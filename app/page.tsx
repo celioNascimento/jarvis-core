@@ -1,64 +1,106 @@
-import Image from "next/image";
+export const revalidate = 0;
 
-export default function Home() {
+import { createClient } from '@supabase/supabase-js';
+
+export default async function JarvisDashboard() {
+  const supabase = createClient(
+    process.env.SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+  
+  const { data: memories } = await supabase
+    .from('brain')
+    .select('*')
+    .order('created_at', { ascending: false });
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <div className="min-h-screen bg-[#0a0c10] text-slate-200 p-4 md:p-10 font-sans selection:bg-blue-500/30">
+      {/* BACKGROUND DECOR (Glows) */}
+      <div className="fixed top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-900/20 blur-[120px] rounded-full pointer-events-none" />
+      <div className="fixed bottom-[-10%] right-[-10%] w-[30%] h-[30%] bg-indigo-900/10 blur-[100px] rounded-full pointer-events-none" />
+
+      {/* HEADER STARK STYLE */}
+      <header className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center mb-12 gap-4">
+        <div>
+          <h1 className="text-4xl font-black tracking-tighter text-white">
+            JARVIS<span className="text-blue-500">.</span>CORE
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="text-slate-500 font-mono text-xs uppercase tracking-[0.3em] mt-1">
+            Neural Interface / Protocol 2026
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+        
+        <div className="flex items-center gap-3 bg-slate-900/50 backdrop-blur-md border border-white/10 p-1 pr-4 rounded-full">
+          <span className="relative flex h-3 w-3 ml-3">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+          </span>
+          <span className="text-sm font-medium text-blue-100 italic">Sessão: Implementação Ativa</span>
         </div>
+      </header>
+
+      <main className="relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-8">
+        
+        {/* COLUNA PRINCIPAL: MEMÓRIA E LOGS (FIFO) */}
+        <section className="lg:col-span-8 space-y-6">
+          <div className="flex items-center gap-4 mb-6">
+            <h2 className="text-lg font-bold uppercase tracking-widest text-slate-400">Fluxo de Dados</h2>
+            <div className="h-[1px] flex-1 bg-gradient-to-r from-slate-700 to-transparent"></div>
+          </div>
+
+          {memories?.filter(m => m.category !== 'Ideia_Estacionada').map((m) => (
+            <div key={m.id} className="group relative bg-white/[0.03] backdrop-blur-xl border border-white/5 p-6 rounded-2xl transition-all hover:bg-white/[0.05] hover:border-blue-500/30">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-tighter uppercase border ${
+                    m.category === 'Log_Tecnico' ? 'border-blue-500/50 text-blue-400 bg-blue-500/10' :
+                    m.category === 'Dúvida' ? 'border-amber-500/50 text-amber-400 bg-amber-500/10' :
+                    'border-slate-500/50 text-slate-400 bg-slate-500/10'
+                  }`}>
+                    {m.category}
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-500">{m.project_tag}</span>
+                </div>
+                <span className="text-[10px] font-mono text-slate-600">{new Date(m.created_at).toLocaleTimeString()}</span>
+              </div>
+              <p className="text-slate-300 leading-relaxed font-light">{m.content}</p>
+            </div>
+          ))}
+
+          {(!memories || memories.filter(m => m.category !== 'Ideia_Estacionada').length === 0) && (
+             <div className="text-slate-600 italic text-center py-20 border-2 border-dashed border-slate-800 rounded-2xl">
+                Aguardando entrada de dados via satélite (Telegram)...
+             </div>
+          )}
+        </section>
+
+        {/* SIDEBAR: ESTACIONAMENTO E CONTEXTO */}
+        <aside className="lg:col-span-4 space-y-8">
+          <div className="p-6 rounded-3xl bg-gradient-to-br from-slate-800/50 to-slate-900/50 border border-white/10 backdrop-blur-md">
+            <h3 className="text-amber-500 text-sm font-bold uppercase tracking-widest mb-6 flex items-center gap-2">
+              <span className="text-xl">🅿️</span> Estacionamento
+            </h3>
+            <div className="space-y-4">
+              {memories?.filter(m => m.category === 'Ideia_Estacionada').map(idea => (
+                <div key={idea.id} className="group cursor-help">
+                  <p className="text-sm text-slate-400 border-l-2 border-slate-700 pl-4 group-hover:border-amber-500 transition-colors">
+                    {idea.content}
+                  </p>
+                </div>
+              ))}
+              {(!memories || memories.filter(m => m.category === 'Ideia_Estacionada').length === 0) && (
+                <p className="text-xs text-slate-600 italic">Nenhuma ideia estacionada no momento.</p>
+              )}
+            </div>
+          </div>
+
+          <div className="p-6 rounded-3xl bg-blue-600/5 border border-blue-500/20">
+            <h3 className="text-blue-400 text-sm font-bold uppercase tracking-widest mb-4">Insights da Sessão</h3>
+            <p className="text-xs text-slate-400 leading-relaxed italic">
+              "A base de toda decisão técnica deve ser a ética e o serviço ao próximo."
+            </p>
+          </div>
+        </aside>
       </main>
     </div>
   );
