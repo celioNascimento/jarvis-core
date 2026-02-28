@@ -15,15 +15,17 @@ export async function POST(req: Request) {
 
     if (!messageText) return NextResponse.json({ ok: true });
 
-    // 1. Chamada ao OpenRouter (Usando o Gemini do Google via Hub)
+    // 1. Chamada ao OpenRouter (Protegida)
     const aiResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json"
+        // ATENÇÃO: Usei OPENAI_API_KEY porque foi o nome que você usou no seu log de variáveis
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, 
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://jarvis-core-three.vercel.app",
       },
       body: JSON.stringify({
-        "model": "google/gemini-2.0-flash-001", // Aqui você escolhe a IA do Google
+        "model": "google/gemini-2.0-flash-001",
         "messages": [
           {
             "role": "system",
@@ -35,15 +37,24 @@ export async function POST(req: Request) {
     });
 
     const aiData = await aiResponse.json();
+
+    // Validação para evitar o erro "reading 0 of undefined"
+    if (!aiData.choices || !aiData.choices[0]) {
+      console.error("❌ Resposta inválida do OpenRouter:", JSON.stringify(aiData));
+      throw new Error(aiData.error?.message || "Erro desconhecido na IA");
+    }
+
     const replyText = aiData.choices[0].message.content;
 
-    // 2. Registro no Supabase (Mantendo o Rigor)
-    await supabase.from('brain').insert([{
+    // 2. Registro no Supabase (Rigor de Dados)
+    const { error: dbError } = await supabase.from('brain').insert([{
       content: messageText,
       category: 'Nota',
       project_tag: 'Jarvis_AI',
       metadata: { ai_reply: replyText }
     }]);
+
+    if (dbError) console.error("❌ Erro Supabase:", dbError.message);
 
     // 3. Resposta no Telegram
     await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
@@ -58,7 +69,13 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true });
   } catch (error: any) {
-    console.error("Erro no OpenRouter:", error.message);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("🚨 Erro Crítico Jarvis:", error.message);
+    // Retornamos 200 para o Telegram não ficar tentando reenviar em caso de erro de lógica
+    return NextResponse.json({ error: error.message }, { status: 200 });
   }
+}
+
+// GET para confirmar que a rota está ativa
+export async function GET() {
+  return NextResponse.json({ status: "Jarvis AI Online" });
 }
