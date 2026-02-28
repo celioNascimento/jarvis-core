@@ -1,103 +1,47 @@
-export const revalidate = 0;
 import { createClient } from '@supabase/supabase-js';
 
+// Conexão com o Schema Jarvis
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { db: { schema: 'jarvis' } }
+);
+
+export const dynamic = 'force-dynamic'; // Garante que as notas novas apareçam ao dar refresh
+
 export default async function JarvisDashboard() {
-  const supabase = createClient(
-    process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { db: { schema: 'jarvis' } }
-  );
-  
-  const { data: memories } = await supabase
+  // Busca as últimas 10 notas do "Cérebro"
+  const { data: notes, error } = await supabase
     .from('brain')
     .select('*')
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .limit(10);
 
   return (
-    <div className="min-h-screen bg-[#0a0c10] text-slate-200 p-4 md:p-10 font-sans selection:bg-blue-500/30">
-      <div className="fixed top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-900/20 blur-[120px] rounded-full pointer-events-none" />
-      <div className="fixed bottom-[-10%] right-[-10%] w-[30%] h-[30%] bg-indigo-900/10 blur-[100px] rounded-full pointer-events-none" />
-
-      <header className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center mb-12 gap-4">
-        <div>
-          <h1 className="text-4xl font-black tracking-tighter text-white text-shadow-sm">
-            JARVIS<span className="text-blue-500">.</span>CORE
-          </h1>
-          <p className="text-slate-500 font-mono text-xs uppercase tracking-[0.3em] mt-1">
-            Neural Interface / Protocol 2026
-          </p>
-        </div>
-        
-        <div className="flex items-center gap-3 bg-slate-900/50 backdrop-blur-md border border-white/10 p-1 pr-4 rounded-full shadow-lg shadow-blue-500/5">
-          <span className="relative flex h-3 w-3 ml-3">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-          </span>
-          <span className="text-sm font-medium text-blue-100 italic">Sessão: Implementação Ativa</span>
-        </div>
+    <main style={{ padding: '2rem', fontFamily: 'sans-serif', backgroundColor: '#0f172a', color: '#f8fafc', minHeight: '100vh' }}>
+      <header style={{ borderBottom: '1px solid #334155', paddingBottom: '1rem', marginBottom: '2rem' }}>
+        <h1 style={{ color: '#38bdf8' }}>🛰️ Jarvis Core - Dashboard</h1>
+        <p style={{ color: '#94a3b8' }}>Monitorando: Procuro Quem Faça & ExpertFrotas</p>
       </header>
 
-      <main className="relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <section className="lg:col-span-8 space-y-6">
-          <div className="flex items-center gap-4 mb-6">
-            <h2 className="text-lg font-bold uppercase tracking-widest text-slate-400">Fluxo de Dados</h2>
-            <div className="h-[1px] flex-1 bg-gradient-to-r from-slate-700 to-transparent"></div>
-          </div>
-
-          {memories && memories.filter(m => m.category !== 'Ideia_Estacionada').length > 0 ? (
-            memories.filter(m => m.category !== 'Ideia_Estacionada').map((m) => (
-              <div key={m.id} className="group relative bg-white/[0.03] backdrop-blur-xl border border-white/5 p-6 rounded-2xl transition-all hover:bg-white/[0.05] hover:border-blue-500/30">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-tighter uppercase border ${
-                      m.category === 'Log_Tecnico' ? 'border-blue-500/50 text-blue-400 bg-blue-500/10' :
-                      m.category === 'Dúvida' ? 'border-amber-500/50 text-amber-400 bg-amber-500/10' :
-                      'border-slate-500/50 text-slate-400 bg-slate-500/10'
-                    }`}>
-                      {m.category}
-                    </span>
-                    <span className="text-[10px] font-mono text-slate-500">{m.project_tag}</span>
-                  </div>
-                  <span className="text-[10px] font-mono text-slate-600">{new Date(m.created_at).toLocaleTimeString()}</span>
-                </div>
-                <p className="text-slate-300 leading-relaxed font-light">{m.content}</p>
+      <section style={{ display: 'grid', gap: '1rem' }}>
+        {notes?.map((note) => (
+          <div key={note.id} style={{ backgroundColor: '#1e293b', padding: '1.5rem', borderRadius: '8px', borderLeft: '4px solid #38bdf8' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+              <span style={{ fontSize: '0.8rem', color: '#7dd3fc', fontWeight: 'bold' }}>[{note.category}]</span>
+              <span style={{ fontSize: '0.8rem', color: '#64748b' }}>{new Date(note.created_at).toLocaleString('pt-BR')}</span>
+            </div>
+            <p style={{ margin: 0, lineHeight: '1.5' }}>{note.content}</p>
+            {note.metadata?.ai_reply && (
+              <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: '#0f172a', borderRadius: '4px', border: '1px dashed #334155' }}>
+                <span style={{ fontSize: '0.7rem', color: '#94a3b8', display: 'block', marginBottom: '0.5' }}>RESPOSTA DO JARVIS:</span>
+                <p style={{ margin: 0, fontSize: '0.9rem', color: '#cbd5e1' }}>{note.metadata.ai_reply}</p>
               </div>
-            ))
-          ) : (
-            <div className="p-8 border border-dashed border-slate-800 rounded-2xl text-center text-slate-600 font-mono text-sm">
-              Aguardando entrada de dados do sistema...
-            </div>
-          )}
-        </section>
-
-        <aside className="lg:col-span-4 space-y-8">
-          <div className="p-6 rounded-3xl bg-gradient-to-br from-slate-800/50 to-slate-900/50 border border-white/10 backdrop-blur-md shadow-2xl">
-            <h3 className="text-amber-500 text-sm font-bold uppercase tracking-widest mb-6 flex items-center gap-2">
-              <span className="text-xl">🅿️</span> Estacionamento
-            </h3>
-            <div className="space-y-4">
-              {memories?.filter(m => m.category === 'Ideia_Estacionada').map(idea => (
-                <div key={idea.id} className="group cursor-help">
-                  <p className="text-sm text-slate-400 border-l-2 border-slate-700 pl-4 group-hover:border-amber-500 transition-colors">
-                    {idea.content}
-                  </p>
-                </div>
-              ))}
-              {(!memories || memories.filter(m => m.category === 'Ideia_Estacionada').length === 0) && (
-                <p className="text-xs text-slate-600 italic">Nenhuma ideia estacionada no momento.</p>
-              )}
-            </div>
+            )}
           </div>
-
-          <div className="p-6 rounded-3xl bg-blue-600/5 border border-blue-500/20 backdrop-blur-sm">
-            <h3 className="text-blue-400 text-sm font-bold uppercase tracking-widest mb-4">Insights da Sessão</h3>
-            <p className="text-xs text-slate-400 leading-relaxed italic">
-              "A base de toda decisão técnica deve ser a ética e o serviço ao próximo."
-            </p>
-            <p className="text-[10px] text-slate-600 mt-4 font-mono">Status: Jarvis monitorando CLI e logs de rede.</p>
-          </div>
-        </aside>
-      </main>
-    </div>
+        ))}
+        {(!notes || notes.length === 0) && <p>Nenhum registro encontrado no Cérebro ainda.</p>}
+      </section>
+    </main>
   );
 }
