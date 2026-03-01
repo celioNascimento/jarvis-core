@@ -48,7 +48,7 @@ export async function POST(req: Request) {
       Estruture em: 1. Compromissos Urgentes, 2. Progresso Técnico e 3. Próximo Passo Sugerido.
       `;
 
-      const aiSummary = await callOpenRouter(summaryPrompt);
+      const aiSummary = await callOpenRouter(summaryPrompt); // Usa o padrão (Flash)
       await sendTelegram(chatId, `📊 *Resumo Consolidado (Stark System):*\n\n${aiSummary}`);
       return NextResponse.json({ ok: true });
     }
@@ -62,7 +62,26 @@ export async function POST(req: Request) {
       .limit(5);
 
     const memory = history?.reverse().map(h => `User: ${h.content}\nJarvis: ${h.metadata?.ai_reply}`).join('\n') || "";
-    const aiReply = await callOpenRouter(`Contexto recente:\n${memory}\n\nUsuário atual: ${messageText}`);
+    
+    // --- LÓGICA DE SELEÇÃO DE MOTOR IA ---
+    let modelToUse = "google/gemini-2.0-flash-001";
+    let engineName = "Gemini Flash";
+    const textLower = messageText.toLowerCase();
+
+    if (textLower.includes('code') || 
+        textLower.includes('bug') || 
+        textLower.includes('#pqf') || 
+        textLower.includes('#expertfrotas')) {
+      modelToUse = "anthropic/claude-3.5-sonnet";
+      engineName = "Claude 3.5 Sonnet";
+    }
+
+    let aiReply = await callOpenRouter(`Contexto recente:\n${memory}\n\nUsuário atual: ${messageText}`, modelToUse);
+
+    // Feedback visual se mudar de motor
+    if (modelToUse !== "google/gemini-2.0-flash-001") {
+      aiReply += `\n\n*(Motor: ${engineName})*`;
+    }
 
     // EXTRATOR DE TAG INTELIGENTE (#tag)
     const tagMatch = messageText.match(/#(\w+)/i);
@@ -141,12 +160,13 @@ async function getGoogleAccessToken() {
 
 // --- FUNÇÕES AUXILIARES ---
 
-async function callOpenRouter(prompt: string) {
+// O motor agora é dinâmico com um valor padrão
+async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      "model": "google/gemini-2.0-flash-001",
+      "model": model, 
       "messages": [
         { 
           "role": "system", 
