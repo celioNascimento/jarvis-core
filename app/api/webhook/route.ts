@@ -11,18 +11,28 @@ export async function POST(req: Request) {
 
     if (!messageText) return NextResponse.json({ ok: true });
 
-    // --- 1. LÓGICA DE COMANDO: /RESUMO ---
+    // --- 1. COMANDO: /IGNORE (Filtro de Ruído) ---
+    if (messageText.startsWith('/ignore')) {
+      const termToIgnore = messageText.replace('/ignore', '').trim().toLowerCase();
+      if (!termToIgnore) {
+        await sendTelegram(chatId, "⚠️ Celio, diga o que devo ignorar. Ex: `/ignore Shopee`.");
+        return NextResponse.json({ ok: true });
+      }
+      
+      await supabase.from('filters').upsert({ term: termToIgnore });
+      await sendTelegram(chatId, `✅ Entendido. O termo "${termToIgnore}" será filtrado dos seus próximos resumos.`);
+      return NextResponse.json({ ok: true });
+    }
+
+    // --- 2. LÓGICA DE COMANDO: /RESUMO ---
     if (messageText.startsWith('/resumo')) {
-      // Busca logs locais
       const { data: logs } = await supabase
         .from('brain')
         .select('content, category, created_at')
         .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
         .order('created_at', { ascending: true });
 
-      // BUSCA DADOS DO GOOGLE (Agenda e Gmail)
       const googleContext = await getGoogleContext();
-
       const activityData = logs?.map(l => `[${l.category}] ${l.content}`).join('\n') || "Sem notas locais hoje.";
       
       const summaryPrompt = `
@@ -42,7 +52,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true });
     }
 
-    // --- 2. MEMÓRIA DE CONTEXTO E RESPOSTA COMUM ---
+    // --- 3. MEMÓRIA DE CONTEXTO E RESPOSTA COMUM ---
     const { data: history } = await supabase
       .from('brain')
       .select('content, metadata')
@@ -65,7 +75,7 @@ export async function POST(req: Request) {
 
   } catch (error: any) {
     console.error("Erro Jarvis:", error.message);
-    return NextResponse.json({ ok: true }); // Mantém 200 para o Telegram não repetir a mensagem
+    return NextResponse.json({ ok: true });
   }
 }
 
@@ -76,6 +86,10 @@ async function getGoogleContext() {
     const accessToken = await getGoogleAccessToken();
     if (!accessToken) return "Não foi possível acessar os dados do Google (Token ausente).";
 
+    // Busca termos para ignorar no banco
+    const { data: ignoreList } = await supabase.from('filters').select('term');
+    const ignoreQuery = ignoreList?.map(f => ` -"${f.term}"`).join('') || "";
+
     // 1. Busca Agenda (Próximos 5 eventos)
     const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=5&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime`, {
       headers: { Authorization: `Bearer ${accessToken}` }
@@ -83,8 +97,8 @@ async function getGoogleContext() {
     const calData = await calRes.json();
     const events = calData.items?.map((e: any) => `- ${e.summary} (${e.start.dateTime || e.start.date})`).join('\n') || "Agenda vazia.";
 
-    // 2. Busca Gmail (Últimos 3 e-mails não lidos)
-    const mailRes = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages?q=is:unread&maxResults=3`, {
+    // 2. Busca Gmail (Últimos 3 e-mails não lidos + Filtro Dinâmico)
+    const mailRes = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages?q=is:unread${ignoreQuery}&maxResults=3`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     const mailData = await mailRes.json();
