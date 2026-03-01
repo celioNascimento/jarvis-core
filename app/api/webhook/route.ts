@@ -26,14 +26,17 @@ export async function POST(req: Request) {
 
     // --- 2. LÓGICA DE COMANDO: /RESUMO ---
     if (messageText.startsWith('/resumo')) {
+      // Busca logs locais incluindo a project_tag
       const { data: logs } = await supabase
         .from('brain')
-        .select('content, category, created_at')
+        .select('content, category, project_tag, created_at')
         .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
         .order('created_at', { ascending: true });
 
       const googleContext = await getGoogleContext();
-      const activityData = logs?.map(l => `[${l.category}] ${l.content}`).join('\n') || "Sem notas locais hoje.";
+      
+      // Usa a tag inteligente se existir, senão usa a categoria padrão
+      const activityData = logs?.map(l => `[${l.project_tag && l.project_tag !== 'Jarvis_AI' ? l.project_tag : l.category}] ${l.content}`).join('\n') || "Sem notas locais hoje.";
       
       const summaryPrompt = `
       Você é o Jarvis. Resuma as últimas 24h para o Celio (Dev com TDAH).
@@ -63,10 +66,14 @@ export async function POST(req: Request) {
     const memory = history?.reverse().map(h => `User: ${h.content}\nJarvis: ${h.metadata?.ai_reply}`).join('\n') || "";
     const aiReply = await callOpenRouter(`Contexto recente:\n${memory}\n\nUsuário atual: ${messageText}`);
 
+    // EXTRATOR DE TAG INTELIGENTE
+    const tagMatch = messageText.match(/#(\w+)/i);
+    const extractedTag = tagMatch ? tagMatch[1] : 'Jarvis_AI';
+
     await supabase.from('brain').insert([{
       content: messageText,
-      category: 'Nota',
-      project_tag: 'Jarvis_AI',
+      category: tagMatch ? 'Contexto' : 'Nota',
+      project_tag: extractedTag,
       metadata: { ai_reply: aiReply }
     }]);
 
@@ -75,7 +82,7 @@ export async function POST(req: Request) {
 
   } catch (error: any) {
     console.error("Erro Jarvis:", error.message);
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true }); 
   }
 }
 
@@ -86,18 +93,15 @@ async function getGoogleContext() {
     const accessToken = await getGoogleAccessToken();
     if (!accessToken) return "Não foi possível acessar os dados do Google (Token ausente).";
 
-    // Busca termos para ignorar no banco
     const { data: ignoreList } = await supabase.from('filters').select('term');
     const ignoreQuery = ignoreList?.map(f => ` -"${f.term}"`).join('') || "";
 
-    // 1. Busca Agenda (Próximos 5 eventos)
     const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=5&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     const calData = await calRes.json();
     const events = calData.items?.map((e: any) => `- ${e.summary} (${e.start.dateTime || e.start.date})`).join('\n') || "Agenda vazia.";
 
-    // 2. Busca Gmail (Últimos 3 e-mails não lidos + Filtro Dinâmico)
     const mailRes = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages?q=is:unread${ignoreQuery}&maxResults=3`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
