@@ -26,7 +26,6 @@ export async function POST(req: Request) {
 
     // --- 2. LÓGICA DE COMANDO: /RESUMO ---
     if (messageText.startsWith('/resumo')) {
-      // Busca logs locais incluindo a project_tag
       const { data: logs } = await supabase
         .from('brain')
         .select('content, category, project_tag, created_at')
@@ -35,7 +34,6 @@ export async function POST(req: Request) {
 
       const googleContext = await getGoogleContext();
       
-      // Usa a tag inteligente se existir, senão usa a categoria padrão
       const activityData = logs?.map(l => `[${l.project_tag && l.project_tag !== 'Jarvis_AI' ? l.project_tag : l.category}] ${l.content}`).join('\n') || "Sem notas locais hoje.";
       
       const summaryPrompt = `
@@ -66,10 +64,11 @@ export async function POST(req: Request) {
     const memory = history?.reverse().map(h => `User: ${h.content}\nJarvis: ${h.metadata?.ai_reply}`).join('\n') || "";
     const aiReply = await callOpenRouter(`Contexto recente:\n${memory}\n\nUsuário atual: ${messageText}`);
 
-    // EXTRATOR DE TAG INTELIGENTE
+    // EXTRATOR DE TAG INTELIGENTE (#tag)
     const tagMatch = messageText.match(/#(\w+)/i);
     const extractedTag = tagMatch ? tagMatch[1] : 'Jarvis_AI';
 
+    // Persistência no Cérebro (Supabase)
     await supabase.from('brain').insert([{
       content: messageText,
       category: tagMatch ? 'Contexto' : 'Nota',
@@ -149,7 +148,10 @@ async function callOpenRouter(prompt: string) {
     body: JSON.stringify({
       "model": "google/gemini-2.0-flash-001",
       "messages": [
-        { "role": "system", "content": "Você é o Jarvis. Assistente focado em produtividade para um dev com TDAH. Use o Framework de 4 Etapas: Capturar, Processar, Agendar e Executar." },
+        { 
+          "role": "system", 
+          "content": "Você é o Jarvis. Assistente de produtividade para um dev com TDAH. DIRETRIZ CRÍTICA: Nunca responda apenas com perguntas ou confirmações vazias. Sempre confirme explicitamente que a informação foi SALVA no seu cérebro. Se o usuário não deu horário para uma tarefa, diga: 'Entendido, Celio. Registrei [Tarefa]. Quando tiver os horários, me avise para eu agendar o alerta'. Use o Framework de 4 Etapas: Capturar, Processar, Agendar e Executar." 
+        },
         { "role": "user", "content": prompt }
       ]
     })
