@@ -48,7 +48,7 @@ export async function POST(req: Request) {
       Estruture em: 1. Compromissos Urgentes, 2. Progresso Técnico e 3. Próximo Passo Sugerido.
       `;
 
-      const aiSummary = await callOpenRouter(summaryPrompt); // Usa o padrão (Flash)
+      const aiSummary = await callOpenRouter(summaryPrompt); 
       await sendTelegram(chatId, `📊 *Resumo Consolidado (Stark System):*\n\n${aiSummary}`);
       return NextResponse.json({ ok: true });
     }
@@ -63,11 +63,12 @@ export async function POST(req: Request) {
 
     const memory = history?.reverse().map(h => `User: ${h.content}\nJarvis: ${h.metadata?.ai_reply}`).join('\n') || "";
     
-    // --- LÓGICA DE SELEÇÃO DE MOTOR IA ---
+    // --- LÓGICA DE SELEÇÃO DE MOTOR IA (Com Override Manual) ---
     let modelToUse = "google/gemini-2.0-flash-001";
     let engineName = "Gemini Flash";
     const textLower = messageText.toLowerCase();
 
+    // Regras automáticas (Projetos/Bugs ativam o Claude)
     if (textLower.includes('code') || 
         textLower.includes('bug') || 
         textLower.includes('#pqf') || 
@@ -76,16 +77,27 @@ export async function POST(req: Request) {
       engineName = "Claude 3.5 Sonnet";
     }
 
+    // Override manual (O usuário manda! Se tiver a tag, força a troca)
+    if (textLower.includes('#claude')) {
+      modelToUse = "anthropic/claude-3.5-sonnet";
+      engineName = "Claude 3.5 Sonnet (Forçado)";
+    } else if (textLower.includes('#gemini')) {
+      modelToUse = "google/gemini-2.0-flash-001";
+      engineName = "Gemini Flash (Forçado)";
+    }
+
     let aiReply = await callOpenRouter(`Contexto recente:\n${memory}\n\nUsuário atual: ${messageText}`, modelToUse);
 
-    // Feedback visual se mudar de motor
-    if (modelToUse !== "google/gemini-2.0-flash-001") {
+    // Adiciona feedback visual se NÃO for o Gemini padrão E se não tiver ativado o fallback de erro
+    if (modelToUse !== "google/gemini-2.0-flash-001" && !aiReply.includes("⚠️ Fallback")) {
       aiReply += `\n\n*(Motor: ${engineName})*`;
     }
 
-    // EXTRATOR DE TAG INTELIGENTE (#tag)
-    const tagMatch = messageText.match(/#(\w+)/i);
-    const extractedTag = tagMatch ? tagMatch[1] : 'Jarvis_AI';
+    // EXTRATOR DE TAG INTELIGENTE (#tag) - Ignora as tags de sistema de IA
+    let extractedTag = 'Jarvis_AI';
+    const cleanMessage = messageText.replace(/#claude/ig, '').replace(/#gemini/ig, '');
+    const tagMatch = cleanMessage.match(/#(\w+)/i);
+    if (tagMatch) extractedTag = tagMatch[1];
 
     // Persistência no Cérebro (Supabase)
     await supabase.from('brain').insert([{
@@ -105,7 +117,6 @@ export async function POST(req: Request) {
 }
 
 // --- FUNÇÕES DE INTEGRAÇÃO GOOGLE ---
-
 async function getGoogleContext() {
   try {
     const accessToken = await getGoogleAccessToken();
@@ -158,44 +169,65 @@ async function getGoogleAccessToken() {
   return tokens.access_token;
 }
 
-// --- FUNÇÕES AUXILIARES ---
-
-// O motor agora é dinâmico com um valor padrão
+// --- FUNÇÕES AUXILIARES (Com Fallback Blindado) ---
 async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      "model": model, 
-      "messages": [
-        { 
-          "role": "system", 
-          "content": "Você é o Jarvis. Assistente de produtividade para um dev com TDAH. DIRETRIZ CRÍTICA: Nunca responda apenas com perguntas ou confirmações vazias. Sempre confirme explicitamente que a informação foi SALVA no seu cérebro. Se o usuário não deu horário para uma tarefa, diga: 'Entendido, Celio. Registrei [Tarefa]. Quando tiver os horários, me avise para eu agendar o alerta'. Use o Framework de 4 Etapas: Capturar, Processar, Agendar e Executar." 
-        },
-        { "role": "user", "content": prompt }
-      ]
-    })
-  });
-  const data = await res.json();
-  return data.choices[0].message.content;
+  const defaultModel = "google/gemini-2.0-flash-001";
+
+  // Função interna para fazer a requisição de IA
+  const fetchAI = async (modelName: string) => {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        "model": modelName, 
+        "messages": [
+          { 
+            "role": "system", 
+            "content": "Você é o Jarvis. Assistente de produtividade para um dev com TDAH. DIRETRIZ CRÍTICA: Nunca responda apenas com perguntas ou confirmações vazias. Sempre confirme explicitamente que a informação foi SALVA no seu cérebro. Se o usuário não deu horário para uma tarefa, diga: 'Entendido, Celio. Registrei [Tarefa]. Quando tiver os horários, me avise para eu agendar o alerta'. Use o Framework de 4 Etapas: Capturar, Processar, Agendar e Executar." 
+          },
+          { "role": "user", "content": prompt }
+        ]
+      })
+    });
+    return await res.json();
+  };
+
+  let data = await fetchAI(model);
+
+  // SE DEU ERRO (Ex: Falta de crédito, limite de API) E não era o Gemini...
+  if (data.error && model !== defaultModel) {
+    console.warn(`[JARVIS FALLBACK] Falha no modelo ${model}. Acionando ${defaultModel}...`);
+    // Faz o Fallback (Retenta com o Gemini Flash)
+    data = await fetchAI(defaultModel);
+    
+    if (!data.error && data.choices) {
+      return data.choices[0].message.content + "\n\n*(⚠️ Fallback de Emergência: O Claude falhou/sem saldo. O Gemini atendeu seu pedido para não te deixar na mão.)*";
+    }
+  }
+
+  // Se deu certo de primeira, ou após o fallback
+  if (!data.error && data.choices) {
+    return data.choices[0].message.content;
+  }
+
+  // Se tudo falhar (inclusive o Gemini)
+  return "❌ Erro Crítico: Nenhum motor de IA pôde responder. Verifique seus créditos ou status da API OpenRouter.";
 }
 
 async function sendTelegram(chatId: number, text: string) {
   try {
-    // Tentativa 1: Com formatação Markdown
     const res = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
     });
 
-    // Tentativa 2: Se falhar (erro 400 do Telegram por Markdown inválido), tenta texto puro
     if (!res.ok) {
       console.warn("Falha no Markdown, enviando como texto puro...");
       await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text }), // Sem parse_mode
+        body: JSON.stringify({ chat_id: chatId, text }),
       });
     }
   } catch (error) {
