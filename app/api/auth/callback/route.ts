@@ -5,11 +5,10 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const code = searchParams.get('code');
 
-  if (!code) return NextResponse.json({ error: "Código não enviado" }, { status: 400 });
+  if (!code) return NextResponse.json({ error: "Código não recebido do Google" });
 
   try {
-    // 1. Troca o código pelo Refresh Token
-    const res = await fetch('https://oauth2.googleapis.com/token', {
+    const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -21,25 +20,34 @@ export async function GET(req: Request) {
       }),
     });
 
-    const data = await res.json();
+    const data = await response.json();
 
-    if (data.error) throw new Error(data.error_description || data.error);
+    // SE O GOOGLE DER ERRO, VAMOS VER O PORQUÊ NA TELA
+    if (data.error) {
+      return NextResponse.json({ 
+        stage: "Erro na troca do Token no Google", 
+        error: data.error, 
+        description: data.error_description 
+      });
+    }
 
-    // 2. Salva na tabela config (schema jarvis)
     const supabase = createClient(
       process.env.SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
       { db: { schema: 'jarvis' } }
     );
 
-    await supabase.from('config').upsert({
-      key: 'google_refresh_token',
-      value: data.refresh_token
-    });
+    const { error: supaError } = await supabase
+      .from('config')
+      .upsert({ key: 'google_refresh_token', value: data.refresh_token });
 
-    return NextResponse.json({ success: true, message: "Jarvis Conectado! Pode voltar ao Telegram." });
+    if (supaError) {
+      return NextResponse.json({ stage: "Erro ao gravar no Supabase", error: supaError.message });
+    }
+
+    return NextResponse.json({ success: true, message: "Token gravado! Verifique o Supabase agora." });
 
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ stage: "Erro Crítico no Servidor", message: error.message });
   }
 }
