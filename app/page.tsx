@@ -47,9 +47,10 @@ export default async function HomePage() {
                 <p className="text-sm text-slate-200 leading-relaxed">{log.content}</p>
                 
                 {log.metadata?.ai_reply && (
-                  <div className="mt-3 p-2 bg-blue-900/10 rounded border border-blue-900/20">
-                    <p className="text-xs text-blue-300 italic">
-                      🤖 <span className="font-bold not-italic">Jarvis:</span> {log.metadata.ai_reply.substring(0, 150)}...
+                  <div className="mt-3 p-3 bg-blue-900/10 rounded border border-blue-900/20">
+                    {/* Alterado para exibir a resposta inteira com quebras de linha respeitadas */}
+                    <p className="text-sm text-blue-300 italic whitespace-pre-wrap">
+                      🤖 <span className="font-bold not-italic">Jarvis:</span> {log.metadata.ai_reply}
                     </p>
                   </div>
                 )}

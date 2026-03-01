@@ -161,9 +161,24 @@ async function callOpenRouter(prompt: string) {
 }
 
 async function sendTelegram(chatId: number, text: string) {
-  await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
-  });
+  try {
+    // Tentativa 1: Com formatação Markdown
+    const res = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+    });
+
+    // Tentativa 2: Se falhar (erro 400 do Telegram por Markdown inválido), tenta texto puro
+    if (!res.ok) {
+      console.warn("Falha no Markdown, enviando como texto puro...");
+      await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text }), // Sem parse_mode
+      });
+    }
+  } catch (error) {
+    console.error("Erro fatal na comunicação com o Telegram:", error);
+  }
 }
