@@ -11,21 +11,20 @@ export async function POST(req: Request) {
 
     if (!messageText) return NextResponse.json({ ok: true });
 
-    // --- 1. COMANDO: /IGNORE (Filtro de Ruído) ---
+    // --- 1. COMANDOS DE SISTEMA (/ignore e /resumo) ---
     if (messageText.startsWith('/ignore')) {
       const termToIgnore = messageText.replace('/ignore', '').trim().toLowerCase();
       if (!termToIgnore) {
         await sendTelegram(chatId, "⚠️ Celio, diga o que devo ignorar. Ex: `/ignore Shopee`.");
         return NextResponse.json({ ok: true });
       }
-      
       await supabase.from('filters').upsert({ term: termToIgnore });
-      await sendTelegram(chatId, `✅ Entendido. O termo "${termToIgnore}" será filtrado dos seus próximos resumos.`);
+      await sendTelegram(chatId, `✅ Entendido. O termo "${termToIgnore}" será filtrado dos resumos.`);
       return NextResponse.json({ ok: true });
     }
 
-    // --- 2. LÓGICA DE COMANDO: /RESUMO ---
     if (messageText.startsWith('/resumo')) {
+      // Lógica de resumo diário mantida (busca na RAM das últimas 24h e Google)
       const { data: logs } = await supabase
         .from('brain')
         .select('content, category, project_tag, created_at')
@@ -33,51 +32,79 @@ export async function POST(req: Request) {
         .order('created_at', { ascending: true });
 
       const googleContext = await getGoogleContext();
-      
-      const activityData = logs?.map(l => `[${l.project_tag && l.project_tag !== 'Jarvis_AI' ? l.project_tag : l.category}] ${l.content}`).join('\n') || "Sem notas locais hoje.";
+      const activityData = logs?.map(l => `[${l.project_tag || l.category}] ${l.content}`).join('\n') || "Sem notas locais hoje.";
       
       const summaryPrompt = `
-      Você é o Jarvis. Resuma as últimas 24h para o Celio (Dev com TDAH).
-      
-      DADOS LOCAIS (Supabase):
-      ${activityData}
-      
-      DADOS GOOGLE (Agenda/Gmail):
-      ${googleContext}
-      
-      Estruture em: 1. Compromissos Urgentes, 2. Progresso Técnico e 3. Próximo Passo Sugerido.
+      Você é o Jarvis. Resuma as últimas 24h para o Celio.
+      DADOS LOCAIS: \n${activityData}\n
+      DADOS GOOGLE: \n${googleContext}\n
+      Estruture em: 1. Compromissos Urgentes, 2. Progresso Técnico, 3. Próximo Passo Sugerido.
       `;
 
       const aiSummary = await callOpenRouter(summaryPrompt); 
-      await sendTelegram(chatId, `📊 *Resumo Consolidado (Stark System):*\n\n${aiSummary}`);
+      await sendTelegram(chatId, `📊 *Resumo Consolidado:*\n\n${aiSummary}`);
       return NextResponse.json({ ok: true });
     }
 
-    // --- 3. MEMÓRIA DE CONTEXTO E RESPOSTA COMUM ---
-    const { data: history } = await supabase
-      .from('brain')
-      .select('content, metadata')
-      .eq('project_tag', 'Jarvis_AI')
-      .order('created_at', { ascending: false })
-      .limit(5);
-
-    const memory = history?.reverse().map(h => `User: ${h.content}\nJarvis: ${h.metadata?.ai_reply}`).join('\n') || "";
+    // --- 2. EXTRATOR DE HIERARQUIA (Tags, Contextos e Módulos) ---
+    const textLower = messageText.toLowerCase();
+    const cleanMessage = messageText.replace(/#claude/ig, '').replace(/#gemini/ig, '');
     
-    // --- LÓGICA DE SELEÇÃO DE MOTOR IA (Com Override Manual) ---
+    const projectMatch = cleanMessage.match(/#(\w+)/i);
+    const contextMatch = cleanMessage.match(/@(\w+)/i);
+    const moduleMatch = cleanMessage.match(/\[(.*?)\]/i);
+
+    const projectTag = projectMatch ? projectMatch[1] : null;
+    const contextTag = contextMatch ? contextMatch[1] : null;
+    const moduleTag = moduleMatch ? moduleMatch[1] : null;
+
+    // --- 3. A PORTARIA (Filtro de Ambiguidade) ---
+    const ambiguousWords = ['senha', 'bug', 'erro', 'falha', 'login', 'banco', 'deploy'];
+    const isAmbiguous = ambiguousWords.some(w => textLower.includes(w));
+
+    if (isAmbiguous && !projectTag) {
+      await sendTelegram(chatId, "⚠️ **Contexto Ausente:**\nCelio, de qual projeto estamos falando? Identifique usando `#` (ex: #PQF, #ExpertFrotas) para eu saber em qual gaveta procurar.");
+      return NextResponse.json({ ok: true });
+    }
+
+    if (projectTag === 'PQF' && isAmbiguous && !contextTag) {
+      await sendTelegram(chatId, "🤔 **Em qual perfil do #PQF?**\nUse `@Prestador` ou `@Cliente` para eu ser cirúrgico e não misturar os fluxos.");
+      return NextResponse.json({ ok: true });
+    }
+
+    // --- 4. GERAÇÃO DO VETOR MATEMÁTICO (DNA da Pergunta) ---
+    const queryEmbedding = await generateEmbedding(cleanMessage);
+
+    // --- 5. BUSCA NO HD (Vetores na tabela 'memories') ---
+    let hdContext = "Sem resumos consolidados relevantes no HD.";
+    if (projectTag && queryEmbedding) {
+      const { data: searchResults } = await supabase.rpc('match_memories', {
+        query_embedding: queryEmbedding,
+        filter_project: projectTag,
+        match_threshold: 0.6, // Certeza de 60% para cima
+        match_count: 2
+      });
+
+      if (searchResults && searchResults.length > 0) {
+        hdContext = searchResults.map((r: any) => `[HD - Resumo Técnico]: ${r.summary}`).join('\n\n');
+      }
+    }
+
+    // --- 6. BUSCA NA RAM (Últimas 15 mensagens do Cérebro) ---
+    let ramQuery = supabase.from('brain').select('content, metadata').order('created_at', { ascending: false }).limit(15);
+    if (projectTag) ramQuery = ramQuery.eq('project_tag', projectTag); // Filtra o fluxo do projeto
+    
+    const { data: history } = await ramQuery;
+    const ramMemory = history?.reverse().map(h => `User: ${h.content}\nJarvis: ${h.metadata?.ai_reply}`).join('\n') || "RAM Vazia.";
+
+    // --- 7. SELEÇÃO DO MOTOR DE IA ---
     let modelToUse = "google/gemini-2.0-flash-001";
     let engineName = "Gemini Flash";
-    const textLower = messageText.toLowerCase();
 
-    // Regras automáticas (Projetos/Bugs ativam o Claude)
-    if (textLower.includes('code') || 
-        textLower.includes('bug') || 
-        textLower.includes('#pqf') || 
-        textLower.includes('#expertfrotas')) {
+    if (textLower.includes('code') || textLower.includes('bug') || projectTag === 'pqf' || projectTag === 'expertfrotas') {
       modelToUse = "anthropic/claude-3.5-sonnet";
       engineName = "Claude 3.5 Sonnet";
     }
-
-    // Override manual (O usuário manda! Se tiver a tag, força a troca)
     if (textLower.includes('#claude')) {
       modelToUse = "anthropic/claude-3.5-sonnet";
       engineName = "Claude 3.5 Sonnet (Forçado)";
@@ -86,25 +113,33 @@ export async function POST(req: Request) {
       engineName = "Gemini Flash (Forçado)";
     }
 
-    let aiReply = await callOpenRouter(`Contexto recente:\n${memory}\n\nUsuário atual: ${messageText}`, modelToUse);
+    // --- 8. O PROMPT MESTRE DO JARVIS ---
+    const finalPrompt = `
+      DADOS DO HD (Conhecimento Profundo / Vetores):
+      ${hdContext}
 
-    // Adiciona feedback visual se NÃO for o Gemini padrão E se não tiver ativado o fallback de erro
+      RAM RECENTE (Fio da meada - Últimas 15 msgs):
+      ${ramMemory}
+
+      NOVA ENTRADA DO USUÁRIO:
+      Contexto Endereçado: Projeto: ${projectTag || 'Geral'} | Perfil: ${contextTag || 'N/A'} | Módulo: ${moduleTag || 'N/A'}
+      Mensagem: ${cleanMessage}
+    `;
+
+    let aiReply = await callOpenRouter(finalPrompt, modelToUse);
+
     if (modelToUse !== "google/gemini-2.0-flash-001" && !aiReply.includes("⚠️ Fallback")) {
       aiReply += `\n\n*(Motor: ${engineName})*`;
     }
 
-    // EXTRATOR DE TAG INTELIGENTE (#tag) - Ignora as tags de sistema de IA
-    let extractedTag = 'Jarvis_AI';
-    const cleanMessage = messageText.replace(/#claude/ig, '').replace(/#gemini/ig, '');
-    const tagMatch = cleanMessage.match(/#(\w+)/i);
-    if (tagMatch) extractedTag = tagMatch[1];
-
-    // Persistência no Cérebro (Supabase)
+    // --- 9. PERSISTÊNCIA BRUTA NA RAM (Agora guardando o Vetor!) ---
+    // Guardamos o vetor na RAM também, caso precisemos migrar dados para o HD depois
     await supabase.from('brain').insert([{
-      content: messageText,
-      category: tagMatch ? 'Contexto' : 'Nota',
-      project_tag: extractedTag,
-      metadata: { ai_reply: aiReply }
+      content: cleanMessage,
+      category: projectTag ? 'Contexto' : 'Nota',
+      project_tag: projectTag || 'Jarvis_AI',
+      embedding: queryEmbedding, // Salva o DNA da mensagem bruta
+      metadata: { ai_reply: aiReply, context: contextTag, module: moduleTag }
     }]);
 
     await sendTelegram(chatId, aiReply);
@@ -116,7 +151,32 @@ export async function POST(req: Request) {
   }
 }
 
-// --- FUNÇÕES DE INTEGRAÇÃO GOOGLE ---
+// ==========================================
+// INTEGRAÇÕES E FUNÇÕES AUXILIARES
+// ==========================================
+
+// Função Nova: Chama a OpenAI para transformar texto em Números
+async function generateEmbedding(text: string) {
+  try {
+    const res = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: text
+      })
+    });
+    const data = await res.json();
+    return data.data[0].embedding;
+  } catch (e) {
+    console.error("Erro ao gerar Embedding:", e);
+    return null;
+  }
+}
+
 async function getGoogleContext() {
   try {
     const accessToken = await getGoogleAccessToken();
@@ -169,11 +229,9 @@ async function getGoogleAccessToken() {
   return tokens.access_token;
 }
 
-// --- FUNÇÕES AUXILIARES (Com Fallback Blindado) ---
 async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
   const defaultModel = "google/gemini-2.0-flash-001";
 
-  // Função interna para fazer a requisição de IA
   const fetchAI = async (modelName: string) => {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -183,7 +241,7 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
         "messages": [
           { 
             "role": "system", 
-            "content": "Você é o Jarvis. Assistente de produtividade para um dev com TDAH. DIRETRIZ CRÍTICA: Nunca responda apenas com perguntas ou confirmações vazias. Sempre confirme explicitamente que a informação foi SALVA no seu cérebro. Se o usuário não deu horário para uma tarefa, diga: 'Entendido, Celio. Registrei [Tarefa]. Quando tiver os horários, me avise para eu agendar o alerta'. Use o Framework de 4 Etapas: Capturar, Processar, Agendar e Executar." 
+            "content": "Você é o Jarvis. Assistente focado e técnico. DIRETRIZ CRÍTICA: Nunca responda apenas com perguntas ou confirmações vazias. Sempre confirme explicitamente que a informação foi SALVA. Use o Framework de 4 Etapas: Capturar, Processar, Agendar e Executar. Seja cirúrgico, mantenha nomes de variáveis exatos." 
           },
           { "role": "user", "content": prompt }
         ]
@@ -194,24 +252,19 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
 
   let data = await fetchAI(model);
 
-  // SE DEU ERRO (Ex: Falta de crédito, limite de API) E não era o Gemini...
   if (data.error && model !== defaultModel) {
     console.warn(`[JARVIS FALLBACK] Falha no modelo ${model}. Acionando ${defaultModel}...`);
-    // Faz o Fallback (Retenta com o Gemini Flash)
     data = await fetchAI(defaultModel);
-    
     if (!data.error && data.choices) {
-      return data.choices[0].message.content + "\n\n*(⚠️ Fallback de Emergência: O Claude falhou/sem saldo. O Gemini atendeu seu pedido para não te deixar na mão.)*";
+      return data.choices[0].message.content + "\n\n*(⚠️ Fallback de Emergência: O Claude falhou/sem saldo. O Gemini assumiu.)*";
     }
   }
 
-  // Se deu certo de primeira, ou após o fallback
   if (!data.error && data.choices) {
     return data.choices[0].message.content;
   }
 
-  // Se tudo falhar (inclusive o Gemini)
-  return "❌ Erro Crítico: Nenhum motor de IA pôde responder. Verifique seus créditos ou status da API OpenRouter.";
+  return "❌ Erro Crítico: Nenhum motor de IA pôde responder.";
 }
 
 async function sendTelegram(chatId: number, text: string) {
