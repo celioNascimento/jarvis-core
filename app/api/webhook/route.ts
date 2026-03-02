@@ -24,7 +24,6 @@ export async function POST(req: Request) {
     }
 
     if (messageText.startsWith('/resumo')) {
-      // Lógica de resumo diário mantida (busca na RAM das últimas 24h e Google)
       const { data: logs } = await supabase
         .from('brain')
         .select('content, category, project_tag, created_at')
@@ -58,7 +57,7 @@ export async function POST(req: Request) {
     const contextTag = contextMatch ? contextMatch[1] : null;
     const moduleTag = moduleMatch ? moduleMatch[1] : null;
 
-    // --- 3. A PORTARIA (Filtro de Ambiguidade) ---
+    // --- 3. A PORTARIA (Filtro de Ambiguidade Estático - Em breve Dinâmico) ---
     const ambiguousWords = ['senha', 'bug', 'erro', 'falha', 'login', 'banco', 'deploy'];
     const isAmbiguous = ambiguousWords.some(w => textLower.includes(w));
 
@@ -81,7 +80,7 @@ export async function POST(req: Request) {
       const { data: searchResults } = await supabase.rpc('match_memories', {
         query_embedding: queryEmbedding,
         filter_project: projectTag,
-        match_threshold: 0.6, // Certeza de 60% para cima
+        match_threshold: 0.6,
         match_count: 2
       });
 
@@ -92,7 +91,7 @@ export async function POST(req: Request) {
 
     // --- 6. BUSCA NA RAM (Últimas 15 mensagens do Cérebro) ---
     let ramQuery = supabase.from('brain').select('content, metadata').order('created_at', { ascending: false }).limit(15);
-    if (projectTag) ramQuery = ramQuery.eq('project_tag', projectTag); // Filtra o fluxo do projeto
+    if (projectTag) ramQuery = ramQuery.eq('project_tag', projectTag);
     
     const { data: history } = await ramQuery;
     const ramMemory = history?.reverse().map(h => `User: ${h.content}\nJarvis: ${h.metadata?.ai_reply}`).join('\n') || "RAM Vazia.";
@@ -132,17 +131,23 @@ export async function POST(req: Request) {
       aiReply += `\n\n*(Motor: ${engineName})*`;
     }
 
-    // --- 9. PERSISTÊNCIA BRUTA NA RAM (Agora guardando o Vetor!) ---
-    // Guardamos o vetor na RAM também, caso precisemos migrar dados para o HD depois
+    // --- 9. PERSISTÊNCIA BRUTA NA RAM ---
     await supabase.from('brain').insert([{
       content: cleanMessage,
       category: projectTag ? 'Contexto' : 'Nota',
       project_tag: projectTag || 'Jarvis_AI',
-      embedding: queryEmbedding, // Salva o DNA da mensagem bruta
+      embedding: queryEmbedding,
       metadata: { ai_reply: aiReply, context: contextTag, module: moduleTag }
     }]);
 
     await sendTelegram(chatId, aiReply);
+
+    // --- 10. GATILHO DE APRENDIZADO SILENCIOSO (Usando Gemini) ---
+    // Roda em background antes de fechar a requisição
+    if (projectTag) {
+      await consolidateKnowledge(projectTag);
+    }
+
     return NextResponse.json({ ok: true });
 
   } catch (error: any) {
@@ -155,7 +160,53 @@ export async function POST(req: Request) {
 // INTEGRAÇÕES E FUNÇÕES AUXILIARES
 // ==========================================
 
-// Função Nova: Chama a OpenAI para transformar texto em Números
+// --- NOVO: Motor de Aprendizado Contínuo ---
+async function consolidateKnowledge(projectTag: string) {
+  try {
+    // Busca quantas mensagens ainda não foram consolidadas para esse projeto
+    const { data: logs, count } = await supabase
+      .from('brain')
+      .select('id, content', { count: 'exact' })
+      .eq('project_tag', projectTag)
+      .is('metadata->consolidated', null)
+      .limit(6); // Pegamos lotes curtos para manter a precisão
+
+    // Se tivermos acumulado 5 ou mais mensagens, ativamos o aprendizado
+    if (count && count >= 5 && logs) {
+      const batchText = logs.map(l => l.content).join('\n');
+      const logIds = logs.map(l => l.id);
+
+      const summaryPrompt = `Você é um engenheiro de software documentando um projeto. 
+      Resuma as seguintes anotações do projeto #${projectTag}. 
+      Extraia apenas decisões técnicas, regras de negócio resolvidas ou correções de bugs. 
+      Seja direto, técnico e mantenha os nomes de variáveis/arquivos.
+      
+      Anotações brutas:
+      ${batchText}`;
+
+      // Usa explicitamente o Gemini Flash para fazer o resumo (Custo quase zero)
+      const summary = await callOpenRouter(summaryPrompt, "google/gemini-2.0-flash-001");
+      const embedding = await generateEmbedding(summary);
+
+      if (embedding) {
+        // Grava no HD Vetorial
+        await supabase.from('memories').insert({
+          project_tag: projectTag,
+          summary: summary,
+          embedding: embedding
+        });
+
+        // Marca as mensagens do 'brain' como consolidadas para não repetir
+        await supabase.from('brain')
+          .update({ metadata: { consolidated: true } })
+          .in('id', logIds);
+      }
+    }
+  } catch (e) {
+    console.error("Falha ao consolidar memória:", e);
+  }
+}
+
 async function generateEmbedding(text: string) {
   try {
     const res = await fetch("https://api.openai.com/v1/embeddings", {
