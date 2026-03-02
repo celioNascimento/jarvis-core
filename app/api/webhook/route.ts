@@ -57,7 +57,7 @@ export async function POST(req: Request) {
     const contextTag = contextMatch ? contextMatch[1] : null;
     const moduleTag = moduleMatch ? moduleMatch[1] : null;
 
-    // --- 3. A PORTARIA (Filtro de Ambiguidade Estático - Em breve Dinâmico) ---
+    // --- 3. A PORTARIA (Filtro de Ambiguidade Estático) ---
     const ambiguousWords = ['senha', 'bug', 'erro', 'falha', 'login', 'banco', 'deploy'];
     const isAmbiguous = ambiguousWords.some(w => textLower.includes(w));
 
@@ -112,7 +112,9 @@ export async function POST(req: Request) {
       engineName = "Gemini Flash (Forçado)";
     }
 
-    // --- 8. O PROMPT MESTRE DO JARVIS ---
+    // --- 8. O PROMPT MESTRE DO JARVIS (Atualizado com Data/Hora) ---
+    const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    
     const finalPrompt = `
       DADOS DO HD (Conhecimento Profundo / Vetores):
       ${hdContext}
@@ -120,12 +122,30 @@ export async function POST(req: Request) {
       RAM RECENTE (Fio da meada - Últimas 15 msgs):
       ${ramMemory}
 
+      DATA E HORA ATUAL DO SISTEMA: ${dataAtual}
+
       NOVA ENTRADA DO USUÁRIO:
       Contexto Endereçado: Projeto: ${projectTag || 'Geral'} | Perfil: ${contextTag || 'N/A'} | Módulo: ${moduleTag || 'N/A'}
       Mensagem: ${cleanMessage}
     `;
 
     let aiReply = await callOpenRouter(finalPrompt, modelToUse);
+
+    // --- 8.5 INTERCEPTADOR DE AGENDAMENTO (O Braço Mecânico) ---
+    // Procura na resposta se o Jarvis gerou a tag secreta de agendamento
+    const scheduleRegex = /\[AGENDAR:\s*(.*?)\s*\|\s*(.*?)\]/i;
+    const scheduleMatch = aiReply.match(scheduleRegex);
+
+    if (scheduleMatch) {
+      const eventTitle = scheduleMatch[1].trim();
+      const eventTime = scheduleMatch[2].trim();
+      
+      // Aciona o Google Agenda via backend
+      const scheduleResult = await createGoogleEvent(eventTitle, eventTime);
+
+      // Limpa a tag feia da resposta para o usuário e adiciona o resultado real
+      aiReply = aiReply.replace(scheduleRegex, `\n\n🗓️ **Ação Automática:** ${scheduleResult}`);
+    }
 
     if (modelToUse !== "google/gemini-2.0-flash-001" && !aiReply.includes("⚠️ Fallback")) {
       aiReply += `\n\n*(Motor: ${engineName})*`;
@@ -142,8 +162,7 @@ export async function POST(req: Request) {
 
     await sendTelegram(chatId, aiReply);
 
-    // --- 10. GATILHO DE APRENDIZADO SILENCIOSO (Usando Gemini) ---
-    // Roda em background antes de fechar a requisição
+    // --- 10. GATILHO DE APRENDIZADO SILENCIOSO ---
     if (projectTag) {
       await consolidateKnowledge(projectTag);
     }
@@ -160,18 +179,41 @@ export async function POST(req: Request) {
 // INTEGRAÇÕES E FUNÇÕES AUXILIARES
 // ==========================================
 
-// --- NOVO: Motor de Aprendizado Contínuo ---
+// --- NOVO: Função para criar eventos na Google Agenda ---
+async function createGoogleEvent(summary: string, startTime: string) {
+  try {
+    const accessToken = await getGoogleAccessToken();
+    if (!accessToken) return "Erro: Sem permissão no Google.";
+
+    const event = {
+      summary: summary,
+      start: { dateTime: startTime, timeZone: 'America/Sao_Paulo' },
+      // Duração padrão de 30 minutos
+      end: { dateTime: new Date(new Date(startTime).getTime() + 30*60000).toISOString(), timeZone: 'America/Sao_Paulo' },
+    };
+
+    const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(event)
+    });
+
+    return res.ok ? "Agendado com sucesso na sua Google Agenda! Seu celular irá despertar." : "Falha ao criar evento na agenda.";
+  } catch (e) {
+    console.error("Erro ao agendar Google Event:", e);
+    return "Erro interno ao tentar agendar.";
+  }
+}
+
 async function consolidateKnowledge(projectTag: string) {
   try {
-    // Busca quantas mensagens ainda não foram consolidadas para esse projeto
     const { data: logs, count } = await supabase
       .from('brain')
       .select('id, content', { count: 'exact' })
       .eq('project_tag', projectTag)
       .is('metadata->consolidated', null)
-      .limit(6); // Pegamos lotes curtos para manter a precisão
+      .limit(6);
 
-    // Se tivermos acumulado 5 ou mais mensagens, ativamos o aprendizado
     if (count && count >= 5 && logs) {
       const batchText = logs.map(l => l.content).join('\n');
       const logIds = logs.map(l => l.id);
@@ -184,19 +226,16 @@ async function consolidateKnowledge(projectTag: string) {
       Anotações brutas:
       ${batchText}`;
 
-      // Usa explicitamente o Gemini Flash para fazer o resumo (Custo quase zero)
       const summary = await callOpenRouter(summaryPrompt, "google/gemini-2.0-flash-001");
       const embedding = await generateEmbedding(summary);
 
       if (embedding) {
-        // Grava no HD Vetorial
         await supabase.from('memories').insert({
           project_tag: projectTag,
           summary: summary,
           embedding: embedding
         });
 
-        // Marca as mensagens do 'brain' como consolidadas para não repetir
         await supabase.from('brain')
           .update({ metadata: { consolidated: true } })
           .in('id', logIds);
@@ -292,7 +331,7 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
         "messages": [
           { 
             "role": "system", 
-            "content": "Você é o Jarvis. Assistente focado e técnico. DIRETRIZ CRÍTICA: Nunca responda apenas com perguntas ou confirmações vazias. Sempre confirme explicitamente que a informação foi SALVA. Use o Framework de 4 Etapas: Capturar, Processar, Agendar e Executar. Seja cirúrgico, mantenha nomes de variáveis exatos." 
+            "content": "Você é o Jarvis. Assistente focado e técnico. DIRETRIZ CRÍTICA: Você POSSUI integração ativa com Google Agenda e Gmail. Se o usuário pedir para lembrar, avisar ou agendar algo futuro, você DEVE gerar a tag exata no formato: [AGENDAR: Titulo do Lembrete | YYYY-MM-DDTHH:mm:ss] usando o padrão ISO rigoroso para o fuso de São Paulo. Use o Framework de 4 Etapas: Capturar, Processar, Agendar e Executar." 
           },
           { "role": "user", "content": prompt }
         ]
