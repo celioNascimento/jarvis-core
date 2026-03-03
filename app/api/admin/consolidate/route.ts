@@ -15,11 +15,11 @@ export async function GET() {
       .select('*')
       .is('metadata->consolidated', null)
       .order('created_at', { ascending: true })
-      .limit(15); // Aumentei o limite, já que sua cota agora permite
+      .limit(20); // Limite aumentado pós-billing
 
     if (fetchError) throw new Error(`Erro Supabase: ${fetchError.message}`);
     if (!logs || logs.length === 0) {
-      return NextResponse.json({ message: "RAM limpa. Jarvis está com o dia em dia." });
+      return NextResponse.json({ message: "RAM limpa. O Jarvis está descansando." });
     }
 
     const projectTag = logs[0].project_tag || 'Geral';
@@ -27,16 +27,17 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Agora com Gemini 2.0 Flash Liberado)
+    // 2. RESUMO COM IA (Gemini 1.5 Flash - Alta Disponibilidade)
     const summaryPrompt = {
       contents: [{
         parts: [{
-          text: `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe técnico e UX:\n${batchText}`
+          text: `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe técnico, UX e de frotas:\n${batchText}`
         }]
       }]
     };
 
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
+    // Usando a v1 estável para garantir o acesso
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(summaryPrompt)
@@ -49,9 +50,10 @@ export async function GET() {
     }
 
     const summary = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!summary) throw new Error("Falha ao gerar resumo.");
 
     // 3. GERAÇÃO DE VETOR (Embedding)
-    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
+    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -78,7 +80,13 @@ export async function GET() {
 
     // 5. LIMPEZA DA RAM
     await supabase.from('brain')
-      .update({ metadata: { ...logs[0].metadata, consolidated: true, consolidated_at: new Date().toISOString() } })
+      .update({ 
+        metadata: { 
+          ...logs[0].metadata, 
+          consolidated: true, 
+          consolidated_at: new Date().toISOString() 
+        } 
+      })
       .in('id', logIds);
 
     return NextResponse.json({ 
