@@ -9,7 +9,7 @@ const supabase = createClient(
 
 export async function GET() {
   try {
-    // 1. BUSCA LOGS NA RAM (Brain)
+    // 1. BUSCA LOGS NA RAM (Tabela Brain - Memória Volátil)
     const { data: logs, error: fetchError } = await supabase
       .from('brain')
       .select('*')
@@ -25,13 +25,15 @@ export async function GET() {
     const projectTag = logs[0].project_tag || 'Geral';
     const batchText = logs.map(l => `[${l.created_at}] ${l.content}`).join('\n');
     const logIds = logs.map(l => l.id);
-    const userId = logs[0].metadata?.user_id || 8275386115;
+    const userId = logs[0].metadata?.user_id || 8275386115; // Fallback Celio
 
-    // 2. RESUMO COM IA (Google Gemini 1.5 Flash via API v1)
+    // 2. RESUMO COM IA (Google Gemini 1.5 Flash - Estabilidade Total)
     const summaryPrompt = {
       contents: [{
         parts: [{
-          text: `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe:\n${batchText}`
+          text: `Você é o núcleo de memória do Jarvis. 
+          Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). 
+          Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe técnico e familiar:\n${batchText}`
         }]
       }]
     };
@@ -53,10 +55,9 @@ export async function GET() {
     }
 
     const summary = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
-
     if (!summary) throw new Error("Resposta da IA vazia.");
 
-    // 3. GERAÇÃO DE VETOR (Google Gemini Embedding)
+    // 3. GERAÇÃO DE VETOR (Google Gemini Embedding - Endereçamento no HD)
     const embRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -72,7 +73,7 @@ export async function GET() {
     }
     const embedding = embData.embedding.values;
 
-    // 4. PERSISTÊNCIA NO HD (Tabela Memories)
+    // 4. PERSISTÊNCIA NO HD (Tabela Memories - Memória de Longo Prazo)
     const { error: memError } = await supabase.from('memories').insert({
       project_tag: projectTag,
       summary: summary,
@@ -83,8 +84,8 @@ export async function GET() {
 
     if (memError) throw new Error(`Erro ao gravar no HD: ${memError.message}`);
 
-    // 5. LIMPEZA DA RAM (Marcar como processado)
-    await supabase.from('brain')
+    // 5. LIMPEZA DA RAM (Finalizando o Ciclo de Vida: Marcar como processado)
+    const { error: updateError } = await supabase.from('brain')
       .update({ 
         metadata: { 
           ...logs[0].metadata, 
@@ -93,6 +94,8 @@ export async function GET() {
         } 
       })
       .in('id', logIds);
+
+    if (updateError) throw new Error(`Erro ao limpar RAM: ${updateError.message}`);
 
     return NextResponse.json({ 
       status: "Sucesso!", 
