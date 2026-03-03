@@ -27,7 +27,7 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Falando direto com o Google para evitar erros do OpenRouter)
+    // 2. RESUMO COM IA (Utilizando 1.5-Flash para maior disponibilidade de cota)
     const summaryPrompt = {
       contents: [{
         parts: [{
@@ -36,7 +36,8 @@ export async function GET() {
       }]
     };
 
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
+    // ALTERAÇÃO AQUI: gemini-1.5-flash
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(summaryPrompt)
@@ -46,7 +47,11 @@ export async function GET() {
     const summary = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!summary) {
-      return NextResponse.json({ error: "Falha no Resumo Gemini", details: aiData }, { status: 502 });
+      return NextResponse.json({ 
+        error: "Falha no Resumo Gemini 1.5", 
+        details: aiData,
+        tip: "Verifique se a API Key tem Billing ativado ou se a cota 1.5 também excedeu." 
+      }, { status: 502 });
     }
 
     // 3. GERAÇÃO DE VETOR (Google Gemini Embedding)
@@ -78,7 +83,13 @@ export async function GET() {
 
     // 5. LIMPEZA DA RAM (Finalizando o Ciclo de Vida)
     await supabase.from('brain')
-      .update({ metadata: { ...logs[0].metadata, consolidated: true, consolidated_at: new Date().toISOString() } })
+      .update({ 
+        metadata: { 
+          ...logs[0].metadata, 
+          consolidated: true, 
+          consolidated_at: new Date().toISOString() 
+        } 
+      })
       .in('id', logIds);
 
     return NextResponse.json({ 
