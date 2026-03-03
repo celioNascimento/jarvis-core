@@ -15,7 +15,7 @@ export async function GET() {
       .select('*')
       .is('metadata->consolidated', null)
       .order('created_at', { ascending: true })
-      .limit(20); // Limite aumentado pós-billing
+      .limit(20);
 
     if (fetchError) throw new Error(`Erro Supabase: ${fetchError.message}`);
     if (!logs || logs.length === 0) {
@@ -27,7 +27,7 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Gemini 1.5 Flash - Versão Pinada 001 via v1beta)
+    // 2. RESUMO COM IA (Gemini 1.5 Flash - Nomenclatura Oficial Limpa)
     const summaryPrompt = {
       contents: [{
         parts: [{
@@ -36,8 +36,8 @@ export async function GET() {
       }]
     };
 
-    // ALTERAÇÃO: Pinando a versão v1beta e o modelo exato gemini-1.5-flash-001
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-001:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
+    // ALTERAÇÃO: Uso exclusivo de v1beta e gemini-1.5-flash
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(summaryPrompt)
