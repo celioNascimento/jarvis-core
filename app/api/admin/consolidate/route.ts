@@ -9,7 +9,6 @@ const supabase = createClient(
 
 export async function GET() {
   try {
-    // 1. BUSCA LOGS NA RAM (Brain)
     const { data: logs, error: fetchError } = await supabase
       .from('brain')
       .select('*')
@@ -27,7 +26,6 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Google Gemini 1.5 Flash via API v1 - Rota de Produção)
     const summaryPrompt = {
       contents: [{
         parts: [{
@@ -36,8 +34,8 @@ export async function GET() {
       }]
     };
 
-    // ALTERAÇÃO CRÍTICA: Mudança para v1 e nomenclatura simplificada
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
+    // DOCUMENTAÇÃO OFICIAL: v1beta e models/gemini-1.5-flash
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(summaryPrompt)
@@ -47,17 +45,15 @@ export async function GET() {
     
     if (aiData.error) {
       return NextResponse.json({ 
-        error: "Erro na API do Google (AI)", 
-        details: aiData.error.message,
-        code: aiData.error.code 
+        error: "Erro na API do Google", 
+        details: aiData.error.message 
       }, { status: 502 });
     }
 
     const summary = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!summary) throw new Error("Resposta da IA vazia.");
 
-    // 3. GERAÇÃO DE VETOR (Google Gemini Embedding v1)
-    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
+    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -71,7 +67,6 @@ export async function GET() {
 
     if (!embedding) throw new Error("Falha ao gerar Embedding.");
 
-    // 4. PERSISTÊNCIA NO HD (Tabela Memories)
     const { error: memError } = await supabase.from('memories').insert({
       project_tag: projectTag,
       summary: summary,
@@ -82,7 +77,6 @@ export async function GET() {
 
     if (memError) throw new Error(`Erro ao gravar no HD: ${memError.message}`);
 
-    // 5. LIMPEZA DA RAM (Marcar como processado)
     await supabase.from('brain')
       .update({ 
         metadata: { 
