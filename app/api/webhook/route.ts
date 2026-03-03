@@ -9,7 +9,7 @@ export async function POST(req: Request) {
     const messageText = body.message?.text || "";
     const chatId = body.message?.chat?.id;
     
-    // --- 1. IDENTIFICAÇÃO DO SUJEITO (QUEM) ---
+    // 1. IDENTIFICAÇÃO DO SUJEITO
     const telegramUserId = body.message?.from?.id;
     const userFirstName = body.message?.from?.first_name || "Usuário";
 
@@ -24,12 +24,12 @@ export async function POST(req: Request) {
     const authorName = userProfile?.nickname || userFirstName;
     const isKnownUser = !!userProfile;
 
-    // --- 2. COMANDOS DE SISTEMA ---
+    // 2. COMANDOS DE SISTEMA
     if (messageText.startsWith('/ignore')) {
       const termToIgnore = messageText.replace('/ignore', '').trim().toLowerCase();
       if (!termToIgnore) return await sendTelegram(chatId, "⚠️ Diga o que devo ignorar. Ex: `/ignore Shopee`.");
       await supabase.from('filters').upsert({ term: termToIgnore });
-      return await sendTelegram(chatId, `✅ Entendido! O termo "${termToIgnore}" foi filtrado dos seus resumos.`);
+      return await sendTelegram(chatId, `✅ Entendido! O termo "${termToIgnore}" foi filtrado.`);
     }
 
     if (messageText.startsWith('/resumo')) {
@@ -47,7 +47,7 @@ export async function POST(req: Request) {
       return await sendTelegram(chatId, `📊 *Resumo Consolidado:*\n\n${aiSummary}`);
     }
 
-    // --- 3. EXTRATOR DE HIERARQUIA (ONDE) ---
+    // 3. EXTRATOR DE HIERARQUIA
     const textLower = messageText.toLowerCase();
     const cleanMessage = messageText.replace(/#(claude|gemini)/ig, '');
     const projectTag = (cleanMessage.match(/#(\w+)/i) || [])[1];
@@ -60,7 +60,7 @@ export async function POST(req: Request) {
       projectId = proj?.id || null;
     }
 
-    // --- 4. A PORTARIA (Filtro de Ambiguidade) ---
+    // 4. PORTARIA E BUSCA
     const ambiguous = ['senha', 'bug', 'erro', 'falha', 'login', 'banco', 'deploy'].some(w => textLower.includes(w));
     if (ambiguous && !projectTag) {
       return await sendTelegram(chatId, "⚠️ **Contexto Ausente:** Use `#` (ex: #PQF) para eu saber onde procurar essa informação.");
@@ -68,28 +68,20 @@ export async function POST(req: Request) {
 
     const queryEmbedding = await generateEmbedding(cleanMessage);
 
-    // --- 5. BUSCA HD (Memórias Consolidadas) ---
     let hdContext = "Sem dados no HD vetorial para este assunto.";
     if (projectTag && queryEmbedding) {
       const { data: search } = await supabase.rpc('match_memories', { query_embedding: queryEmbedding, filter_project: projectTag, match_threshold: 0.6, match_count: 2 });
       if (search?.length) hdContext = search.map((r: any) => `[HD]: ${r.summary}`).join('\n');
     }
 
-    // --- 6. BUSCA RAM (Histórico Recente) ---
     let ramQuery = supabase.from('brain').select('content, metadata').order('created_at', { ascending: false }).limit(15);
     if (projectTag) ramQuery = ramQuery.eq('project_tag', projectTag);
     const { data: history } = await ramQuery;
     const ramMemory = history?.reverse().map(h => `${h.metadata?.user || 'Desconhecido'}: ${h.content}\nJarvis: ${h.metadata?.ai_reply}`).join('\n') || "RAM Vazia.";
 
-    // --- 7. SELEÇÃO DO MOTOR DE IA ---
-    let modelToUse = "google/gemini-2.0-flash-001";
-    let engineName = "Gemini Flash";
-    if (textLower.includes('code') || textLower.includes('bug') || projectTag === 'PQF' || projectTag === 'ExpertFrotas' || textLower.includes('#claude')) {
-      modelToUse = "anthropic/claude-3.5-sonnet";
-      engineName = "Claude 3.5";
-    }
-
-    // --- 8. O PROMPT MESTRE DO JARVIS ---
+    // 5. MOTOR DE IA (Fixo no Gemini)
+    const modelToUse = "google/gemini-2.0-flash-001";
+    
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     const finalPrompt = `
       USUÁRIO ATUAL: ${authorName} (${isKnownUser ? 'Membro Registrado' : 'Visitante/Novo'})
@@ -102,21 +94,12 @@ export async function POST(req: Request) {
 
     let aiReply = await callOpenRouter(finalPrompt, modelToUse);
 
-    // --- 9. INTERCEPTADORES (Os Olhos e o Braço Mecânico) ---
+    // 6. INTERCEPTADORES
     if (aiReply.includes('[LER_CONTEXTO]')) {
       const context = await getGoogleContext();
-      aiReply = aiReply.replace('[LER_CONTEXTO]', `\n\n🔍 **Dados Recuperados do Google:**\n${context}`);
+      aiReply = aiReply.replace('[LER_CONTEXTO]', `\n\n🔍 **Dados Recuperados:**\n${context}`);
     }
 
-    // Interceptador: CRIAR
-    const scheduleRegex = /\[AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
-    const scheduleMatch = aiReply.match(scheduleRegex);
-    if (scheduleMatch) {
-      const result = await createGoogleEvent(scheduleMatch[1].trim(), scheduleMatch[2].trim(), parseInt(scheduleMatch[3]));
-      aiReply = aiReply.replace(scheduleRegex, `\n\n🗓️ **Ação:** ${result}`);
-    }
-
-    // Interceptador: ALTERAR (Agora com suporte a lembrete)
     const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
     const updateMatch = aiReply.match(updateRegex);
     if (updateMatch) {
@@ -124,7 +107,13 @@ export async function POST(req: Request) {
       aiReply = aiReply.replace(updateRegex, `\n\n🗓️ **Ação:** ${result}`);
     }
 
-    // Interceptador: APAGAR
+    const scheduleRegex = /\[AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
+    const scheduleMatch = aiReply.match(scheduleRegex);
+    if (scheduleMatch) {
+      const result = await createGoogleEvent(scheduleMatch[1].trim(), scheduleMatch[2].trim(), parseInt(scheduleMatch[3]));
+      aiReply = aiReply.replace(scheduleRegex, `\n\n🗓️ **Ação:** ${result}`);
+    }
+
     const deleteRegex = /\[APAGAR_AGENDA:\s*(.*?)\]/i;
     const deleteMatch = aiReply.match(deleteRegex);
     if (deleteMatch) {
@@ -132,9 +121,7 @@ export async function POST(req: Request) {
       aiReply = aiReply.replace(deleteRegex, `\n\n🗓️ **Ação:** ${result}`);
     }
 
-    if (!aiReply.includes("⚠️ Fallback") && modelToUse.includes("claude")) aiReply += `\n\n*(Motor: ${engineName})*`;
-
-    // --- 10. FINALIZAÇÃO E PERSISTÊNCIA ---
+    // 7. PERSISTÊNCIA
     await supabase.from('brain').insert([{
       content: cleanMessage,
       category: projectTag ? 'Contexto' : 'Nota',
@@ -146,7 +133,6 @@ export async function POST(req: Request) {
     }]);
 
     await sendTelegram(chatId, aiReply);
-
     return NextResponse.json({ ok: true });
   } catch (error: any) {
     console.error("Erro Jarvis:", error.message);
@@ -154,9 +140,7 @@ export async function POST(req: Request) {
   }
 }
 
-// ==========================================
-// FUNÇÕES AUXILIARES E INTEGRAÇÕES
-// ==========================================
+// --- FUNÇÕES AUXILIARES ---
 
 async function createGoogleEvent(summary: string, startTime: string, reminderMinutes: number = 30) {
   try {
@@ -194,25 +178,14 @@ async function updateGoogleEvent(searchTerm: string, newSummary: string, newStar
     
     const eventId = cal.items[0].id;
 
-    // --- CORREÇÃO DE FUSO HORÁRIO ---
-    // Remove qualquer Z ou fuso prévio para tratar o input como local (Brasília)
     let cleanTime = newStartTime.trim().replace('T', ' ').split('.')[0];
     const localDate = new Date(cleanTime);
     
-    // Se a data resultou em NaN (dependendo do formato vindo da IA), tentamos parse direto
     if (isNaN(localDate.getTime())) {
-       // Fallback simples para strings ISO
        localDate.setTime(Date.parse(newStartTime));
     }
 
-    // Criamos o objeto de data e forçamos o deslocamento manual de -3 horas (180 min)
-    // caso o servidor insista em tratar como UTC
-    const offset = 3; 
-    const startDate = new Date(localDate.getTime()); 
-    // A API do Google aceita o campo timeZone, mas o dateTime precisa estar em ISO correta.
-    // Vamos enviar no formato: YYYY-MM-DDTHH:mm:ss-03:00
     const isoString = localDate.toISOString().replace('Z', '-03:00');
-
     const endDate = new Date(localDate.getTime() + 60 * 60 * 1000);
     const endIsoString = endDate.toISOString().replace('Z', '-03:00');
     
@@ -229,11 +202,9 @@ async function updateGoogleEvent(searchTerm: string, newSummary: string, newStar
       body: JSON.stringify(event)
     });
     
-    // Formatamos a exibição final para você conferir no Telegram sem erro
     const displayTime = localDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    
     return updateRes.ok ? `Corrigido: ${newSummary} para as ${displayTime} (Aviso ${reminderMinutes}min antes)` : "Falha na atualização.";
-  } catch (e) { return `Erro interno: ${e.message}`; }
+  } catch (e: any) { return `Erro interno: ${e.message}`; }
 }
 
 async function deleteGoogleEvent(searchTerm: string) {
@@ -260,7 +231,6 @@ async function getGoogleContext() {
   try {
     const accessToken = await getGoogleAccessToken();
     if (!accessToken) return "Token Google ausente.";
-    
     const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=3&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
@@ -295,25 +265,21 @@ async function getGoogleAccessToken() {
 }
 
 async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
-  const fetchAI = async (m: string) => {
-    return await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: m, 
-        messages: [
-          { 
-            role: "system", 
-            content: "Você é o Jarvis. Personalidade: Empático e focado. DIRETRIZ CRÍTICA: Não faça cálculos de tempo de aviso no horário do evento. Passe sempre o HORÁRIO REAL do evento. Tags: '[AGENDAR: Titulo | ISO_DATE | Minutos_Lembrete]', '[ALTERAR_AGENDA: Termo | Novo_Titulo | ISO_DATE | Minutos_Lembrete]', '[APAGAR_AGENDA: Termo]'. Se o usuário não disser o tempo do lembrete, use 30." 
-          }, 
-          { role: "user", content: prompt }
-        ]
-      })
-    });
-  };
-  let res = await fetchAI(model);
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: model, 
+      messages: [
+        { 
+          role: "system", 
+          content: "Você é o Jarvis. Personalidade: Empático e focado. DIRETRIZ CRÍTICA: Não faça cálculos de tempo de aviso no horário do evento. Passe sempre o HORÁRIO REAL do evento sem o Z no final. Tags: '[AGENDAR: Titulo | YYYY-MM-DDTHH:mm:ss | Minutos]', '[ALTERAR_AGENDA: Termo | Novo_Titulo | YYYY-MM-DDTHH:mm:ss | Minutos]', '[APAGAR_AGENDA: Termo]'. Se não houver minutos, use 30." 
+        }, 
+        { role: "user", content: prompt }
+      ]
+    })
+  });
   let data = await res.json();
-  if (data.error && model !== "google/gemini-2.0-flash-001") data = await (await fetchAI("google/gemini-2.0-flash-001")).json();
   return data.choices?.[0]?.message?.content || "❌ Instabilidade na rede neural.";
 }
 
@@ -324,7 +290,8 @@ async function generateEmbedding(text: string) {
       headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: "text-embedding-3-small", input: text })
     });
-    return (await res.json()).data[0].embedding;
+    const json = await res.json();
+    return json.data[0].embedding;
   } catch { return null; }
 }
 
