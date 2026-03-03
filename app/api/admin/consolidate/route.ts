@@ -27,30 +27,38 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Utilizando 1.5-Flash para maior disponibilidade de cota)
+    // 2. RESUMO COM IA (Utilizando gemini-1.5-flash-latest para compatibilidade v1beta)
     const summaryPrompt = {
       contents: [{
         parts: [{
-          text: `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD:\n${batchText}`
+          text: `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe:\n${batchText}`
         }]
       }]
     };
 
-    // ALTERAÇÃO AQUI: gemini-1.5-flash
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(summaryPrompt)
     });
 
     const aiData = await aiRes.json();
+    
+    // Tratamento de erro da API Google
+    if (aiData.error) {
+      return NextResponse.json({ 
+        error: "Erro na API do Google (AI)", 
+        details: aiData.error.message 
+      }, { status: aiData.error.code || 502 });
+    }
+
     const summary = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!summary) {
       return NextResponse.json({ 
         error: "Falha no Resumo Gemini 1.5", 
         details: aiData,
-        tip: "Verifique se a API Key tem Billing ativado ou se a cota 1.5 também excedeu." 
+        tip: "Verifique se a cota gratuita expirou ou se o modelo mudou na v1beta." 
       }, { status: 502 });
     }
 
@@ -66,7 +74,7 @@ export async function GET() {
     
     const embData = await embRes.json();
     if (!embData.embedding?.values) {
-      return NextResponse.json({ error: "Falha no Embedding", details: embData }, { status: 502 });
+      return NextResponse.json({ error: "Falha no Embedding Google", details: embData }, { status: 502 });
     }
     const embedding = embData.embedding.values;
 
@@ -81,8 +89,8 @@ export async function GET() {
 
     if (memError) throw new Error(`Erro ao gravar no HD: ${memError.message}`);
 
-    // 5. LIMPEZA DA RAM (Finalizando o Ciclo de Vida)
-    await supabase.from('brain')
+    // 5. LIMPEZA DA RAM (Finalizando o Ciclo de Vida: Marcar como processado)
+    const { error: updateError } = await supabase.from('brain')
       .update({ 
         metadata: { 
           ...logs[0].metadata, 
@@ -92,10 +100,13 @@ export async function GET() {
       })
       .in('id', logIds);
 
+    if (updateError) throw new Error(`Erro ao limpar RAM: ${updateError.message}`);
+
     return NextResponse.json({ 
       status: "Sucesso!", 
       instancia: projectTag, 
-      resumo_mnemico: summary 
+      resumo_mnemico: summary,
+      logs_limpos: logIds.length
     });
 
   } catch (error: any) {
