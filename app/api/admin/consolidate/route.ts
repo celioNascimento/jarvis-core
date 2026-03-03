@@ -27,7 +27,7 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Gemini 1.5 Flash - Alta Disponibilidade)
+    // 2. RESUMO COM IA (Gemini 1.5 Flash - Versão Pinada 001 via v1beta)
     const summaryPrompt = {
       contents: [{
         parts: [{
@@ -36,8 +36,8 @@ export async function GET() {
       }]
     };
 
-    // Usando a v1 estável para garantir o acesso
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
+    // ALTERAÇÃO: Pinando a versão v1beta e o modelo exato gemini-1.5-flash-001
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-001:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(summaryPrompt)
@@ -52,8 +52,8 @@ export async function GET() {
     const summary = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!summary) throw new Error("Falha ao gerar resumo.");
 
-    // 3. GERAÇÃO DE VETOR (Embedding)
-    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
+    // 3. GERAÇÃO DE VETOR (Embedding - v1beta para consistência)
+    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
