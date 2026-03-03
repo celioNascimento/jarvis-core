@@ -183,13 +183,23 @@ export async function POST(req: Request) {
 async function createGoogleEvent(summary: string, startTime: string) {
   try {
     const accessToken = await getGoogleAccessToken();
-    if (!accessToken) return "Erro: Sem permissão no Google.";
+    if (!accessToken) return "Erro: Token não encontrado no banco.";
+
+    // Limpeza da string de data vinda da IA
+    let isoDate = startTime.trim().replace(' ', 'T');
+    
+    // Se a IA não mandou o offset de fuso (ex: -03:00), nós forçamos
+    if (!isoDate.includes('-') && !isoDate.endsWith('Z')) {
+      isoDate += '-03:00';
+    }
 
     const event = {
       summary: summary,
-      start: { dateTime: startTime, timeZone: 'America/Sao_Paulo' },
-      // Duração padrão de 30 minutos
-      end: { dateTime: new Date(new Date(startTime).getTime() + 30*60000).toISOString(), timeZone: 'America/Sao_Paulo' },
+      start: { dateTime: isoDate, timeZone: 'America/Sao_Paulo' },
+      end: { 
+        dateTime: new Date(new Date(isoDate).getTime() + 30*60000).toISOString(), 
+        timeZone: 'America/Sao_Paulo' 
+      },
     };
 
     const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
@@ -198,12 +208,15 @@ async function createGoogleEvent(summary: string, startTime: string) {
       body: JSON.stringify(event)
     });
 
-    return res.ok ? "Agendado com sucesso na sua Google Agenda! Seu celular irá despertar." : "Falha ao criar evento na agenda.";
+    const debug = await res.json();
+    if (!res.ok) return `Falha na API: ${debug.error?.message || 'Erro de Permissão'}`;
+
+    return "Agendado com sucesso na sua Google Agenda!";
   } catch (e) {
-    console.error("Erro ao agendar Google Event:", e);
-    return "Erro interno ao tentar agendar.";
+    return "Erro interno ao processar agendamento.";
   }
 }
+
 
 async function consolidateKnowledge(projectTag: string) {
   try {
