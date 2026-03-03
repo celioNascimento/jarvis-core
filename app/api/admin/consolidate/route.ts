@@ -27,17 +27,17 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Gemini 1.5 Flash - Nomenclatura Oficial Limpa)
+    // 2. RESUMO COM IA (Google Gemini 1.5 Flash via API v1 - Rota de Produção)
     const summaryPrompt = {
       contents: [{
         parts: [{
-          text: `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe técnico, UX e de frotas:\n${batchText}`
+          text: `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe técnico:\n${batchText}`
         }]
       }]
     };
 
-    // ALTERAÇÃO: Uso exclusivo de v1beta e gemini-1.5-flash
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
+    // ALTERAÇÃO CRÍTICA: Mudança para v1 e nomenclatura simplificada
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(summaryPrompt)
@@ -46,14 +46,18 @@ export async function GET() {
     const aiData = await aiRes.json();
     
     if (aiData.error) {
-      return NextResponse.json({ error: "Erro Google AI", details: aiData.error.message }, { status: 502 });
+      return NextResponse.json({ 
+        error: "Erro na API do Google (AI)", 
+        details: aiData.error.message,
+        code: aiData.error.code 
+      }, { status: 502 });
     }
 
     const summary = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!summary) throw new Error("Falha ao gerar resumo.");
+    if (!summary) throw new Error("Resposta da IA vazia.");
 
-    // 3. GERAÇÃO DE VETOR (Embedding - v1beta para consistência)
-    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
+    // 3. GERAÇÃO DE VETOR (Google Gemini Embedding v1)
+    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -78,7 +82,7 @@ export async function GET() {
 
     if (memError) throw new Error(`Erro ao gravar no HD: ${memError.message}`);
 
-    // 5. LIMPEZA DA RAM
+    // 5. LIMPEZA DA RAM (Marcar como processado)
     await supabase.from('brain')
       .update({ 
         metadata: { 
