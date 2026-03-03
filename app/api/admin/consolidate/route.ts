@@ -9,7 +9,7 @@ const supabase = createClient(
 
 export async function GET() {
   try {
-    // 1. BUSCA LOGS DA RAM (Brain)
+    // 1. BUSCA LOGS NA RAM (Brain)
     const { data: logs, error: fetchError } = await supabase
       .from('brain')
       .select('*')
@@ -19,7 +19,7 @@ export async function GET() {
 
     if (fetchError) throw new Error(`Erro Supabase: ${fetchError.message}`);
     if (!logs || logs.length === 0) {
-      return NextResponse.json({ message: "RAM limpa. Nada para consolidar." });
+      return NextResponse.json({ message: "RAM limpa. Nada para consolidar agora." });
     }
 
     const projectTag = logs[0].project_tag || 'Geral';
@@ -27,30 +27,29 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (OpenRouter/Gemini)
-    const aiResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { 
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`, 
-        "Content-Type": "application/json" 
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.0-flash-001",
-        messages: [{ 
-          role: "system", 
-          content: "Você é o núcleo de memória do Jarvis. Extraia decisões, sujeitos e detalhes técnicos (UX/Frotas) em um resumo denso para o HD vetorial." 
-        }, { 
-          role: "user", 
-          content: `Consolide estas notas de #${projectTag}:\n${batchText}` 
+    // 2. RESUMO COM IA (Falando direto com o Google para evitar erros do OpenRouter)
+    const summaryPrompt = {
+      contents: [{
+        parts: [{
+          text: `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD:\n${batchText}`
         }]
-      })
+      }]
+    };
+
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(summaryPrompt)
     });
 
-    const aiData = await aiResponse.json();
-    if (!aiData.choices?.[0]) throw new Error("Falha no resumo da IA");
-    const summary = aiData.choices[0].message.content;
+    const aiData = await aiRes.json();
+    const summary = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    // 3. GERAÇÃO DE VETOR (Google Gemini Embedding - Custo Zero)
+    if (!summary) {
+      return NextResponse.json({ error: "Falha no Resumo Gemini", details: aiData }, { status: 502 });
+    }
+
+    // 3. GERAÇÃO DE VETOR (Google Gemini Embedding)
     const embRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -62,11 +61,11 @@ export async function GET() {
     
     const embData = await embRes.json();
     if (!embData.embedding?.values) {
-      return NextResponse.json({ error: "Falha no Embedding Google", details: embData }, { status: 502 });
+      return NextResponse.json({ error: "Falha no Embedding", details: embData }, { status: 502 });
     }
     const embedding = embData.embedding.values;
 
-    // 4. PERSISTÊNCIA NO HD
+    // 4. PERSISTÊNCIA NO HD (Arquitetura de Memória Biológica)
     const { error: memError } = await supabase.from('memories').insert({
       project_tag: projectTag,
       summary: summary,
@@ -75,17 +74,17 @@ export async function GET() {
       brain_references: logIds
     });
 
-    if (memError) throw new Error(`Erro HD: ${memError.message}`);
+    if (memError) throw new Error(`Erro ao gravar no HD: ${memError.message}`);
 
-    // 5. MARCAR COMO PROCESSADO
+    // 5. LIMPEZA DA RAM (Finalizando o Ciclo de Vida)
     await supabase.from('brain')
       .update({ metadata: { ...logs[0].metadata, consolidated: true, consolidated_at: new Date().toISOString() } })
       .in('id', logIds);
 
     return NextResponse.json({ 
       status: "Sucesso!", 
-      projeto: projectTag, 
-      resumo: summary 
+      instancia: projectTag, 
+      resumo_mnemico: summary 
     });
 
   } catch (error: any) {
