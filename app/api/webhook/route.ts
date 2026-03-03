@@ -109,18 +109,18 @@ export async function POST(req: Request) {
     }
 
     // Interceptador: CRIAR
-    const scheduleRegex = /\[AGENDAR:\s*(.*?)\s*\|\s*(.*?)\]/i;
+    const scheduleRegex = /\[AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
     const scheduleMatch = aiReply.match(scheduleRegex);
     if (scheduleMatch) {
-      const result = await createGoogleEvent(scheduleMatch[1].trim(), scheduleMatch[2].trim());
+      const result = await createGoogleEvent(scheduleMatch[1].trim(), scheduleMatch[2].trim(), parseInt(scheduleMatch[3]));
       aiReply = aiReply.replace(scheduleRegex, `\n\n🗓️ **Ação:** ${result}`);
     }
 
-    // Interceptador: ALTERAR
-    const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\]/i;
+    // Interceptador: ALTERAR (Agora com suporte a lembrete)
+    const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
     const updateMatch = aiReply.match(updateRegex);
     if (updateMatch) {
-      const result = await updateGoogleEvent(updateMatch[1].trim(), updateMatch[2].trim(), updateMatch[3].trim());
+      const result = await updateGoogleEvent(updateMatch[1].trim(), updateMatch[2].trim(), updateMatch[3].trim(), parseInt(updateMatch[4]));
       aiReply = aiReply.replace(updateRegex, `\n\n🗓️ **Ação:** ${result}`);
     }
 
@@ -158,63 +158,61 @@ export async function POST(req: Request) {
 // FUNÇÕES AUXILIARES E INTEGRAÇÕES
 // ==========================================
 
-async function createGoogleEvent(summary: string, startTime: string) {
+async function createGoogleEvent(summary: string, startTime: string, reminderMinutes: number = 30) {
   try {
     const accessToken = await getGoogleAccessToken();
-    if (!accessToken) return "Erro: Token ausente no banco.";
+    if (!accessToken) return "Erro: Token ausente.";
     let startIso = startTime.trim().replace(' ', 'T');
     if (!startIso.includes('-') && !startIso.endsWith('Z')) startIso += '-03:00'; 
     const startDate = new Date(startIso);
-    const endDate = new Date(startDate.getTime() + 30 * 60 * 1000);
+    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
     const event = {
       summary,
       start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
       end: { dateTime: endDate.toISOString(), timeZone: 'America/Sao_Paulo' },
+      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
     };
     const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(event)
     });
-    return res.ok ? "Agendado com sucesso na sua Google Agenda!" : "Falha na API do Google Agenda.";
-  } catch { return "Erro interno no agendamento."; }
+    return res.ok ? `Agendado: ${summary} (Aviso ${reminderMinutes}min antes)` : "Falha API Google.";
+  } catch { return "Erro interno."; }
 }
 
-async function updateGoogleEvent(searchTerm: string, newSummary: string, newStartTime: string) {
+async function updateGoogleEvent(searchTerm: string, newSummary: string, newStartTime: string, reminderMinutes: number = 30) {
   try {
     const accessToken = await getGoogleAccessToken();
     if (!accessToken) return "Erro de token.";
     
-    // 1. Busca o evento pelo nome (API nativa do Google faz a busca pra nós)
-    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime&maxResults=5`, {
+    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime&maxResults=1`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     const cal = await calRes.json();
-    if (!cal.items || cal.items.length === 0) return `Não encontrei nenhum evento contendo "${searchTerm}" para alterar.`;
+    if (!cal.items || cal.items.length === 0) return `Não encontrei "${searchTerm}".`;
     
     const eventId = cal.items[0].id;
-    
-    // 2. Prepara nova data e hora
     let startIso = newStartTime.trim().replace(' ', 'T');
     if (!startIso.includes('-') && !startIso.endsWith('Z')) startIso += '-03:00';
     const startDate = new Date(startIso);
-    const endDate = new Date(startDate.getTime() + 30 * 60 * 1000);
+    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
     
     const event = {
       summary: newSummary,
       start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
       end: { dateTime: endDate.toISOString(), timeZone: 'America/Sao_Paulo' },
+      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
     };
     
-    // 3. Atualiza usando PATCH
     const updateRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(event)
     });
     
-    return updateRes.ok ? `Evento corrigido para: ${newSummary} (${startDate.toLocaleString('pt-BR')})` : "Falha ao atualizar o evento.";
-  } catch { return "Erro interno ao alterar agenda."; }
+    return updateRes.ok ? `Corrigido: ${newSummary} para ${startDate.toLocaleString('pt-BR')} (Aviso ${reminderMinutes}min antes)` : "Falha na atualização.";
+  } catch { return "Erro interno."; }
 }
 
 async function deleteGoogleEvent(searchTerm: string) {
@@ -222,21 +220,19 @@ async function deleteGoogleEvent(searchTerm: string) {
     const accessToken = await getGoogleAccessToken();
     if (!accessToken) return "Erro de token.";
     
-    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime&maxResults=5`, {
+    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime&maxResults=1`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     const cal = await calRes.json();
-    if (!cal.items || cal.items.length === 0) return `Não encontrei nenhum evento contendo "${searchTerm}" para apagar.`;
+    if (!cal.items || cal.items.length === 0) return `Não encontrei "${searchTerm}".`;
     
-    const eventId = cal.items[0].id;
-    
-    const deleteRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`, {
+    const deleteRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${cal.items[0].id}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     
-    return deleteRes.ok ? `O evento "${searchTerm}" foi removido da sua agenda.` : "Falha ao apagar o evento.";
-  } catch { return "Erro interno ao apagar agenda."; }
+    return deleteRes.ok ? `Removido: "${searchTerm}".` : "Falha ao apagar.";
+  } catch { return "Erro interno."; }
 }
 
 async function getGoogleContext() {
@@ -287,7 +283,7 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
         messages: [
           { 
             role: "system", 
-            content: "Você é o Jarvis. Personalidade: Empático, focado e inteligente. Adapte-se ao contexto: vibre com vitórias, seja prestativo em erros técnicos e acolhedor com assuntos familiares. SEJA SUCINTO, não enrole ou crie textos gigantes. DIRETRIZ CRÍTICA: Se precisar consultar algo, use '[LER_CONTEXTO]'. Para agendar evento novo: '[AGENDAR: Titulo | YYYY-MM-DDTHH:mm:ss]'. Para alterar ou corrigir um evento: '[ALTERAR_AGENDA: Termo de Busca (Nome atual) | Novo Titulo | YYYY-MM-DDTHH:mm:ss]'. Para cancelar ou apagar: '[APAGAR_AGENDA: Termo de Busca (Nome atual)]'. Não narre o que vai fazer, apenas execute ou responda com naturalidade." 
+            content: "Você é o Jarvis. Personalidade: Empático e focado. DIRETRIZ CRÍTICA: Não faça cálculos de tempo de aviso no horário do evento. Passe sempre o HORÁRIO REAL do evento. Tags: '[AGENDAR: Titulo | ISO_DATE | Minutos_Lembrete]', '[ALTERAR_AGENDA: Termo | Novo_Titulo | ISO_DATE | Minutos_Lembrete]', '[APAGAR_AGENDA: Termo]'. Se o usuário não disser o tempo do lembrete, use 30." 
           }, 
           { role: "user", content: prompt }
         ]
@@ -297,7 +293,7 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
   let res = await fetchAI(model);
   let data = await res.json();
   if (data.error && model !== "google/gemini-2.0-flash-001") data = await (await fetchAI("google/gemini-2.0-flash-001")).json();
-  return data.choices?.[0]?.message?.content || "❌ Estou enfrentando instabilidade na minha rede neural agora.";
+  return data.choices?.[0]?.message?.content || "❌ Instabilidade na rede neural.";
 }
 
 async function generateEmbedding(text: string) {
