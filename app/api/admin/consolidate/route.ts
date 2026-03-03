@@ -27,7 +27,7 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Utilizando gemini-1.5-flash-latest para compatibilidade v1beta)
+    // 2. RESUMO COM IA (Google Gemini 1.5 Flash via API v1)
     const summaryPrompt = {
       contents: [{
         parts: [{
@@ -36,7 +36,7 @@ export async function GET() {
       }]
     };
 
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(summaryPrompt)
@@ -44,26 +44,20 @@ export async function GET() {
 
     const aiData = await aiRes.json();
     
-    // Tratamento de erro da API Google
     if (aiData.error) {
       return NextResponse.json({ 
         error: "Erro na API do Google (AI)", 
-        details: aiData.error.message 
-      }, { status: aiData.error.code || 502 });
+        details: aiData.error.message,
+        code: aiData.error.code 
+      }, { status: aiData.error.code === 429 ? 429 : 502 });
     }
 
     const summary = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    if (!summary) {
-      return NextResponse.json({ 
-        error: "Falha no Resumo Gemini 1.5", 
-        details: aiData,
-        tip: "Verifique se a cota gratuita expirou ou se o modelo mudou na v1beta." 
-      }, { status: 502 });
-    }
+    if (!summary) throw new Error("Resposta da IA vazia.");
 
     // 3. GERAÇÃO DE VETOR (Google Gemini Embedding)
-    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
+    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -78,7 +72,7 @@ export async function GET() {
     }
     const embedding = embData.embedding.values;
 
-    // 4. PERSISTÊNCIA NO HD (Arquitetura de Memória Biológica)
+    // 4. PERSISTÊNCIA NO HD (Tabela Memories)
     const { error: memError } = await supabase.from('memories').insert({
       project_tag: projectTag,
       summary: summary,
@@ -89,8 +83,8 @@ export async function GET() {
 
     if (memError) throw new Error(`Erro ao gravar no HD: ${memError.message}`);
 
-    // 5. LIMPEZA DA RAM (Finalizando o Ciclo de Vida: Marcar como processado)
-    const { error: updateError } = await supabase.from('brain')
+    // 5. LIMPEZA DA RAM (Marcar como processado)
+    await supabase.from('brain')
       .update({ 
         metadata: { 
           ...logs[0].metadata, 
@@ -100,13 +94,11 @@ export async function GET() {
       })
       .in('id', logIds);
 
-    if (updateError) throw new Error(`Erro ao limpar RAM: ${updateError.message}`);
-
     return NextResponse.json({ 
       status: "Sucesso!", 
       instancia: projectTag, 
       resumo_mnemico: summary,
-      logs_limpos: logIds.length
+      logs_processados: logIds.length
     });
 
   } catch (error: any) {
