@@ -9,7 +9,7 @@ const supabase = createClient(
 
 export async function GET() {
   try {
-    // 1. BUSCA LOGS NÃO PROCESSADOS (Limite de 10 por vez)
+    // 1. BUSCA LOGS DA RAM (Brain)
     const { data: logs, error: fetchError } = await supabase
       .from('brain')
       .select('*')
@@ -19,67 +19,54 @@ export async function GET() {
 
     if (fetchError) throw new Error(`Erro Supabase: ${fetchError.message}`);
     if (!logs || logs.length === 0) {
-      return NextResponse.json({ message: "Cérebro já está limpo. RAM vazia para consolidação." });
+      return NextResponse.json({ message: "RAM limpa. Nada para consolidar." });
     }
 
-    // 2. AGRUPAMENTO E METADADOS
     const projectTag = logs[0].project_tag || 'Geral';
     const batchText = logs.map(l => `[${l.created_at}] ${l.content}`).join('\n');
     const logIds = logs.map(l => l.id);
-    const userId = logs[0].metadata?.user_id || 8275386115; // Fallback Celio
+    const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 3. O PROMPT DE "ALGORITMO DE MEMÓRIA"
-    const summaryPrompt = `
-      Aja como o núcleo de memória do Jarvis. 
-      Analise estas anotações do projeto #${projectTag}:
-      "${batchText}"
-      
-      TAREFA:
-      1. Extraia decisões técnicas, regras de negócio e marcos familiares.
-      2. Identifique os SUJEITOS (Quem fez o quê).
-      3. Gere um resumo denso e técnico, preservando detalhes de UX e feedbacks.
-    `;
-
-    // Chamada para a IA (OpenRouter)
+    // 2. RESUMO COM IA (OpenRouter/Gemini)
     const aiResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: { 
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`, // Correção AQUI
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`, 
         "Content-Type": "application/json" 
       },
       body: JSON.stringify({
         model: "google/gemini-2.0-flash-001",
-        messages: [{ role: "user", content: summaryPrompt }]
+        messages: [{ 
+          role: "system", 
+          content: "Você é o núcleo de memória do Jarvis. Extraia decisões, sujeitos e detalhes técnicos (UX/Frotas) em um resumo denso para o HD vetorial." 
+        }, { 
+          role: "user", 
+          content: `Consolide estas notas de #${projectTag}:\n${batchText}` 
+        }]
       })
     });
 
     const aiData = await aiResponse.json();
-    
-    // Verificação de segurança da resposta da IA
-    if (!aiData.choices || !aiData.choices[0]) {
-      return NextResponse.json({ error: "Falha no OpenRouter", details: aiData }, { status: 502 });
-    }
+    if (!aiData.choices?.[0]) throw new Error("Falha no resumo da IA");
     const summary = aiData.choices[0].message.content;
 
-    // 4. GERAÇÃO DO VETOR (Embedding OpenAI)
-    const embRes = await fetch("https://api.openai.com/v1/embeddings", {
+    // 3. GERAÇÃO DE VETOR (Google Gemini Embedding - Custo Zero)
+    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
       method: "POST",
-      headers: { 
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, // OpenAI real mantida AQUI
-        "Content-Type": "application/json" 
-      },
-      body: JSON.stringify({ model: "text-embedding-3-small", input: summary })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "models/text-embedding-004",
+        content: { parts: [{ text: summary }] }
+      })
     });
     
     const embData = await embRes.json();
-
-    // Verificação de segurança do Embedding
-    if (!embData.data || !embData.data[0]) {
-      return NextResponse.json({ error: "Falha no Embedding OpenAI", details: embData }, { status: 502 });
+    if (!embData.embedding?.values) {
+      return NextResponse.json({ error: "Falha no Embedding Google", details: embData }, { status: 502 });
     }
-    const embedding = embData.data[0].embedding;
+    const embedding = embData.embedding.values;
 
-    // 5. PERSISTÊNCIA NO HD (Tabela Memories)
+    // 4. PERSISTÊNCIA NO HD
     const { error: memError } = await supabase.from('memories').insert({
       project_tag: projectTag,
       summary: summary,
@@ -88,30 +75,20 @@ export async function GET() {
       brain_references: logIds
     });
 
-    if (memError) throw new Error(`Erro ao salvar no HD: ${memError.message}`);
+    if (memError) throw new Error(`Erro HD: ${memError.message}`);
 
-    // 6. LIMPEZA DA RAM (Marcar logs como consolidados)
-    const { error: updateError } = await supabase.from('brain')
-      .update({ 
-        metadata: { 
-          ...logs[0].metadata, // Mantém metadados antigos
-          consolidated: true, 
-          consolidated_at: new Date().toISOString() 
-        } 
-      })
+    // 5. MARCAR COMO PROCESSADO
+    await supabase.from('brain')
+      .update({ metadata: { ...logs[0].metadata, consolidated: true, consolidated_at: new Date().toISOString() } })
       .in('id', logIds);
 
-    if (updateError) throw new Error(`Erro ao limpar RAM: ${updateError.message}`);
-
     return NextResponse.json({ 
-      status: "Sucesso", 
+      status: "Sucesso!", 
       projeto: projectTag, 
-      resumo_gerado: summary,
-      logs_processados: logIds.length
+      resumo: summary 
     });
 
   } catch (error: any) {
-    console.error("ERRO CONSOLIDATE:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
