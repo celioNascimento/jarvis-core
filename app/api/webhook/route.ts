@@ -193,15 +193,33 @@ async function updateGoogleEvent(searchTerm: string, newSummary: string, newStar
     if (!cal.items || cal.items.length === 0) return `Não encontrei "${searchTerm}".`;
     
     const eventId = cal.items[0].id;
-    let startIso = newStartTime.trim().replace(' ', 'T');
-    if (!startIso.includes('-') && !startIso.endsWith('Z')) startIso += '-03:00';
-    const startDate = new Date(startIso);
-    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+
+    // --- CORREÇÃO DE FUSO HORÁRIO ---
+    // Remove qualquer Z ou fuso prévio para tratar o input como local (Brasília)
+    let cleanTime = newStartTime.trim().replace('T', ' ').split('.')[0];
+    const localDate = new Date(cleanTime);
+    
+    // Se a data resultou em NaN (dependendo do formato vindo da IA), tentamos parse direto
+    if (isNaN(localDate.getTime())) {
+       // Fallback simples para strings ISO
+       localDate.setTime(Date.parse(newStartTime));
+    }
+
+    // Criamos o objeto de data e forçamos o deslocamento manual de -3 horas (180 min)
+    // caso o servidor insista em tratar como UTC
+    const offset = 3; 
+    const startDate = new Date(localDate.getTime()); 
+    // A API do Google aceita o campo timeZone, mas o dateTime precisa estar em ISO correta.
+    // Vamos enviar no formato: YYYY-MM-DDTHH:mm:ss-03:00
+    const isoString = localDate.toISOString().replace('Z', '-03:00');
+
+    const endDate = new Date(localDate.getTime() + 60 * 60 * 1000);
+    const endIsoString = endDate.toISOString().replace('Z', '-03:00');
     
     const event = {
       summary: newSummary,
-      start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
-      end: { dateTime: endDate.toISOString(), timeZone: 'America/Sao_Paulo' },
+      start: { dateTime: isoString, timeZone: 'America/Sao_Paulo' },
+      end: { dateTime: endIsoString, timeZone: 'America/Sao_Paulo' },
       reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
     };
     
@@ -211,8 +229,11 @@ async function updateGoogleEvent(searchTerm: string, newSummary: string, newStar
       body: JSON.stringify(event)
     });
     
-    return updateRes.ok ? `Corrigido: ${newSummary} para ${startDate.toLocaleString('pt-BR')} (Aviso ${reminderMinutes}min antes)` : "Falha na atualização.";
-  } catch { return "Erro interno."; }
+    // Formatamos a exibição final para você conferir no Telegram sem erro
+    const displayTime = localDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    
+    return updateRes.ok ? `Corrigido: ${newSummary} para as ${displayTime} (Aviso ${reminderMinutes}min antes)` : "Falha na atualização.";
+  } catch (e) { return `Erro interno: ${e.message}`; }
 }
 
 async function deleteGoogleEvent(searchTerm: string) {
