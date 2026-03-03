@@ -185,21 +185,20 @@ async function createGoogleEvent(summary: string, startTime: string) {
     const accessToken = await getGoogleAccessToken();
     if (!accessToken) return "Erro: Token não encontrado no banco.";
 
-    // Limpeza da string de data vinda da IA
-    let isoDate = startTime.trim().replace(' ', 'T');
-    
-    // Se a IA não mandou o offset de fuso (ex: -03:00), nós forçamos
-    if (!isoDate.includes('-') && !isoDate.endsWith('Z')) {
-      isoDate += '-03:00';
+    // 1. Normaliza a entrada para ISO (ex: 2026-03-04T10:00:00-03:00)
+    let startIso = startTime.trim().replace(' ', 'T');
+    if (!startIso.includes('-') && !startIso.endsWith('Z')) {
+      startIso += '-03:00'; // Garante o fuso de Brasília
     }
+
+    // 2. Calcula o fim somando 30 minutos de forma segura
+    const startDate = new Date(startIso);
+    const endDate = new Date(startDate.getTime() + 30 * 60 * 1000);
 
     const event = {
       summary: summary,
-      start: { dateTime: isoDate, timeZone: 'America/Sao_Paulo' },
-      end: { 
-        dateTime: new Date(new Date(isoDate).getTime() + 30*60000).toISOString(), 
-        timeZone: 'America/Sao_Paulo' 
-      },
+      start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
+      end: { dateTime: endDate.toISOString(), timeZone: 'America/Sao_Paulo' },
     };
 
     const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
