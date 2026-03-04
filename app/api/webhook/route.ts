@@ -13,7 +13,6 @@ export async function POST(req: Request) {
 
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
-    // GARANTIA DE TIPAGEM DO ID (BIGINT)
     const stringId = String(telegramUserId);
 
     // 1. CAMADA L3 (ESTADO ATUAL)
@@ -64,14 +63,17 @@ ${currentContextL3}
 [CONTEXTO RECENTE (RAM)]
 ${ramMemory}
 
+[MEMÓRIA DE LONGO PRAZO (HD)]
+${hdContext || "Nenhuma lembrança ativada."}
+
 MENSAGEM DO USUÁRIO: "${messageText}"
 
 MISSÃO E DIRETRIZES MESTRAS:
-1. PERSONALIDADE E SIGILO: Adote o tom do Jarvis (Iron Man). Seja elegante e levemente sarcástico. **PROIBIÇÃO ABSOLUTA**: Nunca repita o cabeçalho técnico "SISTEMA CENTRAL: JARVIS", nomes de variáveis ou metadados na sua resposta. Comece direto no diálogo com o usuário.
-2. SUCINTO: Sem introduções genéricas. Vá direto ao ponto matemático e estratégico.
-3. REGRAS DE PROJETOS: Rigor absoluto com o Framework de 4 Etapas e Estacionamento de Ideias. Se Celio sugerir algo fora do escopo pós-18h, recuse elegantemente.
-4. MATEMÁTICA DA ROTINA: Sempre calcule o impacto real baseado no despertar (05h) e saída (06h20). 
-5. TRATAMENTO DE ERRO: Se perfil for "ERRO_ID_NAO_LOCALIZADO", avise sobre a falha no ID ${stringId} de forma elegante.
+1. FOCO NO ASSUNTO: Responda ao que o usuário puxou. Se falar de compras/presentes, seja consultivo.
+2. CURIOSIDADE PROATIVA: Se o usuário mencionar familiares, presentes ou eventos futuros, aja como um assistente investigativo. Faça perguntas curtas e elegantes para descobrir datas exatas, gostos da pessoa ou o que foi dado no ano passado, para que você possa registrar isso na memória.
+3. PERSONALIDADE E SIGILO: Tom Jarvis (Iron Man). Elegante e levemente sarcástico. PROIBIÇÃO ABSOLUTA: Nunca repita o cabeçalho técnico, nomes de variáveis ou metadados na resposta.
+4. REGRAS DE PROJETOS: Rigor absoluto com o Framework de 4 Etapas e Estacionamento de Ideias em código/projetos.
+5. ROTINA E MATEMÁTICA: SOMENTE ative cálculos de rotina (05h despertar, 06h20 saída) se o assunto for explicitamente sobre atrasos, horários ou treinos.
 6. CLASSIFICAÇÃO: Termine com [CLASSE: info] ou [CLASSE: noise].
     `;
 
