@@ -35,7 +35,7 @@ export async function POST(req: Request) {
       .from('brain')
       .select('content, category, metadata')
       .eq('user_id', telegramUserId)
-      .neq('category', 'noise') // Ignora o lixo educacional na hora de pensar
+      .neq('category', 'noise') 
       .order('created_at', { ascending: false })
       .limit(12);
     
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
       return `${h.metadata?.user || 'Celio'}: ${h.content}\nJarvis: ${cleanAiReply}`;
     }).join('\n') || "Iniciando nova linha de raciocínio.";
 
-    // 4. CACHE: O MOTOR DE IA (Dossiê Unificado)
+    // 4. CACHE: O MOTOR DE IA
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     const projectTag = (messageText.match(/#(\w+)/i) || [])[1];
 
@@ -61,17 +61,15 @@ ${hdContext}
 "${messageText}"
 
 DIRETRIZES:
-1. Use o HISTÓRICO para manter o fio da conversa. Não ignore o que foi dito antes.
-2. Se o usuário pedir para mudar um comportamento ou rotina, aceite e aplique.
-3. SÓ agende se houver verbos de comando claros.
-4. OBRIGATÓRIO: Termine sua resposta com uma classificação de importância:
-   - Se a mensagem do usuário foi apenas saudação/vazia: [CLASSE: noise]
-   - Se houve troca de horários, planos, códigos ou decisões: [CLASSE: info]
+1. Use o HISTÓRICO para manter o fio da conversa.
+2. Termine sua resposta com uma classificação de importância:
+   - Se for saudação/vazio: [CLASSE: noise]
+   - Se houver horários, planos, decisões ou dados: [CLASSE: info]
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 5. PROCESSAMENTO DE CLASSIFICAÇÃO E LIMPEZA
+    // 5. PROCESSAMENTO DE CLASSIFICAÇÃO
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
@@ -103,11 +101,10 @@ DIRETRIZES:
 
     await sendTelegram(chatId, aiReply);
 
-    // 8. MONITOR DE COMPACTAÇÃO
-    const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('category', 'info');
+    // 8. AUTO-COMPACTAÇÃO (Executa após o envio)
+    const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', telegramUserId).eq('category', 'info');
     if (count && count >= 20) {
-       // Sinalização visual no log para sabermos que a hora da faxina chegou
-       console.log("🧠 JARVIS: RAM atingiu o limite de 20 blocos de informação. Pronto para compactar.");
+       compactMemory(telegramUserId.toString(), authorName);
     }
 
     return NextResponse.json({ ok: true });
@@ -117,19 +114,34 @@ DIRETRIZES:
   }
 }
 
-// --- FUNÇÕES AUXILIARES (ESTÁVEIS) ---
+// --- FUNÇÕES AUXILIARES ---
+
+async function compactMemory(userId: string, authorName: string) {
+  try {
+    const { data: messages } = await supabase.from('brain').select('content, metadata').eq('user_id', userId).eq('category', 'info').order('created_at', { ascending: true });
+    if (!messages || messages.length < 20) return;
+
+    const fullDialogue = messages.map(m => `${authorName}: ${m.content}\nJarvis: ${m.metadata?.ai_reply}`).join('\n\n');
+    const prompt = `Gere um resumo denso, factual e técnico deste diálogo, focando em horários, rotinas e decisões: \n\n${fullDialogue}`;
+    
+    const summary = await callOpenRouter(prompt);
+    const embedding = await generateEmbedding(summary);
+
+    if (embedding) {
+      await supabase.from('memories').insert([{ summary, embedding, user_id: userId, metadata: { type: 'snapshot' } }]);
+      await supabase.from('brain').delete().eq('user_id', userId).eq('category', 'info');
+    }
+  } catch (e) { console.error("Erro compactação:", e); }
+}
 
 async function callOpenRouter(prompt: string) {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "google/gemini-2.0-flash-001", 
-      messages: [{ role: "user", content: prompt }]
-    })
+    body: JSON.stringify({ model: "google/gemini-2.0-flash-001", messages: [{ role: "user", content: prompt }] })
   });
   const data = await res.json();
-  return data.choices?.[0]?.message?.content || "❌ Instabilidade na rede neural.";
+  return data.choices?.[0]?.message?.content || "❌ Erro IA.";
 }
 
 async function generateEmbedding(text: string) {
@@ -162,7 +174,6 @@ async function getGoogleAccessToken() {
   return json.access_token;
 }
 
-// (Funções createGoogleEvent e updateGoogleEvent mantidas conforme versões testadas anteriormente)
 async function createGoogleEvent(summary: string, startTime: string, reminderMinutes: number = 30) {
   try {
     const token = await getGoogleAccessToken();
