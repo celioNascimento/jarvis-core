@@ -155,3 +155,19 @@ export async function checkSystemInterrupts(userId: string) {
     return { shouldPauseMorningRoutine: false, reason: null };
   }
 }
+export async function transcribeAudio(fileUrl: string) {
+  try {
+    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: (() => {
+        const formData = new FormData();
+        // O Whisper aceita a URL do arquivo via stream ou download prévio
+        // Para simplificar no Next.js, vamos baixar e enviar:
+        return formData;
+      })()
+    });
+    // Nota: Para não complicar o runtime do Next, faremos o download no Webhook
+    // e enviaremos o Buffer para o Whisper.
+  } catch (e) { console.error(e); return ""; }
+}
