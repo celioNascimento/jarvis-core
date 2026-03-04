@@ -85,7 +85,7 @@ export async function POST(req: Request) {
       return `${h.metadata?.user || 'Desconhecido'}: ${h.content}\nJarvis: ${cleanAiReply}`;
     }).join('\n') || "RAM Vazia.";
 
-    // 6. MOTOR DE IA (O NOVO PROMPT BLINDADO)
+    // 6. MOTOR DE IA (PROMPT DE COMPORTAMENTO AJUSTADO)
     const modelToUse = "google/gemini-2.0-flash-001";
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     
@@ -99,16 +99,17 @@ PROJETO ATUAL: ${projectTag || 'Geral'}
 [MEMÓRIA DE LONGO PRAZO (HD)]
 ${hdContext}
 
-[HISTÓRICO DA CONVERSA (RAM - TAREFAS PASSADAS E CONCLUÍDAS)]
+[HISTÓRICO DA CONVERSA (RAM)]
 ${ramMemory}
 
-[MENSAGEM ATUAL DO USUÁRIO - O SEU ÚNICO FOCO]
+[MENSAGEM ATUAL DO USUÁRIO]
 "${cleanMessage}"
 
-DIRETRIZES DE EXECUÇÃO:
-1. Responda APENAS à "MENSAGEM ATUAL DO USUÁRIO".
-2. Considere o "HISTÓRICO DA CONVERSA" como passado morto. NÃO TENTE resolver, re-agendar ou avisar sobre compromissos que estão no histórico.
-3. SÓ gere tags de agenda se a MENSAGEM ATUAL exigir uma nova ação inédita.
+DIRETRIZES DE COMPORTAMENTO (SIGA RIGOROSAMENTE):
+1. CONTEXTO: Use o [HISTÓRICO DA CONVERSA] para entender o fluxo do assunto e manter uma conversa natural com o usuário.
+2. OBEDIÊNCIA: O usuário define as regras. Se ele pedir para você mudar um comportamento, concorde e aplique imediatamente nas próximas respostas.
+3. PROIBIÇÃO DE AGENDAMENTO AUTÔNOMO: Você está ESTRITAMENTE PROIBIDO de gerar tags de agenda para "conversar", "definir prioridades" ou ações abstratas.
+4. SÓ GERE AGENDAMENTO SE: O usuário disser claramente palavras como "agende", "marque" ou "me lembre de". Caso contrário, aja apenas como um conselheiro ou interlocutor.
     `;
 
     let aiReply = await callOpenRouter(finalPrompt, modelToUse);
@@ -166,12 +167,11 @@ async function createGoogleEvent(summary: string, startTime: string, reminderMin
     const accessToken = await getGoogleAccessToken();
     if (!accessToken) return "Erro: Token ausente.";
     
-    // BLINDAGEM: Corta qualquer sujeira de fuso horário (-03:00 ou Z) e pega só os 19 chars limpos
     let startIso = startTime.trim().replace(' ', 'T').substring(0, 19);
-    startIso += '-03:00'; // Força o fuso horário correto
+    startIso += '-03:00'; 
     
     const startDate = new Date(startIso);
-    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // +1 hora
+    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
     
     const event = {
       summary,
@@ -202,7 +202,6 @@ async function updateGoogleEvent(searchTerm: string, newSummary: string, newStar
     
     const eventId = cal.items[0].id;
 
-    // BLINDAGEM DE DATA AQUI TAMBÉM
     let cleanTime = newStartTime.trim().replace(' ', 'T').substring(0, 19);
     cleanTime += '-03:00';
     const localDate = new Date(cleanTime);
@@ -286,7 +285,7 @@ async function getGoogleAccessToken() {
   return (await res.json()).access_token;
 }
 
-// PROMPT EXTREMAMENTE RIGOROSO PARA A IA OBEDECER O FORMATO
+// PROMPT DO MOTOR DE IA BLINDADO PARA CONVERSAÇÃO E OBEDIÊNCIA
 async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -296,10 +295,9 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
       messages: [
         { 
           role: "system", 
-          content: `Você é o Jarvis. Personalidade: Empático e focado.
-REGRA ABSOLUTA: O 'Histórico' já passou. Nunca re-execute comandos antigos.
-FORMATO OBRIGATÓRIO PARA AÇÕES: Se for agendar algo NOVO, você DEVE gerar exatamente no final da mensagem o formato: [AGENDAR: Titulo | YYYY-MM-DDTHH:mm:ss | 0].
-CUIDADO: Use colchetes [], barras verticais | e o número de minutos no final. Não invente textos soltos ou vírgulas. Nunca coloque "-03:00" ou "Z" no final da data.` 
+          content: `Você é o Jarvis. Personalidade: Empático, natural e prestativo.
+REGRA ABSOLUTA 1: Acompanhe o raciocínio do usuário usando o histórico da conversa.
+REGRA ABSOLUTA 2: NUNCA crie tags de [AGENDAR...], [ALTERAR...] ou [APAGAR...] a menos que o usuário exija isso com verbos diretos de comando de agenda. Apenas converse normalmente.`
         }, 
         { role: "user", content: prompt }
       ]
@@ -327,4 +325,4 @@ async function sendTelegram(chatId: number, text: string) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
   });
-}
+                }
