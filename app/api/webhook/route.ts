@@ -13,19 +13,17 @@ export async function POST(req: Request) {
 
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
-    // 1. CAMADA L3 (IDENTIFICAÇÃO E DOSSIÊ)
-    // Buscamos sem o .toString() primeiro para o Supabase tratar o BigInt naturalmente
-    const { data: userProfile, error: profileError } = await supabase
+    const stringId = String(telegramUserId);
+
+    // 1. CAMADA L3 (ESTADO ATUAL)
+    const { data: userProfile } = await supabase
       .from('users')
       .select('nickname, current_context')
       .eq('id', telegramUserId)
       .single();
       
     const authorName = userProfile?.nickname || userFirstName;
-    
-    // Se não achar, a gente injeta o ID na mensagem de erro para você conferir
-    const currentContextL3 = userProfile?.current_context || 
-      `AVISO TÉCNICO: Dossiê não localizado para o ID ${telegramUserId}. Por favor, verifique se este ID consta na tabela jarvis.users.`;
+    const currentContextL3 = userProfile?.current_context || "ERRO_ID_NAO_LOCALIZADO";
 
     // 2. CAMADA HD (VETORIAL)
     const queryEmbedding = await generateEmbedding(messageText);
@@ -36,10 +34,10 @@ export async function POST(req: Request) {
         match_threshold: 0.4, 
         match_count: 2 
       });
-      if (search?.length) hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
+      if (search?.length) hdContext = search.map((r: any) => `[Histórico]: ${r.summary}`).join('\n');
     }
 
-    // 3. CAMADA RAM (ÚLTIMAS 15 MENSAGENS)
+    // 3. CAMADA RAM (MEMÓRIA RECENTE)
     const { data: history } = await supabase
       .from('brain')
       .select('content, category, metadata')
@@ -51,38 +49,37 @@ export async function POST(req: Request) {
     const ramMemory = history?.reverse().map(h => {
       const cleanAiReply = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
       return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
-    }).join('\n') || "Iniciando nova linha de raciocínio.";
+    }).join('\n') || "Iniciando diálogo.";
 
-    // 4. CAMADA CACHE (O PROMPT MESTRE)
+    // 4. CAMADA CACHE (O CÉREBRO)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    const projectTag = (messageText.match(/#(\w+)/i) || [])[1];
 
     const finalPrompt = `
 SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | DATA: ${dataAtual}
 
-[ESTADO ATUAL DO USUÁRIO (L3)]
+[DADOS DE PERFIL (L3)]
 ${currentContextL3}
 
-[HISTÓRICO RECENTE (RAM)]
+[CONTEXTO RECENTE (RAM)]
 ${ramMemory}
 
-MENSAGEM: "${messageText}"
+MENSAGEM DO USUÁRIO: "${messageText}"
 
-DIRETRIZES:
-1. Se o [ESTADO ATUAL] contiver "AVISO TÉCNICO", peça para o usuário validar o ID no banco.
-2. Caso contrário, use a rotina descrita no dossiê (Acorda 05h, Sai 06h20, Trabalho 08h, Deslocamento 10min).
-3. Responda com clareza técnica.
-4. Finalize com [CLASSE: info].
+MISSÃO E DIRETRIZES:
+1. FOCO EM SOLUÇÃO: Não repita o que o usuário disse. Analise os dados e proponha a otimização matemática da rotina.
+2. LINGUAGEM: Seja robusto, direto e sem "encher linguiça". Use listas se necessário. Evite termos técnicos (como L3, RAM, SQL) a menos que ocorra o erro "ERRO_ID_NAO_LOCALIZADO".
+3. TRATAMENTO DE ERRO: Se [DADOS DE PERFIL] for "ERRO_ID_NAO_LOCALIZADO", explique que houve uma falha técnica na identificação do ID ${telegramUserId} e peça para validar no banco.
+4. LÓGICA DE ROTINA: Considere: Despertar 05h | Sofá 50min | Saída 06h20 | Academia -> Trabalho 10min | Entrada 08h.
+5. CLASSIFICAÇÃO: Termine com [CLASSE: info] ou [CLASSE: noise].
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 5. PROCESSAMENTO E INTERCEPTORES
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
-    // (Agendamentos omitidos para brevidade, mantenha os seus originais aqui)
+    // 5. INTERCEPTORES DE AGENDA
     const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
     const updateMatch = aiReply.match(updateRegex);
     if (updateMatch) {
@@ -90,7 +87,14 @@ DIRETRIZES:
       aiReply += `\n\n🗓️ **Ação:** ${result}`;
     }
 
-    // 6. PERSISTÊNCIA NA RAM
+    const scheduleRegex = /\[AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
+    const scheduleMatch = aiReply.match(scheduleRegex);
+    if (scheduleMatch) {
+      const result = await createGoogleEvent(scheduleMatch[1].trim(), scheduleMatch[2].trim(), parseInt(scheduleMatch[3]));
+      aiReply += `\n\n🗓️ **Ação:** ${result}`;
+    }
+
+    // 6. PERSISTÊNCIA
     await supabase.from('brain').insert([{
       content: messageText,
       category: category, 
@@ -101,9 +105,9 @@ DIRETRIZES:
 
     await sendTelegram(chatId, aiReply);
 
-    // 7. AUTO-COMPACTAÇÃO
+    // 7. COMPACTAÇÃO
     const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', telegramUserId).eq('category', 'info');
-    if (count && count >= 20) compactMemory(telegramUserId.toString(), authorName);
+    if (count && count >= 20) compactMemory(stringId, authorName);
 
     return NextResponse.json({ ok: true });
   } catch (error: any) {
