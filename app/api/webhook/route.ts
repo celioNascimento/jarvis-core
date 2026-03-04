@@ -13,13 +13,18 @@ export async function POST(req: Request) {
 
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
+    // TRAVA DE SEGURANÇA PARA O ID (Garante que o banco entenda o número gigante do Telegram)
+    const stringId = String(telegramUserId);
+
     // 1. CAMADA L3 (ESTADO ATUAL DO USUÁRIO - MEMÓRIA INTERMEDIÁRIA)
-    const { data: userProfile } = await supabase
+    const { data: userProfile, error: profileError } = await supabase
       .from('users')
       .select('nickname, current_context')
-      .eq('id', telegramUserId)
+      .eq('id', stringId)
       .single();
       
+    if (profileError) console.error("Erro na L3:", profileError.message);
+
     const authorName = userProfile?.nickname || userFirstName;
     const currentContextL3 = userProfile?.current_context || "Contexto base ainda não definido no banco de dados.";
 
@@ -41,7 +46,7 @@ export async function POST(req: Request) {
     const { data: history } = await supabase
       .from('brain')
       .select('content, category, metadata')
-      .eq('user_id', telegramUserId)
+      .eq('user_id', stringId)
       .neq('category', 'noise') 
       .order('created_at', { ascending: false })
       .limit(15); 
@@ -112,7 +117,7 @@ DIRETRIZES OBRIGATÓRIAS DE EXECUÇÃO (CRÍTICO):
       content: messageText,
       category: category, 
       project_tag: projectTag || 'Jarvis',
-      user_id: telegramUserId,
+      user_id: stringId,
       embedding: queryEmbedding,
       metadata: { ai_reply: aiReply, user: authorName }
     }]);
@@ -123,11 +128,11 @@ DIRETRIZES OBRIGATÓRIAS DE EXECUÇÃO (CRÍTICO):
     const { count } = await supabase
       .from('brain')
       .select('*', { count: 'exact', head: true })
-      .eq('user_id', telegramUserId)
+      .eq('user_id', stringId)
       .eq('category', 'info');
 
     if (count && count >= 20) {
-       compactMemory(telegramUserId.toString(), authorName);
+       compactMemory(stringId, authorName);
     }
 
     return NextResponse.json({ ok: true });
