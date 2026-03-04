@@ -8,153 +8,108 @@ export async function POST(req: Request) {
     const body = await req.json();
     const messageText = body.message?.text || "";
     const chatId = body.message?.chat?.id;
-    
-    // 1. IDENTIFICAÇÃO E TRAVA DE ECO
     const telegramUserId = body.message?.from?.id;
     const userFirstName = body.message?.from?.first_name || "Usuário";
     const isBot = body.message?.from?.is_bot || false;
 
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
-    const { data: userProfile } = await supabase
-      .from('users')
-      .select('nickname, role')
-      .eq('id', telegramUserId)
-      .single();
-
+    // 1. IDENTIFICAÇÃO DO PERFIL
+    const { data: userProfile } = await supabase.from('users').select('nickname').eq('id', telegramUserId).single();
     const authorName = userProfile?.nickname || userFirstName;
-    const isKnownUser = !!userProfile;
 
-    // 2. COMANDOS DE SISTEMA
-    if (messageText.startsWith('/ignore')) {
-      const termToIgnore = messageText.replace('/ignore', '').trim().toLowerCase();
-      if (!termToIgnore) return await sendTelegram(chatId, "⚠️ Diga o que devo ignorar.");
-      await supabase.from('filters').upsert({ term: termToIgnore });
-      return await sendTelegram(chatId, `✅ Termo "${termToIgnore}" filtrado.`);
-    }
-
-    if (messageText.startsWith('/resumo')) {
-      const { data: logs } = await supabase
-        .from('brain')
-        .select('content, category, project_tag, created_at')
-        .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
-        .order('created_at', { ascending: true });
-
-      const googleContext = await getGoogleContext();
-      const activityData = logs?.map(l => `[${l.project_tag || l.category}] ${l.content}`).join('\n') || "Sem notas locais.";
-      
-      const summaryPrompt = `Resuma as últimas 24h para o ${authorName}. DADOS: \n${activityData}\n GOOGLE: \n${googleContext}`;
-      const aiSummary = await callOpenRouter(summaryPrompt); 
-      return await sendTelegram(chatId, `📊 *Resumo:*\n\n${aiSummary}`);
-    }
-
-    // 3. EXTRATOR DE HIERARQUIA
-    const textLower = messageText.toLowerCase();
-    const cleanMessage = messageText.replace(/#(claude|gemini)/ig, '');
-    const projectTag = (cleanMessage.match(/#(\w+)/i) || [])[1];
-    const contextTag = (cleanMessage.match(/@(\w+)/i) || [])[1];
-    const moduleTag = (cleanMessage.match(/\[(.*?)\]/i) || [])[1];
-
-    let projectId = null;
-    if (projectTag) {
-      const { data: proj } = await supabase.from('projects').select('id').ilike('tag', projectTag).single();
-      projectId = proj?.id || null;
-    }
-
-    // 4. HD: MEMÓRIA DE LONGO PRAZO (O QUE NÃO PODE SER ESQUECIDO)
-    const queryEmbedding = await generateEmbedding(cleanMessage);
+    // 2. HD: MEMÓRIA DE LONGO PRAZO (Busca Vetorial)
+    const queryEmbedding = await generateEmbedding(messageText);
     let hdContext = "Sem dados profundos para este assunto.";
     if (queryEmbedding) {
-      // Modificado para sempre buscar contexto geral se não houver tag de projeto
-      const filter = projectTag ? projectTag : null;
-      const { data: search } = await supabase.rpc('match_memories', { query_embedding: queryEmbedding, filter_project: filter, match_threshold: 0.6, match_count: 2 });
+      const { data: search } = await supabase.rpc('match_memories', { 
+        query_embedding: queryEmbedding, 
+        match_threshold: 0.5, 
+        match_count: 3 
+      });
       if (search?.length) hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
     }
 
-    // 5. RAM: MEMÓRIA DE CURTO PRAZO (O FIO DA CONVERSA)
-    let ramQuery = supabase.from('brain').select('content, metadata').order('created_at', { ascending: false }).limit(10);
-    if (projectTag) ramQuery = ramQuery.eq('project_tag', projectTag);
-    // Assegura que ele veja a conversa do usuário atual
-    ramQuery = ramQuery.eq('user_id', telegramUserId); 
-    
-    const { data: history } = await ramQuery;
+    // 3. RAM: MEMÓRIA DE CURTO PRAZO (Filtrando o Ruído/Saudações)
+    const { data: history } = await supabase
+      .from('brain')
+      .select('content, category, metadata')
+      .eq('user_id', telegramUserId)
+      .neq('category', 'noise') // Ignora o lixo educacional na hora de pensar
+      .order('created_at', { ascending: false })
+      .limit(12);
     
     const ramMemory = history?.reverse().map(h => {
       const cleanAiReply = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
-      return `Celio: ${h.content}\nJarvis: ${cleanAiReply}`;
-    }).join('\n') || "Nenhuma conversa recente registrada.";
+      return `${h.metadata?.user || 'Celio'}: ${h.content}\nJarvis: ${cleanAiReply}`;
+    }).join('\n') || "Iniciando nova linha de raciocínio.";
 
-    // 6. CACHE: O MOTOR DE IA (PROMPT UNIFICADO)
+    // 4. CACHE: O MOTOR DE IA (Dossiê Unificado)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    
-    // O Dossiê que ensina a IA como pensar
+    const projectTag = (messageText.match(/#(\w+)/i) || [])[1];
+
     const finalPrompt = `
-SISTEMA CENTRAL: JARVIS
-USUÁRIO ATUAL: ${authorName}
-DATA/HORA EXATA AGORA: ${dataAtual} (Fuso: São Paulo -03:00)
+SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | DATA: ${dataAtual}
 
---- CACHE DE CONHECIMENTO ---
-
-[1. HD (MEMÓRIA DE LONGO PRAZO)]
-Use isso para lembrar de regras antigas, rotinas ou decisões de projetos.
-${hdContext}
-
-[2. RAM (HISTÓRICO DA CONVERSA ATUAL)]
-Use isso APENAS para manter o contexto e a naturalidade. Siga a linha de raciocínio do usuário. Não trate isso como tarefas pendentes.
+[HISTÓRICO RECENTE (RAM)]
 ${ramMemory}
 
-[3. MENSAGEM ATUAL (AÇÃO EXIGIDA)]
-O usuário acabou de dizer: "${cleanMessage}"
+[MEMÓRIA DE LONGO PRAZO (HD)]
+${hdContext}
 
---- REGRAS DE EXECUÇÃO (OBRIGAÇÃO CRÍTICA) ---
-- Responda de forma natural, empática e prestativa à MENSAGEM ATUAL.
-- SE o usuário pedir a hora, olhe para "DATA/HORA EXATA AGORA" no topo deste documento.
-- VOCÊ ESTÁ PROIBIDO DE AGENDAR EVENTOS a menos que a MENSAGEM ATUAL contenha verbos imperativos explícitos de agendamento (Ex: "Agende", "Marque", "Crie um lembrete").
-- Para agendamentos REAIS solicitados agora, gere exatamente: [AGENDAR: Titulo | YYYY-MM-DDTHH:mm:ss | 0]
+[MENSAGEM ATUAL]
+"${messageText}"
+
+DIRETRIZES:
+1. Use o HISTÓRICO para manter o fio da conversa. Não ignore o que foi dito antes.
+2. Se o usuário pedir para mudar um comportamento ou rotina, aceite e aplique.
+3. SÓ agende se houver verbos de comando claros.
+4. OBRIGATÓRIO: Termine sua resposta com uma classificação de importância:
+   - Se a mensagem do usuário foi apenas saudação/vazia: [CLASSE: noise]
+   - Se houve troca de horários, planos, códigos ou decisões: [CLASSE: info]
     `;
 
-    // Chamada limpa. O OpenRouter agora não tem regras conflitantes no "system".
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 7. INTERCEPTADORES
-    if (aiReply.includes('[LER_CONTEXTO]')) {
-      const context = await getGoogleContext();
-      aiReply = aiReply.replace('[LER_CONTEXTO]', `\n\n🔍 **Dados Recuperados:**\n${context}`);
-    }
+    // 5. PROCESSAMENTO DE CLASSIFICAÇÃO E LIMPEZA
+    const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
+    const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
+    aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
+    // 6. INTERCEPTADORES (AGENDA GOOGLE)
     const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
     const updateMatch = aiReply.match(updateRegex);
     if (updateMatch) {
       const result = await updateGoogleEvent(updateMatch[1].trim(), updateMatch[2].trim(), updateMatch[3].trim(), parseInt(updateMatch[4]));
-      aiReply = aiReply.replace(updateRegex, `\n\n🗓️ **Ação:** ${result}`);
+      aiReply += `\n\n🗓️ **Ação:** ${result}`;
     }
 
     const scheduleRegex = /\[AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
     const scheduleMatch = aiReply.match(scheduleRegex);
     if (scheduleMatch) {
       const result = await createGoogleEvent(scheduleMatch[1].trim(), scheduleMatch[2].trim(), parseInt(scheduleMatch[3]));
-      aiReply = aiReply.replace(scheduleRegex, `\n\n🗓️ **Ação:** ${result}`);
+      aiReply += `\n\n🗓️ **Ação:** ${result}`;
     }
 
-    const deleteRegex = /\[APAGAR_AGENDA:\s*(.*?)\]/i;
-    const deleteMatch = aiReply.match(deleteRegex);
-    if (deleteMatch) {
-      const result = await deleteGoogleEvent(deleteMatch[1].trim());
-      aiReply = aiReply.replace(deleteRegex, `\n\n🗓️ **Ação:** ${result}`);
-    }
-
-    // 8. PERSISTÊNCIA NO BRAIN (Gravando na RAM)
+    // 7. PERSISTÊNCIA NO BRAIN
     await supabase.from('brain').insert([{
-      content: cleanMessage,
-      category: projectTag ? 'Contexto' : 'Nota',
+      content: messageText,
+      category: category, 
       project_tag: projectTag || 'Jarvis_AI',
-      project_id: projectId, 
       user_id: telegramUserId,
       embedding: queryEmbedding,
-      metadata: { ai_reply: aiReply, context: contextTag, module: moduleTag, user: authorName }
+      metadata: { ai_reply: aiReply, user: authorName }
     }]);
 
     await sendTelegram(chatId, aiReply);
+
+    // 8. MONITOR DE COMPACTAÇÃO
+    const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('category', 'info');
+    if (count && count >= 20) {
+       // Sinalização visual no log para sabermos que a hora da faxina chegou
+       console.log("🧠 JARVIS: RAM atingiu o limite de 20 blocos de informação. Pronto para compactar.");
+    }
+
     return NextResponse.json({ ok: true });
   } catch (error: any) {
     console.error("Erro Jarvis:", error.message);
@@ -162,144 +117,18 @@ O usuário acabou de dizer: "${cleanMessage}"
   }
 }
 
-// --- FUNÇÕES AUXILIARES ---
+// --- FUNÇÕES AUXILIARES (ESTÁVEIS) ---
 
-async function createGoogleEvent(summary: string, startTime: string, reminderMinutes: number = 30) {
-  try {
-    const accessToken = await getGoogleAccessToken();
-    if (!accessToken) return "Erro: Token ausente.";
-    
-    let startIso = startTime.trim().replace(' ', 'T').substring(0, 19);
-    startIso += '-03:00'; 
-    
-    const startDate = new Date(startIso);
-    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
-    
-    const event = {
-      summary,
-      start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
-      end: { dateTime: endDate.toISOString(), timeZone: 'America/Sao_Paulo' },
-      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
-    };
-    
-    const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(event)
-    });
-    return res.ok ? `Agendado: ${summary} (Aviso ${reminderMinutes}min antes)` : "Falha API Google.";
-  } catch { return "Erro interno."; }
-}
-
-async function updateGoogleEvent(searchTerm: string, newSummary: string, newStartTime: string, reminderMinutes: number = 30) {
-  try {
-    const accessToken = await getGoogleAccessToken();
-    if (!accessToken) return "Erro de token.";
-    
-    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime&maxResults=1`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    const cal = await calRes.json();
-    if (!cal.items || cal.items.length === 0) return `Não encontrei "${searchTerm}".`;
-    
-    const eventId = cal.items[0].id;
-
-    let cleanTime = newStartTime.trim().replace(' ', 'T').substring(0, 19);
-    cleanTime += '-03:00';
-    const localDate = new Date(cleanTime);
-
-    const isoString = localDate.toISOString().replace('Z', '-03:00');
-    const endDate = new Date(localDate.getTime() + 60 * 60 * 1000);
-    const endIsoString = endDate.toISOString().replace('Z', '-03:00');
-    
-    const event = {
-      summary: newSummary,
-      start: { dateTime: isoString, timeZone: 'America/Sao_Paulo' },
-      end: { dateTime: endIsoString, timeZone: 'America/Sao_Paulo' },
-      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
-    };
-    
-    const updateRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(event)
-    });
-    
-    const displayTime = localDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    return updateRes.ok ? `Corrigido: ${newSummary} para as ${displayTime} (Aviso ${reminderMinutes}min antes)` : "Falha na atualização.";
-  } catch (e: any) { return `Erro interno: ${e.message}`; }
-}
-
-async function deleteGoogleEvent(searchTerm: string) {
-  try {
-    const accessToken = await getGoogleAccessToken();
-    if (!accessToken) return "Erro de token.";
-    
-    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime&maxResults=1`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    const cal = await calRes.json();
-    if (!cal.items || cal.items.length === 0) return `Não encontrei "${searchTerm}".`;
-    
-    const deleteRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${cal.items[0].id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    
-    return deleteRes.ok ? `Removido: "${searchTerm}".` : "Falha ao apagar.";
-  } catch { return "Erro interno."; }
-}
-
-async function getGoogleContext() {
-  try {
-    const accessToken = await getGoogleAccessToken();
-    if (!accessToken) return "Token Google ausente.";
-    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=3&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    const cal = await calRes.json();
-    const events = cal.items?.map((e: any) => `- ${e.summary} (${e.start.dateTime || e.start.date})`).join('\n') || "Nenhum evento próximo.";
-
-    const mailRes = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages?q=is:unread&maxResults=3`, {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
-    const mailData = await mailRes.json();
-    let emails = "Caixa de entrada limpa.";
-    if (mailData.messages) {
-      const details = await Promise.all(mailData.messages.map(async (m: any) => {
-        const d = await (await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages/${m.id}`, { headers: { Authorization: `Bearer ${accessToken}` } })).json();
-        const subject = d.payload.headers.find((h: any) => h.name === 'Subject')?.value || 'Sem Assunto';
-        return `- ${subject}`;
-      }));
-      emails = details.join('\n');
-    }
-    return `AGENDA:\n${events}\n\nGMAIL:\n${emails}`;
-  } catch { return "Erro ao ler dados do Google."; }
-}
-
-async function getGoogleAccessToken() {
-  const { data } = await supabase.from('config').select('value').eq('key', 'google_refresh_token').single();
-  if (!data) return null;
-  const res = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    body: JSON.stringify({ client_id: process.env.GOOGLE_CLIENT_ID, client_secret: process.env.GOOGLE_CLIENT_SECRET, refresh_token: data.value, grant_type: 'refresh_token' }),
-  });
-  return (await res.json()).access_token;
-}
-
-// O MOTOR AGORA RECEBE UM PROMPT LIMPO E DIRETO (SEM MÚLTIPLAS REGRAS DE SISTEMA)
-async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
+async function callOpenRouter(prompt: string) {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: model, 
-      messages: [
-        { role: "user", content: prompt } // Tudo foi unificado no Dossiê de Contexto
-      ]
+      model: "google/gemini-2.0-flash-001", 
+      messages: [{ role: "user", content: prompt }]
     })
   });
-  let data = await res.json();
+  const data = await res.json();
   return data.choices?.[0]?.message?.content || "❌ Instabilidade na rede neural.";
 }
 
@@ -321,4 +150,58 @@ async function sendTelegram(chatId: number, text: string) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
   });
-                                                                    }
+}
+
+async function getGoogleAccessToken() {
+  const { data } = await supabase.from('config').select('value').eq('key', 'google_refresh_token').single();
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    body: JSON.stringify({ client_id: process.env.GOOGLE_CLIENT_ID, client_secret: process.env.GOOGLE_CLIENT_SECRET, refresh_token: data?.value, grant_type: 'refresh_token' }),
+  });
+  const json = await res.json();
+  return json.access_token;
+}
+
+// (Funções createGoogleEvent e updateGoogleEvent mantidas conforme versões testadas anteriormente)
+async function createGoogleEvent(summary: string, startTime: string, reminderMinutes: number = 30) {
+  try {
+    const token = await getGoogleAccessToken();
+    let startIso = startTime.trim().replace(' ', 'T').substring(0, 19) + '-03:00';
+    const startDate = new Date(startIso);
+    const event = {
+      summary,
+      start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
+      end: { dateTime: new Date(startDate.getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
+      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
+    };
+    const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(event)
+    });
+    return res.ok ? `Agendado: ${summary}` : "Falha Google.";
+  } catch { return "Erro."; }
+}
+
+async function updateGoogleEvent(searchTerm: string, newSummary: string, newStartTime: string, reminderMinutes: number = 30) {
+  try {
+    const token = await getGoogleAccessToken();
+    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${new Date().toISOString()}&maxResults=1`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const cal = await calRes.json();
+    if (!cal.items?.length) return `Não achei "${searchTerm}".`;
+    const startIso = newStartTime.trim().replace(' ', 'T').substring(0, 19) + '-03:00';
+    const event = {
+      summary: newSummary,
+      start: { dateTime: startIso, timeZone: 'America/Sao_Paulo' },
+      end: { dateTime: new Date(new Date(startIso).getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' }
+    };
+    const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${cal.items[0].id}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(event)
+    });
+    return res.ok ? `Corrigido: ${newSummary}` : "Falha Google.";
+  } catch { return "Erro."; }
+}
