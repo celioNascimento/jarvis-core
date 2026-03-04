@@ -6,48 +6,51 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     
-    // Extração segura de dados (Deixe o TS inferir ou use fallbacks)
-    const messageText = body.message?.text || "";
+    // Extração com Fallbacks seguros
+    const messageText: string = body.message?.text || "";
     const chatId = body.message?.chat?.id;
     const telegramUserId = body.message?.from?.id;
-    const userFirstName = body.message?.from?.first_name || "Usuário";
-    const isBot = body.message?.from?.is_bot || false;
+    const userFirstName: string = body.message?.from?.first_name || "Usuário";
+    const isBot: boolean = body.message?.from?.is_bot || false;
 
-    // Se não for uma mensagem válida, encerra sem erro
-    if (isBot || !messageText || !chatId || !telegramUserId) {
+    // Bloqueio de segurança para dados ausentes
+    if (isBot || !messageText || chatId == null || telegramUserId == null) {
       return NextResponse.json({ ok: true });
     }
 
     const stringId = String(telegramUserId);
 
-    // 1. CAMADA L3 (ESTADO ATUAL)
+    // 1. CAMADA L3 (Dossiê)
     const { data: userProfile } = await supabase.from('users').select('nickname, current_context').eq('id', stringId).single();
     const authorName = userProfile?.nickname || userFirstName;
     const currentContextL3 = userProfile?.current_context || "ERRO_ID_NAO_LOCALIZADO";
 
-    // 2. CAMADA HD (VETORIAL)
+    // 2. CAMADA HD (Vetorial)
     const queryEmbedding = await generateEmbedding(messageText);
     let hdContext = "";
     if (queryEmbedding) {
-      const { data: search }: any = await supabase.rpc('match_memories', { 
+      const { data: search }: { data: any[] | null } = await supabase.rpc('match_memories', { 
         query_embedding: queryEmbedding, 
         match_threshold: 0.4, 
         match_count: 2 
       });
-      if (search && Array.isArray(search)) {
-        hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
+      if (search && search.length > 0) {
+        hdContext = search.map((r) => `[Memória Antiga]: ${r.summary}`).join('\n');
       }
     }
 
-    // 3. CAMADA RAM
+    // 3. CAMADA RAM (Memória Recente)
     const { data: history } = await supabase.from('brain').select('content, category, metadata').eq('user_id', stringId).neq('category', 'noise').order('created_at', { ascending: false }).limit(15); 
-    const ramMemory = history?.reverse().map((h: any) => {
+    
+    // Garantia de que history é um array antes de operar
+    const safeHistory = history || [];
+    const ramMemory = safeHistory.reverse().map((h) => {
       const aiReply = h.metadata?.ai_reply || "";
       const cleanAiReply = aiReply.replace(/\[.*?\]/g, '').trim();
       return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
     }).join('\n') || "Iniciando protocolo de diálogo.";
 
-    // 4. CAMADA CACHE (HORÁRIO REAL)
+    // 4. CAMADA CACHE (Horário Londrina)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     const horaAtual = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' })).getHours();
 
@@ -75,15 +78,15 @@ MISSÃO:
 
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 5. PROCESSAMENTO E INTERCEPTORES
+    // 5. PROCESSAMENTO DE INTERCEPTORES
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
-    // INTERCEPTOR: EVENTOS PROATIVOS
+    // Eventos Proativos (matchAll com tratamento de segurança)
     const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\]?/gi;
     const matches = Array.from(aiReply.matchAll(eventRegex));
-    let savedEventsCount = 0;
+    let savedCount = 0;
     
     for (const m of matches) {
       if (m && m.length >= 5) {
@@ -99,14 +102,14 @@ MISSÃO:
         
         if (!error) {
           aiReply = aiReply.replace(fullMatch, '').trim();
-          savedEventsCount++;
+          savedCount++;
         }
       }
     }
 
-    if (savedEventsCount > 0) aiReply += `\n\n*(✔️ ${savedEventsCount} evento(s) registrado(s)).*`;
+    if (savedCount > 0) aiReply += `\n\n*(✔️ ${savedCount} evento(s) registrado(s)).*`;
 
-    // INTERCEPTOR: DESCANSO
+    // Interceptor: Descanso
     const interruptRegex = /\[?DESATIVAR_ROTINA:\s*(\d{4}-\d{2}-\d{2})\]?/i;
     const interruptMatch = aiReply.match(interruptRegex);
     if (interruptMatch && interruptMatch[1]) {
@@ -114,19 +117,19 @@ MISSÃO:
       aiReply = aiReply.replace(interruptMatch[0], '').trim() + "\n\n*(Descanso ativado).*";
     }
 
-    // INTERCEPTOR: AGENDA GOOGLE (Com segurança de tipos)
+    // Interceptor: Google Agenda (Reforçado)
     const updateRegex = /\[?ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i;
-    const uMatch = aiReply.match(updateRegex);
-    if (uMatch && uMatch.length >= 5) {
-      const res = await updateGoogleEvent(uMatch[1].trim(), uMatch[2].trim(), uMatch[3].trim(), parseInt(uMatch[4]));
-      aiReply = aiReply.replace(uMatch[0], '').trim() + `\n\n🗓️ **Ação Agenda:** ${res}`;
+    const uM = aiReply.match(updateRegex);
+    if (uM && uM.length >= 5) {
+      const res = await updateGoogleEvent(uM[1].trim(), uM[2].trim(), uM[3].trim(), parseInt(uM[4]));
+      aiReply = aiReply.replace(uM[0], '').trim() + `\n\n🗓️ **Ação Agenda:** ${res}`;
     }
 
     const scheduleRegex = /\[?AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i;
-    const sMatch = aiReply.match(scheduleRegex);
-    if (sMatch && sMatch.length >= 4) {
-      const res = await createGoogleEvent(sMatch[1].trim(), sMatch[2].trim(), parseInt(sMatch[3]));
-      aiReply = aiReply.replace(sMatch[0], '').trim() + `\n\n🗓️ **Ação Agenda:** ${res}`;
+    const sM = aiReply.match(scheduleRegex);
+    if (sM && sM.length >= 4) {
+      const res = await createGoogleEvent(sM[1].trim(), sM[2].trim(), parseInt(sM[3]));
+      aiReply = aiReply.replace(sM[0], '').trim() + `\n\n🗓️ **Ação Agenda:** ${res}`;
     }
 
     // 6. PERSISTÊNCIA
@@ -140,7 +143,7 @@ MISSÃO:
 
     await sendTelegram(chatId, aiReply);
 
-    // 7. COMPACTAÇÃO
+    // 7. COMPACTAÇÃO (Somente se houver volume)
     const { count: currentBrainCount } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', stringId).eq('category', 'info');
     if (currentBrainCount && currentBrainCount >= 20) {
       await compactMemory(stringId, authorName);
