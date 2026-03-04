@@ -27,17 +27,17 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Via OpenRouter - O mesmo motor do chat)
+    // 2. RESUMO COM IA (Via OpenRouter - Estável)
     const summaryPrompt = `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe técnico:\n${batchText}`;
     
-    // Usando a versão mais atual do Gemini via OpenRouter
     const summary = await callOpenRouter(summaryPrompt, "google/gemini-2.0-flash-001");
 
     if (!summary || summary.includes("❌")) throw new Error("Falha ao gerar resumo no OpenRouter.");
 
-    // 3. GERAÇÃO DE VETOR (Via OpenAI - O mesmo motor do chat)
-    const embedding = await generateEmbedding(summary);
-    if (!embedding) throw new Error("Falha ao gerar Embedding.");
+    // 3. GERAÇÃO DE VETOR (Via Google API - Agora ativada)
+    // Usando o modelo mais recente de embedding do Google
+    const embedding = await generateGoogleEmbedding(summary);
+    if (!embedding) throw new Error("Falha ao gerar Embedding no Google AI.");
 
     // 4. PERSISTÊNCIA NO HD
     const { error: memError } = await supabase.from('memories').insert({
@@ -74,10 +74,10 @@ export async function GET() {
 }
 
 // ==========================================
-// MOTORES REAPROVEITADOS DO CHAT PRINCIPAL
+// MOTORES DE IA (UNIFICADOS)
 // ==========================================
 
-async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
+async function callOpenRouter(prompt: string, model: string) {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
@@ -90,12 +90,23 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
   return data.choices?.[0]?.message?.content || "❌ Erro no motor de IA.";
 }
 
-async function generateEmbedding(text: string) {
-  const res = await fetch("https://api.openai.com/v1/embeddings", {
+async function generateGoogleEmbedding(text: string) {
+  // Usando a chave que você ativou agora no Cloud Console
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
     method: "POST",
-    headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "text-embedding-3-small", input: text })
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "models/text-embedding-004",
+      content: { parts: [{ text: text }] }
+    })
   });
+  
   const data = await res.json();
-  return data.data?.[0]?.embedding;
+  
+  if (data.error) {
+    console.error("ERRO GOOGLE EMBEDDING:", data.error.message);
+    return null;
+  }
+  
+  return data.embedding?.values;
 }
