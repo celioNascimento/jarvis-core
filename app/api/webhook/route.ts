@@ -13,11 +13,11 @@ export async function POST(req: Request) {
 
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
-    // 1. CAMADA L3 (ESTADO ATUAL DO USUÁRIO - A NOVA MEMÓRIA INTERMEDIÁRIA)
-    // Aqui buscamos não só o nome, mas o "Dossiê" atualizado do usuário
+    // 1. CAMADA L3 (ESTADO ATUAL DO USUÁRIO - MEMÓRIA INTERMEDIÁRIA)
+    // Puxa o Dossiê injetado via SQL e o apelido
     const { data: userProfile } = await supabase
       .from('users')
-      .select('nickname, current_context') // Você precisa adicionar essa coluna 'current_context' no banco
+      .select('nickname, current_context')
       .eq('id', telegramUserId)
       .single();
       
@@ -30,7 +30,7 @@ export async function POST(req: Request) {
     if (queryEmbedding) {
       const { data: search } = await supabase.rpc('match_memories', { 
         query_embedding: queryEmbedding, 
-        match_threshold: 0.4, 
+        match_threshold: 0.4, // Limiar mais baixo para ser mais assertivo
         match_count: 2 
       });
       if (search?.length) {
@@ -38,7 +38,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // 3. CAMADA RAM (O FIO DA CONVERSA)
+    // 3. CAMADA RAM (O FIO DA CONVERSA - ÚLTIMAS 15 MENSAGENS ÚTEIS)
     const { data: history } = await supabase
       .from('brain')
       .select('content, category, metadata')
@@ -52,14 +52,14 @@ export async function POST(req: Request) {
       return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
     }).join('\n') || "Nenhuma conversa útil recente.";
 
-    // 4. A CACHE (O MOTOR DE IA COM INJEÇÃO ESTRUTURADA)
+    // 4. CAMADA CACHE (O MOTOR DE IA COM DIRETRIZES RÍGIDAS)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     const projectTag = (messageText.match(/#(\w+)/i) || [])[1];
 
     const finalPrompt = `
 SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | DATA: ${dataAtual}
 
-[ESTADO ATUAL DO USUÁRIO (L3 - SEU CONTEXTO MESTRE)]
+[ESTADO ATUAL DO USUÁRIO (L3 - CONTEXTO MESTRE)]
 ${currentContextL3}
 
 [HISTÓRICO DA CONVERSA (RAM)]
@@ -72,21 +72,35 @@ ${hdContext || "Nada relevante encontrado no HD para esta mensagem."}
 "${messageText}"
 
 DIRETRIZES:
-1. Você TEM acesso a todas as memórias acima. NUNCA diga "não tenho acesso" ou "não lembro".
-2. Se o usuário perguntar sobre a rotina dele, as respostas estão no bloco [ESTADO ATUAL].
-3. OBRIGATÓRIO: Termine classificando: [CLASSE: noise] para conversas fiadas/confirmações; [CLASSE: info] para dados e decisões.
+1. Você TEM acesso a todas as memórias acima. NUNCA diga que "não sabe" ou "não tem acesso" ao que está no ESTADO ATUAL (L3) ou na RAM.
+2. Seja direto, empático e técnico quando necessário.
+3. OBRIGATÓRIO: Termine classificando: [CLASSE: noise] para saudações/confirmações; [CLASSE: info] para dados e decisões.
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 5. PROCESSAMENTO E INTERCEPTADORES
+    // 5. PROCESSAMENTO DE CLASSIFICAÇÃO E INTERCEPTADORES (AGENDA)
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
-    // ... (Agendamentos do Google Calendar permanecem inalterados) ...
+    // Interceptor: Alterar Agenda
+    const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
+    const updateMatch = aiReply.match(updateRegex);
+    if (updateMatch) {
+      const result = await updateGoogleEvent(updateMatch[1].trim(), updateMatch[2].trim(), updateMatch[3].trim(), parseInt(updateMatch[4]));
+      aiReply += `\n\n🗓️ **Ação:** ${result}`;
+    }
 
-    // 6. PERSISTÊNCIA NA RAM
+    // Interceptor: Agendar Novo
+    const scheduleRegex = /\[AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
+    const scheduleMatch = aiReply.match(scheduleRegex);
+    if (scheduleMatch) {
+      const result = await createGoogleEvent(scheduleMatch[1].trim(), scheduleMatch[2].trim(), parseInt(scheduleMatch[3]));
+      aiReply += `\n\n🗓️ **Ação:** ${result}`;
+    }
+
+    // 6. PERSISTÊNCIA NA RAM (Tabela Brain)
     await supabase.from('brain').insert([{
       content: messageText,
       category: category, 
@@ -98,8 +112,13 @@ DIRETRIZES:
 
     await sendTelegram(chatId, aiReply);
 
-    // 7. AUTO-COMPACTAÇÃO (Atualiza a L3 e o HD)
-    const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', telegramUserId).eq('category', 'info');
+    // 7. AUTO-COMPACTAÇÃO (Gatilho para manter a L3 atualizada)
+    const { count } = await supabase
+      .from('brain')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', telegramUserId)
+      .eq('category', 'info');
+
     if (count && count >= 20) {
        compactMemory(telegramUserId.toString(), authorName);
     }
@@ -109,4 +128,4 @@ DIRETRIZES:
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true }); 
   }
-      }
+}
