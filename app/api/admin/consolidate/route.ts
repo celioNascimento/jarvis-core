@@ -27,17 +27,15 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Via OpenRouter - Estável)
-    const summaryPrompt = `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe técnico:\n${batchText}`;
+    // 2. RESUMO COM IA (Via OpenRouter)
+    const summaryPrompt = `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos. Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe técnico:\n${batchText}`;
     
     const summary = await callOpenRouter(summaryPrompt, "google/gemini-2.0-flash-001");
-
     if (!summary || summary.includes("❌")) throw new Error("Falha ao gerar resumo no OpenRouter.");
 
-    // 3. GERAÇÃO DE VETOR (Via Google API - Agora ativada)
-    // Usando o modelo mais recente de embedding do Google
-    const embedding = await generateGoogleEmbedding(summary);
-    if (!embedding) throw new Error("Falha ao gerar Embedding no Google AI.");
+    // 3. GERAÇÃO DE VETOR (Via OpenAI - Forçando o modelo mais compatível)
+    const embedding = await generateEmbedding(summary);
+    if (!embedding) throw new Error("Falha crítica ao gerar Embedding.");
 
     // 4. PERSISTÊNCIA NO HD
     const { error: memError } = await supabase.from('memories').insert({
@@ -74,7 +72,7 @@ export async function GET() {
 }
 
 // ==========================================
-// MOTORES DE IA (UNIFICADOS)
+// MOTORES UNIFICADOS (OpenAI/OpenRouter)
 // ==========================================
 
 async function callOpenRouter(prompt: string, model: string) {
@@ -90,23 +88,26 @@ async function callOpenRouter(prompt: string, model: string) {
   return data.choices?.[0]?.message?.content || "❌ Erro no motor de IA.";
 }
 
-async function generateGoogleEmbedding(text: string) {
-  // Usando a chave que você ativou agora no Cloud Console
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
+async function generateEmbedding(text: string) {
+  // Mudamos para a URL oficial da OpenAI, garantindo que o token seja o 'OPENAI_API_KEY'
+  const res = await fetch("https://api.openai.com/v1/embeddings", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "models/text-embedding-004",
-      content: { parts: [{ text: text }] }
+    headers: { 
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, 
+      "Content-Type": "application/json" 
+    },
+    body: JSON.stringify({ 
+      model: "text-embedding-ada-002", // Modelo universal de alta compatibilidade
+      input: text 
     })
   });
   
   const data = await res.json();
   
   if (data.error) {
-    console.error("ERRO GOOGLE EMBEDDING:", data.error.message);
+    console.error("DEBUG EMBEDDING:", data.error.message);
     return null;
   }
   
-  return data.embedding?.values;
+  return data.data?.[0]?.embedding;
 }
