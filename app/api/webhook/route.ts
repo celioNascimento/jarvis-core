@@ -14,7 +14,6 @@ export async function POST(req: Request) {
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
     // 1. CAMADA L3 (ESTADO ATUAL DO USUÁRIO - MEMÓRIA INTERMEDIÁRIA)
-    // Puxa o Dossiê injetado via SQL e o apelido
     const { data: userProfile } = await supabase
       .from('users')
       .select('nickname, current_context')
@@ -22,7 +21,7 @@ export async function POST(req: Request) {
       .single();
       
     const authorName = userProfile?.nickname || userFirstName;
-    const currentContextL3 = userProfile?.current_context || "Contexto base ainda não definido.";
+    const currentContextL3 = userProfile?.current_context || "Contexto base ainda não definido no banco de dados.";
 
     // 2. CAMADA HD (BUSCA VETORIAL PROFUNDA)
     const queryEmbedding = await generateEmbedding(messageText);
@@ -30,7 +29,7 @@ export async function POST(req: Request) {
     if (queryEmbedding) {
       const { data: search } = await supabase.rpc('match_memories', { 
         query_embedding: queryEmbedding, 
-        match_threshold: 0.4, // Limiar mais baixo para ser mais assertivo
+        match_threshold: 0.4, // Limiar generoso para não perder detalhes
         match_count: 2 
       });
       if (search?.length) {
@@ -38,7 +37,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // 3. CAMADA RAM (O FIO DA CONVERSA - ÚLTIMAS 15 MENSAGENS ÚTEIS)
+    // 3. CAMADA RAM (O FIO DA CONVERSA - ÚLTIMAS 15 MENSAGENS)
     const { data: history } = await supabase
       .from('brain')
       .select('content, category, metadata')
@@ -52,34 +51,42 @@ export async function POST(req: Request) {
       return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
     }).join('\n') || "Nenhuma conversa útil recente.";
 
-    // 4. CAMADA CACHE (O MOTOR DE IA COM DIRETRIZES RÍGIDAS)
+    // 4. CAMADA CACHE (MOTOR DE IA COM CHECKMATE CONTRA AMNÉSIA E DIRETRIZES DE TRABALHO)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     const projectTag = (messageText.match(/#(\w+)/i) || [])[1];
 
     const finalPrompt = `
 SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | DATA: ${dataAtual}
 
-[ESTADO ATUAL DO USUÁRIO (L3 - CONTEXTO MESTRE)]
+[ESTADO ATUAL DO USUÁRIO (L3 - SEU CONTEXTO MESTRE)]
 ${currentContextL3}
 
 [HISTÓRICO DA CONVERSA (RAM)]
 ${ramMemory}
 
 [BUSCA PROFUNDA (HD)]
-${hdContext || "Nada relevante encontrado no HD para esta mensagem."}
+${hdContext || "Nenhuma memória de longo prazo acionada para esta mensagem."}
 
-[MENSAGEM ATUAL]
+[MENSAGEM ATUAL DO USUÁRIO]
 "${messageText}"
 
-DIRETRIZES:
-1. Você TEM acesso a todas as memórias acima. NUNCA diga que "não sabe" ou "não tem acesso" ao que está no ESTADO ATUAL (L3) ou na RAM.
-2. Seja direto, empático e técnico quando necessário.
-3. OBRIGATÓRIO: Termine classificando: [CLASSE: noise] para saudações/confirmações; [CLASSE: info] para dados e decisões.
+DIRETRIZES OBRIGATÓRIAS DE EXECUÇÃO (CRÍTICO):
+1. PROIBIÇÃO DE AMNÉSIA: Você TEM ACESSO ABSOLUTO às memórias acima. NUNCA diga frases como "não tenho informações", "memória vazia" ou "não sei sua rotina". Use o [ESTADO ATUAL] como verdade absoluta.
+2. REGRAS DE PROJETOS ('Procuro Quem Faça' / 'ExpertFrotas'): 
+   - Ao implementar, bloqueie demandas fora do escopo.
+   - Em dias úteis (pós-18h) e feriados/finais de semana, siga o princípio FIFO e o Framework de 4 Etapas (Repositório, Laboratório, Homologação e Vitrine).
+   - Novas ideias devem ser enviadas ao "Estacionamento de Ideias", recusando execução imediata.
+   - Sempre exija 'Confirmação de Layout' do usuário antes de avançar camadas visuais. A prioridade é UX visual e rigor técnico.
+3. CÓDIGO E DÚVIDAS: Se o usuário enviar código, altere APENAS o solicitado (mantenha estrutura e variáveis originais). Se ele tirar uma dúvida no meio de uma explicação, sane de forma curta e use uma linha visual (---) para retomar do ponto exato onde pararam.
+4. ROTEIROS: A estrutura de rotina é imutável, altere apenas tarefas dentro dos blocos de tempo.
+5. CLASSIFICAÇÃO: Termine sua resposta (na última linha) com:
+   [CLASSE: noise] (Para saudações, confirmações curtas ou conversa fiada).
+   [CLASSE: info] (Para horários, planos, códigos, ideias ou decisões).
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 5. PROCESSAMENTO DE CLASSIFICAÇÃO E INTERCEPTADORES (AGENDA)
+    // 5. PROCESSAMENTO DE CLASSIFICAÇÃO E INTERCEPTADORES
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
@@ -100,7 +107,7 @@ DIRETRIZES:
       aiReply += `\n\n🗓️ **Ação:** ${result}`;
     }
 
-    // 6. PERSISTÊNCIA NA RAM (Tabela Brain)
+    // 6. PERSISTÊNCIA NA RAM
     await supabase.from('brain').insert([{
       content: messageText,
       category: category, 
@@ -112,7 +119,7 @@ DIRETRIZES:
 
     await sendTelegram(chatId, aiReply);
 
-    // 7. AUTO-COMPACTAÇÃO (Gatilho para manter a L3 atualizada)
+    // 7. GATILHO DE AUTO-COMPACTAÇÃO
     const { count } = await supabase
       .from('brain')
       .select('*', { count: 'exact', head: true })
@@ -125,7 +132,7 @@ DIRETRIZES:
 
     return NextResponse.json({ ok: true });
   } catch (error: any) {
-    console.error("Erro Jarvis:", error.message);
+    console.error("Erro Jarvis Webhook:", error.message);
     return NextResponse.json({ ok: true }); 
   }
 }
