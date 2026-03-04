@@ -9,11 +9,13 @@ export async function POST(req: Request) {
     const messageText = body.message?.text || "";
     const chatId = body.message?.chat?.id;
     
-    // 1. IDENTIFICAÇÃO DO SUJEITO
+    // 1. IDENTIFICAÇÃO DO SUJEITO E TRAVA ANTI-LOOP
     const telegramUserId = body.message?.from?.id;
     const userFirstName = body.message?.from?.first_name || "Usuário";
+    const isBot = body.message?.from?.is_bot || false;
 
-    if (!messageText) return NextResponse.json({ ok: true });
+    // Se a mensagem for do próprio Jarvis (bot) ou vazia, ignoramos para não gerar loop
+    if (isBot || !messageText) return NextResponse.json({ ok: true });
 
     const { data: userProfile } = await supabase
       .from('users')
@@ -60,7 +62,7 @@ export async function POST(req: Request) {
       projectId = proj?.id || null;
     }
 
-    // 4. PORTARIA E BUSCA
+    // 4. PORTARIA E BUSCA NO HD VETORIAL
     const ambiguous = ['senha', 'bug', 'erro', 'falha', 'login', 'banco', 'deploy'].some(w => textLower.includes(w));
     if (ambiguous && !projectTag) {
       return await sendTelegram(chatId, "⚠️ **Contexto Ausente:** Use `#` (ex: #PQF) para eu saber onde procurar essa informação.");
@@ -74,27 +76,36 @@ export async function POST(req: Request) {
       if (search?.length) hdContext = search.map((r: any) => `[HD]: ${r.summary}`).join('\n');
     }
 
+    // 5. RAM (CURTO PRAZO) COM LIMPEZA DE TAGS (Fim do loop de repetição)
     let ramQuery = supabase.from('brain').select('content, metadata').order('created_at', { ascending: false }).limit(15);
     if (projectTag) ramQuery = ramQuery.eq('project_tag', projectTag);
     const { data: history } = await ramQuery;
-    const ramMemory = history?.reverse().map(h => `${h.metadata?.user || 'Desconhecido'}: ${h.content}\nJarvis: ${h.metadata?.ai_reply}`).join('\n') || "RAM Vazia.";
-
-    // 5. MOTOR DE IA (Fixo no Gemini)
-    const modelToUse = "google/gemini-2.0-flash-001";
     
+    const ramMemory = history?.reverse().map(h => {
+      // Retira as tags de agendamento antigas para a IA não tentar refazer
+      const cleanAiReply = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
+      return `${h.metadata?.user || 'Desconhecido'}: ${h.content}\nJarvis: ${cleanAiReply}`;
+    }).join('\n') || "RAM Vazia.";
+
+    // 6. MOTOR DE IA
+    const modelToUse = "google/gemini-2.0-flash-001";
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    
     const finalPrompt = `
       USUÁRIO ATUAL: ${authorName} (${isKnownUser ? 'Membro Registrado' : 'Visitante/Novo'})
       CONTEXTO HD: ${hdContext}
       RAM: ${ramMemory}
       DATA DO SISTEMA: ${dataAtual}
       PROJETO: ${projectTag || 'Geral'}
+      
       ENTRADA (${authorName} disse): "${cleanMessage}"
+      
+      DIRETRIZ CRÍTICA: Responda à entrada atual. Não repita comandos [AGENDAR...], [ALTERAR...] ou [APAGAR...] baseando-se no histórico da RAM.
     `;
 
     let aiReply = await callOpenRouter(finalPrompt, modelToUse);
 
-    // 6. INTERCEPTADORES
+    // 7. INTERCEPTADORES
     if (aiReply.includes('[LER_CONTEXTO]')) {
       const context = await getGoogleContext();
       aiReply = aiReply.replace('[LER_CONTEXTO]', `\n\n🔍 **Dados Recuperados:**\n${context}`);
@@ -121,7 +132,7 @@ export async function POST(req: Request) {
       aiReply = aiReply.replace(deleteRegex, `\n\n🗓️ **Ação:** ${result}`);
     }
 
-    // 7. PERSISTÊNCIA
+    // 8. PERSISTÊNCIA NO BRAIN
     await supabase.from('brain').insert([{
       content: cleanMessage,
       category: projectTag ? 'Contexto' : 'Nota',
@@ -283,12 +294,13 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
   return data.choices?.[0]?.message?.content || "❌ Instabilidade na rede neural.";
 }
 
+// ATUALIZADO PARA OPENROUTER (O Cano Único de estabilidade)
 async function generateEmbedding(text: string) {
   try {
-    const res = await fetch("https://api.openai.com/v1/embeddings", {
+    const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",
       headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "text-embedding-3-small", input: text })
+      body: JSON.stringify({ model: "openai/text-embedding-3-small", input: text })
     });
     const json = await res.json();
     return json.data[0].embedding;
