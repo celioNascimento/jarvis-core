@@ -14,24 +14,37 @@ export async function POST(req: Request) {
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
     // 1. IDENTIFICAÇÃO DO PERFIL (MÚLTIPLOS USUÁRIOS)
-    // O sistema agora atende quem chamou baseado no telegramUserId
     const { data: userProfile } = await supabase.from('users').select('nickname').eq('id', telegramUserId).single();
     const authorName = userProfile?.nickname || userFirstName;
 
-    // 2. HD: MEMÓRIA DE LONGO PRAZO
+    // 2. HD: LEITURA DUPLA (SNAPSHOT FIXO + BUSCA VETORIAL)
+    // A. Pega o resumo mais recente (O "Manual de Instruções" do usuário)
+    const { data: snapshot } = await supabase
+      .from('memories')
+      .select('summary')
+      .eq('user_id', telegramUserId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    let hdContext = snapshot ? `[CONTEXTO PRINCIPAL]: ${snapshot.summary}\n` : "";
+
+    // B. Pega memórias antigas por similaridade
     const queryEmbedding = await generateEmbedding(messageText);
-    let hdContext = "Sem dados profundos para este assunto.";
     if (queryEmbedding) {
       const { data: search } = await supabase.rpc('match_memories', { 
         query_embedding: queryEmbedding, 
         match_threshold: 0.5, 
-        match_count: 3 
+        match_count: 2 
       });
-      // Filtra apenas as memórias deste usuário ou memórias globais
-      if (search?.length) hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
+      if (search?.length) {
+        hdContext += search.map((r: any) => `[Memória Específica]: ${r.summary}`).join('\n');
+      }
     }
+    
+    if (!hdContext) hdContext = "Nenhum dado de longo prazo disponível.";
 
-    // 3. RAM: MEMÓRIA DE CURTO PRAZO
+    // 3. RAM: MEMÓRIA DE CURTO PRAZO (Filtrando Ruído)
     const { data: history } = await supabase
       .from('brain')
       .select('content, category, metadata')
@@ -55,14 +68,14 @@ SISTEMA CENTRAL: JARVIS | USUÁRIO ATUAL: ${authorName} | DATA: ${dataAtual}
 [HISTÓRICO RECENTE (RAM)]
 ${ramMemory}
 
-[MEMÓRIA DE LONGO PRAZO (HD)]
+[MEMÓRIA DE LONGO PRAZO (HD E SNAPSHOTS)]
 ${hdContext}
 
 [MENSAGEM ATUAL]
 "${messageText}"
 
 DIRETRIZES:
-1. Use o HISTÓRICO para manter o fio da conversa.
+1. Use o HISTÓRICO e a MEMÓRIA para manter o fio da conversa e não pedir repetição de contexto.
 2. Termine sua resposta com uma classificação de importância:
    - Se for saudação/vazio: [CLASSE: noise]
    - Se houver horários, planos, decisões ou dados: [CLASSE: info]
@@ -100,12 +113,12 @@ DIRETRIZES:
       metadata: { ai_reply: aiReply, user: authorName }
     }]);
 
-    // Envia a resposta limpa para o usuário correto
     await sendTelegram(chatId, aiReply);
 
-    // 8. AUTO-COMPACTAÇÃO
+    // 8. AUTO-COMPACTAÇÃO (Executa após o envio)
     const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', telegramUserId).eq('category', 'info');
-    if (count && count >= 20) {
+    if (count && count >= 10) {
+       // Dispara a compactação da pasta lib
        compactMemory(telegramUserId.toString(), authorName);
     }
 
