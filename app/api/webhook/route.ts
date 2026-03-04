@@ -17,8 +17,8 @@ export async function POST(req: Request) {
     const { data: userProfile } = await supabase.from('users').select('nickname').eq('id', telegramUserId).single();
     const authorName = userProfile?.nickname || userFirstName;
 
-    // 2. HD: LEITURA DUPLA (SNAPSHOT FIXO + BUSCA VETORIAL)
-    // A. Pega o resumo mais recente (O "Manual de Instruções" do usuário)
+    // 2. HD: LEITURA DUPLA IMPERCEPTÍVEL (SNAPSHOT + BUSCA VETORIAL)
+    // A. Snapshot (A identidade e contexto permanente que nunca apaga)
     const { data: snapshot } = await supabase
       .from('memories')
       .select('summary')
@@ -27,58 +27,59 @@ export async function POST(req: Request) {
       .limit(1)
       .single();
 
-    let hdContext = snapshot ? `[CONTEXTO PRINCIPAL]: ${snapshot.summary}\n` : "";
+    let hdContext = snapshot ? `[CONTEXTO PRINCIPAL FIXO]: ${snapshot.summary}\n` : "";
 
-    // B. Pega memórias antigas por similaridade
+    // B. Busca Vetorial (Memórias específicas do passado com limiar tolerante)
     const queryEmbedding = await generateEmbedding(messageText);
     if (queryEmbedding) {
       const { data: search } = await supabase.rpc('match_memories', { 
         query_embedding: queryEmbedding, 
-        match_threshold: 0.5, 
-        match_count: 2 
+        match_threshold: 0.4, // Tolerância maior para não deixar passar detalhes
+        match_count: 3 
       });
       if (search?.length) {
-        hdContext += search.map((r: any) => `[Memória Específica]: ${r.summary}`).join('\n');
+        hdContext += search.map((r: any) => `[Memória Recuperada]: ${r.summary}`).join('\n');
       }
     }
     
-    if (!hdContext) hdContext = "Nenhum dado de longo prazo disponível.";
+    if (!hdContext) hdContext = "Aguardando geração do primeiro snapshot.";
 
-    // 3. RAM: MEMÓRIA DE CURTO PRAZO (Filtrando Ruído)
+    // 3. RAM: MEMÓRIA DE CURTO PRAZO (O Fio da Meada)
     const { data: history } = await supabase
       .from('brain')
       .select('content, category, metadata')
       .eq('user_id', telegramUserId)
-      .neq('category', 'noise') 
+      .neq('category', 'noise') // Filtro de ruído mantido
       .order('created_at', { ascending: false })
-      .limit(12);
+      .limit(20); // Fôlego aumentado para não perder contexto de áudios/textos longos
     
     const ramMemory = history?.reverse().map(h => {
       const cleanAiReply = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
       return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
     }).join('\n') || "Iniciando nova linha de raciocínio.";
 
-    // 4. CACHE: O MOTOR DE IA
+    // 4. CACHE: MOTOR DE IA COM BLINDAGEM CONTRA AMNÉSIA
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     const projectTag = (messageText.match(/#(\w+)/i) || [])[1];
 
     const finalPrompt = `
 SISTEMA CENTRAL: JARVIS | USUÁRIO ATUAL: ${authorName} | DATA: ${dataAtual}
 
+[MEMÓRIA DE LONGO PRAZO (HD)]
+${hdContext}
+
 [HISTÓRICO RECENTE (RAM)]
 ${ramMemory}
 
-[MEMÓRIA DE LONGO PRAZO (HD E SNAPSHOTS)]
-${hdContext}
-
-[MENSAGEM ATUAL]
+[MENSAGEM ATUAL DO USUÁRIO]
 "${messageText}"
 
-DIRETRIZES:
-1. Use o HISTÓRICO e a MEMÓRIA para manter o fio da conversa e não pedir repetição de contexto.
-2. Termine sua resposta com uma classificação de importância:
-   - Se for saudação/vazio: [CLASSE: noise]
-   - Se houver horários, planos, decisões ou dados: [CLASSE: info]
+DIRETRIZES DE EXECUÇÃO (CRÍTICO):
+1. Você TEM ACESSO MENTAL aos blocos acima. A transição deve ser invisível e natural. NUNCA diga frases como "não tenho acesso a mensagens anteriores" ou "minha memória está vazia". Assuma os dados como verdades.
+2. SÓ agende ou altere compromissos se houver comandos claros.
+3. OBRIGATÓRIO: Termine sua resposta classificando a mensagem:
+   - Se for apenas saudação, ok ou confirmação simples: [CLASSE: noise]
+   - Se houver horários, ideias, rotinas ou fatos: [CLASSE: info]
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
@@ -103,7 +104,7 @@ DIRETRIZES:
       aiReply += `\n\n🗓️ **Ação:** ${result}`;
     }
 
-    // 7. PERSISTÊNCIA NO BRAIN
+    // 7. PERSISTÊNCIA NO BRAIN (Gravando na RAM)
     await supabase.from('brain').insert([{
       content: messageText,
       category: category, 
@@ -115,10 +116,9 @@ DIRETRIZES:
 
     await sendTelegram(chatId, aiReply);
 
-    // 8. AUTO-COMPACTAÇÃO (Executa após o envio)
+    // 8. AUTO-COMPACTAÇÃO INVISÍVEL
     const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', telegramUserId).eq('category', 'info');
-    if (count && count >= 10) {
-       // Dispara a compactação da pasta lib
+    if (count && count >= 20) {
        compactMemory(telegramUserId.toString(), authorName);
     }
 
