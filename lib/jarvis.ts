@@ -157,17 +157,26 @@ export async function checkSystemInterrupts(userId: string) {
 }
 export async function transcribeAudio(fileUrl: string) {
   try {
+    const response = await fetch(fileUrl);
+    const arrayBuffer = await response.arrayBuffer();
+    const blob = new Blob([arrayBuffer], { type: 'audio/ogg' });
+
+    const formData = new FormData();
+    formData.append('file', blob, 'audio.ogg');
+    formData.append('model', 'whisper-1');
+
     const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
-      headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: (() => {
-        const formData = new FormData();
-        // O Whisper aceita a URL do arquivo via stream ou download prévio
-        // Para simplificar no Next.js, vamos baixar e enviar:
-        return formData;
-      })()
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: formData
     });
-    // Nota: Para não complicar o runtime do Next, faremos o download no Webhook
-    // e enviaremos o Buffer para o Whisper.
-  } catch (e) { console.error(e); return ""; }
+
+    const data = await res.json();
+    return data.text || "";
+  } catch (e) {
+    console.error("Erro na transcrição:", e);
+    return "";
+  }
 }
