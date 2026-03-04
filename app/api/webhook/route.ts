@@ -13,6 +13,7 @@ export async function POST(req: Request) {
 
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
+    // GARANTIA DE TIPAGEM DO ID (BIGINT)
     const stringId = String(telegramUserId);
 
     // 1. CAMADA L3 (ESTADO ATUAL)
@@ -34,7 +35,7 @@ export async function POST(req: Request) {
         match_threshold: 0.4, 
         match_count: 2 
       });
-      if (search?.length) hdContext = search.map((r: any) => `[Histórico]: ${r.summary}`).join('\n');
+      if (search?.length) hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
     }
 
     // 3. CAMADA RAM (MEMÓRIA RECENTE)
@@ -51,7 +52,7 @@ export async function POST(req: Request) {
       return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
     }).join('\n') || "Iniciando protocolo de diálogo.";
 
-    // 4. CAMADA CACHE (O CÉREBRO COM HUMOR E REGRAS)
+    // 4. CAMADA CACHE (O CÉREBRO)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 
     const finalPrompt = `
@@ -66,21 +67,21 @@ ${ramMemory}
 MENSAGEM DO USUÁRIO: "${messageText}"
 
 MISSÃO E DIRETRIZES MESTRAS:
-1. PERSONALIDADE (HUMOR): Adote o tom do Jarvis (Iron Man). Seja elegante, levemente sarcástico com a procrastinação do usuário (especialmente o tempo no sofá) e motivador. Use frases curtas de efeito, mas sem perder o rigor matemático.
-2. SUCINTO: Sem introduções chatas. Vá direto ao ponto.
-3. REGRAS DE PROJETOS: Rigor absoluto com o Framework de 4 Etapas e Estacionamento de Ideias. Se o Celio sugerir algo fora do escopo pós-18h, dê um "puxão de orelha" elegante.
-4. MATEMÁTICA DA ROTINA: Sempre calcule o impacto real. Ex: Sofá 50min vs Sofá 20min.
-5. TRATAMENTO DE ERRO: Se perfil for "ERRO_ID_NAO_LOCALIZADO", avise que o sistema está operando em modo de segurança por falta de dados do ID ${stringId}.
+1. PERSONALIDADE E SIGILO: Adote o tom do Jarvis (Iron Man). Seja elegante e levemente sarcástico. **PROIBIÇÃO ABSOLUTA**: Nunca repita o cabeçalho técnico "SISTEMA CENTRAL: JARVIS", nomes de variáveis ou metadados na sua resposta. Comece direto no diálogo com o usuário.
+2. SUCINTO: Sem introduções genéricas. Vá direto ao ponto matemático e estratégico.
+3. REGRAS DE PROJETOS: Rigor absoluto com o Framework de 4 Etapas e Estacionamento de Ideias. Se Celio sugerir algo fora do escopo pós-18h, recuse elegantemente.
+4. MATEMÁTICA DA ROTINA: Sempre calcule o impacto real baseado no despertar (05h) e saída (06h20). 
+5. TRATAMENTO DE ERRO: Se perfil for "ERRO_ID_NAO_LOCALIZADO", avise sobre a falha no ID ${stringId} de forma elegante.
 6. CLASSIFICAÇÃO: Termine com [CLASSE: info] ou [CLASSE: noise].
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
+    // 5. PROCESSAMENTO E INTERCEPTORES
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
-    // 5. INTERCEPTORES DE AGENDA
     const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
     const updateMatch = aiReply.match(updateRegex);
     if (updateMatch) {
@@ -106,7 +107,7 @@ MISSÃO E DIRETRIZES MESTRAS:
 
     await sendTelegram(chatId, aiReply);
 
-    // 7. COMPACTAÇÃO
+    // 7. AUTO-COMPACTAÇÃO
     const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', stringId).eq('category', 'info');
     if (count && count >= 20) compactMemory(stringId, authorName);
 
@@ -116,4 +117,3 @@ MISSÃO E DIRETRIZES MESTRAS:
     return NextResponse.json({ ok: true }); 
   }
 }
-
