@@ -33,7 +33,7 @@ export async function generateEmbedding(text: string) {
   } catch { return null; }
 }
 
-// 4. MENSAGEIRO
+// 4. MENSAGEIRO TELEGRAM
 export async function sendTelegram(chatId: string | number, text: string) {
   try {
     await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
@@ -44,23 +44,60 @@ export async function sendTelegram(chatId: string | number, text: string) {
   } catch (e) { console.error("Erro ao enviar Telegram", e); }
 }
 
-// 5. O FAXINEIRO (Compactação Automática)
-// Note que passamos o authorName para ele resumir "A rotina do Celio" em vez de só "A rotina"
+// 5. O MOTOR DE CONSOLIDAÇÃO (A Mágica das 4 Camadas)
 export async function compactMemory(userId: string, authorName: string) {
   try {
-    const { data: messages } = await supabase.from('brain').select('content, metadata').eq('user_id', userId).eq('category', 'info').order('created_at', { ascending: true });
-    if (!messages || messages.length < 20) return;
+    // A. Busca a RAM (Últimas 20 mensagens úteis)
+    const { data: messages } = await supabase
+      .from('brain')
+      .select('content, metadata')
+      .eq('user_id', userId)
+      .eq('category', 'info')
+      .order('created_at', { ascending: true });
 
+    if (!messages || messages.length < 20) return; // Só compacta se a RAM estiver cheia
+
+    // B. Busca o Dossiê Atual (Camada L3) para não sobrescrever o passado
+    const { data: userProfile } = await supabase
+      .from('users')
+      .select('current_context')
+      .eq('id', userId)
+      .single();
+      
+    const oldContext = userProfile?.current_context || "Nenhum contexto prévio estabelecido.";
     const fullDialogue = messages.map(m => `${authorName}: ${m.content}\nJarvis: ${m.metadata?.ai_reply}`).join('\n\n');
-    const prompt = `Gere um resumo denso, factual e técnico deste diálogo de ${authorName}, focando em horários, rotinas, preferências e decisões tomadas. Ignore conversas fiadas: \n\n${fullDialogue}`;
+
+    // C. Pede para a IA fundir o passado com o presente
+    const prompt = `
+      Você é o Gerente de Memória do Jarvis.
+      
+      [CONTEXTO ATUAL DE ${authorName}]:
+      ${oldContext}
+
+      [NOVAS INTERAÇÕES (RAM)]:
+      ${fullDialogue}
+
+      TAREFA: Atualize o "Contexto Atual" integrando as novas informações.
+      - Mantenha o que ainda é válido do contexto antigo.
+      - Adicione os novos fatos (horários, rotinas, projetos).
+      - Remova o que foi explicitamente cancelado ou alterado.
+      - Crie um texto denso, direto e em formato de dossiê técnico. Nada de saudações.
+    `;
     
-    const summary = await callOpenRouter(prompt);
-    const embedding = await generateEmbedding(summary);
+    const newContext = await callOpenRouter(prompt);
+    const embedding = await generateEmbedding(newContext);
 
     if (embedding) {
-      await supabase.from('memories').insert([{ summary, embedding, user_id: userId, metadata: { type: 'snapshot' } }]);
+      // D. Atualiza a Camada L3 (O Perfil do Usuário - Consulta super rápida)
+      await supabase.from('users').update({ current_context: newContext }).eq('id', userId);
+
+      // E. Salva na Camada HD (Histórico Vetorial para buscas profundas no futuro)
+      await supabase.from('memories').insert([{ summary: newContext, embedding, user_id: userId, metadata: { type: 'snapshot' } }]);
+
+      // F. Limpa a RAM (Libera espaço para a próxima conversa)
       await supabase.from('brain').delete().eq('user_id', userId).eq('category', 'info');
-      console.log(`🧹 Memória compactada para ${authorName}.`);
+      
+      console.log(`🧹 Memória de 4 Camadas consolidada com sucesso para ${authorName}.`);
     }
-  } catch (e) { console.error("Erro compactação:", e); }
+  } catch (e) { console.error("Erro na compactação:", e); }
 }
