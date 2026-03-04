@@ -9,7 +9,7 @@ export async function POST(req: Request) {
     const messageText = body.message?.text || "";
     const chatId = body.message?.chat?.id;
     
-    // 1. IDENTIFICAÇÃO DO SUJEITO E TRAVA DE ECO
+    // 1. IDENTIFICAÇÃO E TRAVA DE ECO
     const telegramUserId = body.message?.from?.id;
     const userFirstName = body.message?.from?.first_name || "Usuário";
     const isBot = body.message?.from?.is_bot || false;
@@ -28,9 +28,9 @@ export async function POST(req: Request) {
     // 2. COMANDOS DE SISTEMA
     if (messageText.startsWith('/ignore')) {
       const termToIgnore = messageText.replace('/ignore', '').trim().toLowerCase();
-      if (!termToIgnore) return await sendTelegram(chatId, "⚠️ Diga o que devo ignorar. Ex: `/ignore Shopee`.");
+      if (!termToIgnore) return await sendTelegram(chatId, "⚠️ Diga o que devo ignorar.");
       await supabase.from('filters').upsert({ term: termToIgnore });
-      return await sendTelegram(chatId, `✅ Entendido! O termo "${termToIgnore}" foi filtrado.`);
+      return await sendTelegram(chatId, `✅ Termo "${termToIgnore}" filtrado.`);
     }
 
     if (messageText.startsWith('/resumo')) {
@@ -41,14 +41,14 @@ export async function POST(req: Request) {
         .order('created_at', { ascending: true });
 
       const googleContext = await getGoogleContext();
-      const activityData = logs?.map(l => `[${l.project_tag || l.category}] ${l.content}`).join('\n') || "Sem notas locais nas últimas 24h.";
+      const activityData = logs?.map(l => `[${l.project_tag || l.category}] ${l.content}`).join('\n') || "Sem notas locais.";
       
-      const summaryPrompt = `Resuma as últimas 24h para o ${authorName}. DADOS LOCAIS: \n${activityData}\n DADOS GOOGLE: \n${googleContext}`;
+      const summaryPrompt = `Resuma as últimas 24h para o ${authorName}. DADOS: \n${activityData}\n GOOGLE: \n${googleContext}`;
       const aiSummary = await callOpenRouter(summaryPrompt); 
-      return await sendTelegram(chatId, `📊 *Resumo Consolidado:*\n\n${aiSummary}`);
+      return await sendTelegram(chatId, `📊 *Resumo:*\n\n${aiSummary}`);
     }
 
-    // 3. EXTRATOR DE HIERARQUIA E PROJETOS
+    // 3. EXTRATOR DE HIERARQUIA
     const textLower = messageText.toLowerCase();
     const cleanMessage = messageText.replace(/#(claude|gemini)/ig, '');
     const projectTag = (cleanMessage.match(/#(\w+)/i) || [])[1];
@@ -61,58 +61,60 @@ export async function POST(req: Request) {
       projectId = proj?.id || null;
     }
 
-    // 4. PORTARIA E BUSCA NO HD VETORIAL
-    const ambiguous = ['senha', 'bug', 'erro', 'falha', 'login', 'banco', 'deploy'].some(w => textLower.includes(w));
-    if (ambiguous && !projectTag) {
-      return await sendTelegram(chatId, "⚠️ **Contexto Ausente:** Use `#` (ex: #PQF) para eu saber onde procurar essa informação.");
-    }
-
+    // 4. HD: MEMÓRIA DE LONGO PRAZO (O QUE NÃO PODE SER ESQUECIDO)
     const queryEmbedding = await generateEmbedding(cleanMessage);
-
-    let hdContext = "Sem dados no HD vetorial para este assunto.";
-    if (projectTag && queryEmbedding) {
-      const { data: search } = await supabase.rpc('match_memories', { query_embedding: queryEmbedding, filter_project: projectTag, match_threshold: 0.6, match_count: 2 });
-      if (search?.length) hdContext = search.map((r: any) => `[HD]: ${r.summary}`).join('\n');
+    let hdContext = "Sem dados profundos para este assunto.";
+    if (queryEmbedding) {
+      // Modificado para sempre buscar contexto geral se não houver tag de projeto
+      const filter = projectTag ? projectTag : null;
+      const { data: search } = await supabase.rpc('match_memories', { query_embedding: queryEmbedding, filter_project: filter, match_threshold: 0.6, match_count: 2 });
+      if (search?.length) hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
     }
 
-    // 5. RAM (CURTO PRAZO) COM LIMPEZA ESTILIZADA
+    // 5. RAM: MEMÓRIA DE CURTO PRAZO (O FIO DA CONVERSA)
     let ramQuery = supabase.from('brain').select('content, metadata').order('created_at', { ascending: false }).limit(10);
     if (projectTag) ramQuery = ramQuery.eq('project_tag', projectTag);
+    // Assegura que ele veja a conversa do usuário atual
+    ramQuery = ramQuery.eq('user_id', telegramUserId); 
+    
     const { data: history } = await ramQuery;
     
     const ramMemory = history?.reverse().map(h => {
       const cleanAiReply = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
-      return `${h.metadata?.user || 'Desconhecido'}: ${h.content}\nJarvis: ${cleanAiReply}`;
-    }).join('\n') || "RAM Vazia.";
+      return `Celio: ${h.content}\nJarvis: ${cleanAiReply}`;
+    }).join('\n') || "Nenhuma conversa recente registrada.";
 
-    // 6. MOTOR DE IA (PROMPT DE COMPORTAMENTO AJUSTADO)
-    const modelToUse = "google/gemini-2.0-flash-001";
+    // 6. CACHE: O MOTOR DE IA (PROMPT UNIFICADO)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     
+    // O Dossiê que ensina a IA como pensar
     const finalPrompt = `
-SISTEMA CENTRAL JARVIS
-=======================
-USUÁRIO: ${authorName} (${isKnownUser ? 'Membro Registrado' : 'Visitante/Novo'})
-DATA/HORA ATUAL: ${dataAtual}
-PROJETO ATUAL: ${projectTag || 'Geral'}
+SISTEMA CENTRAL: JARVIS
+USUÁRIO ATUAL: ${authorName}
+DATA/HORA EXATA AGORA: ${dataAtual} (Fuso: São Paulo -03:00)
 
-[MEMÓRIA DE LONGO PRAZO (HD)]
+--- CACHE DE CONHECIMENTO ---
+
+[1. HD (MEMÓRIA DE LONGO PRAZO)]
+Use isso para lembrar de regras antigas, rotinas ou decisões de projetos.
 ${hdContext}
 
-[HISTÓRICO DA CONVERSA (RAM)]
+[2. RAM (HISTÓRICO DA CONVERSA ATUAL)]
+Use isso APENAS para manter o contexto e a naturalidade. Siga a linha de raciocínio do usuário. Não trate isso como tarefas pendentes.
 ${ramMemory}
 
-[MENSAGEM ATUAL DO USUÁRIO]
-"${cleanMessage}"
+[3. MENSAGEM ATUAL (AÇÃO EXIGIDA)]
+O usuário acabou de dizer: "${cleanMessage}"
 
-DIRETRIZES DE COMPORTAMENTO (SIGA RIGOROSAMENTE):
-1. CONTEXTO: Use o [HISTÓRICO DA CONVERSA] para entender o fluxo do assunto e manter uma conversa natural com o usuário.
-2. OBEDIÊNCIA: O usuário define as regras. Se ele pedir para você mudar um comportamento, concorde e aplique imediatamente nas próximas respostas.
-3. PROIBIÇÃO DE AGENDAMENTO AUTÔNOMO: Você está ESTRITAMENTE PROIBIDO de gerar tags de agenda para "conversar", "definir prioridades" ou ações abstratas.
-4. SÓ GERE AGENDAMENTO SE: O usuário disser claramente palavras como "agende", "marque" ou "me lembre de". Caso contrário, aja apenas como um conselheiro ou interlocutor.
+--- REGRAS DE EXECUÇÃO (OBRIGAÇÃO CRÍTICA) ---
+- Responda de forma natural, empática e prestativa à MENSAGEM ATUAL.
+- SE o usuário pedir a hora, olhe para "DATA/HORA EXATA AGORA" no topo deste documento.
+- VOCÊ ESTÁ PROIBIDO DE AGENDAR EVENTOS a menos que a MENSAGEM ATUAL contenha verbos imperativos explícitos de agendamento (Ex: "Agende", "Marque", "Crie um lembrete").
+- Para agendamentos REAIS solicitados agora, gere exatamente: [AGENDAR: Titulo | YYYY-MM-DDTHH:mm:ss | 0]
     `;
 
-    let aiReply = await callOpenRouter(finalPrompt, modelToUse);
+    // Chamada limpa. O OpenRouter agora não tem regras conflitantes no "system".
+    let aiReply = await callOpenRouter(finalPrompt);
 
     // 7. INTERCEPTADORES
     if (aiReply.includes('[LER_CONTEXTO]')) {
@@ -141,7 +143,7 @@ DIRETRIZES DE COMPORTAMENTO (SIGA RIGOROSAMENTE):
       aiReply = aiReply.replace(deleteRegex, `\n\n🗓️ **Ação:** ${result}`);
     }
 
-    // 8. PERSISTÊNCIA NO BRAIN
+    // 8. PERSISTÊNCIA NO BRAIN (Gravando na RAM)
     await supabase.from('brain').insert([{
       content: cleanMessage,
       category: projectTag ? 'Contexto' : 'Nota',
@@ -285,7 +287,7 @@ async function getGoogleAccessToken() {
   return (await res.json()).access_token;
 }
 
-// PROMPT DO MOTOR DE IA BLINDADO PARA CONVERSAÇÃO E OBEDIÊNCIA
+// O MOTOR AGORA RECEBE UM PROMPT LIMPO E DIRETO (SEM MÚLTIPLAS REGRAS DE SISTEMA)
 async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -293,13 +295,7 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
     body: JSON.stringify({
       model: model, 
       messages: [
-        { 
-          role: "system", 
-          content: `Você é o Jarvis. Personalidade: Empático, natural e prestativo.
-REGRA ABSOLUTA 1: Acompanhe o raciocínio do usuário usando o histórico da conversa.
-REGRA ABSOLUTA 2: NUNCA crie tags de [AGENDAR...], [ALTERAR...] ou [APAGAR...] a menos que o usuário exija isso com verbos diretos de comando de agenda. Apenas converse normalmente.`
-        }, 
-        { role: "user", content: prompt }
+        { role: "user", content: prompt } // Tudo foi unificado no Dossiê de Contexto
       ]
     })
   });
@@ -325,4 +321,4 @@ async function sendTelegram(chatId: number, text: string) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
   });
-                }
+                                                                    }
