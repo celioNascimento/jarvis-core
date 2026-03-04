@@ -11,22 +11,18 @@ export async function POST(req: Request) {
     // --- 🎤 MOTOR DE AUDIÇÃO (WHISPER FIX) ---
     if (message?.voice) {
       const fileId = message.voice.file_id;
-      // 1. Pega o caminho do arquivo
       const getFile = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/getFile?file_id=${fileId}`);
       const fileData = await getFile.json();
       
       if (fileData.ok) {
-        const filePath = fileData.result.file_path;
-        const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_TOKEN}/${filePath}`;
-        
-        // 2. Baixa o áudio
+        const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_TOKEN}/${fileData.result.file_path}`;
         const audioRes = await fetch(fileUrl);
-        const audioBuffer = await audioRes.arrayBuffer();
+        const buffer = await audioRes.arrayBuffer();
         
-        // 3. Prepara o FormData de forma compatível com a API OpenAI
         const formData = new FormData();
-        const file = new File([audioBuffer], 'audio.ogg', { type: 'audio/ogg' });
-        formData.append('file', file);
+        // O Whisper exige um Blob/File com nome de arquivo para identificar o formato
+        const audioFile = new Blob([buffer], { type: 'audio/ogg' });
+        formData.append('file', audioFile, 'voice.ogg');
         formData.append('model', 'whisper-1');
 
         const transcriptionRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
@@ -37,7 +33,6 @@ export async function POST(req: Request) {
         
         const transcriptionData = await transcriptionRes.json();
         messageText = transcriptionData.text || "";
-        console.log("🎤 Transcrição concluída:", messageText);
       }
     }
 
@@ -45,16 +40,18 @@ export async function POST(req: Request) {
     const telegramUserId = message?.from?.id;
     const userFirstName = message?.from?.first_name || "Usuário";
 
-    if (!messageText || chatId == null || telegramUserId == null) return NextResponse.json({ ok: true });
+    if (!messageText || chatId == null || telegramUserId == null) {
+      return NextResponse.json({ ok: true });
+    }
 
     const stringId = String(telegramUserId);
 
-    // 1. CAMADA L3
+    // 1. CAMADA L3 (DOSSIÊ)
     const { data: userProfile } = await supabase.from('users').select('nickname, current_context').eq('id', stringId).single();
     const authorName = userProfile?.nickname || userFirstName;
     const currentContextL3 = userProfile?.current_context || "Sem dossiê.";
 
-    // 2. CAMADA HD
+    // 2. CAMADA HD (VETORIAL)
     const queryEmbedding = await generateEmbedding(messageText);
     let hdContext = "";
     if (queryEmbedding) {
@@ -62,37 +59,50 @@ export async function POST(req: Request) {
       if (search && search.length > 0) hdContext = search.map((r) => `[Memória Antiga]: ${r.summary}`).join('\n');
     }
 
-    // 3. CAMADA RAM
-    const { data: history } = await supabase.from('brain').select('content, category, metadata').eq('user_id', stringId).neq('category', 'noise').order('created_at', { ascending: false }).limit(10); 
-    const ramMemory = (history || []).reverse().map((h: any) => `${authorName}: ${h.content}\nJarvis: ${(h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim()}`).join('\n');
+    // 3. CAMADA RAM (HISTÓRICO RECENTE - Aumentado para 15 para evitar amnésia)
+    const { data: history } = await supabase.from('brain')
+      .select('content, metadata')
+      .eq('user_id', stringId)
+      .neq('category', 'noise')
+      .order('created_at', { ascending: false })
+      .limit(15); 
 
-    // 4. CAMADA CACHE (Londrina)
-    const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const ramMemory = (history || []).reverse().map((h: any) => {
+      const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
+      return `${authorName}: ${h.content}\nJarvis: ${ai}`;
+    }).join('\n');
+
+    // 4. CAMADA CACHE (HORÁRIO E PROMPT)
+    const fusoLondrina = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 
     const finalPrompt = `
-SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | AGORA: ${dataAtual}
+SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | AGORA: ${fusoLondrina}
 
-[PERFIL L3]
+[PERFIL L3 - QUEM É O USUÁRIO]
 ${currentContextL3}
 
-[CONVERSA ATUAL]
+[HISTÓRICO DE CONVERSA (RAM) - O QUE ACABAMOS DE FALAR]
 ${ramMemory}
 
-MENSAGEM: "${messageText}"
+[MEMÓRIAS PROFUNDAS (HD)]
+${hdContext}
+
+MENSAGEM ATUAL: "${messageText}"
 
 MISSÃO:
-1. PERSONALIDADE: Você é o Jarvis (Tony Stark style). Seja direto e eficiente. 
-2. REGRAS DE SAUDAÇÃO: NÃO fale a hora. NÃO diga "Boa noite" ou "Bom dia" em todas as mensagens. Apenas responda ao que foi dito de forma natural.
-3. GATILHOS: 
-   - [SALVAR_EVENTO]: Datas recorrentes (aniversários).
-   - [DESATIVAR_ROTINA]: Só se eu disser "folga" ou "feriado".
+1. PERSONALIDADE: Você é o Jarvis (Tony Stark style). Seja direto, inteligente e levemente sarcástico. 
+2. REGRAS DE SAUDAÇÃO: NÃO diga "Boa Noite" ou a hora, a menos que seja a primeira vez que nos falamos no dia. Mantenha o fluxo da conversa anterior.
+3. MEMÓRIA: Respeite o que foi dito na seção [HISTÓRICO]. Se falamos de bombons ou presentes há 2 minutos, você SABE disso.
+4. GATILHOS (Rigor Máximo):
+   - [SALVAR_EVENTO]: Datas anuais (aniversários).
+   - [DESATIVAR_ROTINA]: Só para feriados/folgas explícitos.
    - [AGENDAR]: Tarefas na agenda.
-4. CLASSE: [CLASSE: info] ou [CLASSE: noise].
+5. CLASSE: Termine com [CLASSE: info] ou [CLASSE: noise].
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 5. INTERCEPTORES
+    // 5. INTERCEPTORES (Tipagem blindada)
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
@@ -115,9 +125,20 @@ MISSÃO:
       aiReply = aiReply.replace(sMatch[0], '').trim() + `\n\n🗓️ **Agenda:** ${res}`;
     }
 
-    // 6. PERSISTÊNCIA
-    await supabase.from('brain').insert([{ content: messageText, category, user_id: stringId, embedding: queryEmbedding, metadata: { ai_reply: aiReply, user: authorName } }]);
+    // 6. PERSISTÊNCIA E ENVIO
+    await supabase.from('brain').insert([{ 
+      content: messageText, 
+      category, 
+      user_id: stringId, 
+      embedding: queryEmbedding, 
+      metadata: { ai_reply: aiReply, user: authorName } 
+    }]);
+
     await sendTelegram(chatId, aiReply);
+
+    // 7. COMPACTAÇÃO
+    const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', stringId).eq('category', 'info');
+    if (count && count >= 20) await compactMemory(stringId, authorName);
 
     return NextResponse.json({ ok: true });
   } catch (error: any) {
