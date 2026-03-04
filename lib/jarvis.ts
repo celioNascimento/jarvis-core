@@ -2,8 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 
 // 1. CONEXÃO COM O BANCO DE DADOS (SCHEMA JARVIS)
 export const supabase = createClient(
-  process.env.SUPABASE_URL!, 
-  process.env.SUPABASE_SERVICE_ROLE_KEY!, 
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
 );
 
@@ -12,20 +12,20 @@ export async function callOpenRouter(prompt: string) {
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: { 
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, 
-        "Content-Type": "application/json" 
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify({ 
-        model: "google/gemini-2.0-flash-001", 
-        messages: [{ role: "user", content: prompt }] 
+      body: JSON.stringify({
+        model: "google/gemini-2.0-flash-001",
+        messages: [{ role: "user", content: prompt }]
       })
     });
     const data = await res.json();
     return data.choices?.[0]?.message?.content || "❌ Erro IA.";
-  } catch (e) { 
+  } catch (e) {
     console.error("Erro callOpenRouter:", e);
-    return "❌ Erro na conexão com a IA."; 
+    return "❌ Erro na conexão com a IA.";
   }
 }
 
@@ -34,20 +34,20 @@ export async function generateEmbedding(text: string) {
   try {
     const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",
-      headers: { 
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, 
-        "Content-Type": "application/json" 
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify({ 
-        model: "openai/text-embedding-3-small", 
-        input: text 
+      body: JSON.stringify({
+        model: "openai/text-embedding-3-small",
+        input: text
       })
     });
     const json = await res.json();
     return json.data?.[0]?.embedding || null;
-  } catch (e) { 
+  } catch (e) {
     console.error("Erro generateEmbedding:", e);
-    return null; 
+    return null;
   }
 }
 
@@ -59,8 +59,8 @@ export async function sendTelegram(chatId: string | number, text: string) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
     });
-  } catch (e) { 
-    console.error("Erro ao enviar Telegram", e); 
+  } catch (e) {
+    console.error("Erro ao enviar Telegram", e);
   }
 }
 
@@ -84,11 +84,11 @@ export async function compactMemory(userId: string, authorName: string) {
       .select('current_context')
       .eq('id', userId)
       .single();
-      
+
     const oldContext = userProfile?.current_context || "Nenhum contexto prévio estabelecido.";
-    
+
     // C. Formata o diálogo recente para a IA processar
-    const brainText = rawBrain.map(m => 
+    const brainText = rawBrain.map(m =>
       `${authorName}: ${m.content}\nJarvis: ${m.metadata?.ai_reply || ''}`
     ).join('\n\n');
 
@@ -109,7 +109,7 @@ export async function compactMemory(userId: string, authorName: string) {
       4. Extraia aprendizados sobre o comportamento e rigor técnico exigido pelo usuário.
       5. Retorne APENAS o novo Dossiê estruturado e denso. Sem introduções.
     `;
-    
+
     const newContext = await callOpenRouter(prompt);
     const embedding = await generateEmbedding(newContext);
 
@@ -118,11 +118,11 @@ export async function compactMemory(userId: string, authorName: string) {
       await supabase.from('users').update({ current_context: newContext }).eq('id', userId);
 
       // F. Alimenta Camada HD (Busca vetorial para o futuro)
-      await supabase.from('memories').insert([{ 
-        summary: newContext, 
-        embedding, 
-        user_id: userId, 
-        metadata: { type: 'auto_consolidation', count: rawBrain.length } 
+      await supabase.from('memories').insert([{
+        summary: newContext,
+        embedding,
+        user_id: userId,
+        metadata: { type: 'auto_consolidation', count: rawBrain.length }
       }]);
 
       // G. LIMPEZA SEGURA: Apaga apenas as mensagens que foram processadas
@@ -132,10 +132,48 @@ export async function compactMemory(userId: string, authorName: string) {
         .eq('user_id', userId)
         .eq('category', 'info')
         .lte('created_at', lastProcessedDate);
-      
+
       console.log(`🧹 RAM de ${authorName} limpa. Dossiê L3 e HD atualizados.`);
     }
-  } catch (e) { 
-    console.error("Erro crítico na compactação:", e); 
+  } catch (e) {
+    console.error("Erro crítico na compactação:", e);
   }
+}
+
+// BUSCA EVENTOS PROATIVOS (Hoje ou 7 dias antes)
+export async function getProactiveEvents(userId: string) {
+  const hoje = new Date();
+  const seteDiasDepois = new Date();
+  seteDiasDepois.setDate(hoje.getDate() + 7);
+
+  const { data: events } = await supabase
+    .from('events')
+    .select('*')
+    .eq('user_id', userId)
+    .filter('last_notified_year', 'neq', hoje.getFullYear());
+
+  if (!events) return [];
+
+  // Filtra apenas o que é relevante para o disparo de hoje
+  return events.filter(event => {
+    const d = new Date(event.event_date);
+    const isHoje = d.getDate() === hoje.getDate() && d.getMonth() === hoje.getMonth();
+    const isSeteDias = d.getDate() === seteDiasDepois.getDate() && d.getMonth() === seteDiasDepois.getMonth();
+    return isHoje || isSeteDias;
+  });
+}
+
+export async function checkSystemInterrupts(userId: string) {
+  const hoje = new Date();
+  const dataString = hoje.toISOString().split('T')[0];
+  
+  // 1. Poderíamos integrar uma API de feriados aqui
+  // 2. Ou checar no seu Google Calendar por eventos "Folga", "Feriado" ou "Férias"
+  const agenda = await getGoogleContext();
+  const temFolga = agenda.toLowerCase().includes("feriado") || agenda.toLowerCase().includes("folga");
+
+  return {
+    shouldPauseMorningRoutine: temFolga,
+    reason: temFolga ? "Feriado/Folga detectado na agenda" : null
+  };
 }

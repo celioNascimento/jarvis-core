@@ -16,42 +16,26 @@ export async function POST(req: Request) {
     const stringId = String(telegramUserId);
 
     // 1. CAMADA L3 (ESTADO ATUAL)
-    const { data: userProfile } = await supabase
-      .from('users')
-      .select('nickname, current_context')
-      .eq('id', stringId)
-      .single();
-      
+    const { data: userProfile } = await supabase.from('users').select('nickname, current_context').eq('id', stringId).single();
     const authorName = userProfile?.nickname || userFirstName;
     const currentContextL3 = userProfile?.current_context || "ERRO_ID_NAO_LOCALIZADO";
 
-    // 2. CAMADA HD (VETORIAL)
+    // 2. CAMADA HD (VETORIAL - BUSCA PROFUNDA)
     const queryEmbedding = await generateEmbedding(messageText);
     let hdContext = "";
     if (queryEmbedding) {
-      const { data: search } = await supabase.rpc('match_memories', { 
-        query_embedding: queryEmbedding, 
-        match_threshold: 0.4, 
-        match_count: 2 
-      });
+      const { data: search } = await supabase.rpc('match_memories', { query_embedding: queryEmbedding, match_threshold: 0.4, match_count: 2 });
       if (search?.length) hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
     }
 
-    // 3. CAMADA RAM (MEMÓRIA RECENTE)
-    const { data: history } = await supabase
-      .from('brain')
-      .select('content, category, metadata')
-      .eq('user_id', stringId)
-      .neq('category', 'noise') 
-      .order('created_at', { ascending: false })
-      .limit(15); 
-    
+    // 3. CAMADA RAM (O FIO DA CONVERSA)
+    const { data: history } = await supabase.from('brain').select('content, category, metadata').eq('user_id', stringId).neq('category', 'noise').order('created_at', { ascending: false }).limit(15); 
     const ramMemory = history?.reverse().map(h => {
       const cleanAiReply = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
       return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
     }).join('\n') || "Iniciando protocolo de diálogo.";
 
-    // 4. CAMADA CACHE (O CÉREBRO)
+    // 4. CAMADA CACHE (MOTOR DE INTELIGÊNCIA)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 
     const finalPrompt = `
@@ -64,16 +48,16 @@ ${currentContextL3}
 ${ramMemory}
 
 [MEMÓRIA DE LONGO PRAZO (HD)]
-${hdContext || "Nenhuma lembrança ativada."}
+${hdContext || "Nenhuma lembrança relevante ativada."}
 
-MENSAGEM DO USUÁRIO: "${messageText}"
+MENSAGEM: "${messageText}"
 
-MISSÃO E DIRETRIZES MESTRAS:
-1. FOCO NO ASSUNTO: Responda ao que o usuário puxou. Se falar de compras/presentes, seja consultivo.
-2. CURIOSIDADE PROATIVA: Se o usuário mencionar familiares, presentes ou eventos futuros, aja como um assistente investigativo. Faça perguntas curtas e elegantes para descobrir datas exatas, gostos da pessoa ou o que foi dado no ano passado, para que você possa registrar isso na memória.
-3. PERSONALIDADE E SIGILO: Tom Jarvis (Iron Man). Elegante e levemente sarcástico. PROIBIÇÃO ABSOLUTA: Nunca repita o cabeçalho técnico, nomes de variáveis ou metadados na resposta.
-4. REGRAS DE PROJETOS: Rigor absoluto com o Framework de 4 Etapas e Estacionamento de Ideias em código/projetos.
-5. ROTINA E MATEMÁTICA: SOMENTE ative cálculos de rotina (05h despertar, 06h20 saída) se o assunto for explicitamente sobre atrasos, horários ou treinos.
+MISSÃO E DIRETRIZES:
+1. FOCO E INVESTIGAÇÃO: Responda ao usuário. Se mencionar datas ou pessoas, investigue para descobrir a data exata.
+2. SALVAMENTO PROATIVO: Se identificar uma data importante, inclua ao final: [SALVAR_EVENTO: Título | YYYY-MM-DD | alta/media/baixa | true/false].
+3. GESTÃO DE DESCANSO (NOVO): Se o usuário falar de folga, feriado, ou que quer dormir mais, ofereça pausar a rotina. Use o comando invisível [DESATIVAR_ROTINA: YYYY-MM-DD] com a data correspondente à folga.
+4. PERSONALIDADE: Estilo Stark (elegante/sarcástico). PROIBIÇÃO: Nunca repita cabeçalhos, variáveis ou comandos em colchetes visíveis na resposta.
+5. RIGOR TÉCNICO: Mantenha o Framework de 4 Etapas e o Estacionamento de Ideias para projetos de código.
 6. CLASSIFICAÇÃO: Termine com [CLASSE: info] ou [CLASSE: noise].
     `;
 
@@ -84,6 +68,23 @@ MISSÃO E DIRETRIZES MESTRAS:
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
+    // Interceptor: Eventos Proativos
+    const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\]/i;
+    const eventMatch = aiReply.match(eventRegex);
+    if (eventMatch) {
+      await supabase.from('events').insert([{ user_id: stringId, title: eventMatch[1].trim(), event_date: eventMatch[2], priority: eventMatch[3].toLowerCase(), is_recurring: eventMatch[4].toLowerCase() === 'true', last_notified_year: new Date().getFullYear() - 1 }]);
+      aiReply = aiReply.replace(eventRegex, '').trim() + "\n\n*(Evento registrado nos meus radares).*";
+    }
+
+    // Interceptor: Gestão de Descanso (Interruptor de Comodidade)
+    const interruptRegex = /\[DESATIVAR_ROTINA:\s*(\d{4}-\d{2}-\d{2})\]/i;
+    const interruptMatch = aiReply.match(interruptRegex);
+    if (interruptMatch) {
+      await supabase.from('routine_exceptions').insert([{ user_id: stringId, exception_date: interruptMatch[1], type: 'pause_all' }]);
+      aiReply = aiReply.replace(interruptRegex, '').trim() + "\n\n*(Protocolo de descanso ativado. Alarmes silenciados para esta data).*";
+    }
+
+    // Interceptor: Agenda Google
     const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
     const updateMatch = aiReply.match(updateRegex);
     if (updateMatch) {
@@ -99,14 +100,7 @@ MISSÃO E DIRETRIZES MESTRAS:
     }
 
     // 6. PERSISTÊNCIA NA RAM
-    await supabase.from('brain').insert([{
-      content: messageText,
-      category: category, 
-      user_id: stringId,
-      embedding: queryEmbedding,
-      metadata: { ai_reply: aiReply, user: authorName }
-    }]);
-
+    await supabase.from('brain').insert([{ content: messageText, category, user_id: stringId, embedding: queryEmbedding, metadata: { ai_reply: aiReply, user: authorName } }]);
     await sendTelegram(chatId, aiReply);
 
     // 7. AUTO-COMPACTAÇÃO
