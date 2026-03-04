@@ -9,12 +9,11 @@ export async function POST(req: Request) {
     const messageText = body.message?.text || "";
     const chatId = body.message?.chat?.id;
     
-    // 1. IDENTIFICAÇÃO DO SUJEITO E TRAVA ANTI-LOOP
+    // 1. IDENTIFICAÇÃO DO SUJEITO E TRAVA DE ECO
     const telegramUserId = body.message?.from?.id;
     const userFirstName = body.message?.from?.first_name || "Usuário";
     const isBot = body.message?.from?.is_bot || false;
 
-    // Se a mensagem for do próprio Jarvis (bot) ou vazia, ignoramos para não gerar loop
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
     const { data: userProfile } = await supabase
@@ -49,7 +48,7 @@ export async function POST(req: Request) {
       return await sendTelegram(chatId, `📊 *Resumo Consolidado:*\n\n${aiSummary}`);
     }
 
-    // 3. EXTRATOR DE HIERARQUIA
+    // 3. EXTRATOR DE HIERARQUIA E PROJETOS
     const textLower = messageText.toLowerCase();
     const cleanMessage = messageText.replace(/#(claude|gemini)/ig, '');
     const projectTag = (cleanMessage.match(/#(\w+)/i) || [])[1];
@@ -76,31 +75,41 @@ export async function POST(req: Request) {
       if (search?.length) hdContext = search.map((r: any) => `[HD]: ${r.summary}`).join('\n');
     }
 
-    // 5. RAM (CURTO PRAZO) COM LIMPEZA DE TAGS (Fim do loop de repetição)
-    let ramQuery = supabase.from('brain').select('content, metadata').order('created_at', { ascending: false }).limit(15);
+    // 5. RAM (CURTO PRAZO) COM LIMPEZA ESTILIZADA
+    let ramQuery = supabase.from('brain').select('content, metadata').order('created_at', { ascending: false }).limit(10);
     if (projectTag) ramQuery = ramQuery.eq('project_tag', projectTag);
     const { data: history } = await ramQuery;
     
     const ramMemory = history?.reverse().map(h => {
-      // Retira as tags de agendamento antigas para a IA não tentar refazer
       const cleanAiReply = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
       return `${h.metadata?.user || 'Desconhecido'}: ${h.content}\nJarvis: ${cleanAiReply}`;
     }).join('\n') || "RAM Vazia.";
 
-    // 6. MOTOR DE IA
+    // 6. MOTOR DE IA (O NOVO PROMPT BLINDADO)
     const modelToUse = "google/gemini-2.0-flash-001";
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     
+    // A ESTRUTURAÇÃO AQUI FOI ALTERADA PARA LIMITAR A INTERPRETAÇÃO DA IA
     const finalPrompt = `
-      USUÁRIO ATUAL: ${authorName} (${isKnownUser ? 'Membro Registrado' : 'Visitante/Novo'})
-      CONTEXTO HD: ${hdContext}
-      RAM: ${ramMemory}
-      DATA DO SISTEMA: ${dataAtual}
-      PROJETO: ${projectTag || 'Geral'}
-      
-      ENTRADA (${authorName} disse): "${cleanMessage}"
-      
-      DIRETRIZ CRÍTICA: Responda à entrada atual. Não repita comandos [AGENDAR...], [ALTERAR...] ou [APAGAR...] baseando-se no histórico da RAM.
+SISTEMA CENTRAL JARVIS
+=======================
+USUÁRIO: ${authorName} (${isKnownUser ? 'Membro Registrado' : 'Visitante/Novo'})
+DATA/HORA ATUAL: ${dataAtual}
+PROJETO ATUAL: ${projectTag || 'Geral'}
+
+[MEMÓRIA DE LONGO PRAZO (HD)]
+${hdContext}
+
+[HISTÓRICO DA CONVERSA (RAM - TAREFAS PASSADAS E CONCLUÍDAS)]
+${ramMemory}
+
+[MENSAGEM ATUAL DO USUÁRIO - O SEU ÚNICO FOCO]
+"${cleanMessage}"
+
+DIRETRIZES DE EXECUÇÃO:
+1. Responda APENAS à "MENSAGEM ATUAL DO USUÁRIO".
+2. Considere o "HISTÓRICO DA CONVERSA" como passado morto. NÃO TENTE resolver, re-agendar ou avisar sobre compromissos que estão no histórico.
+3. SÓ gere tags de agenda se a MENSAGEM ATUAL exigir uma nova ação inédita.
     `;
 
     let aiReply = await callOpenRouter(finalPrompt, modelToUse);
@@ -153,6 +162,7 @@ export async function POST(req: Request) {
 
 // --- FUNÇÕES AUXILIARES ---
 
+// ... (createGoogleEvent, updateGoogleEvent, deleteGoogleEvent, getGoogleContext, getGoogleAccessToken mantidos inalterados) ...
 async function createGoogleEvent(summary: string, startTime: string, reminderMinutes: number = 30) {
   try {
     const accessToken = await getGoogleAccessToken();
@@ -275,6 +285,7 @@ async function getGoogleAccessToken() {
   return (await res.json()).access_token;
 }
 
+// MUDANÇA CRÍTICA AQUI TAMBÉM NO COMPORTAMENTO-BASE
 async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -284,7 +295,7 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
       messages: [
         { 
           role: "system", 
-          content: "Você é o Jarvis. Personalidade: Empático e focado. DIRETRIZ CRÍTICA: Não faça cálculos de tempo de aviso no horário do evento. Passe sempre o HORÁRIO REAL do evento sem o Z no final. Tags: '[AGENDAR: Titulo | YYYY-MM-DDTHH:mm:ss | Minutos]', '[ALTERAR_AGENDA: Termo | Novo_Titulo | YYYY-MM-DDTHH:mm:ss | Minutos]', '[APAGAR_AGENDA: Termo]'. Se não houver minutos, use 30." 
+          content: "Você é o Jarvis. Personalidade: Empático e focado. REGRA ABSOLUTA: O 'Histórico da Conversa' representa ações passadas e RESOLVIDAS. Nunca tente re-executá-las. SÓ GERE as tags [AGENDAR...], [ALTERAR_AGENDA...] ou [APAGAR_AGENDA...] se o usuário pedir isso EXPLICITAMENTE na Mensagem Atual. Passe sempre o HORÁRIO REAL do evento sem o Z no final. Se não houver minutos, use 30." 
         }, 
         { role: "user", content: prompt }
       ]
@@ -294,7 +305,6 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
   return data.choices?.[0]?.message?.content || "❌ Instabilidade na rede neural.";
 }
 
-// ATUALIZADO PARA OPENROUTER (O Cano Único de estabilidade)
 async function generateEmbedding(text: string) {
   try {
     const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
@@ -314,3 +324,4 @@ async function sendTelegram(chatId: number, text: string) {
     body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
   });
 }
+
