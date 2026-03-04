@@ -1,136 +1,157 @@
-import { NextResponse } from 'next/server';
-import { supabase, callOpenRouter, generateEmbedding, sendTelegram, compactMemory } from '@/lib/jarvis';
-import { createGoogleEvent, updateGoogleEvent } from '@/lib/google';
+import { createClient } from '@supabase/supabase-js';
+import { getGoogleContext } from './google';
 
-export async function POST(req: Request) {
+// 1. CONEXÃO CENTRAL COM O BANCO (SCHEMA JARVIS)
+export const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { db: { schema: 'jarvis' } }
+);
+
+// 2. MOTOR DE IA (OpenRouter - Gemini 2.0 Flash)
+export async function callOpenRouter(prompt: string) {
   try {
-    const body = await req.json();
-    const messageText: string = body.message?.text || "";
-    const chatId = body.message?.chat?.id;
-    const telegramUserId = body.message?.from?.id;
-    const userFirstName: string = body.message?.from?.first_name || "Usuário";
-    const isBot: boolean = body.message?.from?.is_bot || false;
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.0-flash-001",
+        messages: [{ role: "user", content: prompt }]
+      })
+    });
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || "❌ Erro IA.";
+  } catch (e) {
+    console.error("Erro callOpenRouter:", e);
+    return "❌ Erro na conexão com a IA.";
+  }
+}
 
-    if (isBot || !messageText || chatId == null || telegramUserId == null) {
-      return NextResponse.json({ ok: true });
-    }
+// 3. MOTOR VETORIAL (Busca no HD / Longo Prazo)
+export async function generateEmbedding(text: string) {
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "openai/text-embedding-3-small",
+        input: text
+      })
+    });
+    const json = await res.json();
+    return json.data?.[0]?.embedding || null;
+  } catch (e) {
+    console.error("Erro generateEmbedding:", e);
+    return null;
+  }
+}
 
-    const stringId = String(telegramUserId);
+// 4. MENSAGEIRO TELEGRAM
+export async function sendTelegram(chatId: string | number, text: string) {
+  try {
+    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+    });
+  } catch (e) {
+    console.error("Erro ao enviar Telegram", e);
+  }
+}
 
-    // 1. CAMADA L3 (Dossiê)
-    const { data: userProfile } = await supabase.from('users').select('nickname, current_context').eq('id', stringId).single();
-    const authorName = userProfile?.nickname || userFirstName;
-    const currentContextL3 = userProfile?.current_context || "ERRO_ID_NAO_LOCALIZADO";
+// 5. MOTOR DE CONSOLIDAÇÃO (RAM -> L3 -> HD)
+export async function compactMemory(userId: string, authorName: string) {
+  try {
+    const { data: rawBrain } = await supabase
+      .from('brain')
+      .select('content, metadata, created_at')
+      .eq('user_id', userId)
+      .eq('category', 'info')
+      .order('created_at', { ascending: true });
 
-    // 2. CAMADA HD (Vetorial)
-    const queryEmbedding = await generateEmbedding(messageText);
-    let hdContext = "";
-    if (queryEmbedding) {
-      const { data: search }: { data: any[] | null } = await supabase.rpc('match_memories', { 
-        query_embedding: queryEmbedding, 
-        match_threshold: 0.4, 
-        match_count: 2 
-      });
-      if (search && search.length > 0) {
-        hdContext = search.map((r) => `[Memória Antiga]: ${r.summary}`).join('\n');
-      }
-    }
+    if (!rawBrain || rawBrain.length < 20) return;
 
-    // 3. CAMADA RAM
-    const { data: history } = await supabase.from('brain').select('content, category, metadata').eq('user_id', stringId).neq('category', 'noise').order('created_at', { ascending: false }).limit(15); 
-    const safeHistory = history || [];
-    const ramMemory = safeHistory.reverse().map((h: any) => {
-      const aiReply = h.metadata?.ai_reply || "";
-      const cleanAiReply = aiReply.replace(/\[.*?\]/g, '').trim();
-      return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
-    }).join('\n') || "Iniciando protocolo de diálogo.";
+    const { data: userProfile } = await supabase
+      .from('users')
+      .select('current_context')
+      .eq('id', userId)
+      .single();
 
-    // 4. CAMADA CACHE
-    const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    const horaAtual = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' })).getHours();
+    const oldContext = userProfile?.current_context || "Nenhum contexto prévio.";
 
-    const finalPrompt = `
-SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | DATA/HORA: ${dataAtual}
+    const brainText = rawBrain.map(m =>
+      `${authorName}: ${m.content}\nJarvis: ${m.metadata?.ai_reply || ''}`
+    ).join('\n\n');
 
-[DADOS DE PERFIL (L3)]
-${currentContextL3}
-
-[CONTEXTO RECENTE (RAM)]
-${ramMemory}
-
-MENSAGEM: "${messageText}"
-
-MISSÃO:
-1. SAUDAÇÃO: Use a hora atual (${horaAtual}h). Estilo Stark.
-2. MULTI-SALVAMENTO: [SALVAR_EVENTO: Título | YYYY-MM-DD | alta/media/baixa | true/false]
-3. GESTÃO DE DESCANSO: [DESATIVAR_ROTINA: YYYY-MM-DD]
-4. SIGILO: Comandos em colchetes nunca devem aparecer na resposta final.
+    const prompt = `
+      Você é o Gerente de Memória do Jarvis. Sua missão é manter o Dossiê do usuário atualizado.
+      [DOSSIÊ ATUAL (L3)]: ${oldContext}
+      [NOVAS INTERAÇÕES]: ${brainText}
+      TAREFA: Integre as informações ao Dossiê, mantenha rigor técnico e foco nos projetos 'Procuro Quem Faça' e 'ExpertFrotas'. Retorne APENAS o novo Dossiê estruturado.
     `;
 
-    let aiReply = await callOpenRouter(finalPrompt);
+    const newContext = await callOpenRouter(prompt);
+    const embedding = await generateEmbedding(newContext);
 
-    const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
-    const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
-    aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
-
-    // --- INTERCEPTORES (CORREÇÃO DE BUILD AQUI) ---
-    
-    // 1. Eventos Proativos
-    const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\]?/gi;
-    const matches = Array.from(aiReply.matchAll(eventRegex)) as RegExpExecArray[]; // <-- FORCEI O TIPO AQUI
-    let savedCount = 0;
-    
-    for (const m of matches) {
-      if (m && m.length >= 5) {
-        const fullMatch = m[0];
-        const { error } = await supabase.from('events').insert([{
-          user_id: stringId,
-          title: m[1].trim(),
-          event_date: m[2],
-          priority: m[3].toLowerCase(),
-          is_recurring: m[4].toLowerCase() === 'true',
-          last_notified_year: new Date().getFullYear() - 1
-        }]);
-        
-        if (!error) {
-          aiReply = aiReply.replace(fullMatch, '').trim();
-          savedCount++;
-        }
-      }
+    if (embedding) {
+      // Atualiza L3 (Dossiê)
+      await supabase.from('users').update({ current_context: newContext }).eq('id', userId);
+      // Alimenta HD (Memória Histórica)
+      await supabase.from('memories').insert([{
+        summary: newContext,
+        embedding,
+        user_id: userId,
+        metadata: { type: 'auto_consolidation', count: rawBrain.length }
+      }]);
+      // Limpa RAM
+      const lastProcessedDate = rawBrain[rawBrain.length - 1].created_at;
+      await supabase.from('brain').delete().eq('user_id', userId).eq('category', 'info').lte('created_at', lastProcessedDate);
+      console.log(`🧹 Memória de ${authorName} consolidada.`);
     }
+  } catch (e) {
+    console.error("Erro na compactação:", e);
+  }
+}
 
-    if (savedCount > 0) aiReply += `\n\n*(✔️ ${savedCount} evento(s) registrado(s)).*`;
+// 6. BUSCA EVENTOS PROATIVOS (Radares)
+export async function getProactiveEvents(userId: string) {
+  const hoje = new Date();
+  const seteDiasDepois = new Date();
+  seteDiasDepois.setDate(hoje.getDate() + 7);
 
-    // 2. Descanso
-    const interruptRegex = /\[?DESATIVAR_ROTINA:\s*(\d{4}-\d{2}-\d{2})\]?/i;
-    const interruptMatch = aiReply.match(interruptRegex) as RegExpMatchArray | null; // <-- FORCEI O TIPO AQUI
-    if (interruptMatch && interruptMatch[1]) {
-      await supabase.from('routine_exceptions').insert([{ user_id: stringId, exception_date: interruptMatch[1], type: 'pause_all' }]);
-      aiReply = aiReply.replace(interruptMatch[0], '').trim() + "\n\n*(Descanso ativado).*";
-    }
+  const { data: events } = await supabase
+    .from('events')
+    .select('*')
+    .eq('user_id', userId)
+    .filter('last_notified_year', 'neq', hoje.getFullYear());
 
-    // --- FIM DOS INTERCEPTORES ---
+  if (!events) return [];
 
-    // 6. PERSISTÊNCIA
-    await supabase.from('brain').insert([{ 
-      content: messageText, 
-      category, 
-      user_id: stringId, 
-      embedding: queryEmbedding, 
-      metadata: { ai_reply: aiReply, user: authorName } 
-    }]);
+  return events.filter(event => {
+    const d = new Date(event.event_date);
+    const isHoje = d.getDate() === hoje.getDate() && d.getMonth() === hoje.getMonth();
+    const isSeteDias = d.getDate() === seteDiasDepois.getDate() && d.getMonth() === seteDiasDepois.getMonth();
+    return isHoje || isSeteDias;
+  });
+}
 
-    await sendTelegram(chatId, aiReply);
+// 7. CHECAGEM DE INTERRUPTORES (Feriados/Comodidade)
+export async function checkSystemInterrupts(userId: string) {
+  try {
+    const agenda = await getGoogleContext();
+    const temFolga = agenda.toLowerCase().includes("feriado") || agenda.toLowerCase().includes("folga");
 
-    // 7. COMPACTAÇÃO
-    const { count: currentBrainCount } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', stringId).eq('category', 'info');
-    if (currentBrainCount && currentBrainCount >= 20) {
-      await compactMemory(stringId, authorName);
-    }
-
-    return NextResponse.json({ ok: true });
-  } catch (error: any) {
-    console.error("Erro Jarvis:", error.message);
-    return NextResponse.json({ ok: true }); 
+    return {
+      shouldPauseMorningRoutine: temFolga,
+      reason: temFolga ? "Feriado/Folga detectado" : null
+    };
+  } catch (e) {
+    return { shouldPauseMorningRoutine: false, reason: null };
   }
 }
