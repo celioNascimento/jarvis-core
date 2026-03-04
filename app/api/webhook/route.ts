@@ -37,9 +37,10 @@ export async function POST(req: Request) {
 
     // 4. CAMADA CACHE (MOTOR DE INTELIGÊNCIA)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const horaAtual = new Date().getHours();
 
     const finalPrompt = `
-SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | DATA: ${dataAtual}
+SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | DATA E HORA ATUAL: ${dataAtual} (Hora: ${horaAtual}h)
 
 [DADOS DE PERFIL (L3)]
 ${currentContextL3}
@@ -53,12 +54,14 @@ ${hdContext || "Nenhuma lembrança relevante ativada."}
 MENSAGEM: "${messageText}"
 
 MISSÃO E DIRETRIZES:
-1. FOCO E INVESTIGAÇÃO: Responda ao usuário. Se mencionar datas ou pessoas, investigue para descobrir a data exata.
-2. SALVAMENTO PROATIVO: Se identificar uma data importante, inclua ao final: [SALVAR_EVENTO: Título | YYYY-MM-DD | alta/media/baixa | true/false].
-3. GESTÃO DE DESCANSO (NOVO): Se o usuário falar de folga, feriado, ou que quer dormir mais, ofereça pausar a rotina. Use o comando invisível [DESATIVAR_ROTINA: YYYY-MM-DD] com a data correspondente à folga.
-4. PERSONALIDADE: Estilo Stark (elegante/sarcástico). PROIBIÇÃO: Nunca repita cabeçalhos, variáveis ou comandos em colchetes visíveis na resposta.
-5. RIGOR TÉCNICO: Mantenha o Framework de 4 Etapas e o Estacionamento de Ideias para projetos de código.
-6. CLASSIFICAÇÃO: Termine com [CLASSE: info] ou [CLASSE: noise].
+1. CONSCIÊNCIA TEMPORAL: Observe a "Hora" atual acima. Use a saudação correta (Bom dia, Boa tarde, Boa noite).
+2. FOCO E TOM: Seja amigável, empático, mas mantenha a elegância Stark. Não pareça um robô gerando logs.
+3. SALVAMENTO PROATIVO: Se o usuário passar datas importantes, use o comando interno OBRIGATORIAMENTE ENTRE COLCHETES. Você pode gerar mais de um comando se houver mais de uma data:
+   [SALVAR_EVENTO: Título do Evento | YYYY-MM-DD | alta/media/baixa | true/false]
+4. GESTÃO DE DESCANSO: Se o usuário mencionar folga ou feriado, ofereça pausar a rotina usando: [DESATIVAR_ROTINA: YYYY-MM-DD].
+5. PROIBIÇÃO ABSOLUTA: O usuário NÃO PODE VER os comandos [SALVAR_EVENTO] ou [DESATIVAR_ROTINA]. Gere-os isolados no final da mensagem para o sistema processar. Nunca repita variáveis de sistema.
+6. RIGOR TÉCNICO: Mantenha o Framework de 4 Etapas e o Estacionamento de Ideias para projetos de código.
+7. CLASSIFICAÇÃO: Termine na última linha com [CLASSE: info] ou [CLASSE: noise].
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
@@ -68,20 +71,25 @@ MISSÃO E DIRETRIZES:
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
-    // Interceptor: Eventos Proativos
-    const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\]/i;
-    const eventMatch = aiReply.match(eventRegex);
-    if (eventMatch) {
+    // Interceptor: Eventos Proativos (Usando Loop para capturar MÚLTIPLOS eventos e aceitar falhas de formatação)
+    const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\]?/i;
+    let eventMatch;
+    let eventosSalvos = 0;
+    while ((eventMatch = aiReply.match(eventRegex))) {
       await supabase.from('events').insert([{ user_id: stringId, title: eventMatch[1].trim(), event_date: eventMatch[2], priority: eventMatch[3].toLowerCase(), is_recurring: eventMatch[4].toLowerCase() === 'true', last_notified_year: new Date().getFullYear() - 1 }]);
-      aiReply = aiReply.replace(eventRegex, '').trim() + "\n\n*(Evento registrado nos meus radares).*";
+      aiReply = aiReply.replace(eventMatch[0], '').trim(); // Remove o comando exato que foi encontrado
+      eventosSalvos++;
+    }
+    if (eventosSalvos > 0) {
+      aiReply += `\n\n*(✔️ ${eventosSalvos} evento(s) classificado(s) e registrado(s) nos meus radares).*`;
     }
 
-    // Interceptor: Gestão de Descanso (Interruptor de Comodidade)
-    const interruptRegex = /\[DESATIVAR_ROTINA:\s*(\d{4}-\d{2}-\d{2})\]/i;
+    // Interceptor: Gestão de Descanso
+    const interruptRegex = /\[?DESATIVAR_ROTINA:\s*(\d{4}-\d{2}-\d{2})\]?/i;
     const interruptMatch = aiReply.match(interruptRegex);
     if (interruptMatch) {
       await supabase.from('routine_exceptions').insert([{ user_id: stringId, exception_date: interruptMatch[1], type: 'pause_all' }]);
-      aiReply = aiReply.replace(interruptRegex, '').trim() + "\n\n*(Protocolo de descanso ativado. Alarmes silenciados para esta data).*";
+      aiReply = aiReply.replace(interruptMatch[0], '').trim() + "\n\n*(Protocolo de descanso ativado. Alarmes silenciados para esta data).*";
     }
 
     // Interceptor: Agenda Google
