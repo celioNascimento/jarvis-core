@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { getGoogleContext } from './google';
 
 // 1. CONEXÃO COM O BANCO DE DADOS (SCHEMA JARVIS)
 export const supabase = createClient(
@@ -67,7 +68,6 @@ export async function sendTelegram(chatId: string | number, text: string) {
 // 5. O MOTOR DE CONSOLIDAÇÃO TOTAL (Fusão RAM -> L3 -> HD)
 export async function compactMemory(userId: string, authorName: string) {
   try {
-    // A. Busca dados brutos na RAM (brain) que sejam informativos
     const { data: rawBrain } = await supabase
       .from('brain')
       .select('content, metadata, created_at')
@@ -75,10 +75,8 @@ export async function compactMemory(userId: string, authorName: string) {
       .eq('category', 'info')
       .order('created_at', { ascending: true });
 
-    // Só inicia a consolidação se houver um volume mínimo (ex: 20 mensagens)
     if (!rawBrain || rawBrain.length < 20) return;
 
-    // B. Busca o Dossiê Atual (Camada L3)
     const { data: userProfile } = await supabase
       .from('users')
       .select('current_context')
@@ -87,12 +85,10 @@ export async function compactMemory(userId: string, authorName: string) {
 
     const oldContext = userProfile?.current_context || "Nenhum contexto prévio estabelecido.";
 
-    // C. Formata o diálogo recente para a IA processar
     const brainText = rawBrain.map(m =>
       `${authorName}: ${m.content}\nJarvis: ${m.metadata?.ai_reply || ''}`
     ).join('\n\n');
 
-    // D. IA: Fusão do Passado (L3) com o Presente (RAM)
     const prompt = `
       Você é o Gerente de Memória do Jarvis. Sua missão é manter o Dossiê do usuário atualizado.
       
@@ -114,10 +110,8 @@ export async function compactMemory(userId: string, authorName: string) {
     const embedding = await generateEmbedding(newContext);
 
     if (embedding) {
-      // E. Atualiza Camada L3 (Consulta rápida por ID)
       await supabase.from('users').update({ current_context: newContext }).eq('id', userId);
 
-      // F. Alimenta Camada HD (Busca vetorial para o futuro)
       await supabase.from('memories').insert([{
         summary: newContext,
         embedding,
@@ -125,7 +119,6 @@ export async function compactMemory(userId: string, authorName: string) {
         metadata: { type: 'auto_consolidation', count: rawBrain.length }
       }]);
 
-      // G. LIMPEZA SEGURA: Apaga apenas as mensagens que foram processadas
       const lastProcessedDate = rawBrain[rawBrain.length - 1].created_at;
       await supabase.from('brain')
         .delete()
@@ -140,7 +133,7 @@ export async function compactMemory(userId: string, authorName: string) {
   }
 }
 
-// BUSCA EVENTOS PROATIVOS (Hoje ou 7 dias antes)
+// 6. BUSCA EVENTOS PROATIVOS (Hoje ou 7 dias antes)
 export async function getProactiveEvents(userId: string) {
   const hoje = new Date();
   const seteDiasDepois = new Date();
@@ -154,7 +147,6 @@ export async function getProactiveEvents(userId: string) {
 
   if (!events) return [];
 
-  // Filtra apenas o que é relevante para o disparo de hoje
   return events.filter(event => {
     const d = new Date(event.event_date);
     const isHoje = d.getDate() === hoje.getDate() && d.getMonth() === hoje.getMonth();
@@ -163,12 +155,11 @@ export async function getProactiveEvents(userId: string) {
   });
 }
 
+// 7. CHECAGEM DE INTERRUPTORES (Feriados/Folgas)
 export async function checkSystemInterrupts(userId: string) {
   const hoje = new Date();
   const dataString = hoje.toISOString().split('T')[0];
   
-  // 1. Poderíamos integrar uma API de feriados aqui
-  // 2. Ou checar no seu Google Calendar por eventos "Folga", "Feriado" ou "Férias"
   const agenda = await getGoogleContext();
   const temFolga = agenda.toLowerCase().includes("feriado") || agenda.toLowerCase().includes("folga");
 
