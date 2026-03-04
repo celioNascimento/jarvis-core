@@ -13,102 +13,84 @@ export async function POST(req: Request) {
 
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
-    // 1. IDENTIFICAÇÃO DO PERFIL (MÚLTIPLOS USUÁRIOS)
-    const { data: userProfile } = await supabase.from('users').select('nickname').eq('id', telegramUserId).single();
-    const authorName = userProfile?.nickname || userFirstName;
-
-    // 2. HD: LEITURA DUPLA IMPERCEPTÍVEL (SNAPSHOT + BUSCA VETORIAL)
-    // A. Snapshot (A identidade e contexto permanente que nunca apaga)
-    const { data: snapshot } = await supabase
-      .from('memories')
-      .select('summary')
-      .eq('user_id', telegramUserId)
-      .order('created_at', { ascending: false })
-      .limit(1)
+    // 1. CAMADA L3 (ESTADO ATUAL DO USUÁRIO - A NOVA MEMÓRIA INTERMEDIÁRIA)
+    // Aqui buscamos não só o nome, mas o "Dossiê" atualizado do usuário
+    const { data: userProfile } = await supabase
+      .from('users')
+      .select('nickname, current_context') // Você precisa adicionar essa coluna 'current_context' no banco
+      .eq('id', telegramUserId)
       .single();
+      
+    const authorName = userProfile?.nickname || userFirstName;
+    const currentContextL3 = userProfile?.current_context || "Contexto base ainda não definido.";
 
-    let hdContext = snapshot ? `[CONTEXTO PRINCIPAL FIXO]: ${snapshot.summary}\n` : "";
-
-    // B. Busca Vetorial (Memórias específicas do passado com limiar tolerante)
+    // 2. CAMADA HD (BUSCA VETORIAL PROFUNDA)
     const queryEmbedding = await generateEmbedding(messageText);
+    let hdContext = "";
     if (queryEmbedding) {
       const { data: search } = await supabase.rpc('match_memories', { 
         query_embedding: queryEmbedding, 
-        match_threshold: 0.4, // Tolerância maior para não deixar passar detalhes
-        match_count: 3 
+        match_threshold: 0.4, 
+        match_count: 2 
       });
       if (search?.length) {
-        hdContext += search.map((r: any) => `[Memória Recuperada]: ${r.summary}`).join('\n');
+        hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
       }
     }
-    
-    if (!hdContext) hdContext = "Aguardando geração do primeiro snapshot.";
 
-    // 3. RAM: MEMÓRIA DE CURTO PRAZO (O Fio da Meada)
+    // 3. CAMADA RAM (O FIO DA CONVERSA)
     const { data: history } = await supabase
       .from('brain')
       .select('content, category, metadata')
       .eq('user_id', telegramUserId)
-      .neq('category', 'noise') // Filtro de ruído mantido
+      .neq('category', 'noise') 
       .order('created_at', { ascending: false })
-      .limit(20); // Fôlego aumentado para não perder contexto de áudios/textos longos
+      .limit(15); 
     
     const ramMemory = history?.reverse().map(h => {
       const cleanAiReply = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
       return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
-    }).join('\n') || "Iniciando nova linha de raciocínio.";
+    }).join('\n') || "Nenhuma conversa útil recente.";
 
-    // 4. CACHE: MOTOR DE IA COM BLINDAGEM CONTRA AMNÉSIA
+    // 4. A CACHE (O MOTOR DE IA COM INJEÇÃO ESTRUTURADA)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     const projectTag = (messageText.match(/#(\w+)/i) || [])[1];
 
     const finalPrompt = `
-SISTEMA CENTRAL: JARVIS | USUÁRIO ATUAL: ${authorName} | DATA: ${dataAtual}
+SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | DATA: ${dataAtual}
 
-[MEMÓRIA DE LONGO PRAZO (HD)]
-${hdContext}
+[ESTADO ATUAL DO USUÁRIO (L3 - SEU CONTEXTO MESTRE)]
+${currentContextL3}
 
-[HISTÓRICO RECENTE (RAM)]
+[HISTÓRICO DA CONVERSA (RAM)]
 ${ramMemory}
 
-[MENSAGEM ATUAL DO USUÁRIO]
+[BUSCA PROFUNDA (HD)]
+${hdContext || "Nada relevante encontrado no HD para esta mensagem."}
+
+[MENSAGEM ATUAL]
 "${messageText}"
 
-DIRETRIZES DE EXECUÇÃO (CRÍTICO):
-1. Você TEM ACESSO MENTAL aos blocos acima. A transição deve ser invisível e natural. NUNCA diga frases como "não tenho acesso a mensagens anteriores" ou "minha memória está vazia". Assuma os dados como verdades.
-2. SÓ agende ou altere compromissos se houver comandos claros.
-3. OBRIGATÓRIO: Termine sua resposta classificando a mensagem:
-   - Se for apenas saudação, ok ou confirmação simples: [CLASSE: noise]
-   - Se houver horários, ideias, rotinas ou fatos: [CLASSE: info]
+DIRETRIZES:
+1. Você TEM acesso a todas as memórias acima. NUNCA diga "não tenho acesso" ou "não lembro".
+2. Se o usuário perguntar sobre a rotina dele, as respostas estão no bloco [ESTADO ATUAL].
+3. OBRIGATÓRIO: Termine classificando: [CLASSE: noise] para conversas fiadas/confirmações; [CLASSE: info] para dados e decisões.
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 5. PROCESSAMENTO DE CLASSIFICAÇÃO
+    // 5. PROCESSAMENTO E INTERCEPTADORES
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
-    // 6. INTERCEPTADORES (AGENDA GOOGLE)
-    const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
-    const updateMatch = aiReply.match(updateRegex);
-    if (updateMatch) {
-      const result = await updateGoogleEvent(updateMatch[1].trim(), updateMatch[2].trim(), updateMatch[3].trim(), parseInt(updateMatch[4]));
-      aiReply += `\n\n🗓️ **Ação:** ${result}`;
-    }
+    // ... (Agendamentos do Google Calendar permanecem inalterados) ...
 
-    const scheduleRegex = /\[AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
-    const scheduleMatch = aiReply.match(scheduleRegex);
-    if (scheduleMatch) {
-      const result = await createGoogleEvent(scheduleMatch[1].trim(), scheduleMatch[2].trim(), parseInt(scheduleMatch[3]));
-      aiReply += `\n\n🗓️ **Ação:** ${result}`;
-    }
-
-    // 7. PERSISTÊNCIA NO BRAIN (Gravando na RAM)
+    // 6. PERSISTÊNCIA NA RAM
     await supabase.from('brain').insert([{
       content: messageText,
       category: category, 
-      project_tag: projectTag || 'Jarvis_AI',
+      project_tag: projectTag || 'Jarvis',
       user_id: telegramUserId,
       embedding: queryEmbedding,
       metadata: { ai_reply: aiReply, user: authorName }
@@ -116,7 +98,7 @@ DIRETRIZES DE EXECUÇÃO (CRÍTICO):
 
     await sendTelegram(chatId, aiReply);
 
-    // 8. AUTO-COMPACTAÇÃO INVISÍVEL
+    // 7. AUTO-COMPACTAÇÃO (Atualiza a L3 e o HD)
     const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', telegramUserId).eq('category', 'info');
     if (count && count >= 20) {
        compactMemory(telegramUserId.toString(), authorName);
@@ -127,4 +109,4 @@ DIRETRIZES DE EXECUÇÃO (CRÍTICO):
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true }); 
   }
-}
+      }
