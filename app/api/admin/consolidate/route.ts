@@ -27,48 +27,16 @@ export async function GET() {
     const logIds = logs.map(l => l.id);
     const userId = logs[0].metadata?.user_id || 8275386115;
 
-    // 2. RESUMO COM IA (Google Gemini 1.5 Flash - URL Ajustada para v1beta)
-    const summaryPrompt = {
-      contents: [{
-        parts: [{
-          text: `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe técnico:\n${batchText}`
-        }]
-      }]
-    };
-
-    // MUDANÇA: URL alterada de v1 para v1beta
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(summaryPrompt)
-    });
-
-    const aiData = await aiRes.json();
+    // 2. RESUMO COM IA (Via OpenRouter - O mesmo motor do chat)
+    const summaryPrompt = `Você é o núcleo de memória do Jarvis. Analise estas anotações de #${projectTag} e extraia decisões técnicas e sujeitos (quem fez o quê). Gere um resumo denso para o HD vetorial preservando o rigor de cada detalhe técnico:\n${batchText}`;
     
-    if (aiData.error) {
-      return NextResponse.json({ 
-        error: "Erro Crítico Google AI", 
-        details: aiData.error.message,
-        hint: "Verifique se a API Gemini está ativada no Google Cloud Console." 
-      }, { status: 502 });
-    }
+    // Usando a versão mais atual do Gemini via OpenRouter
+    const summary = await callOpenRouter(summaryPrompt, "google/gemini-2.0-flash-001");
 
-    const summary = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!summary) throw new Error("Resposta da IA vazia.");
+    if (!summary || summary.includes("❌")) throw new Error("Falha ao gerar resumo no OpenRouter.");
 
-    // 3. GERAÇÃO DE VETOR (Embedding alterado para v1beta para parear com o Flash)
-    const embRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GOOGLE_API_KEY}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "models/text-embedding-004",
-        content: { parts: [{ text: summary }] }
-      })
-    });
-    
-    const embData = await embRes.json();
-    const embedding = embData.embedding?.values;
-
+    // 3. GERAÇÃO DE VETOR (Via OpenAI - O mesmo motor do chat)
+    const embedding = await generateEmbedding(summary);
     if (!embedding) throw new Error("Falha ao gerar Embedding.");
 
     // 4. PERSISTÊNCIA NO HD
@@ -103,4 +71,31 @@ export async function GET() {
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
+
+// ==========================================
+// MOTORES REAPROVEITADOS DO CHAT PRINCIPAL
+// ==========================================
+
+async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: model, 
+      messages: [{ role: "user", content: prompt }]
+    })
+  });
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "❌ Erro no motor de IA.";
+}
+
+async function generateEmbedding(text: string) {
+  const res = await fetch("https://api.openai.com/v1/embeddings", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "text-embedding-3-small", input: text })
+  });
+  const data = await res.json();
+  return data.data?.[0]?.embedding;
 }
