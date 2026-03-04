@@ -33,9 +33,9 @@ export async function GET() {
     const summary = await callOpenRouter(summaryPrompt, "google/gemini-2.0-flash-001");
     if (!summary || summary.includes("❌")) throw new Error("Falha ao gerar resumo no OpenRouter.");
 
-    // 3. GERAÇÃO DE VETOR (Via OpenAI - Forçando o modelo mais compatível)
+    // 3. GERAÇÃO DE VETOR (Via OpenRouter - Cano Único)
     const embedding = await generateEmbedding(summary);
-    if (!embedding) throw new Error("Falha crítica ao gerar Embedding.");
+    if (!embedding) throw new Error("Falha crítica ao gerar Embedding via OpenRouter.");
 
     // 4. PERSISTÊNCIA NO HD
     const { error: memError } = await supabase.from('memories').insert({
@@ -72,7 +72,7 @@ export async function GET() {
 }
 
 // ==========================================
-// MOTORES UNIFICADOS (OpenAI/OpenRouter)
+// MOTORES UNIFICADOS (OpenRouter 100%)
 // ==========================================
 
 async function callOpenRouter(prompt: string, model: string) {
@@ -89,15 +89,15 @@ async function callOpenRouter(prompt: string, model: string) {
 }
 
 async function generateEmbedding(text: string) {
-  // Mudamos para a URL oficial da OpenAI, garantindo que o token seja o 'OPENAI_API_KEY'
-  const res = await fetch("https://api.openai.com/v1/embeddings", {
+  // Roteamento do Embedding pela mesma porta do OpenRouter
+  const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
     method: "POST",
     headers: { 
       "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`, 
       "Content-Type": "application/json" 
     },
     body: JSON.stringify({ 
-      model: "text-embedding-ada-002", // Modelo universal de alta compatibilidade
+      model: "openai/text-embedding-3-small", 
       input: text 
     })
   });
@@ -105,7 +105,7 @@ async function generateEmbedding(text: string) {
   const data = await res.json();
   
   if (data.error) {
-    console.error("DEBUG EMBEDDING:", data.error.message);
+    console.error("DEBUG OPENROUTER EMBEDDING:", data.error.message);
     return null;
   }
   
