@@ -13,7 +13,6 @@ export async function POST(req: Request) {
 
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
-    // GARANTIA DE TIPAGEM DO ID
     const stringId = String(telegramUserId);
 
     // 1. CAMADA L3 (ESTADO ATUAL)
@@ -50,9 +49,9 @@ export async function POST(req: Request) {
     const ramMemory = history?.reverse().map(h => {
       const cleanAiReply = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
       return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
-    }).join('\n') || "Iniciando diálogo.";
+    }).join('\n') || "Iniciando protocolo de diálogo.";
 
-    // 4. CAMADA CACHE (O CÉREBRO E REGRAS)
+    // 4. CAMADA CACHE (O CÉREBRO COM HUMOR E REGRAS)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 
     const finalPrompt = `
@@ -67,20 +66,21 @@ ${ramMemory}
 MENSAGEM DO USUÁRIO: "${messageText}"
 
 MISSÃO E DIRETRIZES MESTRAS:
-1. TOM E ESTILO (COPILOTO): Seja extremamente sucinto e direto. NUNCA inicie a resposta repetindo o cabeçalho do sistema (como "SISTEMA CENTRAL" ou data). Não use parágrafos de introdução ou conclusão. Vá direto à solução ou matemática usando bullet points curtos.
-2. REGRAS DE PROJETOS ('Procuro Quem Faça' / 'ExpertFrotas'): Bloqueie demandas fora do escopo estipulado. Em dias úteis (pós-18h)/feriados, use FIFO e o Framework de 4 Etapas. Novas ideias vão para o "Estacionamento de Ideias". Sempre exija "Confirmação de Layout" antes de avançar UI.
-3. CÓDIGO E ROTEIROS: Altere APENAS o código explicitamente solicitado. Roteiros têm estrutura imutável, altere apenas as tarefas. Dúvidas no meio da explicação: responda curto, use "---" e retome de onde parou.
-4. TRATAMENTO DE ERRO: Se o perfil for "ERRO_ID_NAO_LOCALIZADO", apenas avise sobre a falha no ID ${stringId}.
-5. CLASSIFICAÇÃO: Termine na última linha com [CLASSE: info] ou [CLASSE: noise].
+1. PERSONALIDADE (HUMOR): Adote o tom do Jarvis (Iron Man). Seja elegante, levemente sarcástico com a procrastinação do usuário (especialmente o tempo no sofá) e motivador. Use frases curtas de efeito, mas sem perder o rigor matemático.
+2. SUCINTO: Sem introduções chatas. Vá direto ao ponto.
+3. REGRAS DE PROJETOS: Rigor absoluto com o Framework de 4 Etapas e Estacionamento de Ideias. Se o Celio sugerir algo fora do escopo pós-18h, dê um "puxão de orelha" elegante.
+4. MATEMÁTICA DA ROTINA: Sempre calcule o impacto real. Ex: Sofá 50min vs Sofá 20min.
+5. TRATAMENTO DE ERRO: Se perfil for "ERRO_ID_NAO_LOCALIZADO", avise que o sistema está operando em modo de segurança por falta de dados do ID ${stringId}.
+6. CLASSIFICAÇÃO: Termine com [CLASSE: info] ou [CLASSE: noise].
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 5. PROCESSAMENTO E INTERCEPTORES
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
+    // 5. INTERCEPTORES DE AGENDA
     const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
     const updateMatch = aiReply.match(updateRegex);
     if (updateMatch) {
@@ -116,3 +116,4 @@ MISSÃO E DIRETRIZES MESTRAS:
     return NextResponse.json({ ok: true }); 
   }
 }
+
