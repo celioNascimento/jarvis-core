@@ -89,7 +89,6 @@ export async function POST(req: Request) {
     const modelToUse = "google/gemini-2.0-flash-001";
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     
-    // A ESTRUTURAÇÃO AQUI FOI ALTERADA PARA LIMITAR A INTERPRETAÇÃO DA IA
     const finalPrompt = `
 SISTEMA CENTRAL JARVIS
 =======================
@@ -162,21 +161,25 @@ DIRETRIZES DE EXECUÇÃO:
 
 // --- FUNÇÕES AUXILIARES ---
 
-// ... (createGoogleEvent, updateGoogleEvent, deleteGoogleEvent, getGoogleContext, getGoogleAccessToken mantidos inalterados) ...
 async function createGoogleEvent(summary: string, startTime: string, reminderMinutes: number = 30) {
   try {
     const accessToken = await getGoogleAccessToken();
     if (!accessToken) return "Erro: Token ausente.";
-    let startIso = startTime.trim().replace(' ', 'T');
-    if (!startIso.includes('-') && !startIso.endsWith('Z')) startIso += '-03:00'; 
+    
+    // BLINDAGEM: Corta qualquer sujeira de fuso horário (-03:00 ou Z) e pega só os 19 chars limpos
+    let startIso = startTime.trim().replace(' ', 'T').substring(0, 19);
+    startIso += '-03:00'; // Força o fuso horário correto
+    
     const startDate = new Date(startIso);
-    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // +1 hora
+    
     const event = {
       summary,
       start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
       end: { dateTime: endDate.toISOString(), timeZone: 'America/Sao_Paulo' },
       reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
     };
+    
     const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
@@ -199,12 +202,10 @@ async function updateGoogleEvent(searchTerm: string, newSummary: string, newStar
     
     const eventId = cal.items[0].id;
 
-    let cleanTime = newStartTime.trim().replace('T', ' ').split('.')[0];
+    // BLINDAGEM DE DATA AQUI TAMBÉM
+    let cleanTime = newStartTime.trim().replace(' ', 'T').substring(0, 19);
+    cleanTime += '-03:00';
     const localDate = new Date(cleanTime);
-    
-    if (isNaN(localDate.getTime())) {
-       localDate.setTime(Date.parse(newStartTime));
-    }
 
     const isoString = localDate.toISOString().replace('Z', '-03:00');
     const endDate = new Date(localDate.getTime() + 60 * 60 * 1000);
@@ -285,7 +286,7 @@ async function getGoogleAccessToken() {
   return (await res.json()).access_token;
 }
 
-// MUDANÇA CRÍTICA AQUI TAMBÉM NO COMPORTAMENTO-BASE
+// PROMPT EXTREMAMENTE RIGOROSO PARA A IA OBEDECER O FORMATO
 async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0-flash-001") {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -295,7 +296,10 @@ async function callOpenRouter(prompt: string, model: string = "google/gemini-2.0
       messages: [
         { 
           role: "system", 
-          content: "Você é o Jarvis. Personalidade: Empático e focado. REGRA ABSOLUTA: O 'Histórico da Conversa' representa ações passadas e RESOLVIDAS. Nunca tente re-executá-las. SÓ GERE as tags [AGENDAR...], [ALTERAR_AGENDA...] ou [APAGAR_AGENDA...] se o usuário pedir isso EXPLICITAMENTE na Mensagem Atual. Passe sempre o HORÁRIO REAL do evento sem o Z no final. Se não houver minutos, use 30." 
+          content: `Você é o Jarvis. Personalidade: Empático e focado.
+REGRA ABSOLUTA: O 'Histórico' já passou. Nunca re-execute comandos antigos.
+FORMATO OBRIGATÓRIO PARA AÇÕES: Se for agendar algo NOVO, você DEVE gerar exatamente no final da mensagem o formato: [AGENDAR: Titulo | YYYY-MM-DDTHH:mm:ss | 0].
+CUIDADO: Use colchetes [], barras verticais | e o número de minutos no final. Não invente textos soltos ou vírgulas. Nunca coloque "-03:00" ou "Z" no final da data.` 
         }, 
         { role: "user", content: prompt }
       ]
@@ -324,4 +328,3 @@ async function sendTelegram(chatId: number, text: string) {
     body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
   });
 }
-
