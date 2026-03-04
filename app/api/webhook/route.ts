@@ -5,13 +5,18 @@ import { createGoogleEvent, updateGoogleEvent } from '@/lib/google';
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const messageText: string = body.message?.text || "";
-    const chatId: number = body.message?.chat?.id;
-    const telegramUserId: number = body.message?.from?.id;
-    const userFirstName: string = body.message?.from?.first_name || "Usuário";
-    const isBot: boolean = body.message?.from?.is_bot || false;
+    
+    // Extração segura de dados (Deixe o TS inferir ou use fallbacks)
+    const messageText = body.message?.text || "";
+    const chatId = body.message?.chat?.id;
+    const telegramUserId = body.message?.from?.id;
+    const userFirstName = body.message?.from?.first_name || "Usuário";
+    const isBot = body.message?.from?.is_bot || false;
 
-    if (isBot || !messageText) return NextResponse.json({ ok: true });
+    // Se não for uma mensagem válida, encerra sem erro
+    if (isBot || !messageText || !chatId || !telegramUserId) {
+      return NextResponse.json({ ok: true });
+    }
 
     const stringId = String(telegramUserId);
 
@@ -24,8 +29,12 @@ export async function POST(req: Request) {
     const queryEmbedding = await generateEmbedding(messageText);
     let hdContext = "";
     if (queryEmbedding) {
-      const { data: search }: any = await supabase.rpc('match_memories', { query_embedding: queryEmbedding, match_threshold: 0.4, match_count: 2 });
-      if (search && search.length > 0) {
+      const { data: search }: any = await supabase.rpc('match_memories', { 
+        query_embedding: queryEmbedding, 
+        match_threshold: 0.4, 
+        match_count: 2 
+      });
+      if (search && Array.isArray(search)) {
         hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
       }
     }
@@ -33,13 +42,14 @@ export async function POST(req: Request) {
     // 3. CAMADA RAM
     const { data: history } = await supabase.from('brain').select('content, category, metadata').eq('user_id', stringId).neq('category', 'noise').order('created_at', { ascending: false }).limit(15); 
     const ramMemory = history?.reverse().map((h: any) => {
-      const cleanAiReply = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
+      const aiReply = h.metadata?.ai_reply || "";
+      const cleanAiReply = aiReply.replace(/\[.*?\]/g, '').trim();
       return `${authorName}: ${h.content}\nJarvis: ${cleanAiReply}`;
     }).join('\n') || "Iniciando protocolo de diálogo.";
 
-    // 4. CAMADA CACHE
+    // 4. CAMADA CACHE (HORÁRIO REAL)
     const dataAtual = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    const horaAtual = new Date().getHours();
+    const horaAtual = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' })).getHours();
 
     const finalPrompt = `
 SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | DATA/HORA: ${dataAtual}
@@ -50,19 +60,22 @@ ${currentContextL3}
 [CONTEXTO RECENTE (RAM)]
 ${ramMemory}
 
+[HD]: ${hdContext}
+
 MENSAGEM: "${messageText}"
 
 MISSÃO:
-1. SAUDAÇÃO: Use a hora atual (${horaAtual}h) para saudar. Estilo Stark.
+1. SAUDAÇÃO: Use a hora atual (${horaAtual}h). Estilo Stark.
 2. MULTI-SALVAMENTO: [SALVAR_EVENTO: Título | YYYY-MM-DD | alta/media/baixa | true/false]
 3. GESTÃO DE DESCANSO: [DESATIVAR_ROTINA: YYYY-MM-DD]
 4. AGENDA GOOGLE: [AGENDAR: Título | YYYY-MM-DDTHH:MM:SS | DuraçãoMinutos]
-5. SIGILO ABSOLUTO: Comandos em colchetes nunca devem aparecer na resposta final.
+5. SIGILO: Comandos em colchetes nunca devem aparecer na resposta final.
 6. CLASSIFICAÇÃO: Termine com [CLASSE: info] ou [CLASSE: noise].
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
+    // 5. PROCESSAMENTO E INTERCEPTORES
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
@@ -70,33 +83,28 @@ MISSÃO:
     // INTERCEPTOR: EVENTOS PROATIVOS
     const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\]?/gi;
     const matches = Array.from(aiReply.matchAll(eventRegex));
-    let count = 0;
+    let savedEventsCount = 0;
     
     for (const m of matches) {
       if (m && m.length >= 5) {
         const fullMatch = m[0];
-        const title = m[1].trim();
-        const date = m[2];
-        const priority = m[3].toLowerCase();
-        const recurring = m[4].toLowerCase() === 'true';
-
         const { error } = await supabase.from('events').insert([{
           user_id: stringId,
-          title,
-          event_date: date,
-          priority,
-          is_recurring: recurring,
+          title: m[1].trim(),
+          event_date: m[2],
+          priority: m[3].toLowerCase(),
+          is_recurring: m[4].toLowerCase() === 'true',
           last_notified_year: new Date().getFullYear() - 1
         }]);
         
         if (!error) {
           aiReply = aiReply.replace(fullMatch, '').trim();
-          count++;
+          savedEventsCount++;
         }
       }
     }
 
-    if (count > 0) aiReply += `\n\n*(✔️ ${count} evento(s) registrado(s)).*`;
+    if (savedEventsCount > 0) aiReply += `\n\n*(✔️ ${savedEventsCount} evento(s) registrado(s)).*`;
 
     // INTERCEPTOR: DESCANSO
     const interruptRegex = /\[?DESATIVAR_ROTINA:\s*(\d{4}-\d{2}-\d{2})\]?/i;
@@ -106,28 +114,35 @@ MISSÃO:
       aiReply = aiReply.replace(interruptMatch[0], '').trim() + "\n\n*(Descanso ativado).*";
     }
 
-    // INTERCEPTOR: AGENDA GOOGLE
+    // INTERCEPTOR: AGENDA GOOGLE (Com segurança de tipos)
     const updateRegex = /\[?ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i;
-    const updateMatch = aiReply.match(updateRegex);
-    if (updateMatch && updateMatch.length >= 5) {
-      const result = await updateGoogleEvent(updateMatch[1].trim(), updateMatch[2].trim(), updateMatch[3].trim(), parseInt(updateMatch[4]));
-      aiReply = aiReply.replace(updateMatch[0], '').trim() + `\n\n🗓️ **Ação Agenda:** ${result}`;
+    const uMatch = aiReply.match(updateRegex);
+    if (uMatch && uMatch.length >= 5) {
+      const res = await updateGoogleEvent(uMatch[1].trim(), uMatch[2].trim(), uMatch[3].trim(), parseInt(uMatch[4]));
+      aiReply = aiReply.replace(uMatch[0], '').trim() + `\n\n🗓️ **Ação Agenda:** ${res}`;
     }
 
     const scheduleRegex = /\[?AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i;
-    const scheduleMatch = aiReply.match(scheduleRegex);
-    if (scheduleMatch && scheduleMatch.length >= 4) {
-      const result = await createGoogleEvent(scheduleMatch[1].trim(), scheduleMatch[2].trim(), parseInt(scheduleMatch[3]));
-      aiReply = aiReply.replace(scheduleMatch[0], '').trim() + `\n\n🗓️ **Ação Agenda:** ${result}`;
+    const sMatch = aiReply.match(scheduleRegex);
+    if (sMatch && sMatch.length >= 4) {
+      const res = await createGoogleEvent(sMatch[1].trim(), sMatch[2].trim(), parseInt(sMatch[3]));
+      aiReply = aiReply.replace(sMatch[0], '').trim() + `\n\n🗓️ **Ação Agenda:** ${res}`;
     }
 
     // 6. PERSISTÊNCIA
-    await supabase.from('brain').insert([{ content: messageText, category, user_id: stringId, embedding: queryEmbedding, metadata: { ai_reply: aiReply, user: authorName } }]);
+    await supabase.from('brain').insert([{ 
+      content: messageText, 
+      category, 
+      user_id: stringId, 
+      embedding: queryEmbedding, 
+      metadata: { ai_reply: aiReply, user: authorName } 
+    }]);
+
     await sendTelegram(chatId, aiReply);
 
     // 7. COMPACTAÇÃO
-    const { count: brainCount } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', stringId).eq('category', 'info');
-    if (brainCount && brainCount >= 20) {
+    const { count: currentBrainCount } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', stringId).eq('category', 'info');
+    if (currentBrainCount && currentBrainCount >= 20) {
       await compactMemory(stringId, authorName);
     }
 
