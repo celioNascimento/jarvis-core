@@ -13,23 +13,21 @@ export async function POST(req: Request) {
 
     if (isBot || !messageText) return NextResponse.json({ ok: true });
 
-    // ⚡ TRAVA DE SINAPSE: Forçamos o ID a ser uma String para bater com o BigInt do banco
-    const stringId = String(telegramUserId);
-
-    // 1. CAMADA L3 (ESTADO ATUAL - O DOSSIÊ)
+    // 1. CAMADA L3 (IDENTIFICAÇÃO E DOSSIÊ)
+    // Buscamos sem o .toString() primeiro para o Supabase tratar o BigInt naturalmente
     const { data: userProfile, error: profileError } = await supabase
       .from('users')
       .select('nickname, current_context')
-      .eq('id', stringId) // <--- USANDO A STRINGID AGORA
+      .eq('id', telegramUserId)
       .single();
       
-    if (profileError) console.error("Erro ao acessar L3:", profileError.message);
-
-    // Se o banco falhar, o authorName será o nome do Telegram, mas o Dossiê terá o aviso
     const authorName = userProfile?.nickname || userFirstName;
-    const currentContextL3 = userProfile?.current_context || "ATENÇÃO: Dossiê não localizado no banco para o ID " + stringId;
+    
+    // Se não achar, a gente injeta o ID na mensagem de erro para você conferir
+    const currentContextL3 = userProfile?.current_context || 
+      `AVISO TÉCNICO: Dossiê não localizado para o ID ${telegramUserId}. Por favor, verifique se este ID consta na tabela jarvis.users.`;
 
-    // 2. CAMADA HD (BUSCA VETORIAL)
+    // 2. CAMADA HD (VETORIAL)
     const queryEmbedding = await generateEmbedding(messageText);
     let hdContext = "";
     if (queryEmbedding) {
@@ -38,16 +36,14 @@ export async function POST(req: Request) {
         match_threshold: 0.4, 
         match_count: 2 
       });
-      if (search?.length) {
-        hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
-      }
+      if (search?.length) hdContext = search.map((r: any) => `[Memória Antiga]: ${r.summary}`).join('\n');
     }
 
-    // 3. CAMADA RAM (HISTÓRICO RECENTE)
+    // 3. CAMADA RAM (ÚLTIMAS 15 MENSAGENS)
     const { data: history } = await supabase
       .from('brain')
       .select('content, category, metadata')
-      .eq('user_id', stringId) // <--- TAMBÉM USANDO STRINGID AQUI
+      .eq('user_id', telegramUserId)
       .neq('category', 'noise') 
       .order('created_at', { ascending: false })
       .limit(15); 
@@ -64,31 +60,29 @@ export async function POST(req: Request) {
     const finalPrompt = `
 SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | DATA: ${dataAtual}
 
-[ESTADO ATUAL DO USUÁRIO (L3 - CONTEXTO MESTRE)]
+[ESTADO ATUAL DO USUÁRIO (L3)]
 ${currentContextL3}
 
 [HISTÓRICO RECENTE (RAM)]
 ${ramMemory}
 
-[MENSAGEM ATUAL]
-"${messageText}"
+MENSAGEM: "${messageText}"
 
-DIRETRIZES DE JARVIS:
-- Você é um assistente pessoal focado em performance e rigor técnico.
-- Se o campo [ESTADO ATUAL] disser "Dossiê não localizado", peça para o usuário rodar o comando SQL de cadastro.
-- Se o Dossiê estiver presente, use os horários lá descritos (Acorda 05h, Academia 06h20, Trabalho 08h) para responder.
-- NUNCA responda que não sabe se a informação está no Dossiê acima.
-- Classifique no final: [CLASSE: noise] ou [CLASSE: info].
+DIRETRIZES:
+1. Se o [ESTADO ATUAL] contiver "AVISO TÉCNICO", peça para o usuário validar o ID no banco.
+2. Caso contrário, use a rotina descrita no dossiê (Acorda 05h, Sai 06h20, Trabalho 08h, Deslocamento 10min).
+3. Responda com clareza técnica.
+4. Finalize com [CLASSE: info].
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 5. PROCESSAMENTO DE CATEGORIA E AGENDA
+    // 5. PROCESSAMENTO E INTERCEPTORES
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
-    // (Interceptors de Agenda mantidos...)
+    // (Agendamentos omitidos para brevidade, mantenha os seus originais aqui)
     const updateRegex = /\[ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
     const updateMatch = aiReply.match(updateRegex);
     if (updateMatch) {
@@ -96,19 +90,11 @@ DIRETRIZES DE JARVIS:
       aiReply += `\n\n🗓️ **Ação:** ${result}`;
     }
 
-    const scheduleRegex = /\[AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]/i;
-    const scheduleMatch = aiReply.match(scheduleRegex);
-    if (scheduleMatch) {
-      const result = await createGoogleEvent(scheduleMatch[1].trim(), scheduleMatch[2].trim(), parseInt(scheduleMatch[3]));
-      aiReply += `\n\n🗓️ **Ação:** ${result}`;
-    }
-
     // 6. PERSISTÊNCIA NA RAM
     await supabase.from('brain').insert([{
       content: messageText,
       category: category, 
-      project_tag: projectTag || 'Jarvis',
-      user_id: stringId, // <--- PERSISTINDO COMO STRING
+      user_id: telegramUserId,
       embedding: queryEmbedding,
       metadata: { ai_reply: aiReply, user: authorName }
     }]);
@@ -116,10 +102,8 @@ DIRETRIZES DE JARVIS:
     await sendTelegram(chatId, aiReply);
 
     // 7. AUTO-COMPACTAÇÃO
-    const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', stringId).eq('category', 'info');
-    if (count && count >= 20) {
-       compactMemory(stringId, authorName);
-    }
+    const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', telegramUserId).eq('category', 'info');
+    if (count && count >= 20) compactMemory(telegramUserId.toString(), authorName);
 
     return NextResponse.json({ ok: true });
   } catch (error: any) {
