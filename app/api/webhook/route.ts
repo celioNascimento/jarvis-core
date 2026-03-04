@@ -42,7 +42,6 @@ export async function POST(req: Request) {
     // 3. CAMADA RAM (Memória Recente)
     const { data: history } = await supabase.from('brain').select('content, category, metadata').eq('user_id', stringId).neq('category', 'noise').order('created_at', { ascending: false }).limit(15); 
     
-    // Garantia de que history é um array antes de operar
     const safeHistory = history || [];
     const ramMemory = safeHistory.reverse().map((h) => {
       const aiReply = h.metadata?.ai_reply || "";
@@ -83,9 +82,9 @@ MISSÃO:
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
-    // Eventos Proativos (matchAll com tratamento de segurança)
+    // INTERCEPTOR: EVENTOS PROATIVOS (Correção de tipagem para Build)
     const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\]?/gi;
-    const matches = Array.from(aiReply.matchAll(eventRegex));
+    const matches = Array.from(aiReply.matchAll(eventRegex)) as any[]; 
     let savedCount = 0;
     
     for (const m of matches) {
@@ -117,7 +116,7 @@ MISSÃO:
       aiReply = aiReply.replace(interruptMatch[0], '').trim() + "\n\n*(Descanso ativado).*";
     }
 
-    // Interceptor: Google Agenda (Reforçado)
+    // Interceptor: Google Agenda
     const updateRegex = /\[?ALTERAR_AGENDA:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i;
     const uM = aiReply.match(updateRegex);
     if (uM && uM.length >= 5) {
@@ -143,7 +142,7 @@ MISSÃO:
 
     await sendTelegram(chatId, aiReply);
 
-    // 7. COMPACTAÇÃO (Somente se houver volume)
+    // 7. COMPACTAÇÃO
     const { count: currentBrainCount } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', stringId).eq('category', 'info');
     if (currentBrainCount && currentBrainCount >= 20) {
       await compactMemory(stringId, authorName);
