@@ -16,6 +16,12 @@ import {
   buildWeightedContext,
   truncateByWeight
 } from '@/lib/context-router';
+import {
+  getOnboardingState,
+  initOnboarding,
+  processOnboardingFromMessage,
+  buildOnboardingBlock
+} from '@/lib/onboarding';
 
 export async function POST(req: Request) {
   try {
@@ -119,7 +125,7 @@ export async function POST(req: Request) {
     // ============================================================
     // BUSCA DE DADOS EM PARALELO
     // ============================================================
-    const [userProfileResult, sessionId, eventsResult, ashesResult] = await Promise.all([
+    const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult] = await Promise.all([
       supabase
         .from('users')
         .select('nickname, current_context, pending_question, pending_context')
@@ -139,7 +145,14 @@ export async function POST(req: Request) {
         .select('ash_summary, period_start, period_end')
         .eq('user_id', stringId)
         .order('period_end', { ascending: false })
-        .limit(5)
+        .limit(5),
+
+      // Onboarding
+      supabase
+        .from('onboarding_progress')
+        .select('*')
+        .eq('user_id', stringId)
+        .single()
     ]);
 
     const userProfile = userProfileResult.data;
@@ -147,6 +160,13 @@ export async function POST(req: Request) {
     const currentContextL3 = userProfile?.current_context || "Sem dossiê ainda.";
     const pendingQuestion = userProfile?.pending_question || null;
     const pendingContext = userProfile?.pending_context || null;
+
+    // Onboarding — inicializa se for novo usuário
+    let onboardingState = onboardingResult?.data || null;
+    if (!onboardingState) {
+      onboardingState = await initOnboarding(stringId);
+    }
+    const onboardingBlock = buildOnboardingBlock(onboardingState);
 
     // ============================================================
     // MONTA BLOCOS DE CONTEXTO BRUTOS
@@ -257,6 +277,8 @@ export async function POST(req: Request) {
 JARVIS | USUÁRIO: ${authorName} | ${fusoLondrina} | MODO: ${weights.horizon.toUpperCase()}
 
 ${weightedContext}
+
+${onboardingBlock}
 
 ═══════════════════════════════════════
 MENSAGEM: "${messageText}"
@@ -371,6 +393,12 @@ REGRAS DE PERSONALIDADE:
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 
     await sendTelegram(chatId, aiReply);
+
+    // Processa onboarding em background — extrai info da conversa
+    if (onboardingState?.status === 'in_progress') {
+      processOnboardingFromMessage(stringId, messageText, aiReply, onboardingState)
+        .catch(e => console.error('[Onboarding] Erro background:', e));
+    }
 
     // Compactação
     const { count } = await supabase
