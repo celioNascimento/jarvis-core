@@ -431,6 +431,13 @@ REGRAS:
         .catch(e => console.error('[Onboarding] Erro:', e));
     }
 
+    // Extrator contínuo — roda para TODA mensagem info, em paralelo
+    // Persiste fatos novos em user_profiles, children, relationships e L3
+    if (category === 'info') {
+      extractAndPersistFacts(stringId, authorName, messageText, aiReply)
+        .catch(e => console.error('[Extrator] Erro:', e));
+    }
+
     // Compactação
     const { count } = await supabase
       .from('brain')
@@ -438,7 +445,7 @@ REGRAS:
       .eq('user_id', stringId)
       .eq('category', 'info');
 
-    if (count && count >= 5) await compactMemory(stringId, authorName);
+    if (count && count >= 20) await compactMemory(stringId, authorName);
 
     return NextResponse.json({ ok: true });
 
@@ -446,4 +453,180 @@ REGRAS:
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true });
   }
+}
+
+// ============================================================
+// EXTRATOR CONTÍNUO DE FATOS
+// Roda em paralelo após cada mensagem classificada como 'info'
+// Detecta fatos novos e persiste nas tabelas certas
+// ============================================================
+async function extractAndPersistFacts(
+  userId: string,
+  userName: string,
+  userMessage: string,
+  aiReply: string
+) {
+  const prompt = `
+Analise esta troca e extraia APENAS fatos pessoais novos mencionados explicitamente.
+Retorne APENAS JSON válido, sem explicações.
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+
+Retorne:
+{
+  "fatos_detectados": true,
+  "perfil": {
+    "cidade": null,
+    "cidade_origem": null,
+    "profissao": null,
+    "nascimento": null
+  },
+  "esposa": {
+    "nome": null,
+    "aniversario": null
+  },
+  "filhos": [],
+  "fe": null,
+  "objetivos": null,
+  "preferencias": null
+}
+
+Regras:
+- Retorne null para campos não mencionados EXPLICITAMENTE nesta troca
+- filhos: [{"nome": "Miguel", "idade": 5}] apenas se mencionados agora
+- fatos_detectados: false se nenhum fato pessoal foi compartilhado
+- Se fatos_detectados for false, os outros campos podem ser todos null
+`;
+
+  const raw = await callOpenRouter(prompt);
+  const clean = raw.replace(/\`\`\`json|\`\`\`/g, '').trim();
+  const extracted = JSON.parse(clean);
+
+  if (!extracted.fatos_detectados) return; // nada novo — sai sem custo
+
+  console.log('[Extrator] Fatos detectados:', JSON.stringify(extracted));
+
+  // ── Atualiza user_profiles ──────────────────────────────
+  const profilePatch: Record<string, any> = {};
+  const p = extracted.perfil || {};
+  const e = extracted.esposa || {};
+
+  if (p.cidade)        profilePatch.city           = p.cidade;
+  if (p.cidade_origem) profilePatch.birth_city     = p.cidade_origem;
+  if (p.profissao)     profilePatch.current_job    = p.profissao;
+  if (p.nascimento)    profilePatch.birth_date     = p.nascimento;
+  if (e.nome)          profilePatch.spouse_name    = e.nome;
+  if (e.aniversario)   profilePatch.spouse_birthday = e.aniversario;
+
+  if (Object.keys(profilePatch).length > 0) {
+    profilePatch.user_id    = userId;
+    profilePatch.updated_at = new Date().toISOString();
+    await supabase
+      .from('user_profiles')
+      .upsert(profilePatch, { onConflict: 'user_id' });
+    console.log('[Extrator] user_profiles atualizado:', profilePatch);
+  }
+
+  // ── Atualiza children ───────────────────────────────────
+  const filhos: any[] = extracted.filhos || [];
+  for (const filho of filhos) {
+    if (!filho.nome) continue;
+    const birthYear  = filho.idade ? new Date().getFullYear() - filho.idade : null;
+    const birth_date = birthYear ? `${birthYear}-01-01` : null;
+    const lifePhase  =
+      !filho.idade      ? 'child'       :
+      filho.idade <= 3  ? 'baby'        :
+      filho.idade <= 11 ? 'child'       :
+      filho.idade <= 17 ? 'teen'        :
+      filho.idade <= 24 ? 'young_adult' : 'adult';
+
+    // Upsert por nome + parent_id para evitar duplicatas
+    const { data: existing } = await supabase
+      .from('children')
+      .select('id')
+      .eq('parent_id', userId)
+      .eq('name', filho.nome)
+      .single()
+      .catch(() => ({ data: null }));
+
+    if (existing) {
+      await supabase.from('children')
+        .update({ birth_date, life_phase: lifePhase, updated_at: new Date().toISOString() })
+        .eq('id', existing.id);
+    } else {
+      await supabase.from('children').insert({
+        parent_id: userId, name: filho.nome,
+        birth_date, life_phase: lifePhase,
+        updated_at: new Date().toISOString()
+      });
+    }
+    console.log(`[Extrator] children: ${filho.nome}`);
+  }
+
+  // ── Atualiza relationships (esposa) ─────────────────────
+  if (e.nome) {
+    const { data: existingRel } = await supabase
+      .from('relationships')
+      .select('id')
+      .eq('user_id_a', userId)
+      .eq('relation_type', 'spouse')
+      .single()
+      .catch(() => ({ data: null }));
+
+    if (existingRel) {
+      await supabase.from('relationships')
+        .update({ nickname: e.nome, metadata: { birthday: e.aniversario } })
+        .eq('id', existingRel.id);
+    } else {
+      await supabase.from('relationships').insert({
+        user_id_a: userId, relation_type: 'spouse',
+        nickname: e.nome, metadata: { birthday: e.aniversario },
+        created_at: new Date().toISOString()
+      });
+    }
+    console.log(`[Extrator] relationships: esposa ${e.nome}`);
+  }
+
+  // ── Atualiza L3 imediatamente ───────────────────────────
+  const { data: user } = await supabase
+    .from('users')
+    .select('current_context')
+    .eq('id', userId)
+    .single();
+
+  let ctx = user?.current_context || '';
+  const patches: Record<string, string> = {};
+
+  if (p.cidade)        patches['Localização'] = p.cidade;
+  if (p.cidade_origem) patches['Origem']      = p.cidade_origem;
+  if (p.profissao)     patches['Emprego']     = p.profissao;
+  if (e.nome)          patches['Esposa']      = e.nome;
+  if (extracted.fe)    patches['Fé']          = extracted.fe;
+
+  for (const [key, val] of Object.entries(patches)) {
+    const regex = new RegExp(`- ${key}:.*`, 'i');
+    const line  = `- ${key}: ${val}`;
+    ctx = regex.test(ctx) ? ctx.replace(regex, line) : ctx + `\n${line}`;
+  }
+
+  // Adiciona filhos novos ao L3
+  for (const filho of filhos) {
+    if (!filho.nome) continue;
+    if (!ctx.includes(filho.nome)) {
+      ctx = ctx.replace(/- Filhos:(.*)/i, (m: string) =>
+        m.includes(filho.nome) ? m : `${m}, ${filho.nome} (${filho.idade} anos)`
+      );
+      if (!ctx.includes('- Filhos:')) {
+        ctx += `\n- Filhos: ${filho.nome} (${filho.idade} anos)`;
+      }
+    }
+  }
+
+  await supabase
+    .from('users')
+    .update({ current_context: ctx.trim(), updated_at: new Date().toISOString() })
+    .eq('id', userId);
+
+  console.log('[Extrator] L3 atualizado em tempo real');
 }
