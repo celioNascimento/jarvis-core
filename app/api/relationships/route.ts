@@ -278,8 +278,8 @@ function getDefaultPrivacyLevel(type: string): number {
 function getDefaultIntensity(type: string): number {
   const intensities: Record<string, number> = {
     'cônjuge':          0.95,
-    'noivo':            0,80,
-    'noiva':            0,80,
+    'noivo':            0.80,
+    'noiva':            0.80,
     'namorado':         0.80,
     'namorada':         0.80,
     'pai':              0.90,
