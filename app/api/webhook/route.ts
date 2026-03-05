@@ -314,11 +314,13 @@ REGRAS:
 4. PERGUNTAS ABERTAS: Só quando precisar agir:
    [PERGUNTA_ABERTA: "texto" | contexto]
 
-5. GATILHOS:
+5. GATILHOS — use APENAS estes formatos exatos, nunca invente outros:
    [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false | permanent|recurring_annual|deadline|one_time]
    [AGENDAR: título | YYYY-MM-DDTHH:MM | minutos]
    [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM | minutos]
    [LIMPAR_PENDENTE]
+   PROIBIDO: criar gatilhos próprios como [ONBOARDING: x], [IDÉIA: x], [REGISTRADO: x] ou qualquer outro formato livre.
+   Os gatilhos ficam INVISÍVEIS para o usuário — nunca aparecem no texto da resposta.
 
 6. Ao final: [CLASSE: info] ou [CLASSE: noise]
 `.trim();

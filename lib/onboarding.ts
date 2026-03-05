@@ -152,12 +152,13 @@ Se nenhum campo foi mencionado, retorne: {"extraido": {}, "campos_coletados": []
       })
       .eq('user_id', userId);
 
-    // Se coletou algo, salva no user_profiles também
+    // Se coletou algo, salva no user_profiles e atualiza L3 imediatamente
     if (parsed.campos_coletados.length > 0) {
       await syncToUserProfile(userId, parsed.extraido);
+      await patchL3WithNewFacts(userId, parsed.extraido); // atualiza L3 na hora
     }
 
-    // Se completou, consolida no dossiê L3
+    // Se completou, consolida dossiê completo no L3
     if (updatedState.status === 'completed') {
       await consolidateOnboardingToDossie(userId, updatedState.collected_data);
     }
@@ -231,6 +232,61 @@ function getNextFieldHint(field: string | null): string {
       'Se falar de planos, sonhos, futuro — pergunte o que quer conquistar.',
   };
   return field ? (hints[field] || '') : '';
+}
+
+// ============================================================
+// Atualiza L3 imediatamente com fatos novos (sem esperar compactação)
+// ============================================================
+async function patchL3WithNewFacts(userId: string, data: Record<string, any>) {
+  try {
+    const { data: user } = await supabase
+      .from('users')
+      .select('current_context')
+      .eq('id', userId)
+      .single();
+
+    const context = user?.current_context || '';
+
+    // Mapeamento de campos para texto legível
+    const patches: string[] = [];
+    if (data.cidade)         patches.push(`Cidade: ${data.cidade}`);
+    if (data.nascimento)     patches.push(`Nascimento: ${data.nascimento}`);
+    if (data.profissao)      patches.push(`Profissão: ${data.profissao}`);
+    if (data.familia_origem) patches.push(`Origem: ${data.familia_origem}`);
+    if (data.rotina)         patches.push(`Rotina: ${data.rotina}`);
+    if (data.objetivos)      patches.push(`Objetivos: ${data.objetivos}`);
+    if (data.fe)             patches.push(`Fé: ${data.fe}`);
+    if (data.filhos && Array.isArray(data.filhos)) {
+      const filhosStr = data.filhos.map((f: any) =>
+        f.nome ? `${f.nome}${f.idade ? ` (${f.idade} anos)` : ''}` : `filho(a)`
+      ).join(', ');
+      patches.push(`Filhos: ${filhosStr}`);
+    }
+
+    if (!patches.length) return;
+
+    // Aplica patches no contexto existente (substitui se já existir, adiciona se não)
+    let updated = context;
+    for (const patch of patches) {
+      const key = patch.split(':')[0];
+      const keyRegex = new RegExp(`${key}:.*`, 'i');
+      if (keyRegex.test(updated)) {
+        updated = updated.replace(keyRegex, patch); // atualiza linha existente
+      } else {
+        updated = updated + `
+${patch}`; // adiciona nova linha
+      }
+    }
+
+    await supabase
+      .from('users')
+      .update({ current_context: updated.trim(), updated_at: new Date().toISOString() })
+      .eq('id', userId);
+
+    console.log(`[L3] Atualizado em tempo real: ${patches.join(' | ')}`);
+  } catch (e) {
+    console.error('[L3] Erro ao patch:', e);
+  }
 }
 
 // ============================================================
