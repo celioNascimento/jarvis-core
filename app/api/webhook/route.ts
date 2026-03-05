@@ -52,18 +52,37 @@ export async function POST(req: Request) {
         }
 
         const buffer = await audioRes.arrayBuffer();
-        const formData = new FormData();
-        formData.append('file', new Blob([buffer], { type: 'audio/ogg' }), 'voice.ogg');
-        formData.append('model', 'whisper-1');
 
-        const transcriptionRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
-          body: formData
-        });
+        // Tenta transcrever com múltiplos formatos — Telegram manda .oga
+        // que alguns runtimes não reconhecem como audio/ogg
+        const audioFormats = [
+          { type: 'audio/mpeg',  ext: 'voice.mp3'  },
+          { type: 'audio/ogg',   ext: 'voice.ogg'  },
+          { type: 'audio/wav',   ext: 'voice.wav'  },
+        ];
 
-        if (!transcriptionRes.ok) {
-          console.error("Whisper falhou:", transcriptionRes.status);
+        let transcriptionRes: Response | null = null;
+        for (const fmt of audioFormats) {
+          const formData = new FormData();
+          formData.append('file', new Blob([buffer], { type: fmt.type }), fmt.ext);
+          formData.append('model', 'whisper-1');
+          formData.append('language', 'pt'); // força português — melhora precisão
+
+          const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+            body: formData
+          });
+
+          if (res.ok) {
+            transcriptionRes = res;
+            break; // achou um formato que funcionou
+          }
+          console.warn(`Whisper rejeitou formato ${fmt.type}:`, res.status);
+        }
+
+        if (!transcriptionRes) {
+          console.error("Whisper falhou em todos os formatos.");
           await sendTelegram(message.chat.id, "⚠️ Não consegui transcrever o áudio. Pode digitar?");
           return NextResponse.json({ ok: true });
         }
@@ -344,5 +363,4 @@ REGRAS:
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true });
   }
-                 }
-          
+                                                    }
