@@ -15,20 +15,39 @@ export const supabase = createClient(
 // ============================================================
 export async function callOpenRouter(prompt: string) {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
         model: "google/gemini-2.0-flash-001",
+        max_tokens: 400,
+        temperature: 0.7,
         messages: [{ role: "user", content: prompt }]
       })
     });
+
+    clearTimeout(timeout);
     const data = await res.json();
+
+    if (data.error) {
+      console.error("OpenRouter erro:", JSON.stringify(data.error));
+      return data.error.message || "❌ Erro IA.";
+    }
+
     return data.choices?.[0]?.message?.content || "❌ Erro IA.";
-  } catch (e) {
+
+  } catch (e: any) {
+    if (e.name === 'AbortError') {
+      console.error("OpenRouter timeout após 8s");
+      return "Timeout — tenta de novo em instantes.";
+    }
     console.error("Erro callOpenRouter:", e);
     return "❌ Erro na conexão com a IA.";
   }
@@ -312,4 +331,4 @@ export async function reinforceMemory(memoryId: string) {
   } catch (e) {
     console.error("Erro reinforceMemory:", e);
   }
-}
+                                         }
