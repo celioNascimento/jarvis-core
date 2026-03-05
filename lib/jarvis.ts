@@ -1,14 +1,18 @@
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
 
+// ============================================================
 // 1. CONEXÃO CENTRAL COM O BANCO (SCHEMA JARVIS)
+// ============================================================
 export const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
 );
 
+// ============================================================
 // 2. MOTOR DE IA (OpenRouter - Gemini 2.0 Flash)
+// ============================================================
 export async function callOpenRouter(prompt: string) {
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -30,7 +34,9 @@ export async function callOpenRouter(prompt: string) {
   }
 }
 
-// 3. MOTOR VETORIAL (Busca no HD / Longo Prazo)
+// ============================================================
+// 3. MOTOR VETORIAL
+// ============================================================
 export async function generateEmbedding(text: string) {
   try {
     const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
@@ -52,7 +58,9 @@ export async function generateEmbedding(text: string) {
   }
 }
 
+// ============================================================
 // 4. MENSAGEIRO TELEGRAM
+// ============================================================
 export async function sendTelegram(chatId: string | number, text: string) {
   try {
     await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
@@ -65,17 +73,109 @@ export async function sendTelegram(chatId: string | number, text: string) {
   }
 }
 
-// 5. MOTOR DE CONSOLIDAÇÃO (RAM -> L3 -> HD)
+// ============================================================
+// 5. GERENCIADOR DE SESSÃO (L3 — Contexto da Conversa Atual)
+// Resolve o problema de contexto perdido entre turnos
+// ============================================================
+export async function getOrCreateSession(userId: string): Promise<string> {
+  try {
+    // Busca sessão ativa criada nas últimas 4 horas
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+
+    const { data: existing } = await supabase
+      .from('sessions')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .gte('last_active', fourHoursAgo)
+      .order('last_active', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (existing) {
+      // Atualiza timestamp da sessão ativa
+      await supabase
+        .from('sessions')
+        .update({ last_active: new Date().toISOString() })
+        .eq('id', existing.id);
+      return existing.id;
+    }
+
+    // Sem sessão ativa: encerra antigas e cria nova
+    await supabase
+      .from('sessions')
+      .update({ is_active: false })
+      .eq('user_id', userId)
+      .eq('is_active', true);
+
+    const { data: newSession } = await supabase
+      .from('sessions')
+      .insert({ user_id: userId, is_active: true })
+      .select('id')
+      .single();
+
+    return newSession?.id || 'default';
+  } catch (e) {
+    console.error("Erro getOrCreateSession:", e);
+    return 'default';
+  }
+}
+
+// ============================================================
+// 6. GERENCIADOR DE PERGUNTA PENDENTE
+// Resolve o "sim" perdido — a fila de intenções abertas
+// ============================================================
+export async function getPendingQuestion(userId: string): Promise<{ question: string | null; context: any }> {
+  try {
+    const { data } = await supabase
+      .from('users')
+      .select('pending_question, pending_context')
+      .eq('id', userId)
+      .single();
+
+    return {
+      question: data?.pending_question || null,
+      context: data?.pending_context || null
+    };
+  } catch {
+    return { question: null, context: null };
+  }
+}
+
+export async function setPendingQuestion(userId: string, question: string | null, context: any = null) {
+  try {
+    await supabase
+      .from('users')
+      .update({
+        pending_question: question,
+        pending_context: context
+      })
+      .eq('id', userId);
+  } catch (e) {
+    console.error("Erro setPendingQuestion:", e);
+  }
+}
+
+export async function clearPendingQuestion(userId: string) {
+  await setPendingQuestion(userId, null, null);
+}
+
+// ============================================================
+// 7. MOTOR DE CONSOLIDAÇÃO (RAM → L3 → HD) — CORRIGIDO
+// Compacta a cada 5 mensagens (era 20 — muito lento)
+// ============================================================
 export async function compactMemory(userId: string, authorName: string) {
   try {
+    // CORRIGIDO: filtra por user_id (coluna agora existe)
     const { data: rawBrain } = await supabase
       .from('brain')
       .select('content, metadata, created_at')
       .eq('user_id', userId)
-      .eq('category', 'info')
+      .neq('category', 'noise')
       .order('created_at', { ascending: true });
 
-    if (!rawBrain || rawBrain.length < 20) return;
+    // CORRIGIDO: threshold reduzido de 20 para 5
+    if (!rawBrain || rawBrain.length < 5) return;
 
     const { data: userProfile } = await supabase
       .from('users')
@@ -90,36 +190,62 @@ export async function compactMemory(userId: string, authorName: string) {
     ).join('\n\n');
 
     const prompt = `
-      Você é o Gerente de Memória do Jarvis. Sua missão é manter o Dossiê do usuário atualizado.
-      [DOSSIÊ ATUAL (L3)]: ${oldContext}
-      [NOVAS INTERAÇÕES]: ${brainText}
-      TAREFA: Integre as informações ao Dossiê, mantenha rigor técnico e foco nos projetos 'Procuro Quem Faça' e 'ExpertFrotas'. Retorne APENAS o novo Dossiê estruturado.
+      Você é o Gerente de Memória do Jarvis. Mantenha o Dossiê do usuário ${authorName} atualizado.
+      
+      [DOSSIÊ ATUAL]:
+      ${oldContext}
+      
+      [NOVAS INTERAÇÕES]:
+      ${brainText}
+      
+      TAREFA: Integre as novas informações ao Dossiê existente.
+      - Preserve TODOS os dados anteriores relevantes
+      - Adicione novas informações, decisões e preferências detectadas
+      - Marque compromissos com datas quando houver
+      - Retorne APENAS o Dossiê atualizado, sem comentários
     `;
 
     const newContext = await callOpenRouter(prompt);
     const embedding = await generateEmbedding(newContext);
 
     if (embedding) {
-      // Atualiza L3 (Dossiê)
-      await supabase.from('users').update({ current_context: newContext }).eq('id', userId);
-      // Alimenta HD (Memória Histórica)
+      // Atualiza L3 (Dossiê no perfil do usuário)
+      await supabase
+        .from('users')
+        .update({ current_context: newContext })
+        .eq('id', userId);
+
+      // Alimenta HD com peso emocional neutro (será ajustado pelo decay)
       await supabase.from('memories').insert([{
         summary: newContext,
         embedding,
         user_id: userId,
+        relevance_score: 1.0,
+        access_count: 0,
+        decay_lambda: 0.005, // Dossiê decai lentamente
+        emotional_weight: 0.5,
         metadata: { type: 'auto_consolidation', count: rawBrain.length }
       }]);
-      // Limpa RAM
+
+      // Limpa RAM processada
       const lastProcessedDate = rawBrain[rawBrain.length - 1].created_at;
-      await supabase.from('brain').delete().eq('user_id', userId).eq('category', 'info').lte('created_at', lastProcessedDate);
-      console.log(`🧹 Memória de ${authorName} consolidada.`);
+      await supabase
+        .from('brain')
+        .delete()
+        .eq('user_id', userId)
+        .neq('category', 'noise')
+        .lte('created_at', lastProcessedDate);
+
+      console.log(`🧹 Memória de ${authorName} consolidada. ${rawBrain.length} entradas → L3 atualizado.`);
     }
   } catch (e) {
     console.error("Erro na compactação:", e);
   }
 }
 
-// 6. BUSCA EVENTOS PROATIVOS (Radares)
+// ============================================================
+// 8. BUSCA EVENTOS PROATIVOS (Radares)
+// ============================================================
 export async function getProactiveEvents(userId: string) {
   const hoje = new Date();
   const seteDiasDepois = new Date();
@@ -141,7 +267,9 @@ export async function getProactiveEvents(userId: string) {
   });
 }
 
-// 7. CHECAGEM DE INTERRUPTORES (Feriados/Comodidade)
+// ============================================================
+// 9. CHECAGEM DE INTERRUPTORES (Feriados/Comodidade)
+// ============================================================
 export async function checkSystemInterrupts(userId: string) {
   try {
     const agenda = await getGoogleContext();
@@ -155,28 +283,33 @@ export async function checkSystemInterrupts(userId: string) {
     return { shouldPauseMorningRoutine: false, reason: null };
   }
 }
-export async function transcribeAudio(fileUrl: string) {
+
+// ============================================================
+// 10. REFORÇO DE MEMÓRIA (Aumenta relevância ao acessar)
+// Chamado toda vez que uma memória HD é usada
+// ============================================================
+export async function reinforceMemory(memoryId: string) {
   try {
-    const response = await fetch(fileUrl);
-    const arrayBuffer = await response.arrayBuffer();
-    const blob = new Blob([arrayBuffer], { type: 'audio/ogg' });
+    const { data } = await supabase
+      .from('memories')
+      .select('access_count, relevance_score')
+      .eq('id', memoryId)
+      .single();
 
-    const formData = new FormData();
-    formData.append('file', blob, 'audio.ogg');
-    formData.append('model', 'whisper-1');
+    if (!data) return;
 
-    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: formData
-    });
+    const newAccessCount = (data.access_count || 0) + 1;
+    const newRelevance = Math.min((data.relevance_score || 0) + 0.05, 1.0);
 
-    const data = await res.json();
-    return data.text || "";
+    await supabase
+      .from('memories')
+      .update({
+        access_count: newAccessCount,
+        relevance_score: newRelevance,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', memoryId);
   } catch (e) {
-    console.error("Erro na transcrição:", e);
-    return "";
+    console.error("Erro reinforceMemory:", e);
   }
 }
