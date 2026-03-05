@@ -60,29 +60,93 @@ export async function POST(req: Request) {
     }
 
     const stringId = String(telegramUserId);
+    const hoje = new Date();
 
     // ============================================================
-    // CAMADA L3 — DOSSIÊ DO USUÁRIO
+    // BUSCA DE DADOS EM PARALELO (mais rápido)
     // ============================================================
-    const { data: userProfile } = await supabase
-      .from('users')
-      .select('nickname, current_context, pending_question, pending_context')
-      .eq('id', stringId)
-      .single();
+    const [
+      userProfileResult,
+      sessionId,
+      eventsResult,
+      ashesResult
+    ] = await Promise.all([
+      // Perfil + dossiê L3
+      supabase
+        .from('users')
+        .select('nickname, current_context, pending_question, pending_context')
+        .eq('id', stringId)
+        .single(),
 
+      // Sessão ativa
+      getOrCreateSession(stringId),
+
+      // NOVO: Todos os eventos do usuário com relevância calculada
+      supabase
+        .from('events')
+        .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
+        .eq('user_id', stringId)
+        .order('relevance_score', { ascending: false }),
+
+      // NOVO: Cinzas (memórias arquivadas — contexto vago de longo prazo)
+      supabase
+        .from('memory_ashes')
+        .select('ash_summary, period_start, period_end')
+        .eq('user_id', stringId)
+        .order('period_end', { ascending: false })
+        .limit(5)
+    ]);
+
+    const userProfile = userProfileResult.data;
     const authorName = userProfile?.nickname || userFirstName;
     const currentContextL3 = userProfile?.current_context || "Sem dossiê ainda.";
     const pendingQuestion = userProfile?.pending_question || null;
     const pendingContext = userProfile?.pending_context || null;
 
     // ============================================================
-    // CAMADA L3 — SESSÃO ATUAL
-    // Garante que o contexto da conversa não se perde entre turnos
+    // PROCESSA EVENTOS — separa por relevância e urgência
     // ============================================================
-    const sessionId = await getOrCreateSession(stringId);
+    const events = eventsResult.data || [];
+    const now = hoje;
+
+    // Eventos urgentes: nos próximos 7 dias (relevância alta)
+    const urgentEvents = events.filter(e => {
+      const score = e.relevance_score || 0;
+      return score >= 0.7;
+    });
+
+    // Eventos no radar: relevância média
+    const radarEvents = events.filter(e => {
+      const score = e.relevance_score || 0;
+      return score >= 0.3 && score < 0.7;
+    });
+
+    // Monta bloco de eventos para o prompt
+    const eventsContext = events.length > 0
+      ? [
+          urgentEvents.length > 0
+            ? `🔴 URGENTE/PRÓXIMOS:\n${urgentEvents.map(e =>
+                `  - ${e.title}: ${e.event_date} [${e.decay_type}] relevância: ${(e.relevance_score || 0).toFixed(2)}${e.notes ? ` — ${e.notes}` : ''}`
+              ).join('\n')}`
+            : null,
+          radarEvents.length > 0
+            ? `🟡 NO RADAR:\n${radarEvents.map(e =>
+                `  - ${e.title}: ${e.event_date} [${e.decay_type}]${e.notes ? ` — ${e.notes}` : ''}`
+              ).join('\n')}`
+            : null,
+        ].filter(Boolean).join('\n\n') || "Nenhum evento relevante no momento."
+      : "Nenhum evento cadastrado ainda.";
 
     // ============================================================
-    // CAMADA HD — BUSCA VETORIAL (Memórias de Longo Prazo)
+    // PROCESSA CINZAS — contexto vago de memórias antigas
+    // ============================================================
+    const ashes = ashesResult.data || [];
+    const ashesContext = ashes.length > 0
+      ? ashes.map(a => a.ash_summary).join('\n')
+      : null;
+
+    // ============================================================
+    // CAMADA HD — BUSCA VETORIAL
     // ============================================================
     const queryEmbedding = await generateEmbedding(messageText);
     let hdContext = "";
@@ -96,24 +160,26 @@ export async function POST(req: Request) {
       }) as { data: any[] | null };
 
       if (search && search.length > 0) {
-        hdContext = search.map(r => `[Memória]: ${r.summary}`).join('\n');
+        hdContext = search
+          .filter(r => !r.summary.startsWith('[CINZA]')) // ignora cinzas no HD
+          .map(r => `[Memória]: ${r.summary}`)
+          .join('\n');
         hdMemoryIds = search.map(r => r.id);
       }
     }
 
     // ============================================================
-    // CAMADA RAM — HISTÓRICO RECENTE (CORRIGIDO: filtra por user_id)
+    // CAMADA RAM — HISTÓRICO RECENTE
     // ============================================================
     const { data: history } = await supabase
       .from('brain')
       .select('content, metadata')
-      .eq('user_id', stringId)       // ← CORRIGIDO: coluna user_id agora existe
-      .eq('session_id', sessionId)   // ← NOVO: histórico da sessão atual primeiro
+      .eq('user_id', stringId)
+      .eq('session_id', sessionId)
       .neq('category', 'noise')
       .order('created_at', { ascending: false })
       .limit(10);
 
-    // Se não houver histórico da sessão, busca geral recente
     const { data: historyGeral } = (!history || history.length === 0)
       ? await supabase
           .from('brain')
@@ -137,15 +203,17 @@ export async function POST(req: Request) {
     const fusoLondrina = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 
     // ============================================================
-    // CONSTRUÇÃO DO PROMPT FINAL
-    // Inclui: Dossiê L3 + Sessão + RAM + HD + Pergunta Pendente
+    // BLOCO DE PERGUNTA PENDENTE
     // ============================================================
     const pendingBlock = pendingQuestion
       ? `\n[⚠️ PERGUNTA PENDENTE SEM RESPOSTA]: "${pendingQuestion}"
-[CONTEXTO DA PERGUNTA]: ${JSON.stringify(pendingContext)}
-INSTRUÇÃO: Se a mensagem atual for uma confirmação ("sim", "pode", "quero", "não", "negativo"), resolva a pergunta pendente antes de qualquer outra coisa. Após resolver, limpe o estado com [LIMPAR_PENDENTE].`
+[CONTEXTO]: ${JSON.stringify(pendingContext)}
+INSTRUÇÃO: Se a mensagem atual for confirmação ("sim", "pode", "quero", "não"), resolva PRIMEIRO antes de qualquer outra coisa. Após resolver, use [LIMPAR_PENDENTE].`
       : "";
 
+    // ============================================================
+    // PROMPT FINAL v1.2
+    // ============================================================
     const finalPrompt = `
 SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | AGORA: ${fusoLondrina}
 
@@ -159,48 +227,53 @@ ${ramMemory || "Início de conversa."}
 
 [MEMÓRIAS HD — LONGO PRAZO]
 ${hdContext || "Nenhuma memória relevante encontrada."}
+
+[EVENTOS E DATAS IMPORTANTES]
+${eventsContext}
+${ashesContext ? `\n[MEMÓRIAS DISTANTES — contexto vago]\n${ashesContext}` : ''}
 ${pendingBlock}
 ═══════════════════════════════════════
 MENSAGEM ATUAL: "${messageText}"
 ═══════════════════════════════════════
 
 MISSÃO E REGRAS:
-1. PERSONALIDADE: Tony Stark. Direto, inteligente, levemente sarcástico quando apropriado.
+1. PERSONALIDADE: Tony Stark. Direto, inteligente, levemente sarcástico.
    Sem saudações genéricas. Sem repetir o nome toda frase.
-   
-2. MEMÓRIA OBRIGATÓRIA: Use o HISTÓRICO RAM e DOSSIÊ para manter continuidade.
-   Nunca faça perguntas que já foram respondidas acima.
-   
-3. PERGUNTAS ABERTAS: Se você fizer UMA pergunta ao usuário, registre com:
-   [PERGUNTA_ABERTA: "texto exato da pergunta" | contexto_json]
-   Só UMA pergunta por resposta. Nunca duas.
 
-4. GATILHOS DE AÇÃO (use quando necessário):
-   - Salvar evento recorrente: [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false]
-   - Agendar no Google Calendar: [AGENDAR: título | YYYY-MM-DDTHH:MM | minutos_lembrete]
-   - Atualizar evento existente: [ATUALIZAR_EVENTO: termo_busca | novo_título | YYYY-MM-DDTHH:MM | minutos]
-   - Limpar pergunta pendente: [LIMPAR_PENDENTE]
-   
-5. CLASSIFICAÇÃO OBRIGATÓRIA ao final: [CLASSE: info] ou [CLASSE: noise]
-   - info: qualquer coisa com dado, decisão, evento, preferência
-   - noise: apenas "ok", "entendido", "vlw" sem conteúdo
+2. MEMÓRIA: Use TUDO acima para manter continuidade. Nunca pergunte algo já respondido.
 
-6. Ajuste de comportamento como "diminuir humor X%" deve ser respeitado e persistido.
+3. EVENTOS: Você CONHECE todos os eventos listados acima. Responda sobre datas, 
+   aniversários e compromissos SEM pedir que o usuário informe novamente.
+   Para eventos urgentes (🔴), seja proativo e sugira ações.
+
+4. CINZAS: Se usar uma memória distante, diga "lembro vagamente que..." para ser honesto
+   sobre a imprecisão.
+
+5. PERGUNTAS ABERTAS: Se fizer UMA pergunta, registre com:
+   [PERGUNTA_ABERTA: "texto exato" | contexto_json]
+   Só UMA por resposta.
+
+6. GATILHOS DE AÇÃO:
+   - Salvar evento: [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false | permanent|recurring_annual|deadline|one_time]
+   - Agendar Google: [AGENDAR: título | YYYY-MM-DDTHH:MM | minutos_lembrete]
+   - Atualizar evento Google: [ATUALIZAR_EVENTO: busca | novo_título | YYYY-MM-DDTHH:MM | minutos]
+   - Limpar pendente: [LIMPAR_PENDENTE]
+
+7. CLASSIFICAÇÃO ao final: [CLASSE: info] ou [CLASSE: noise]
 `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
     // ============================================================
-    // INTERCEPTOR 1 — CLASSIFICAÇÃO
+    // INTERCEPTORES
     // ============================================================
+
+    // Classificação
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
 
-    // ============================================================
-    // INTERCEPTOR 2 — PERGUNTA PENDENTE
-    // Grava se o Jarvis fez uma pergunta que precisa de resposta
-    // ============================================================
+    // Pergunta pendente
     const pendingMatch = aiReply.match(/\[PERGUNTA_ABERTA:\s*"([^"]+)"\s*\|\s*(\{.*?\}|\w+)\]/i);
     if (pendingMatch) {
       let ctx = null;
@@ -209,36 +282,31 @@ MISSÃO E REGRAS:
       aiReply = aiReply.replace(pendingMatch[0], '').trim();
     }
 
-    // ============================================================
-    // INTERCEPTOR 3 — LIMPAR PERGUNTA PENDENTE
-    // ============================================================
+    // Limpar pendente
     if (aiReply.includes('[LIMPAR_PENDENTE]')) {
       await clearPendingQuestion(stringId);
       aiReply = aiReply.replace(/\[LIMPAR_PENDENTE\]/gi, '').trim();
     }
 
-    // ============================================================
-    // INTERCEPTOR 4 — SALVAR EVENTO
-    // ============================================================
-    const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\]?/gi;
+    // Salvar evento — ATUALIZADO: agora aceita decay_type
+    const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(permanent|recurring_annual|deadline|one_time)\]?/gi;
     const evMatches = Array.from(aiReply.matchAll(eventRegex)) as any[];
     for (const m of evMatches) {
-      if (m && m.length >= 5) {
+      if (m && m.length >= 6) {
         await supabase.from('events').insert([{
           user_id: stringId,
           title: m[1].trim(),
           event_date: m[2],
           priority: m[3].toLowerCase(),
           is_recurring: m[4].toLowerCase() === 'true',
+          decay_type: m[5],
           last_notified_year: new Date().getFullYear() - 1
         }]);
         aiReply = aiReply.replace(m[0], '').trim();
       }
     }
 
-    // ============================================================
-    // INTERCEPTOR 5 — AGENDAR NO GOOGLE CALENDAR
-    // ============================================================
+    // Agendar no Google Calendar
     const scheduleRegex = /\[?AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i;
     const sMatch = aiReply.match(scheduleRegex);
     if (sMatch && sMatch.length >= 4) {
@@ -246,9 +314,7 @@ MISSÃO E REGRAS:
       aiReply = aiReply.replace(sMatch[0], '').trim() + `\n\n🗓️ *Agendado:* ${res}`;
     }
 
-    // ============================================================
-    // INTERCEPTOR 6 — ATUALIZAR EVENTO NO GOOGLE CALENDAR
-    // ============================================================
+    // Atualizar evento no Google Calendar
     const updateRegex = /\[?ATUALIZAR_EVENTO:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i;
     const uMatch = aiReply.match(updateRegex);
     if (uMatch && uMatch.length >= 5) {
@@ -258,14 +324,13 @@ MISSÃO E REGRAS:
 
     // ============================================================
     // PERSISTÊNCIA NA RAM
-    // CORRIGIDO: inclui user_id e session_id
     // ============================================================
     await supabase.from('brain').insert([{
       content: messageText,
       category,
-      user_id: stringId,           // ← CORRIGIDO
-      session_id: sessionId,       // ← NOVO: vincula à sessão
-      project_tag: 'geral',        // ← CORRIGIDO: não deixa NULL
+      user_id: stringId,
+      session_id: sessionId,
+      project_tag: 'geral',
       embedding: queryEmbedding,
       metadata: {
         ai_reply: aiReply,
@@ -274,7 +339,7 @@ MISSÃO E REGRAS:
       }
     }]);
 
-    // Reforça memórias HD que foram usadas
+    // Reforça memórias HD usadas
     for (const memId of hdMemoryIds) {
       await reinforceMemory(memId);
     }
@@ -285,7 +350,7 @@ MISSÃO E REGRAS:
     await sendTelegram(chatId, aiReply);
 
     // ============================================================
-    // COMPACTAÇÃO — CORRIGIDO: threshold 5 (era 20)
+    // COMPACTAÇÃO (threshold: 5 mensagens)
     // ============================================================
     const { count } = await supabase
       .from('brain')
@@ -303,4 +368,4 @@ MISSÃO E REGRAS:
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true });
   }
-}
+      }
