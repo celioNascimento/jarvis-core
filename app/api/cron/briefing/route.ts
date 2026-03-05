@@ -4,16 +4,21 @@ import { getGoogleContext } from '@/lib/google';
 
 export async function GET(req: Request) {
   try {
-    // 1. SEGURANÇA
+    // 1. SEGURANÇA HÍBRIDA (Aceita Header Vercel ou ?auth=Bearer...)
+    const { searchParams } = new URL(req.url);
+    const authParam = searchParams.get('auth');
     const authHeader = req.headers.get('authorization');
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    const secret = `Bearer ${process.env.CRON_SECRET}`;
+
+    if (authHeader !== secret && authParam !== secret) {
       return new Response('Unauthorized', { status: 401 });
     }
 
     const userId = process.env.MY_TELEGRAM_ID!; 
-    const hojeString = new Date().toISOString().split('T')[0]; // Pega apenas YYYY-MM-DD
+    const hoje = new Date();
+    const hojeString = hoje.toISOString().split('T')[0];
 
-    // 2. CHECAGEM DE EXCEÇÃO (O INTERRUPTOR DE COMODIDADE)
+    // 2. CHECAGEM DE EXCEÇÃO (INTERRUPTOR DE COMODIDADE)
     const { data: exception } = await supabase
       .from('routine_exceptions')
       .select('type')
@@ -21,13 +26,15 @@ export async function GET(req: Request) {
       .eq('exception_date', hojeString)
       .single();
 
-    // Se houver uma exceção registrada para hoje, o Cron aborta a missão silenciosamente
     if (exception) {
-      console.log("Briefing pausado por solicitação do usuário (Feriado/Folga).");
-      return NextResponse.json({ ok: true, message: "Briefing pausado hoje." });
+      return NextResponse.json({ ok: true, message: "Briefing pausado hoje (Folga/Feriado)." });
     }
 
-    // 3. RECUPERAÇÃO DE CONTEXTO (HD)
+    // 3. CLIMA REAL (Londrina)
+    const weatherRes = await fetch(`https://wttr.in/Londrina?format=%C+%t+%w`);
+    const climaLondrina = await weatherRes.text();
+
+    // 4. RECUPERAÇÃO DE CONTEXTO (HD) e AGENDA (GOOGLE)
     const { data: snapshot } = await supabase
       .from('memories')
       .select('summary')
@@ -36,31 +43,30 @@ export async function GET(req: Request) {
       .limit(1)
       .single();
 
-    // 4. RECUPERAÇÃO DE AGENDA (GOOGLE)
     const agenda = await getGoogleContext();
-    const climaLondrina = "Ensolarado, máxima de 33°C e mínima de 18°C. Sem previsão de chuva.";
 
-    // 5. PROMPT DE BRIEFING (O "Acorda, Jarvis!")
+    // 5. PROMPT DE BRIEFING STARK
     const briefingPrompt = `
-      Jarvis, prepare o briefing matinal para o Celio.
-      
-      [CONTEXTO DO HD]: ${snapshot?.summary || "Planejamento de rotina com foco em pontualidade."}
-      [AGENDA DO DIA]: ${agenda}
-      [CLIMA EM LONDRINA]: ${climaLondrina}
+      Jarvis, briefing matinal para o Celio.
+      [DATA]: ${hoje.toLocaleDateString('pt-BR')}
+      [CONTEXTO HD]: ${snapshot?.summary || "Foco em pontualidade e ExpertFrotas."}
+      [AGENDA]: ${agenda}
+      [CLIMA]: ${climaLondrina}
       
       INSTRUÇÕES:
-      - Comece com um bom dia motivador no estilo Stark.
+      - Estilo Tony Stark: Curto, inteligente, levemente sarcástico.
+      - Não repita a hora.
       - Resuma os compromissos.
-      - Dê uma dica baseada no clima (ex: calor pede hidratação ou cuidado na moto).
-      - Lembre-o da meta de não se atrasar para o trabalho e gerenciar o treino (05h despertar, 06h20 saída).
+      - Dê uma dica de trajeto (moto) baseada no clima: ${climaLondrina}.
+      - Lembre-o: Despertar 05h, Saída 06h20. Não se atrase.
     `;
 
     const aiReply = await callOpenRouter(briefingPrompt);
 
-    // 6. ENVIO PROATIVO
+    // 6. ENVIO
     await sendTelegram(userId, aiReply);
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, weather: climaLondrina });
 
   } catch (error: any) {
     console.error("Erro no Cron Briefing:", error.message);
