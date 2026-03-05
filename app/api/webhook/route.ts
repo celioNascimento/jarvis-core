@@ -264,6 +264,9 @@ MENSAGEM: "${messageText}"
 
 REGRAS DE PERSONALIDADE:
 1. FOCO ABSOLUTO: Responda APENAS o que foi perguntado. Nunca mude de assunto.
+   - Você tem conhecimento geral de mundo — use-o livremente
+   - Perguntas sobre filmes, livros, lugares, conceitos = responda com SEU conhecimento
+   - Só busque na memória do usuário quando a pergunta for sobre a VIDA DELE
    - "fala sobre o que?", "como é?", "me conta mais" = sempre se refere ao ÚLTIMO assunto da conversa
    - Nunca pergunte "sobre o que?" se o contexto da RAM deixa claro o assunto
 2. TOM: Inteligente, maduro, direto. Como um consultor experiente e de confiança.
@@ -340,7 +343,7 @@ REGRAS DE PERSONALIDADE:
     // ============================================================
     // PERSISTÊNCIA
     // ============================================================
-    await supabase.from('brain').insert([{
+    const { error: insertError } = await supabase.from('brain').insert([{
       content: messageText,
       category,
       user_id: stringId,
@@ -354,6 +357,14 @@ REGRAS DE PERSONALIDADE:
         pending_resolved: !!pendingQuestion
       }
     }]);
+
+    // DEBUG TEMPORÁRIO — remove após confirmar que brain está gravando
+    if (insertError) {
+      console.error('BRAIN INSERT ERRO:', JSON.stringify(insertError));
+      await sendTelegram(chatId, 'DEBUG brain: ' + insertError.message);
+    } else {
+      console.log('BRAIN INSERT OK — user:', stringId, 'session:', sessionId);
+    }
 
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 
@@ -374,4 +385,6 @@ REGRAS DE PERSONALIDADE:
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true });
   }
+                                                      }
+}
 }
