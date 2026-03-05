@@ -103,14 +103,13 @@ export function classifyTemporalHorizon(
     };
   }
 
-  // ── RECENTE: contexto atual, hoje, esta semana ──
+  // ── RECENTE: menção explícita a datas, pessoas ou compromissos ──
   const recentPatterns = [
     /\b(hoje|agora|esta semana|essa semana|nessa semana|esta manhã|essa manhã)\b/,
     /\b(meu (projeto|trabalho|emprego|treino|rotina))\b/,
     /\b(white martins|procuro quem fa[çc]a|expertfrotas)\b/,
     /\b(minha (esposa|mulher|filh[oa]|m[ãa]e|pai|fam[íi]lia))\b/,
-    /\b(aniversário|presente|comprar|fazer|ir|vir|precisar|querer)\b/,
-    /\b(quando [ée]|qual [ée]|me lembra|sabe quando|voc[eê] sabe)\b/,
+    /\b(aniversário|presente|data|quando [ée]|me lembra|sabe quando)\b/,
   ];
 
   if (recentPatterns.some(p => p.test(msg))) {
@@ -121,19 +120,19 @@ export function classifyTemporalHorizon(
       hd: 0.20,
       ashes: 0.0,
       events: 0.15,
-      reason: 'Contexto atual/recente — balanceando L3, RAM e Events'
+      reason: 'Contexto recente com referência a datas ou pessoas'
     };
   }
 
-  // ── DEFAULT: contexto geral ──
+  // ── DEFAULT: conversa casual — eventos fora, foco na conversa ──
   return {
     horizon: 'recent',
-    ram: 0.30,
+    ram: 0.50,
     l3: 0.35,
-    hd: 0.20,
+    hd: 0.15,
     ashes: 0.0,
-    events: 0.15,
-    reason: 'Contexto geral — distribuição balanceada'
+    events: 0.0,  // eventos só entram quando explicitamente relevantes
+    reason: 'Conversa casual — RAM e L3 dominam, sem eventos'
   };
 }
 
