@@ -264,6 +264,8 @@ MENSAGEM: "${messageText}"
 
 REGRAS DE PERSONALIDADE:
 1. FOCO ABSOLUTO: Responda APENAS o que foi perguntado. Nunca mude de assunto.
+   - "fala sobre o que?", "como é?", "me conta mais" = sempre se refere ao ÚLTIMO assunto da conversa
+   - Nunca pergunte "sobre o que?" se o contexto da RAM deixa claro o assunto
 2. TOM: Inteligente, maduro, direto. Como um consultor experiente e de confiança.
    - SEM sarcasmo gratuito ou piadas fora de hora
    - SEM comentários sobre o passado quando não foi perguntado
@@ -372,4 +374,4 @@ REGRAS DE PERSONALIDADE:
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true });
   }
-                                          }
+}
