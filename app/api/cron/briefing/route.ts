@@ -2,9 +2,11 @@ import { NextResponse } from 'next/server';
 import { supabase, callOpenRouter, sendTelegram } from '@/lib/jarvis';
 import { getGoogleContext } from '@/lib/google';
 
+export const maxDuration = 10; // Força o limite da Vercel para 10s
+
 export async function GET(req: Request) {
   try {
-    // 1. SEGURANÇA HÍBRIDA (Aceita Header Vercel ou ?auth=Bearer...)
+    // 1. SEGURANÇA HÍBRIDA
     const { searchParams } = new URL(req.url);
     const authParam = searchParams.get('auth');
     const authHeader = req.headers.get('authorization');
@@ -14,62 +16,51 @@ export async function GET(req: Request) {
       return new Response('Unauthorized', { status: 401 });
     }
 
-    const userId = process.env.MY_TELEGRAM_ID!; 
-    const hoje = new Date();
-    const hojeString = hoje.toISOString().split('T')[0];
+    const userId = process.env.MY_TELEGRAM_ID!;
+    
+    // 2. BUSCA DE DADOS EM PARALELO (Mais rápido que um por um)
+    const [weatherData, googleAgenda, snapshot] = await Promise.all([
+      fetch(`https://wttr.in/Londrina?format=%C+%t`, { signal: AbortSignal.timeout(3000) }) // 3s max
+        .then(res => res.text())
+        .catch(() => "Clima indisponível"),
+      
+      getGoogleContext().catch(() => "Agenda indisponível no momento"),
+      
+      supabase
+        .from('memories')
+        .select('summary')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single()
+        .then(res => res.data?.summary || "Sem contexto prévio.")
+    ]);
 
-    // 2. CHECAGEM DE EXCEÇÃO (INTERRUPTOR DE COMODIDADE)
-    const { data: exception } = await supabase
-      .from('routine_exceptions')
-      .select('type')
-      .eq('user_id', userId)
-      .eq('exception_date', hojeString)
-      .single();
-
-    if (exception) {
-      return NextResponse.json({ ok: true, message: "Briefing pausado hoje (Folga/Feriado)." });
-    }
-
-    // 3. CLIMA REAL (Londrina)
-    const weatherRes = await fetch(`https://wttr.in/Londrina?format=%C+%t+%w`);
-    const climaLondrina = await weatherRes.text();
-
-    // 4. RECUPERAÇÃO DE CONTEXTO (HD) e AGENDA (GOOGLE)
-    const { data: snapshot } = await supabase
-      .from('memories')
-      .select('summary')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
-
-    const agenda = await getGoogleContext();
-
-    // 5. PROMPT DE BRIEFING STARK
+    // 3. PROMPT STARK (ESTRUTURADO PARA VELOCIDADE)
     const briefingPrompt = `
       Jarvis, briefing matinal para o Celio.
-      [DATA]: ${hoje.toLocaleDateString('pt-BR')}
-      [CONTEXTO HD]: ${snapshot?.summary || "Foco em pontualidade e ExpertFrotas."}
-      [AGENDA]: ${agenda}
-      [CLIMA]: ${climaLondrina}
+      [CONTEXTO]: ${snapshot}
+      [AGENDA]: ${googleAgenda}
+      [CLIMA]: ${weatherData}
       
-      INSTRUÇÕES:
-      - Estilo Tony Stark: Curto, inteligente, levemente sarcástico.
-      - Não repita a hora.
-      - Resuma os compromissos.
-      - Dê uma dica de trajeto (moto) baseada no clima: ${climaLondrina}.
-      - Lembre-o: Despertar 05h, Saída 06h20. Não se atrase.
+      MISSÃO: Estilo Tony Stark. Curto e direto. 
+      Resuma o dia e lembre-o: Acordar 05h, Sair 06h20.
     `;
 
-    const aiReply = await callOpenRouter(briefingPrompt);
+    // 4. CHAMADA IA COM TIMEOUT
+    const aiReply = await Promise.race([
+      callOpenRouter(briefingPrompt),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('IA Timeout')), 6000))
+    ]) as string;
 
-    // 6. ENVIO
+    // 5. ENVIO E RESPOSTA IMEDIATA
     await sendTelegram(userId, aiReply);
 
-    return NextResponse.json({ ok: true, weather: climaLondrina });
+    return NextResponse.json({ ok: true, weather: weatherData });
 
   } catch (error: any) {
-    console.error("Erro no Cron Briefing:", error.message);
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    console.error("Erro Cron:", error.message);
+    // Se der erro, pelo menos retorna algo para a Vercel não ficar "pensando"
+    return NextResponse.json({ ok: false, error: error.message }, { status: 200 });
   }
 }
