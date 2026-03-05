@@ -342,5 +342,3 @@ export async function reinforceMemory(memoryId: string) {
     console.error("Erro reinforceMemory:", e);
   }
         }
-
-                                         }
