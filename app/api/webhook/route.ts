@@ -275,32 +275,43 @@ export async function POST(req: Request) {
     // ============================================================
     const fusoLondrina = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 
-    const finalPrompt = `
-JARVIS | USUÁRIO: ${authorName} | ${fusoLondrina} | MODO: ${weights.horizon.toUpperCase()}
+    // ============================================================
+    // MONTA MESSAGES ESTRUTURADO — como uma instância real
+    // System prompt com contexto + histórico como conversa
+    // ============================================================
+    const systemPrompt = `
+Você é ${authorName === 'Celio' ? 'Jarvis' : 'Lev'}, assistente pessoal de ${authorName}.
+Data/hora: ${fusoLondrina} | Modo: ${weights.horizon.toUpperCase()}
 
-${weightedContext}
+${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]
+${truncatedL3}` : ''}
+
+${truncatedEvents ? `[EVENTOS RELEVANTES]
+${truncatedEvents}` : ''}
+
+${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]
+${truncatedHd}` : ''}
+
+${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao citar]
+${truncatedAshes}` : ''}
 
 ${onboardingBlock}
 
-═══════════════════════════════════════
-MENSAGEM: "${messageText}"
-═══════════════════════════════════════
-
 REGRAS:
 1. FOCO: Responda O QUE FOI PERGUNTADO. Nunca mude de assunto.
-   - "fala sobre o que?", "como é?", "me conta mais" = sempre se refere ao ÚLTIMO assunto da RAM
-   - Nunca pergunte "sobre o que?" se a RAM deixa claro o assunto
+   - Pronomes ("esse filme", "isso", "ele") sempre se referem ao ÚLTIMO assunto da conversa
+   - Nunca pergunte "qual?" se o histórico já deixa claro
 
 2. TOM: Amigo de longa data — inteligente, direto, humano.
    - Trate por "${informalAddress}" de forma natural, não em toda frase
-   - Humor leve e inesperado quando o momento pedir — como numa boa conversa
+   - Humor leve e inesperado quando o momento pedir
    - NUNCA comece com "Considerando que", "Com base no seu histórico", "Levando em conta"
    - SEM perguntas ao final — só pergunte se for ESSENCIAL para agir
    - SEM "Em que posso te ajudar?" ou variações
 
 3. MEMÓRIA DISTANTE: Se usar cinzas, diga "lembro vagamente que...".
 
-4. PERGUNTAS ABERTAS: Só quando precisar agir. Use:
+4. PERGUNTAS ABERTAS: Só quando precisar agir:
    [PERGUNTA_ABERTA: "texto" | contexto]
 
 5. GATILHOS:
@@ -310,9 +321,31 @@ REGRAS:
    [LIMPAR_PENDENTE]
 
 6. Ao final: [CLASSE: info] ou [CLASSE: noise]
-`;
+`.trim();
 
-    let aiReply = await callOpenRouter(finalPrompt);
+    // Busca histórico para montar conversa estruturada
+    const { data: historyForMessages } = await supabase
+      .from('brain')
+      .select('content, metadata')
+      .eq('user_id', stringId)
+      .neq('category', 'noise')
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+
+    const conversationMessages: ChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      // Histórico como conversa estruturada (ordem cronológica)
+      ...(historyForMessages || []).reverse().flatMap((h: any): ChatMessage[] => [
+        { role: 'user',      content: h.content },
+        { role: 'assistant', content: (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim() }
+      ]),
+      // Mensagem atual
+      { role: 'user', content: messageText }
+    ];
+
+    let aiReply = await callOpenRouter(conversationMessages);
 
     // ============================================================
     // INTERCEPTORES
