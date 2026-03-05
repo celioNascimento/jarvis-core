@@ -10,29 +10,32 @@ export async function POST(req: Request) {
     
     // --- 🎤 MOTOR DE AUDIÇÃO (WHISPER FIX) ---
     if (message?.voice) {
-      const fileId = message.voice.file_id;
-      const getFile = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/getFile?file_id=${fileId}`);
-      const fileData = await getFile.json();
-      
-      if (fileData.ok) {
-        const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_TOKEN}/${fileData.result.file_path}`;
-        const audioRes = await fetch(fileUrl);
-        const buffer = await audioRes.arrayBuffer();
+      try {
+        const fileId = message.voice.file_id;
+        const getFile = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/getFile?file_id=${fileId}`);
+        const fileData = await getFile.json();
         
-        const formData = new FormData();
-        // O Whisper exige um Blob/File com nome de arquivo para identificar o formato
-        const audioFile = new Blob([buffer], { type: 'audio/ogg' });
-        formData.append('file', audioFile, 'voice.ogg');
-        formData.append('model', 'whisper-1');
+        if (fileData.ok) {
+          const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_TOKEN}/${fileData.result.file_path}`;
+          const audioRes = await fetch(fileUrl);
+          const buffer = await audioRes.arrayBuffer();
+          
+          const formData = new FormData();
+          const audioFile = new Blob([buffer], { type: 'audio/ogg' });
+          formData.append('file', audioFile, 'voice.ogg');
+          formData.append('model', 'whisper-1');
 
-        const transcriptionRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
-          body: formData
-        });
-        
-        const transcriptionData = await transcriptionRes.json();
-        messageText = transcriptionData.text || "";
+          const transcriptionRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+            body: formData
+          });
+          
+          const transcriptionData = await transcriptionRes.json();
+          messageText = transcriptionData.text || "";
+        }
+      } catch (err) {
+        console.error("Falha no áudio, tentando seguir...", err);
       }
     }
 
@@ -59,7 +62,7 @@ export async function POST(req: Request) {
       if (search && search.length > 0) hdContext = search.map((r) => `[Memória Antiga]: ${r.summary}`).join('\n');
     }
 
-    // 3. CAMADA RAM (HISTÓRICO RECENTE - Aumentado para 15 para evitar amnésia)
+    // 3. CAMADA RAM (HISTÓRICO RECENTE)
     const { data: history } = await supabase.from('brain')
       .select('content, metadata')
       .eq('user_id', stringId)
@@ -78,36 +81,31 @@ export async function POST(req: Request) {
     const finalPrompt = `
 SISTEMA CENTRAL: JARVIS | USUÁRIO: ${authorName} | AGORA: ${fusoLondrina}
 
-[PERFIL L3 - QUEM É O USUÁRIO]
+[PERFIL L3]
 ${currentContextL3}
 
-[HISTÓRICO DE CONVERSA (RAM) - O QUE ACABAMOS DE FALAR]
+[HISTÓRICO RAM]
 ${ramMemory}
 
-[MEMÓRIAS PROFUNDAS (HD)]
+[MEMÓRIAS HD]
 ${hdContext}
 
 MENSAGEM ATUAL: "${messageText}"
 
 MISSÃO:
-1. PERSONALIDADE: Você é o Jarvis (Tony Stark style). Seja direto, inteligente e levemente sarcástico. 
-2. REGRAS DE SAUDAÇÃO: NÃO diga "Boa Noite" ou a hora, a menos que seja a primeira vez que nos falamos no dia. Mantenha o fluxo da conversa anterior.
-3. MEMÓRIA: Respeite o que foi dito na seção [HISTÓRICO]. Se falamos de bombons ou presentes há 2 minutos, você SABE disso.
-4. GATILHOS (Rigor Máximo):
-   - [SALVAR_EVENTO]: Datas anuais (aniversários).
-   - [DESATIVAR_ROTINA]: Só para feriados/folgas explícitos.
-   - [AGENDAR]: Tarefas na agenda.
-5. CLASSE: Termine com [CLASSE: info] ou [CLASSE: noise].
+1. PERSONALIDADE: Tony Stark. Direto, sem saudações robóticas ou repetição de horas.
+2. MEMÓRIA: Use o HISTÓRICO acima para manter o contexto.
+3. GATILHOS: [SALVAR_EVENTO], [DESATIVAR_ROTINA], [AGENDAR].
+4. CLASSE: Termine com [CLASSE: info] ou [CLASSE: noise].
     `;
 
     let aiReply = await callOpenRouter(finalPrompt);
 
-    // 5. INTERCEPTORES (Tipagem blindada)
+    // 5. INTERCEPTORES
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/g, '').trim();
 
-    // Eventos
     const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\]?/gi;
     const evMatches = Array.from(aiReply.matchAll(eventRegex)) as any[];
     for (const m of evMatches) {
@@ -117,7 +115,6 @@ MISSÃO:
       }
     }
 
-    // Google Agenda
     const scheduleRegex = /\[?AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i;
     const sMatch = aiReply.match(scheduleRegex);
     if (sMatch && sMatch.length >= 4) {
@@ -125,7 +122,7 @@ MISSÃO:
       aiReply = aiReply.replace(sMatch[0], '').trim() + `\n\n🗓️ **Agenda:** ${res}`;
     }
 
-    // 6. PERSISTÊNCIA E ENVIO
+    // 6. PERSISTÊNCIA
     await supabase.from('brain').insert([{ 
       content: messageText, 
       category, 
