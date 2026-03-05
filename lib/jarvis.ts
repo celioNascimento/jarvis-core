@@ -193,9 +193,29 @@ export async function clearPendingQuestion(userId: string) {
 // 7. MOTOR DE CONSOLIDAÇÃO (RAM → L3 → HD) — CORRIGIDO
 // Compacta a cada 5 mensagens (era 20 — muito lento)
 // ============================================================
+// Strings que indicam resposta quebrada/loop — nunca devem ser gravadas no HD
+const MEMORIA_INVALIDA = [
+  'Framework de 4 Etapas',
+  'Como posso te ajudar a ser mais produtivo',
+  'Olá! 👋',
+  'Plano de Ação:',
+  'Próximos Passos:',
+];
+
+function memoriaEhValida(texto: string): boolean {
+  // Rejeita se contém padrões de loop
+  if (MEMORIA_INVALIDA.some(p => texto.includes(p))) return false;
+  // Rejeita se for menor que 100 chars (vazio / inútil)
+  if (texto.trim().length < 100) return false;
+  // Rejeita se mais de 40% do texto for repetição de um mesmo parágrafo
+  const linhas = texto.split('\n').filter(l => l.trim().length > 20);
+  const unicas = new Set(linhas);
+  if (linhas.length > 5 && unicas.size / linhas.length < 0.6) return false;
+  return true;
+}
+
 export async function compactMemory(userId: string, authorName: string) {
   try {
-    // CORRIGIDO: filtra por user_id (coluna agora existe)
     const { data: rawBrain } = await supabase
       .from('brain')
       .select('content, metadata, created_at')
@@ -203,8 +223,8 @@ export async function compactMemory(userId: string, authorName: string) {
       .neq('category', 'noise')
       .order('created_at', { ascending: true });
 
-    // CORRIGIDO: threshold reduzido de 20 para 5
-    if (!rawBrain || rawBrain.length < 5) return;
+    // Threshold: 20 mensagens antes de compactar
+    if (!rawBrain || rawBrain.length < 20) return;
 
     const { data: userProfile } = await supabase
       .from('users')
@@ -214,50 +234,80 @@ export async function compactMemory(userId: string, authorName: string) {
 
     const oldContext = userProfile?.current_context || "Nenhum contexto prévio.";
 
-    const brainText = rawBrain.map(m =>
-      `${authorName}: ${m.content}\nJarvis: ${m.metadata?.ai_reply || ''}`
+    // Padrões de saudação — sem valor semântico para memória
+    const SAUDACOES = [
+      /^(olá|oi|e aí|fala|qual a boa|tudo bem|tudo bom|bom dia|boa tarde|boa noite|hey|opa|salve)[!?,. ]*/i,
+      /^(ok|certo|entendido|perfeito|ótimo|show|vlw|valeu|obrigad)[!?,. ]*/i,
+    ];
+
+    const ehSaudacao = (texto: string) =>
+      SAUDACOES.some(r => r.test(texto.trim()));
+
+    // Filtra entradas com ai_reply válido (ignora saudações, loops e respostas curtas)
+    const entradasValidas = rawBrain.filter(m => {
+      const reply = m.metadata?.ai_reply || '';
+      if (ehSaudacao(m.content)) return false;
+      if (reply.trim().length > 20 && !MEMORIA_INVALIDA.some(p => reply.includes(p))) return true;
+      return false;
+    });
+
+    if (entradasValidas.length < 5) {
+      console.log(`[Memory] Entradas válidas insuficientes (${entradasValidas.length}) — compactação cancelada`);
+      return;
+    }
+
+    const brainText = entradasValidas.map(m =>
+      `${authorName}: ${m.content}\nJarvis: ${(m.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim()}`
     ).join('\n\n');
 
     const prompt = `
-      Você é o Gerente de Memória do Jarvis. Mantenha o Dossiê do usuário ${authorName} atualizado.
-      
-      [DOSSIÊ ATUAL]:
-      ${oldContext}
-      
-      [NOVAS INTERAÇÕES]:
-      ${brainText}
-      
-      TAREFA: Integre as novas informações ao Dossiê existente.
-      - Preserve TODOS os dados anteriores relevantes
-      - Adicione novas informações, decisões e preferências detectadas
-      - Marque compromissos com datas quando houver
-      - Retorne APENAS o Dossiê atualizado, sem comentários
-    `;
+Você é o Gerente de Memória do Lev. Mantenha o Dossiê do usuário ${authorName} atualizado.
+
+[DOSSIÊ ATUAL]:
+${oldContext}
+
+[NOVAS INTERAÇÕES]:
+${brainText}
+
+TAREFA: Integre as novas informações ao Dossiê existente.
+- Preserve TODOS os dados anteriores relevantes
+- Adicione novas informações, decisões, preferências e fatos detectados
+- Marque compromissos com datas quando houver
+- Seja denso e informativo — este texto alimenta a memória de longo prazo
+- Retorne APENAS o Dossiê atualizado em português, sem comentários, sem markdown excessivo
+    `.trim();
 
     const newContext = await callOpenRouter(prompt);
+
+    // Validação anti-lixo antes de gravar
+    if (!memoriaEhValida(newContext)) {
+      console.error('[Memory] Compactação rejeitada — resumo inválido detectado');
+      return;
+    }
+
     const embedding = await generateEmbedding(newContext);
 
     if (embedding) {
-      // Atualiza L3 (Dossiê no perfil do usuário)
+      // Atualiza L3 (Dossiê no perfil)
       await supabase
         .from('users')
         .update({ current_context: newContext })
         .eq('id', userId);
 
-      // Alimenta HD com peso emocional neutro (será ajustado pelo decay)
+      // Alimenta HD
       await supabase.from('memories').insert([{
         summary: newContext,
         embedding,
         user_id: userId,
         relevance_score: 1.0,
         access_count: 0,
-        decay_lambda: 0.005, // Dossiê decai lentamente
+        decay_lambda: 0.005,
         emotional_weight: 0.5,
-        metadata: { type: 'auto_consolidation', count: rawBrain.length }
+        metadata: { type: 'auto_consolidation', count: entradasValidas.length }
       }]);
 
-      // Limpa RAM processada
-      const lastProcessedDate = rawBrain[rawBrain.length - 1].created_at;
+      // Limpa apenas as entradas já processadas (não deleta tudo)
+      const lastProcessedDate = entradasValidas[entradasValidas.length - 1].created_at;
       await supabase
         .from('brain')
         .delete()
@@ -265,7 +315,7 @@ export async function compactMemory(userId: string, authorName: string) {
         .neq('category', 'noise')
         .lte('created_at', lastProcessedDate);
 
-      console.log(`🧹 Memória de ${authorName} consolidada. ${rawBrain.length} entradas → L3 atualizado.`);
+      console.log(`🧹 Memória de ${authorName} consolidada. ${entradasValidas.length} entradas → L3 + HD.`);
     }
   } catch (e) {
     console.error("Erro na compactação:", e);
