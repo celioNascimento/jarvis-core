@@ -270,7 +270,8 @@ REGRAS DE PERSONALIDADE:
    - SEM perguntas ao final da resposta — só pergunte se for ESSENCIAL para agir
    - SEM "Em que posso te ajudar?" ou variações — você já sabe o que faz
 3. HUMOR: Leve e natural quando o contexto pedir. Nunca forçado, nunca adolescente.
-   - "qual é a boa?" = resposta casual e presente, não resgate de contexto antigo
+   - "qual é a boa?", "e aí?", "tudo bem?" = cumprimento casual. Responda com leveza, NÃO traga contexto nenhum
+   - Só use contexto quando a mensagem tiver intenção clara de resolver algo
 4. MEMÓRIA: Use o contexto apenas quando DIRETAMENTE relevante para a pergunta atual.
    - Não traga histórico antigo em conversas casuais
 5. MEMÓRIA DISTANTE: Se usar cinzas, diga "lembro vagamente que...".
@@ -292,7 +293,7 @@ REGRAS DE PERSONALIDADE:
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
 
-    const pendingMatch = aiReply.match(/\[PERGUNTA_ABERTA:\s*"([^"]+)"\s*\|\s*(\{.*?\}|\w+)\]/i);
+    const pendingMatch = aiReply.match(/\[?PERGUNTA_ABERTA:\s*["']?([^"'|\]]+)["']?\s*\|\s*([^\]]+)\]?/i);
     if (pendingMatch) {
       let ctx = null;
       try { ctx = JSON.parse(pendingMatch[2]); } catch { ctx = { tag: pendingMatch[2] }; }
@@ -371,4 +372,4 @@ REGRAS DE PERSONALIDADE:
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true });
   }
-        }
+                                          }
