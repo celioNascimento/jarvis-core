@@ -13,10 +13,20 @@ export const supabase = createClient(
 // ============================================================
 // 2. MOTOR DE IA (OpenRouter - Gemini 2.0 Flash)
 // ============================================================
-export async function callOpenRouter(prompt: string) {
+type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+
+export async function callOpenRouter(
+  input: string | ChatMessage[],
+  model: string = "google/gemini-2.0-flash-001"
+) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
+
+    // Aceita string simples ou array estruturado de messages
+    const messages: ChatMessage[] = typeof input === 'string'
+      ? [{ role: 'user', content: input }]
+      : input;
 
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -26,10 +36,10 @@ export async function callOpenRouter(prompt: string) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "google/gemini-2.0-flash-001",
-        max_tokens: 400,
+        model,
+        max_tokens: 800,
         temperature: 0.7,
-        messages: [{ role: "user", content: prompt }]
+        messages
       })
     });
 
@@ -331,4 +341,6 @@ export async function reinforceMemory(memoryId: string) {
   } catch (e) {
     console.error("Erro reinforceMemory:", e);
   }
+        }
+
                                          }
