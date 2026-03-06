@@ -275,7 +275,9 @@ REGRAS:
 - FONTE: extraia APENAS do que o USUÁRIO afirma. Perguntas do assistente = ignorar
 - nome_completo: só com sobrenome(s). "Celio Roberto Ramos do Nascimento" → extrai tudo
   "pode me chamar de X" → NÃO é nome_completo, é nome_preferido
-- nome_preferido: "pode me chamar de Celio", "prefiro Jessica", "me chama de Cel"
+- nome_preferido: APENAS quando usuário disser explicitamente como quer ser chamado.
+  "pode me chamar de X", "prefiro X", "me chama de X" → nome_preferido="X"
+  NUNCA inferir de contexto, nome de terceiros ou perguntas do assistente
 - cidade/estado: infira estado pela cidade (Londrina→PR, São Paulo→SP). Estado = sigla 2 letras
 - cidade_natal ≠ cidade: natal=onde nasceu, cidade=onde mora AGORA
 - telefone: "telefone", "celular", "número", "fone", "contato"
@@ -316,7 +318,8 @@ REGRAS:
     }
 
     set('full_name',      data.nome_completo,      'name');
-    set('preferred_name', data.nome_preferido,      'once');
+    // preferred_name: atualiza sempre que usuário afirmar explicitamente
+    if (data.nome_preferido) patch.preferred_name = data.nome_preferido;
     set('nickname',       data.apelido,             'once');
     set('city',           data.cidade,              'once');
     set('state',          data.estado,              'once');
