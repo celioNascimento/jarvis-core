@@ -185,14 +185,13 @@ async function detectGaps(
   if (contexts.length === 0) return [];
 
   const [profileRes, childrenRes] = await Promise.all([
-    supabase.from('user_profiles').select('personality_notes, city, current_job').eq('user_id', userId).maybeSingle(),
+    supabase.from('user_profiles').select('spouse_name, city, current_job').eq('user_id', userId).maybeSingle(),
     supabase.from('children').select('name').eq('parent_id', userId),
   ]);
 
   const profile    = profileRes.data;
   const childNames = (childrenRes.data || []).map((c: any) => c.name);
-  const conjugeMatch = profile?.personality_notes?.match(/C.njuge: ([^\n(|]+)/);
-  const conjugeNome  = conjugeMatch?.[1]?.trim();
+  const conjugeNome = profile?.spouse_name;
 
   const prompt = `Identifique lacunas de informação na troca abaixo.
 
@@ -242,7 +241,12 @@ Retorne APENAS JSON (null para não mencionados):
 Usuário: "${userMessage}"
 Assistente: "${aiReply}"
 
-{"cidade": null, "estado": null, "cidade_natal": null, "nascimento": null, "profissao": null, "empresa": null, "genero": null}`;
+{"cidade": null, "estado": null, "cidade_natal": null, "estado_natal": null, "nascimento": null, "profissao": null, "empresa": null, "genero": null}
+
+REGRAS:
+- Se a cidade for mencionada e o estado for conhecido (ex: Londrina → PR, São Paulo → SP), infira o estado.
+- estado: sigla de 2 letras (ex: "PR", "SP", "MG")
+- nascimento: formato YYYY-MM-DD`;
 
   try {
     const data = JSON.parse(await callAI(prompt, 200));
@@ -251,6 +255,7 @@ Assistente: "${aiReply}"
     if (data.cidade)       patch.city        = data.cidade;
     if (data.estado)       patch.state       = data.estado;
     if (data.cidade_natal) patch.birth_city  = data.cidade_natal;
+    if (data.estado_natal) patch.birth_state = data.estado_natal;
     if (data.nascimento)   patch.birth_date  = data.nascimento;
     if (data.profissao)    patch.current_job = data.profissao;
     if (data.empresa)      patch.company     = data.empresa;
@@ -301,30 +306,23 @@ filhos: [{"nome": "Miguel", "idade": 5}] apenas se mencionados.`;
 
     const conjuge = data.esposa?.nome ? data.esposa : data.marido?.nome ? data.marido : null;
     if (conjuge?.nome) {
-      const { data: existing } = await supabase
-        .from('user_profiles')
-        .select('personality_notes')
-        .eq('user_id', userId)
-        .maybeSingle();
+      const spousePatch: Record<string, any> = {
+        user_id:     userId,
+        spouse_name: conjuge.nome,
+        updated_at:  new Date().toISOString(),
+      };
+      if (conjuge.aniversario) {
+        spousePatch.spouse_birthday = normalizeDate(conjuge.aniversario);
+      }
 
-      const oldNotes  = existing?.personality_notes || '';
-      const conjugeRegex = /C.njuge: [^\n]*/;
-      const newNote   = `Cônjuge: ${conjuge.nome}${conjuge.aniversario ? ` (aniv: ${conjuge.aniversario})` : ''}`;
-      const newNotes  = conjugeRegex.test(oldNotes)
-        ? oldNotes.replace(conjugeRegex, newNote)
-        : `${oldNotes}\n${newNote}`.trim();
-
-      await supabase.from('user_profiles').upsert(
-        { user_id: userId, personality_notes: newNotes, updated_at: new Date().toISOString() },
-        { onConflict: 'user_id' }
-      );
+      await supabase.from('user_profiles').upsert(spousePatch, { onConflict: 'user_id' });
       console.log('[Extrator/familia] Cônjuge:', conjuge.nome);
 
       if (conjuge.aniversario) {
         await upsertEvent(userId, {
-          title:           `Aniversário ${conjuge.nome}`,
-          event_date:      normalizeDate(conjuge.aniversario),
-          category:        'family',
+          title:      `Aniversário ${conjuge.nome}`,
+          event_date: normalizeDate(conjuge.aniversario),
+          category:   'family',
           ...EVENT_WEIGHTS.aniversario_esposa,
         });
       }
@@ -464,10 +462,10 @@ Retorne compromissos: [] se nenhum mencionado.`;
     for (const comp of (data.compromissos || [])) {
       if (!comp.descricao || !comp.data_hora) continue;
       const { data: ex } = await supabase.from('agenda').select('id')
-        .eq('owner_id', userId).eq('description', comp.descricao).eq('event_at', comp.data_hora).maybeSingle();
+        .eq('user_id', userId).eq('description', comp.descricao).eq('event_at', comp.data_hora).maybeSingle();
       if (!ex) {
         await supabase.from('agenda').insert({
-          owner_id: userId, description: comp.descricao,
+          user_id: userId, description: comp.descricao,
           event_at: comp.data_hora, category: comp.categoria || 'Pessoal',
         });
         console.log('[Extrator/agenda]', comp.descricao);
@@ -575,8 +573,7 @@ async function updateL3(userId: string): Promise<void> {
     if (p?.birth_date)  patches['Nascimento']  = p.birth_date;
     if (p?.faith_profile && p.faith_profile !== 'unknown') patches['Fé'] = p.faith_profile;
 
-    const conjugeMatch = p?.personality_notes?.match(/C.njuge: ([^\n(|]+)/);
-    if (conjugeMatch) patches['Esposa'] = conjugeMatch[1].trim();
+    if (p?.spouse_name) patches['Esposa'] = p.spouse_name;
 
     if (kids.length > 0) {
       patches['Filhos'] = kids.map((k: any) => {
@@ -637,7 +634,7 @@ async function callAI(prompt: string, maxTokens = 300): Promise<string> {
   });
   const data = await res.json();
   return (data.choices?.[0]?.message?.content || '')
-    .replace(/```json|```/gi, '')
+    .replace(/```json|```/g, '')
     .trim();
 }
 
