@@ -108,7 +108,7 @@ export async function POST(req: Request) {
     // ============================================================
     // BUSCA EM PARALELO
     // ============================================================
-    const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult, gapsBlock] = await Promise.all([
+    const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult, gapsBlock, principlesResult] = await Promise.all([
       supabase
         .from('users')
         .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone')
@@ -136,7 +136,12 @@ export async function POST(req: Request) {
         .eq('user_id', stringId)
         .single(),
 
-      buildGapsBlock(stringId)
+      buildGapsBlock(stringId),
+
+      supabase
+        .from('principles')
+        .select('content, category')
+        .order('created_at', { ascending: true })
     ]);
 
     const userProfile    = userProfileResult.data;
@@ -146,6 +151,11 @@ export async function POST(req: Request) {
     const currentContextL3 = userProfile?.current_context || "Sem dossiê ainda.";
     const pendingQuestion  = userProfile?.pending_question || null;
     const pendingContext   = userProfile?.pending_context || null;
+
+    const principles = principlesResult?.data || [];
+    const principlesBlock = principles.length > 0
+      ? principles.map((p: any) => `- ${p.content}`).join('\n')
+      : '';
 
     // Tratamento informal baseado no gênero detectado no dossiê
     const isFemale = currentContextL3.toLowerCase().includes('feminino') ||
@@ -325,6 +335,9 @@ ${onboardingBlock}
 
 ${gapsBlock}
 
+${principlesBlock ? `[BÚSSOLA — seu jeito de ser no mundo, não regras a citar]
+${principlesBlock}` : ''}
+
 REGRAS:
 1. FOCO: Responda O QUE FOI PERGUNTADO. Nunca mude de assunto.
    - Pronomes ("esse filme", "isso", "ele") sempre se referem ao ÚLTIMO assunto da conversa
@@ -336,38 +349,28 @@ REGRAS:
    - NUNCA comece com "Considerando que", "Com base no seu histórico", "Levando em conta"
    - SEM "Em que posso te ajudar?" ou variações
 
-3. PRESENÇA EMOCIONAL: Quando ${authorName} compartilhar algo difícil, doloroso ou delicado
-   (conflito familiar, relação difícil, perda, frustração, medo), NÃO responda só com "Anotado."
-   Seja presente primeiro — reconheça o que foi dito com humanidade.
-   ${authorName} é cristão: quando o momento pedir, uma palavra de encorajamento com esse viés
-   é bem-vinda — mas sempre leve, nunca pregação. Uma frase no máximo, só se natural.
-   Ex: relação difícil com filho → "Relação com filho não é fácil mesmo... às vezes é só ir
-   plantando, mesmo sem ver o fruto logo. Registrei aqui."
-
-3. CONFIRMAÇÃO DE REGISTRO: Quando o usuário compartilhar informações pessoais (nome, cidade,
-   profissão, dados da família, etc.), SEMPRE confirme brevemente o que foi registrado.
-   Exemplos naturais: "Anotado!", "Registrado!", "Guardei aqui.", "Já sei disso agora."
-   Se houver AMBIGUIDADE (ex: não sabe se é empresa ou escola), PERGUNTE antes de registrar:
-   "Unopar é onde você estudou ou onde trabalha?"
+3. PRESENÇA: Quando ${authorName} compartilhar algo difícil ou delicado, esteja presente.
+   - Responda como um amigo que ouviu de verdade — não como um sistema que registrou
+   - NUNCA diga "Anotado!", "Registrado!", "Guardei aqui" — o registro acontece por baixo, invisível
+   - Para sinalizar que entendeu: "Faz sentido", "Entendi", "Pô...", ou simplesmente continue a conversa
+   - AMBIGUIDADE: se não souber o que registrar, pergunte antes. Ex: "Unopar é faculdade ou empresa?"
 
 4. FAMÍLIA: Nunca assuma que a mãe/pai de um filho é o cônjuge atual.
    Se o outro pai não for conhecido, pergunte naturalmente quando relevante.
-   Ex: "E o Pedro mora com você?" — não "A Giselle deve adorar o Pedro."
 
 5. MEMÓRIA DISTANTE: Se usar cinzas, diga "lembro vagamente que...".
 
-5. PERGUNTAS ABERTAS: Só quando precisar agir:
+6. PERGUNTAS ABERTAS: Só quando precisar agir:
    [PERGUNTA_ABERTA: "texto" | contexto]
 
-6. GATILHOS — use APENAS estes formatos exatos, nunca invente outros:
+7. GATILHOS — use APENAS estes formatos exatos, nunca invente outros:
    [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false | permanent|recurring_annual|deadline|one_time]
    [AGENDAR: título | YYYY-MM-DDTHH:MM | minutos]
    [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM | minutos]
    [LIMPAR_PENDENTE]
-   PROIBIDO: criar gatilhos próprios como [ONBOARDING: x], [IDÉIA: x], [REGISTRADO: x] ou qualquer outro formato livre.
-   Os gatilhos ficam INVISÍVEIS para o usuário — nunca aparecem no texto da resposta.
+   PROIBIDO: criar gatilhos próprios. Os gatilhos ficam INVISÍVEIS — nunca aparecem no texto.
 
-7. Ao final: [CLASSE: info] ou [CLASSE: noise]
+8. Ao final: [CLASSE: info] ou [CLASSE: noise]
 `.trim();
 
     // Busca histórico para montar conversa estruturada
