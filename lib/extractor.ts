@@ -395,7 +395,7 @@ Retorne APENAS JSON (null para não mencionados):
 {
   "esposa":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null},
   "marido":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null},
-  "filhos": [{"nome": null, "nascimento": null, "idade": null, "genero": null, "pronome": null, "escola": null, "serie": null, "turno": null, "nivel_escolar": null, "necessidades_especiais": null, "apelido": null, "outro_pai": null}],
+  "filhos": [{"nome": null, "nascimento": null, "idade": null, "genero": null, "pronome": null, "escola": null, "serie": null, "turno": null, "nivel_escolar": null, "necessidades_especiais": null, "autonomia": null, "apelido": null, "outro_pai": null}],
   "pai":    {"nome": null, "apelido": null},
   "mae":    {"nome": null, "apelido": null}
 }
@@ -411,7 +411,10 @@ REGRAS:
 - nivel_escolar: "creche"|"pre"|"fundamental"|"medio"|"superior"|"nao_estuda" — infira do contexto
   "creche" → nivel_escolar="creche" | "P5" → nivel_escolar="pre" | "ensino médio concluído" → nivel_escolar="nao_estuda"
 - turno: "manha"|"tarde"|"integral"|"noite"|null
-- necessidades_especiais: array de strings se mencionado, ex: ["autismo"] | null se não mencionado
+- necessidades_especiais: array de strings se mencionado, ex: ["autismo", "TDAH"] | null se não mencionado
+- autonomia: 1-5 se frase indicar grau de independência, null se não mencionado
+  "não faz nada sozinho" → 1 | "precisa de ajuda" → 2 | "se vira em algumas coisas" → 3
+  "bastante independente" → 4 | "totalmente independente / se vira sozinho" → 5
 - outro_pai: nome do outro pai/mãe biológico SE mencionado
   "a mãe do Davi é Giselle" → outro_pai="Giselle"
   "é de um casamento anterior" → outro_pai="desconhecido"
@@ -521,6 +524,17 @@ REGRAS:
       if (filho.turno)                 childData.school_shift       = filho.turno;
       if (filho.necessidades_especiais) childData.special_needs     = filho.necessidades_especiais;
       if (filho.outro_pai)             childData.other_parent_name  = filho.outro_pai === 'desconhecido' ? null : filho.outro_pai;
+
+      // autonomy_level: frase explícita tem precedência, senão infere por life_phase
+      const autonomyByPhase: Record<string, number> = {
+        baby: 1, child: 2, teen: 3, young_adult: 4, adult: 5,
+      };
+      if (filho.autonomia) {
+        childData.autonomy_level = Math.min(5, Math.max(1, parseInt(String(filho.autonomia))));
+      } else if (!ex) {
+        // Só infere na criação — não sobrescreve em updates sem dado explícito
+        childData.autonomy_level = autonomyByPhase[life_phase] || 2;
+      }
 
       // nivel_escolar → life_phase override + school_grade quando creche/pre
       if (filho.nivel_escolar) {
