@@ -149,7 +149,7 @@ Contextos disponíveis:
             nome do pai, nome da mãe, quantidade de irmãos, fé/religião,
             formação acadêmica (curso/área), cargo/emprego atual ou futuro,
             empresa, data início emprego, escola/faculdade cursada
-- "familia": esposa/marido (nome, aniversário, telefone), filhos (nome, idade, escola, série, turno, creche, ensino médio, necessidades especiais)
+- "familia": esposa/marido (nome, aniversário, telefone), filhos (nome, idade, escola, série, turno, creche, ensino médio, necessidades especiais), nome da mãe/pai de um filho específico
 - "alias": apelido que o usuário usa para chamar alguém ("vida"=esposa, "velho"=pai)
 - "projeto": projetos, ideias, apps, negócios que desenvolve ou quer desenvolver
 - "evento": aniversários, festas, datas comemorativas recorrentes (sem hora específica)
@@ -412,9 +412,10 @@ REGRAS:
   "creche" → nivel_escolar="creche" | "P5" → nivel_escolar="pre" | "ensino médio concluído" → nivel_escolar="nao_estuda"
 - turno: "manha"|"tarde"|"integral"|"noite"|null
 - necessidades_especiais: array de strings se mencionado, ex: ["autismo"] | null se não mencionado
-- outro_pai: nome do outro pai/mãe biológico SE explicitamente mencionado como diferente do cônjuge atual
-  Ex: "é de um casamento anterior" → outro_pai="desconhecido" (será perguntado depois)
-  Ex: "filho da Ana, minha ex" → outro_pai="Ana"
+- outro_pai: nome do outro pai/mãe biológico SE mencionado
+  "a mãe do Davi é Giselle" → outro_pai="Giselle"
+  "é de um casamento anterior" → outro_pai="desconhecido"
+  "filho da Ana" → outro_pai="Ana"
   null se não mencionado`;
 
   try {
@@ -507,9 +508,12 @@ REGRAS:
       }
 
       const childData: Record<string, any> = {
-        name: nameToSave, birth_date, life_phase,
+        name: nameToSave,
         updated_at: new Date().toISOString(),
       };
+      // Só inclui birth_date e life_phase se tiver valor — nunca sobrescreve com null
+      if (birth_date)  childData.birth_date  = birth_date;
+      if (life_phase && (!ex || birth_date)) childData.life_phase = life_phase;
       if (nicknameToSave)              childData.nickname          = nicknameToSave;
       if (generoNorm)                  childData.gender             = generoNorm;
       if (filho.escola)                childData.school_name        = filho.escola;
