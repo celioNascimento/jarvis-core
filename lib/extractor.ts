@@ -363,28 +363,30 @@ Assistente: "${aiReply}"
   "escola": null
 }
 
-REGRAS CRÍTICAS — leia com atenção:
-- nome_completo: nome inteiro da pessoa. Se disser "me chamo Celio Rodrigues Nascimento" → extraia tudo
-- nome_preferido: como prefere ser chamado se diferente do nome ("prefiro Jessica")
-- cidade/estado: se cidade conhecida infira estado. Estado = sigla 2 letras (Londrina→PR, São Paulo→SP)
-- cidade_natal vs cidade: natal=onde nasceu, cidade=onde mora agora. SÃO DIFERENTES
-- telefone: qualquer número de contato mencionado como "telefone", "celular", "número", "fone"
-- whatsapp: número mencionado especificamente como "whatsapp" ou "zap"
-- formacao: ÁREA DE ESTUDO ou CURSO ("Engenharia de Computação", "Medicina", "Direito")
-             NÃO é cargo, NÃO é empresa
-- cargo_atual: FUNÇÃO/CARGO que exerce ou vai exercer ("Técnico Jr de Manutenção", "Analista")
-               NÃO é área de estudo
-- empresa: nome da empresa onde trabalha ou vai trabalhar. NÃO é escola/faculdade
-- data_inicio_emprego: data que vai começar/começou o emprego atual. Formato YYYY-MM-DD
+REGRAS CRÍTICAS:
+- nome_completo: nome inteiro. "Celio Roberto Ramos do Nascimento" → extrai tudo
+- nome_preferido: APENAS se explicitamente indicado. "pode me chamar de Cel" → "Cel" | "prefiro Jessica" → "Jessica"
+  ATENÇÃO: primeiro nome comum NÃO é nome_preferido. Só preencha com apelido/variação explícita
+- genero: extraia EXPLICITAMENTE ("sou do sexo masculino", "sou homem/mulher")
+  TAMBÉM infira por contexto: "minha esposa" → genero="masculino" | "meu marido" → genero="feminino"
+- cidade/estado: infira estado pela cidade (Londrina→PR, São Paulo→SP). Estado = sigla 2 letras
+- cidade_natal vs cidade: natal=onde nasceu, cidade=onde mora. SÃO CAMPOS DIFERENTES
+- telefone: qualquer número de contato ("telefone", "celular", "número", "fone", "contato")
+- whatsapp: número mencionado como "whatsapp", "wpp" ou "zap"
+- formacao: ÁREA DE ESTUDO ("Engenharia de Computação", "Medicina"). NÃO é cargo, NÃO é empresa
+- cargo_atual: FUNÇÃO/CARGO ("Técnico Jr de Manutenção", "Analista"). NÃO é área de estudo
+- empresa: empresa onde trabalha ou VAI trabalhar. NÃO é escola/faculdade
+- data_inicio_emprego: "a partir do dia 12/03/2026" → "2026-03-12". Formato YYYY-MM-DD
 - escolaridade: APENAS "fundamental"|"medio"|"tecnico"|"superior_cursando"|"superior_completo"|"pos_graduacao"|"mestrado"|"doutorado"
-- escola: nome da instituição de ensino (colégio, faculdade, universidade)
+- escola: nome da instituição de ensino. NÃO é empresa
 - fe: APENAS "christian_declared"|"open"|"none"
 - qtd_irmaos: número inteiro
 
-EXEMPLOS DE SEPARAÇÃO formacao vs cargo vs empresa:
-- "fiz Engenharia de Computação na Unopar" → formacao="Engenharia de Computação", escola="Unopar", empresa=null
-- "vou trabalhar na White Martins como Técnico Jr" → cargo_atual="Técnico Jr", empresa="White Martins", formacao=null
-- "sou engenheiro na Petrobras" → formacao="Engenharia" (inferido), cargo_atual=null, empresa="Petrobras"`;
+EXEMPLOS:
+- "fiz Eng. Computação na Unopar" → formacao="Engenharia de Computação", escola="Unopar", empresa=null
+- "vou trabalhar na White Martins como Técnico Jr a partir de 12/03" → cargo_atual="Técnico Jr de Manutenção", empresa="White Martins", data_inicio_emprego="2026-03-12", formacao=null
+- "sou do sexo masculino" → genero="masculino"
+- "minha esposa se chama Giselle" → genero="masculino" (inferido por contexto)`;
 
   try {
     const data = JSON.parse(await callAI(prompt, 400));
@@ -423,16 +425,23 @@ EXEMPLOS DE SEPARAÇÃO formacao vs cargo vs empresa:
       const { data: prof } = await supabase
         .from('user_profiles').select('schools').eq('user_id', userId).maybeSingle();
       const existing: string[] = prof?.schools || [];
-      if (!existing.includes(data.escola)) {
+      const normalize = (s: string) => s.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const alreadyExists = existing.some(e => normalize(e) === normalize(data.escola));
+      if (!alreadyExists) {
         patch.schools = [...existing, data.escola];
       }
     }
 
+    // Gênero: explícito ou inferido (só grava se ainda não está preenchido)
     if (data.genero) {
-      const g = data.genero.toLowerCase();
-      patch.gender = g.includes('masc') || g === 'm' ? 'masculino'
-                   : g.includes('fem')  || g === 'f' ? 'feminino'
-                   : 'prefiro_nao_dizer';
+      const { data: existingProf } = await supabase
+        .from('user_profiles').select('gender').eq('user_id', userId).maybeSingle();
+      if (!existingProf?.gender) {
+        const g = data.genero.toLowerCase();
+        patch.gender = g.includes('masc') || g === 'm' ? 'masculino'
+                     : g.includes('fem')  || g === 'f' ? 'feminino'
+                     : 'prefiro_nao_dizer';
+      }
     }
 
     if (Object.keys(patch).length === 0) return;
@@ -501,12 +510,12 @@ REGRAS:
       console.log('[Extrator/familia] Cônjuge:', conjuge.nome);
 
       // Salva apelido se mencionado
-      if (conjuge.apelido) {
-        await upsertAlias(userId, conjuge.apelido, 'spouse', null, conjuge.nome);
+      if (conjuge.apelido) {await upsertAlias(userId, conjuge.apelido, 'spouse', null, conjuge.nome);
       }
 
       if (conjuge.aniversario) {
-        await upsertEvent(userId, {title:      `Aniversário ${conjuge.nome}`,
+        await upsertEvent(userId, {
+          title:      `Aniversário ${conjuge.nome}`,
           event_date: normalizeDate(conjuge.aniversario),
           category:   'family',
           ...EVENT_WEIGHTS.aniversario_esposa,
