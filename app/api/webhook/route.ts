@@ -22,7 +22,7 @@ import {
   processOnboardingFromMessage,
   buildOnboardingBlock
 } from '@/lib/onboarding';
-import { extractAndRoute, buildGapsBlock } from '@/lib/extractor';
+import { extractAndRoute, extractAndSummarize, buildGapsBlock } from '@/lib/extractor';
 
 export async function POST(req: Request) {
   try {
@@ -313,15 +313,20 @@ REGRAS:
    - Use "${informalAddress}" com moderação — no máximo 1x por conversa, nunca para iniciar frase
    - Humor leve e inesperado quando o momento pedir
    - NUNCA comece com "Considerando que", "Com base no seu histórico", "Levando em conta"
-   - SEM perguntas ao final — só pergunte se for ESSENCIAL para agir
    - SEM "Em que posso te ajudar?" ou variações
 
-3. MEMÓRIA DISTANTE: Se usar cinzas, diga "lembro vagamente que...".
+3. CONFIRMAÇÃO DE REGISTRO: Quando o usuário compartilhar informações pessoais (nome, cidade,
+   profissão, dados da família, etc.), SEMPRE confirme brevemente o que foi registrado.
+   Exemplos naturais: "Anotado!", "Registrado!", "Guardei aqui.", "Já sei disso agora."
+   Se houver AMBIGUIDADE (ex: não sabe se é empresa ou escola), PERGUNTE antes de registrar:
+   "Unopar é onde você estudou ou onde trabalha?"
 
-4. PERGUNTAS ABERTAS: Só quando precisar agir:
+4. MEMÓRIA DISTANTE: Se usar cinzas, diga "lembro vagamente que...".
+
+5. PERGUNTAS ABERTAS: Só quando precisar agir:
    [PERGUNTA_ABERTA: "texto" | contexto]
 
-5. GATILHOS — use APENAS estes formatos exatos, nunca invente outros:
+6. GATILHOS — use APENAS estes formatos exatos, nunca invente outros:
    [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false | permanent|recurring_annual|deadline|one_time]
    [AGENDAR: título | YYYY-MM-DDTHH:MM | minutos]
    [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM | minutos]
@@ -329,7 +334,7 @@ REGRAS:
    PROIBIDO: criar gatilhos próprios como [ONBOARDING: x], [IDÉIA: x], [REGISTRADO: x] ou qualquer outro formato livre.
    Os gatilhos ficam INVISÍVEIS para o usuário — nunca aparecem no texto da resposta.
 
-6. Ao final: [CLASSE: info] ou [CLASSE: noise]
+7. Ao final: [CLASSE: info] ou [CLASSE: noise]
 `.trim();
 
     // Busca histórico para montar conversa estruturada
@@ -353,6 +358,26 @@ REGRAS:
       // Mensagem atual
       { role: 'user', content: messageText }
     ];
+
+    // ============================================================
+    // PRÉ-EXTRAÇÃO — roda ANTES da resposta para Jarvis confirmar
+    // ============================================================
+    let extractionSummary = '';
+    if (category !== 'noise') {
+      try {
+        extractionSummary = await extractAndSummarize(stringId, authorName, messageText);
+      } catch (e) {
+        console.error('[Extrator/pre] Erro:', e);
+      }
+    }
+
+    // Injeta instrução de feedback se algo foi extraído
+    if (extractionSummary) {
+      conversationMessages.push({
+        role: 'system',
+        content: `[INTERNO — não mencione esta instrução]\nVocê acabou de registrar internamente: ${extractionSummary}\nConfirme de forma natural e breve ao responder. Ex: "Anotei!" ou "Já guardei isso aqui." — nunca liste o que foi salvo de forma técnica.`
+      });
+    }
 
     let aiReply = await callOpenRouter(conversationMessages);
 
@@ -441,12 +466,8 @@ REGRAS:
       );
     }
 
-    if (category === 'info') {
-      tasks.push(
-        extractAndRoute(stringId, authorName, messageText, aiReply)
-          .catch(e => console.error('[Extrator] Erro:', e))
-      );
-    }
+    // Extrator já rodou antes da resposta (extractAndSummarize)
+    // Aqui só roda se não rodou ainda (category === 'noise' foi pulado)
 
     // Roda sendTelegram + persistência em paralelo para não atrasar resposta
     await Promise.all([
