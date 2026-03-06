@@ -72,6 +72,7 @@ export interface DetectedGap {
   field: string;        // o que falta
   context: string;      // contexto para a pergunta
   hint: string;         // sugestão de como perguntar naturalmente
+  urgencia?: string;    // "alta" | "media" | "baixa"
 }
 
 export async function extractAndRoute(
@@ -867,10 +868,8 @@ export async function buildGapsBlock(userId: string): Promise<string> {
     if (gaps.length === 0) return '';
 
     const lines = gaps.map(g =>
-      `- LACUNA [${g.urgencia?.toUpperCase() || 'MEDIA'}]: ${g.context}
-  → ${g.hint}`
-    ).join('
-');
+      `- LACUNA [${g.urgencia?.toUpperCase() || 'MEDIA'}]: ${g.context}\n  → ${g.hint}`
+    ).join('\n');
 
     return `[INFORMAÇÕES INCOMPLETAS — pergunte naturalmente quando houver abertura]
 ${lines}
