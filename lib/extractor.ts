@@ -99,7 +99,7 @@ export async function extractAndSummarize(
     if (classification.contexts.includes('familia'))     tasks.push(extractFamilia(userId, userMessage, pendingGaps));
     if (classification.contexts.includes('alias'))       tasks.push(extractAlias(userId, userMessage));
     if (classification.contexts.includes('projeto'))     tasks.push(extractProjeto(userId, userMessage));
-    if (classification.contexts.includes('evento'))      tasks.push(extractEvento(userId, userMessage));
+    // 'evento' não roda aqui — o gatilho SALVAR_EVENTO no webhook é o único caminho de insert
     if (classification.contexts.includes('agenda'))      tasks.push(extractAgenda(userId, userMessage));
     if (classification.contexts.includes('rotina'))      tasks.push(extractRotina(userId, userMessage));
     if (classification.contexts.includes('preferencia')) tasks.push(extractPreferencia(userId, userMessage));
@@ -149,18 +149,21 @@ function summarizeContexts(contexts: string[]): string {
 // HELPER: parse seguro de JSON — tenta reparar truncamentos
 // ============================================================
 function safeParseJSON(raw: string): any | null {
-  // Remove markdown fences
   const clean = raw.replace(/```json|```/g, '').trim();
   try {
     return JSON.parse(clean);
   } catch {
-    // Tenta fechar JSON truncado adicionando chaves/colchetes faltantes
     let fixed = clean;
-    const opens  = (fixed.match(/\{/g) || []).length;
-    const closes = (fixed.match(/\}/g) || []).length;
+    // Remove propriedade truncada no meio de string
+    fixed = fixed.replace(/,?\s*"[^"]*":\s*"[^"]*$/, '');
+    fixed = fixed.replace(/,?\s*"[^"]*":\s*$/, '');
+    // Fecha string aberta
+    if ((fixed.match(/"/g) || []).length % 2 !== 0) fixed += '"';
+    // Fecha arrays e objetos
+    const opens   = (fixed.match(/\{/g) || []).length;
+    const closes  = (fixed.match(/\}/g) || []).length;
     const aOpens  = (fixed.match(/\[/g) || []).length;
     const aCloses = (fixed.match(/\]/g) || []).length;
-    // Fecha arrays e objetos abertos
     for (let i = 0; i < aOpens - aCloses; i++) fixed += ']';
     for (let i = 0; i < opens - closes; i++) fixed += '}';
     try {
@@ -473,7 +476,13 @@ REGRAS:
   null se nenhum fato ou dinâmica mencionada`;
 
   try {
-    const raw  = await callAI(prompt, 800);
+    // Tokens dinâmicos: base 300 + 100 por filho existente (evita truncamento)
+    const { data: existingKids } = await supabase.from('children')
+      .select('id').eq('parent_id', userId);
+    const kidCount = Math.max((existingKids || []).length, 1);
+    const maxTokens = 300 + (kidCount * 100);
+
+    const raw  = await callAI(prompt, maxTokens);
     const data = safeParseJSON(raw);
     if (!data) { console.error('[Extrator/familia] JSON inválido:', raw.slice(0, 200)); return; }
 
