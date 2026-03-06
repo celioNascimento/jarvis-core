@@ -362,34 +362,44 @@ export async function upsertEvent(userId: string, ev: {
   priority: string; decay_type: string; emotional_weight: number;
   is_recurring?: boolean; notes?: string | null;
 }): Promise<void> {
-  // Normaliza título para comparação: remove acentos, lowercase, espaços extras
+  // Normaliza títulos de aniversário: "Aniversário da Giselle" → "Aniversário Giselle"
+  const normalizeTitle = (t: string) => t
+    .replace(/^Aniversário\s+(d[ao]\s+)/i, 'Aniversário ')  // remove "da/do"
+    .replace(/^(Aniversário\s+)\S+\s+\S+.*$/i, (_, prefix) => {
+      // "Aniversário Pedro Henrique Correa..." → "Aniversário Pedro"
+      const firstName = t.replace(/^Aniversário\s+(d[ao]\s+)?/i, '').split(' ')[0];
+      return `${prefix}${firstName}`;
+    })
+    .trim();
+
+  const title = ev.title.toLowerCase().startsWith('aniversário') || ev.title.toLowerCase().startsWith('aniversario')
+    ? normalizeTitle(ev.title)
+    : ev.title;
+
+  // Normaliza para comparação: remove acentos, lowercase
   const norm = (s: string) => s.toLowerCase().trim()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ');
 
-  // Extrai primeiro nome da pessoa do título para match fuzzy
-  // "Aniversário Giselle", "Aniversário da Giselle", "Aniversário da Esposa" → "giselle"
-  const titleNorm = norm(ev.title);
-  const firstName = titleNorm.replace(/aniversari[oa]?\s+(d[ao]\s+)?/, '').split(' ')[0];
+  const titleNorm = norm(title);
+  const firstName = titleNorm.replace(/aniversari[oa]?\s+/, '').split(' ')[0];
 
-  // Busca todos os eventos do usuário na mesma data para comparar
-  const eventYear = ev.event_date.slice(0, 4);
-  const eventMMDD = ev.event_date.slice(5); // MM-DD
-
+  // Busca candidatos na mesma data (mês+dia) para detectar duplicata
+  const eventMMDD = ev.event_date.slice(5);
   const { data: candidates } = await supabase.from('events')
     .select('id, title')
     .eq('user_id', userId)
     .or(`event_date.eq.${ev.event_date},event_date.like.%-${eventMMDD}`);
 
-  // Encontra duplicata por: título normalizado igual OU primeiro nome igual
   const ex = (candidates || []).find((c: any) => {
     const cn = norm(c.title);
-    const cf = cn.replace(/aniversari[oa]?\s+(d[ao]\s+)?/, '').split(' ')[0];
+    const cf = cn.replace(/aniversari[oa]?\s+/, '').split(' ')[0];
     return cn === titleNorm || (firstName.length > 2 && cf === firstName);
   });
 
   if (ex?.id) {
     await supabase.from('events').update({
+      title,
       event_date: ev.event_date, priority: ev.priority,
       decay_type: ev.decay_type, emotional_weight: ev.emotional_weight,
       notes: ev.notes || null,
