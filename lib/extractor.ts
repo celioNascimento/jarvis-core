@@ -364,9 +364,11 @@ Assistente: "${aiReply}"
 }
 
 REGRAS CRÍTICAS:
-- nome_completo: nome inteiro. "Celio Roberto Ramos do Nascimento" → extrai tudo
-- nome_preferido: APENAS se explicitamente indicado. "pode me chamar de Cel" → "Cel" | "prefiro Jessica" → "Jessica"
-  ATENÇÃO: primeiro nome comum NÃO é nome_preferido. Só preencha com apelido/variação explícita
+- nome_completo: nome inteiro com sobrenome(s). "Celio Roberto Ramos do Nascimento" → extrai tudo
+  ATENÇÃO: "pode me chamar de Celio" ou "me chama de X" → NÃO é nome_completo, é nome_preferido
+  nome_completo só se tiver sobrenome(s) junto
+- nome_preferido: como prefere ser chamado. "pode me chamar de Celio" → nome_preferido="Celio"
+  "prefiro Jessica" → "Jessica" | "me chama de Cel" → "Cel"
 - genero: extraia EXPLICITAMENTE ("sou do sexo masculino", "sou homem/mulher")
   TAMBÉM infira por contexto: "minha esposa" → genero="masculino" | "meu marido" → genero="feminino"
 - cidade/estado: infira estado pela cidade (Londrina→PR, São Paulo→SP). Estado = sigla 2 letras
@@ -392,7 +394,24 @@ EXEMPLOS:
     const data = JSON.parse(await callAI(prompt, 400));
     const patch: Record<string, any> = {};
 
-    if (data.nome_completo)       patch.full_name      = data.nome_completo;
+    // full_name: só grava se ainda não existe — nunca sobrescreve
+    if (data.nome_completo) {
+      const { data: existing } = await supabase
+        .from('user_profiles').select('full_name').eq('user_id', userId).maybeSingle();
+      if (!existing?.full_name) {
+        patch.full_name = data.nome_completo;
+      } else {
+        // Se vier um nome mais completo (mais palavras), atualiza
+        const existingWords = existing.full_name.trim().split(/\s+/).length;
+        const newWords      = data.nome_completo.trim().split(/\s+/).length;
+        if (newWords > existingWords) patch.full_name = data.nome_completo;
+        // Se vier nome mais curto, vai para preferred_name em vez de full_name
+        else if (newWords < existingWords && newWords <= 2) {
+          patch.preferred_name = data.nome_completo;
+        }
+      }
+    }
+
     if (data.nome_preferido)      patch.preferred_name = data.nome_preferido;
     if (data.apelido)             patch.nickname       = data.apelido;
     if (data.cidade)              patch.city           = data.cidade;
@@ -501,8 +520,7 @@ REGRAS:
       const patch: Record<string, any> = {
         user_id:     userId,
         spouse_name: conjuge.nome,
-        updated_at:  new Date().toISOString(),
-      };
+        updated_at:  new Date().toISOString(),};
       if (conjuge.aniversario) patch.spouse_birthday = normalizeDate(conjuge.aniversario);
       if (conjuge.telefone)    patch.spouse_phone    = conjuge.telefone;
 
@@ -510,7 +528,8 @@ REGRAS:
       console.log('[Extrator/familia] Cônjuge:', conjuge.nome);
 
       // Salva apelido se mencionado
-      if (conjuge.apelido) {await upsertAlias(userId, conjuge.apelido, 'spouse', null, conjuge.nome);
+      if (conjuge.apelido) {
+        await upsertAlias(userId, conjuge.apelido, 'spouse', null, conjuge.nome);
       }
 
       if (conjuge.aniversario) {
