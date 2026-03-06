@@ -149,7 +149,7 @@ Contextos disponíveis:
             nome do pai, nome da mãe, quantidade de irmãos, fé/religião,
             formação acadêmica (curso/área), cargo/emprego atual ou futuro,
             empresa, data início emprego, escola/faculdade cursada
-- "familia": esposa/marido (nome, aniversário, telefone), filhos (nome, idade, escola)
+- "familia": esposa/marido (nome, aniversário, telefone), filhos (nome, idade, escola, série, turno, creche, ensino médio, necessidades especiais)
 - "alias": apelido que o usuário usa para chamar alguém ("vida"=esposa, "velho"=pai)
 - "projeto": projetos, ideias, apps, negócios que desenvolve ou quer desenvolver
 - "evento": aniversários, festas, datas comemorativas recorrentes (sem hora específica)
@@ -395,7 +395,7 @@ Retorne APENAS JSON (null para não mencionados):
 {
   "esposa":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null},
   "marido":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null},
-  "filhos": [{"nome": null, "nascimento": null, "idade": null, "genero": null, "escola": null, "serie": null, "apelido": null, "outro_pai": null}],
+  "filhos": [{"nome": null, "nascimento": null, "idade": null, "genero": null, "pronome": null, "escola": null, "serie": null, "turno": null, "nivel_escolar": null, "necessidades_especiais": null, "apelido": null, "outro_pai": null}],
   "pai":    {"nome": null, "apelido": null},
   "mae":    {"nome": null, "apelido": null}
 }
@@ -404,8 +404,14 @@ REGRAS:
 - filhos: [] se nenhum mencionado
 - nascimento: data exata se informada, formato YYYY-MM-DD. Tem precedência sobre idade
 - aniversario: DD/MM, YYYY-MM-DD, ou "5 de agosto"
-- genero filho: "m"|"f"|null
+- genero: "m"|"f"|null — extraia de "ele"/"ela", "meu filho"/"minha filha", ou declaração explícita
+- pronome: "ele"|"ela"|null — pronome usado na mensagem para referir ao filho
 - apelido: como o usuário chama a pessoa ("vida", "velho", "mãezinha")
+- serie: série/ano escolar exato ("P5", "1º ano", "3º médio") ou tipo ("creche", "maternal")
+- nivel_escolar: "creche"|"pre"|"fundamental"|"medio"|"superior"|"nao_estuda" — infira do contexto
+  "creche" → nivel_escolar="creche" | "P5" → nivel_escolar="pre" | "ensino médio concluído" → nivel_escolar="nao_estuda"
+- turno: "manha"|"tarde"|"integral"|"noite"|null
+- necessidades_especiais: array de strings se mencionado, ex: ["autismo"] | null se não mencionado
 - outro_pai: nome do outro pai/mãe biológico SE explicitamente mencionado como diferente do cônjuge atual
   Ex: "é de um casamento anterior" → outro_pai="desconhecido" (será perguntado depois)
   Ex: "filho da Ana, minha ex" → outro_pai="Ana"
@@ -482,22 +488,51 @@ REGRAS:
           .from('user_profiles').select('preferred_name, full_name')
           .eq('user_id', String(ex.child_user_id)).maybeSingle();
         nicknameToSave = childUser?.preferred_name || childUser?.full_name?.split(' ')[0] || null;
-      } else if (filho.apelido) {
-        // Sem conta: grava se vazio ou se vier mais completo
-        const apWords  = filho.apelido.trim().split(/\s+/).length;
+      } else {
+        // Sem conta: padrão = primeiro nome quando apelido não informado
+        const apelido  = filho.apelido || nameToSave.split(' ')[0];
+        const apWords  = apelido.trim().split(/\s+/).length;
         const curWords = (ex?.nickname || '').trim().split(/\s+/).length;
-        if (!ex?.nickname || apWords > curWords) nicknameToSave = filho.apelido;
+        if (!ex?.nickname || apWords > curWords) nicknameToSave = apelido;
+      }
+
+      // Normaliza gênero para valores aceitos pelo CHECK constraint
+      let generoNorm: string | null = null;
+      if (filho.genero) {
+        const g = filho.genero.toLowerCase();
+        generoNorm = (g === 'm' || g.startsWith('masc')) ? 'masculino'
+                   : (g === 'f' || g.startsWith('fem'))  ? 'feminino' : 'outro';
+      } else if (filho.pronome) {
+        generoNorm = filho.pronome === 'ele' ? 'masculino' : filho.pronome === 'ela' ? 'feminino' : null;
       }
 
       const childData: Record<string, any> = {
         name: nameToSave, birth_date, life_phase,
         updated_at: new Date().toISOString(),
       };
-      if (nicknameToSave)  childData.nickname          = nicknameToSave;
-      if (filho.genero)    childData.gender             = filho.genero;
-      if (filho.escola)    childData.school_name        = filho.escola;
-      if (filho.serie)     childData.school_grade       = filho.serie;
-      if (filho.outro_pai) childData.other_parent_name  = filho.outro_pai === 'desconhecido' ? null : filho.outro_pai;
+      if (nicknameToSave)              childData.nickname          = nicknameToSave;
+      if (generoNorm)                  childData.gender             = generoNorm;
+      if (filho.escola)                childData.school_name        = filho.escola;
+      if (filho.serie)                 childData.school_grade       = filho.serie;
+      if (filho.turno)                 childData.school_shift       = filho.turno;
+      if (filho.necessidades_especiais) childData.special_needs     = filho.necessidades_especiais;
+      if (filho.outro_pai)             childData.other_parent_name  = filho.outro_pai === 'desconhecido' ? null : filho.outro_pai;
+
+      // nivel_escolar → life_phase override + school_grade quando creche/pre
+      if (filho.nivel_escolar) {
+        const nivelMap: Record<string, string> = {
+          creche: 'baby', pre: 'child', fundamental: 'child',
+          medio: 'teen', superior: 'young_adult', nao_estuda: life_phase,
+        };
+        if (nivelMap[filho.nivel_escolar]) childData.life_phase = nivelMap[filho.nivel_escolar];
+        if (!filho.serie && ['creche','pre'].includes(filho.nivel_escolar)) {
+          childData.school_grade = filho.nivel_escolar;
+        }
+        if (filho.nivel_escolar === 'nao_estuda') {
+          childData.school_name  = null;
+          childData.school_grade = null;
+        }
+      }
 
       let childId: string;
       if (ex?.id) {
