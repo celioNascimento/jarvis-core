@@ -241,24 +241,64 @@ Retorne APENAS JSON (null para não mencionados):
 Usuário: "${userMessage}"
 Assistente: "${aiReply}"
 
-{"cidade": null, "estado": null, "cidade_natal": null, "estado_natal": null, "nascimento": null, "profissao": null, "empresa": null, "genero": null}
+{
+  "nome_completo": null,
+  "cidade": null,
+  "estado": null,
+  "cidade_natal": null,
+  "estado_natal": null,
+  "nascimento": null,
+  "profissao": null,
+  "empresa": null,
+  "genero": null,
+  "whatsapp": null,
+  "nome_pai": null,
+  "nome_mae": null,
+  "qtd_irmaos": null,
+  "fe": null,
+  "fe_notas": null,
+  "escolaridade": null,
+  "escola": null
+}
 
 REGRAS:
-- Se a cidade for mencionada e o estado for conhecido (ex: Londrina → PR, São Paulo → SP), infira o estado.
-- estado: sigla de 2 letras (ex: "PR", "SP", "MG")
-- nascimento: formato YYYY-MM-DD`;
+- Se cidade mencionada e estado conhecido (ex: Londrina → PR), infira o estado. Sigla 2 letras.
+- nascimento: formato YYYY-MM-DD
+- fe: "christian_declared" | "open" | "none" (null se não mencionado)
+- escolaridade: "fundamental" | "medio" | "tecnico" | "superior_cursando" | "superior_completo" | "pos_graduacao" | "mestrado" | "doutorado"
+- qtd_irmaos: número inteiro
+- Retorne null para qualquer campo não mencionado explicitamente`;
 
   try {
-    const data = JSON.parse(await callAI(prompt, 200));
+    const data = JSON.parse(await callAI(prompt, 300));
     const patch: Record<string, any> = {};
 
-    if (data.cidade)       patch.city        = data.cidade;
-    if (data.estado)       patch.state       = data.estado;
-    if (data.cidade_natal) patch.birth_city  = data.cidade_natal;
-    if (data.estado_natal) patch.birth_state = data.estado_natal;
-    if (data.nascimento)   patch.birth_date  = data.nascimento;
-    if (data.profissao)    patch.current_job = data.profissao;
-    if (data.empresa)      patch.company     = data.empresa;
+    if (data.nome_completo) patch.full_name   = data.nome_completo;
+    if (data.cidade)        patch.city        = data.cidade;
+    if (data.estado)        patch.state       = data.estado;
+    if (data.cidade_natal)  patch.birth_city  = data.cidade_natal;
+    if (data.estado_natal)  patch.birth_state = data.estado_natal;
+    if (data.nascimento)    patch.birth_date  = data.nascimento;
+    if (data.profissao)     patch.current_job = data.profissao;
+    if (data.empresa)       patch.company     = data.empresa;
+    if (data.whatsapp)      patch.whatsapp    = data.whatsapp;
+    if (data.nome_pai)      patch.father_name = data.nome_pai;
+    if (data.nome_mae)      patch.mother_name = data.nome_mae;
+    if (data.qtd_irmaos !== null && data.qtd_irmaos !== undefined) {
+      patch.siblings_count = parseInt(data.qtd_irmaos);
+    }
+    if (data.fe)            patch.faith_profile = data.fe;
+    if (data.fe_notas)      patch.faith_notes   = data.fe_notas;
+    if (data.escolaridade)  patch.education_level = data.escolaridade;
+    if (data.escola) {
+      // schools é array — busca existente para não sobrescrever
+      const { data: prof } = await supabase
+        .from('user_profiles').select('schools').eq('user_id', userId).maybeSingle();
+      const existing = prof?.schools || [];
+      if (!existing.includes(data.escola)) {
+        patch.schools = [...existing, data.escola];
+      }
+    }
     if (data.genero) {
       const g = data.genero.toLowerCase();
       patch.gender = g.includes('masc') || g === 'm' ? 'masculino'
@@ -294,12 +334,12 @@ Usuário: "${userMessage}"
 Assistente: "${aiReply}"
 
 {
-  "esposa": {"nome": null, "aniversario": null},
-  "marido": {"nome": null, "aniversario": null},
+  "esposa": {"nome": null, "aniversario": null, "telefone": null},
+  "marido": {"nome": null, "aniversario": null, "telefone": null},
   "filhos": []
 }
 
-filhos: [{"nome": "Miguel", "idade": 5}] apenas se mencionados.`;
+filhos: [{"nome": "Miguel", "idade": 5, "genero": "m"}] apenas se mencionados.`;
 
   try {
     const data = JSON.parse(await callAI(prompt, 300));
@@ -311,9 +351,8 @@ filhos: [{"nome": "Miguel", "idade": 5}] apenas se mencionados.`;
         spouse_name: conjuge.nome,
         updated_at:  new Date().toISOString(),
       };
-      if (conjuge.aniversario) {
-        spousePatch.spouse_birthday = normalizeDate(conjuge.aniversario);
-      }
+      if (conjuge.aniversario) spousePatch.spouse_birthday = normalizeDate(conjuge.aniversario);
+      if (conjuge.telefone)    spousePatch.spouse_phone    = conjuge.telefone;
 
       await supabase.from('user_profiles').upsert(spousePatch, { onConflict: 'user_id' });
       console.log('[Extrator/familia] Cônjuge:', conjuge.nome);
@@ -328,8 +367,7 @@ filhos: [{"nome": "Miguel", "idade": 5}] apenas se mencionados.`;
       }
     }
 
-    for (const filho of (data.filhos || [])) {
-      if (!filho.nome) continue;
+    for (const filho of (data.filhos || [])) {if (!filho.nome) continue;
       const birthYear  = filho.idade ? new Date().getFullYear() - filho.idade : null;
       const birth_date = birthYear ? `${birthYear}-01-01` : null;
       const life_phase = getLifePhase(filho.idade);
@@ -339,14 +377,16 @@ filhos: [{"nome": "Miguel", "idade": 5}] apenas se mencionados.`;
 
       if (ex?.id) {
         await supabase.from('children')
-          .update({ birth_date, life_phase, updated_at: new Date().toISOString() })
+          .update({ birth_date, life_phase, gender: filho.genero || null, updated_at: new Date().toISOString() })
           .eq('id', ex.id);
       } else {
         await supabase.from('children').insert({
           parent_id: userId, name: filho.nome, birth_date, life_phase,
+          gender: filho.genero || null,
           updated_at: new Date().toISOString(),
         });
       }
+
       if (birth_date) {
         await upsertEvent(userId, {
           title:     `Aniversário ${filho.nome}`,
