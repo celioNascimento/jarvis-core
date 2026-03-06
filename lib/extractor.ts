@@ -393,9 +393,9 @@ Mensagem do usuário: "${userMessage}"
 
 Retorne APENAS JSON (null para não mencionados):
 {
-  "esposa":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null},
-  "marido":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null},
-  "filhos": [{"nome": null, "nascimento": null, "idade": null, "genero": null, "pronome": null, "escola": null, "serie": null, "turno": null, "nivel_escolar": null, "necessidades_especiais": null, "autonomia": null, "apelido": null, "outro_pai": null}],
+  "esposa":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null, "nota": null},
+  "marido":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null, "nota": null},
+  "filhos": [{"nome": null, "nascimento": null, "idade": null, "genero": null, "pronome": null, "escola": null, "serie": null, "turno": null, "nivel_escolar": null, "necessidades_especiais": null, "autonomia": null, "apelido": null, "outro_pai": null, "nota": null}],
   "pai":    {"nome": null, "apelido": null},
   "mae":    {"nome": null, "apelido": null}
 }
@@ -407,6 +407,8 @@ REGRAS:
 - genero: "m"|"f"|null — extraia de "ele"/"ela", "meu filho"/"minha filha", ou declaração explícita
 - pronome: "ele"|"ela"|null — pronome usado na mensagem para referir ao filho
 - apelido: como o usuário chama a pessoa ("vida", "velho", "mãezinha")
+- nota (esposa/marido): fato marcante mencionado sobre o cônjuge
+  "a Giselle comprou um carro" → nota="Comprou um carro" | null se nenhum
 - serie: série/ano escolar exato ("P5", "1º ano", "3º médio") ou tipo ("creche", "maternal")
 - nivel_escolar: "creche"|"pre"|"fundamental"|"medio"|"superior"|"nao_estuda" — infira do contexto
   "creche" → nivel_escolar="creche" | "P5" → nivel_escolar="pre" | "ensino médio concluído" → nivel_escolar="nao_estuda"
@@ -419,7 +421,11 @@ REGRAS:
   "a mãe do Davi é Giselle" → outro_pai="Giselle"
   "é de um casamento anterior" → outro_pai="desconhecido"
   "filho da Ana" → outro_pai="Ana"
-  null se não mencionado`;
+  null se não mencionado
+- nota: fato marcante sobre a criança mencionado na conversa
+  "o Pedro comprou uma moto" → nota="Comprou uma moto"
+  "o Davi ganhou mochila do Pikachu" → nota="Ganhou mochila do Pikachu"
+  null se nenhum fato marcante`;
 
   try {
     const data = JSON.parse(await callAI(prompt, 400));
@@ -445,6 +451,13 @@ REGRAS:
           event_date: normalizeDate(conjuge.aniversario),
           category: 'family',
           priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.95,
+        });
+      }
+      // Nota sobre cônjuge → person_notes
+      if (conjuge.nota) {
+        await supabase.from('person_notes').insert({
+          user_id: userId, person_name: conjuge.nome,
+          person_type: 'spouse', note: conjuge.nota,
         });
       }
       console.log('[Extrator/familia] Cônjuge:', conjuge.nome);
@@ -524,6 +537,17 @@ REGRAS:
       if (filho.turno)                 childData.school_shift       = filho.turno;
       if (filho.necessidades_especiais) childData.special_needs     = filho.necessidades_especiais;
       if (filho.outro_pai)             childData.other_parent_name  = filho.outro_pai === 'desconhecido' ? null : filho.outro_pai;
+
+      // lev_notes: acumula fatos marcantes — nunca sobrescreve, só adiciona
+      if (filho.nota) {
+        const { data: childRec } = await supabase.from('children')
+          .select('lev_notes').eq('id', ex?.id || '').maybeSingle();
+        const existing = childRec?.lev_notes || '';
+        const newNote  = `[${new Date().toLocaleDateString('pt-BR')}] ${filho.nota}`;
+        if (!existing.includes(filho.nota)) {
+          childData.lev_notes = existing ? `${existing}\n${newNote}` : newNote;
+        }
+      }
 
       // autonomy_level: frase explícita tem precedência, senão infere por life_phase
       const autonomyByPhase: Record<string, number> = {

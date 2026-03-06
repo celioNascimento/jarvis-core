@@ -179,6 +179,38 @@ export async function POST(req: Request) {
     const ashesBlock = ashes.length > 0 ? ashes.map(a => a.ash_summary).join('\n') : null;
 
     // ============================================================
+    // NOTAS CONTEXTUAIS — carrega só quando pessoa é mencionada
+    // ============================================================
+    let personNotesBlock = "";
+    const [childrenResult, personNotesResult] = await Promise.all([
+      supabase.from('children').select('name, nickname, lev_notes')
+        .eq('parent_id', stringId).not('lev_notes', 'is', null),
+      supabase.from('person_notes').select('person_name, person_type, note, noted_at')
+        .eq('user_id', stringId).order('noted_at', { ascending: false }).limit(20),
+    ]);
+
+    const msgLower = messageText.toLowerCase();
+    const childNotes = (childrenResult.data || []).filter((c: any) => {
+      const nick = (c.nickname || '').toLowerCase();
+      const name = (c.name || '').split(' ')[0].toLowerCase();
+      return msgLower.includes(nick) || msgLower.includes(name);
+    });
+    const pNotes = (personNotesResult.data || []).filter((n: any) =>
+      msgLower.includes(n.person_name.split(' ')[0].toLowerCase())
+    );
+
+    if (childNotes.length > 0 || pNotes.length > 0) {
+      const lines: string[] = [];
+      for (const c of childNotes) {
+        lines.push(`${c.nickname || c.name.split(' ')[0]}: ${c.lev_notes}`);
+      }
+      for (const n of pNotes) {
+        lines.push(`${n.person_name} [${n.noted_at}]: ${n.note}`);
+      }
+      personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
+    }
+
+    // ============================================================
     // HD VETORIAL
     // ============================================================
     const queryEmbedding = await generateEmbedding(messageText);
@@ -280,6 +312,8 @@ ${truncatedL3}` : ''}
 
 ${truncatedEvents ? `[EVENTOS RELEVANTES]
 ${truncatedEvents}` : ''}
+
+${personNotesBlock ? personNotesBlock : ''}
 
 ${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]
 ${truncatedHd}` : ''}

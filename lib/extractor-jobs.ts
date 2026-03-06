@@ -375,15 +375,33 @@ export function normalizeDate(raw: string): string {
     maio:'05', junho:'06', julho:'07', agosto:'08',
     setembro:'09', outubro:'10', novembro:'11', dezembro:'12',
   };
-  const year    = new Date().getFullYear();
-  const ptMatch = raw.match(/(\d{1,2})\s+de?\s+(\w+)/i);
+  const currentYear = new Date().getFullYear();
+
+  // "5 de agosto" ou "5 de agosto de 2020"
+  const ptMatch = raw.match(/(\d{1,2})\s+de?\s+(\w+)(\s+de?\s+(\d{4}))?/i);
   if (ptMatch) {
-    const mon = months[ptMatch[2].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+    const mon  = months[ptMatch[2].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+    const year = ptMatch[4] || String(currentYear);
     if (mon) return `${year}-${mon}-${ptMatch[1].padStart(2, '0')}`;
   }
+
   const parts = raw.split(/[-/]/);
-  if (parts.length === 2) return `${year}-${parts[0].padStart(2, '0')}-${parts[1].padStart(2, '0')}`;
-  if (parts.length === 3) return raw;
+
+  if (parts.length === 3) {
+    const [a, b, c] = parts;
+    // YYYY-MM-DD já correto
+    if (a.length === 4) return `${a}-${b.padStart(2,'0')}-${c.padStart(2,'0')}`;
+    // DD/MM/YYYY → YYYY-MM-DD
+    if (c.length === 4) return `${c}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`;
+    // DD/MM/YY → 20YY-MM-DD
+    if (c.length === 2) return `20${c}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`;
+  }
+
+  // DD/MM → ano corrente
+  if (parts.length === 2) {
+    return `${currentYear}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+  }
+
   return raw;
 }
 
@@ -396,8 +414,8 @@ export function getCategoryFromType(tipo: string): string {
 }
 
 export function getLifePhase(age: number | null): string {
-  if (!age || age <= 0) return 'child';
-  if (age <= 3)  return 'baby';
+  if (age === null || age === undefined || age < 0) return 'child';
+  if (age < 3)   return 'baby';
   if (age <= 11) return 'child';
   if (age <= 17) return 'teen';
   if (age <= 24) return 'young_adult';
