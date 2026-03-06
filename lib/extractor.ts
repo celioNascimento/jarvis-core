@@ -131,6 +131,32 @@ function summarizeContexts(contexts: string[]): string {
 }
 
 // ============================================================
+// HELPER: parse seguro de JSON — tenta reparar truncamentos
+// ============================================================
+function safeParseJSON(raw: string): any | null {
+  // Remove markdown fences
+  const clean = raw.replace(/```json|```/g, '').trim();
+  try {
+    return JSON.parse(clean);
+  } catch {
+    // Tenta fechar JSON truncado adicionando chaves/colchetes faltantes
+    let fixed = clean;
+    const opens  = (fixed.match(/\{/g) || []).length;
+    const closes = (fixed.match(/\}/g) || []).length;
+    const aOpens  = (fixed.match(/\[/g) || []).length;
+    const aCloses = (fixed.match(/\]/g) || []).length;
+    // Fecha arrays e objetos abertos
+    for (let i = 0; i < aOpens - aCloses; i++) fixed += ']';
+    for (let i = 0; i < opens - closes; i++) fixed += '}';
+    try {
+      return JSON.parse(fixed);
+    } catch {
+      return null;
+    }
+  }
+}
+
+// ============================================================
 // CLASSIFICADOR
 // ============================================================
 
@@ -428,7 +454,9 @@ REGRAS:
   null se nenhum fato marcante`;
 
   try {
-    const data = JSON.parse(await callAI(prompt, 400));
+    const raw  = await callAI(prompt, 800);
+    const data = safeParseJSON(raw);
+    if (!data) { console.error('[Extrator/familia] JSON inválido:', raw.slice(0, 200)); return; }
 
     // ── Cônjuge ──────────────────────────────────────────────
     const conjuge = data.esposa?.nome ? data.esposa : data.marido?.nome ? data.marido : null;
