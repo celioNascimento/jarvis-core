@@ -21,6 +21,7 @@ import {
   buildOnboardingBlock
 } from '@/lib/onboarding';
 import { extractAndSummarize, buildGapsBlock } from '@/lib/extractor';
+import { upsertEvent } from '@/lib/extractor-jobs';
 
 export async function POST(req: Request) {
   try {
@@ -366,12 +367,22 @@ REGRAS:
 6. PERGUNTAS ABERTAS: Só quando precisar agir:
    [PERGUNTA_ABERTA: "texto" | contexto]
 
-7. GATILHOS — use APENAS estes formatos exatos, nunca invente outros:
+7. GATILHOS — formato EXATO obrigatório, todos os campos presentes:
    [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false | permanent|recurring_annual|deadline|one_time]
-   [AGENDAR: título | YYYY-MM-DDTHH:MM | minutos]
-   [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM | minutos]
+   [AGENDAR: título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
+   [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
    [LIMPAR_PENDENTE]
-   PROIBIDO: criar gatilhos próprios. Os gatilhos ficam INVISÍVEIS — nunca aparecem no texto.
+
+   Exemplos corretos:
+   [SALVAR_EVENTO: Páscoa em família | 2026-04-05 | baixa | true | recurring_annual]
+   [SALVAR_EVENTO: Aniversário Giselle | 1985-08-05 | alta | true | recurring_annual]
+
+   REGRAS CRÍTICAS:
+   - Data YYYY-MM-DD é OBRIGATÓRIA — sem data o gatilho não funciona
+   - Páscoa 2026 = 2026-04-05 | Natal = MM-DD 12-25 | Ano Novo = 01-01
+   - Para eventos recorrentes sem data exata, use o próximo ano corrente
+   - PROIBIDO omitir qualquer campo — formato incompleto vaza no texto
+   - Os gatilhos ficam INVISÍVEIS — nunca aparecem na resposta ao usuário
 
 8. Ao final: [CLASSE: info] ou [CLASSE: noise]
 `.trim();
@@ -439,17 +450,34 @@ REGRAS:
     }
 
     // Salvar evento
-    const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(permanent|recurring_annual|deadline|one_time)\]?/gi;
+    // Regex tolerante: aceita campos fora de ordem (modelo às vezes inverte)
+    const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(permanent|recurring_annual|deadline|one_time)\]/gi;
     for (const m of Array.from(aiReply.matchAll(eventRegex)) as any[]) {
-      await supabase.from('events').insert([{
-        user_id: stringId,
-        title: m[1].trim(),
+      const evTitle = m[1].trim();
+      // Infere categoria pelo título
+      const catMap: Record<string, string> = {
+        aniversario: 'family', aniversário: 'family',
+        casamento: 'family', pascoa: 'family', páscoa: 'family',
+        natal: 'family', 'ano novo': 'family',
+        consulta: 'health', médic: 'health', exame: 'health',
+        reuniao: 'work', reunião: 'work', entrega: 'work', prazo: 'work',
+        viagem: 'personal', ferias: 'personal', férias: 'personal',
+      };
+      const titleLower = evTitle.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      const category = Object.entries(catMap).find(([k]) => titleLower.includes(k))?.[1] || 'personal';
+
+      // Peso emocional por prioridade
+      const emotionalWeight = m[3] === 'alta' ? 0.9 : m[3] === 'media' ? 0.6 : 0.3;
+
+      await upsertEvent(stringId, {
+        title: evTitle,
         event_date: m[2],
-        priority: m[3].toLowerCase(),
+        priority: m[3],
         is_recurring: m[4] === 'true',
         decay_type: m[5],
-        last_notified_year: new Date().getFullYear() - 1
-      }]);
+        category,
+        emotional_weight: emotionalWeight,
+      });
       aiReply = aiReply.replace(m[0], '').trim();
     }
 
