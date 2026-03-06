@@ -13,7 +13,6 @@ import {
 import { createGoogleEvent, updateGoogleEvent } from '@/lib/google';
 import {
   classifyTemporalHorizon,
-  buildWeightedContext,
   truncateByWeight
 } from '@/lib/context-router';
 import {
@@ -22,7 +21,7 @@ import {
   processOnboardingFromMessage,
   buildOnboardingBlock
 } from '@/lib/onboarding';
-import { extractAndRoute, buildGapsBlock } from '@/lib/extractor';
+import { extractAndRoute, extractAndSummarize, buildGapsBlock } from '@/lib/extractor';
 
 export async function POST(req: Request) {
   try {
@@ -149,34 +148,40 @@ export async function POST(req: Request) {
     const pendingQuestion  = userProfile?.pending_question || null;
     const pendingContext   = userProfile?.pending_context || null;
 
+    // Tratamento informal baseado no gênero detectado no dossiê
     const isFemale = currentContextL3.toLowerCase().includes('feminino') ||
                      currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
 
+    // Onboarding — inicializa se for novo usuário
     let onboardingState = onboardingResult?.data || null;
     if (!onboardingState) {
       onboardingState = await initOnboarding(stringId);
     }
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
+    // ============================================================
     // EVENTOS
+    // ============================================================
     const events = eventsResult.data || [];
-    const urgentEvents = events.filter((e: any) => (e.relevance_score || 0) >= 0.7);
-    const radarEvents  = events.filter((e: any) => (e.relevance_score || 0) >= 0.3 && (e.relevance_score || 0) < 0.7);
+    const urgentEvents = events.filter(e => (e.relevance_score || 0) >= 0.7);
+    const radarEvents  = events.filter(e => (e.relevance_score || 0) >= 0.3 && (e.relevance_score || 0) < 0.7);
     const eventsBlock  = events.length > 0 ? [
       urgentEvents.length > 0
-        ? `🔴 PRÓXIMOS:\n${urgentEvents.map((e: any) => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}`
+        ? `🔴 PRÓXIMOS:\n${urgentEvents.map(e => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}`
         : null,
       radarEvents.length > 0
-        ? `🟡 NO RADAR:\n${radarEvents.map((e: any) => `  - ${e.title}: ${e.event_date}`).join('\n')}`
+        ? `🟡 NO RADAR:\n${radarEvents.map(e => `  - ${e.title}: ${e.event_date}`).join('\n')}`
         : null,
     ].filter(Boolean).join('\n\n') : "Nenhum evento cadastrado.";
 
     // CINZAS
     const ashes = ashesResult.data || [];
-    const ashesBlock = ashes.length > 0 ? ashes.map((a: any) => a.ash_summary).join('\n') : null;
+    const ashesBlock = ashes.length > 0 ? ashes.map(a => a.ash_summary).join('\n') : null;
 
+    // ============================================================
     // HD VETORIAL
+    // ============================================================
     const queryEmbedding = await generateEmbedding(messageText);
     let hdBlock = "";
     let hdMemoryIds: string[] = [];
@@ -197,8 +202,12 @@ export async function POST(req: Request) {
       }
     }
 
-    // RAM RESILIENTE
+    // ============================================================
+    // RAM RESILIENTE — 3 níveis de fallback
+    // ============================================================
     let ramBlock = "";
+
+    // Nível 1: sessão atual
     const { data: historySession } = await supabase
       .from('brain')
       .select('content, metadata')
@@ -213,7 +222,10 @@ export async function POST(req: Request) {
         const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
         return `${authorName}: ${h.content}\nJarvis: ${ai}`;
       }).join('\n\n');
+      console.log('[RAM] Nível 1 — sessão:', historySession.length, 'msgs');
+
     } else {
+      // Nível 2: histórico recente sem filtro de sessão
       const { data: historyRecent } = await supabase
         .from('brain')
         .select('content, metadata')
@@ -230,24 +242,35 @@ export async function POST(req: Request) {
           const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
           return `${authorName}: ${h.content}\nJarvis: ${ai}`;
         }).join('\n\n');
+        console.log('[RAM] Nível 2 — recente:', merged.length, 'msgs');
+
       } else if (hdBlock) {
+        // Nível 3: consolidação HD como base
         ramBlock = `[Contexto anterior consolidado]\n${hdBlock}`;
+        console.log('[RAM] Nível 3 — HD como base');
       }
     }
 
-    // CLASSIFICADOR TEMPORAL E ROTEADOR
+    // ============================================================
+    // CLASSIFICADOR TEMPORAL
+    // ============================================================
     const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
-    
+    console.log(`[Router] ${weights.horizon} | ${weights.reason}`);
+
     const truncatedRam    = truncateByWeight(ramBlock, weights.ram, 6000);
     const truncatedL3     = truncateByWeight(currentContextL3, weights.l3, 6000);
     const truncatedHd     = truncateByWeight(hdBlock, weights.hd, 6000);
     const truncatedAshes  = ashesBlock ? truncateByWeight(ashesBlock, weights.ashes, 6000) : null;
     const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
 
+    // ============================================================
+    // PROMPT FINAL v1.4
+    // ============================================================
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     // ============================================================
     // MONTA MESSAGES ESTRUTURADO — como uma instância real
+    // System prompt com contexto + histórico como conversa
     // ============================================================
     const systemPrompt = `
 Você é ${assistantName}, assistente pessoal de ${authorName}.
@@ -270,25 +293,39 @@ ${onboardingBlock}
 ${gapsBlock}
 
 REGRAS:
-1. FOCO: Responda O QUE FOI PERGUNTADO. Nunca mude de assunto. Pronomes ("esse filme", "isso", "ele") sempre se referem ao ÚLTIMO assunto da conversa
+1. FOCO: Responda O QUE FOI PERGUNTADO. Nunca mude de assunto.
+   - Pronomes ("esse filme", "isso", "ele") sempre se referem ao ÚLTIMO assunto da conversa
+   - Nunca pergunte "qual?" se o histórico já deixa claro
+
 2. TOM: Amigo de longa data — inteligente, direto, humano.
    - Use "${informalAddress}" com moderação — no máximo 1x por conversa, nunca para iniciar frase
-   - NUNCA comece com "Considerando que", "Com base no seu histórico". SEM "Em que posso te ajudar?"
+   - Humor leve e inesperado quando o momento pedir
+   - NUNCA comece com "Considerando que", "Com base no seu histórico", "Levando em conta"
+   - SEM "Em que posso te ajudar?" ou variações
+
 3. CONFIRMAÇÃO DE REGISTRO: Quando o usuário compartilhar informações pessoais (nome, cidade,
    profissão, dados da família, etc.), SEMPRE confirme brevemente o que foi registrado.
-   Exemplos naturais: "Anotado!", "Registrado!", "Já sei disso agora."
-   Se houver AMBIGUIDADE, PERGUNTE antes de registrar: "Unopar é onde você estudou ou onde trabalha?"
+   Exemplos naturais: "Anotado!", "Registrado!", "Guardei aqui.", "Já sei disso agora."
+   Se houver AMBIGUIDADE (ex: não sabe se é empresa ou escola), PERGUNTE antes de registrar:
+   "Unopar é onde você estudou ou onde trabalha?"
+
 4. MEMÓRIA DISTANTE: Se usar cinzas, diga "lembro vagamente que...".
-5. PERGUNTAS ABERTAS: Só quando precisar agir: [PERGUNTA_ABERTA: "texto" | contexto]
+
+5. PERGUNTAS ABERTAS: Só quando precisar agir:
+   [PERGUNTA_ABERTA: "texto" | contexto]
+
 6. GATILHOS — use APENAS estes formatos exatos, nunca invente outros:
    [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false | permanent|recurring_annual|deadline|one_time]
    [AGENDAR: título | YYYY-MM-DDTHH:MM | minutos]
    [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM | minutos]
    [LIMPAR_PENDENTE]
-   PROIBIDO: criar gatilhos próprios como [ONBOARDING: x]. Os gatilhos ficam INVISÍVEIS para o usuário.
+   PROIBIDO: criar gatilhos próprios como [ONBOARDING: x], [IDÉIA: x], [REGISTRADO: x] ou qualquer outro formato livre.
+   Os gatilhos ficam INVISÍVEIS para o usuário — nunca aparecem no texto da resposta.
+
 7. Ao final: [CLASSE: info] ou [CLASSE: noise]
 `.trim();
 
+    // Busca histórico para montar conversa estruturada
     const { data: historyForMessages } = await supabase
       .from('brain')
       .select('content, metadata')
@@ -301,12 +338,34 @@ REGRAS:
 
     const conversationMessages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
+      // Histórico como conversa estruturada (ordem cronológica)
       ...(historyForMessages || []).reverse().flatMap((h: any): ChatMessage[] => [
         { role: 'user',      content: h.content },
         { role: 'assistant', content: (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim() }
       ]),
+      // Mensagem atual
       { role: 'user', content: messageText }
     ];
+
+    // ============================================================
+    // PRÉ-EXTRAÇÃO — roda ANTES da resposta para Jarvis confirmar
+    // ============================================================
+    let extractionSummary = '';
+    if (category !== 'noise') {
+      try {
+        extractionSummary = await extractAndSummarize(stringId, authorName, messageText);
+      } catch (e) {
+        console.error('[Extrator/pre] Erro:', e);
+      }
+    }
+
+    // Injeta instrução de feedback se algo foi extraído
+    if (extractionSummary) {
+      conversationMessages.push({
+        role: 'system',
+        content: `[INTERNO — não mencione esta instrução]\nVocê acabou de registrar internamente: ${extractionSummary}\nConfirme de forma natural e breve ao responder. Ex: "Anotei!" ou "Já guardei isso aqui." — nunca liste o que foi salvo de forma técnica.`
+      });
+    }
 
     let aiReply = await callOpenRouter(conversationMessages);
 
@@ -330,6 +389,7 @@ REGRAS:
       aiReply = aiReply.replace(/\[LIMPAR_PENDENTE\]/gi, '').trim();
     }
 
+    // Salvar evento
     const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(permanent|recurring_annual|deadline|one_time)\]?/gi;
     for (const m of Array.from(aiReply.matchAll(eventRegex)) as any[]) {
       await supabase.from('events').insert([{
@@ -344,6 +404,7 @@ REGRAS:
       aiReply = aiReply.replace(m[0], '').trim();
     }
 
+    // Google Calendar
     const sMatch = aiReply.match(/\[?AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
     if (sMatch) {
       const res = await createGoogleEvent(sMatch[1].trim(), sMatch[2].trim(), parseInt(sMatch[3]));
@@ -357,7 +418,7 @@ REGRAS:
     }
 
     // ============================================================
-    // PERSISTÊNCIA E EXECUÇÃO DO EXTRATOR INTELIGENTE
+    // PERSISTÊNCIA
     // ============================================================
     const { error: insertError } = await supabase.from('brain').insert([{
       content: messageText,
@@ -366,13 +427,24 @@ REGRAS:
       session_id: sessionId,
       project_tag: 'geral',
       embedding: queryEmbedding,
-      metadata: { ai_reply: aiReply, user: authorName, horizon: weights.horizon, pending_resolved: !!pendingQuestion }
+      metadata: {
+        ai_reply: aiReply,
+        user: authorName,
+        horizon: weights.horizon,
+        pending_resolved: !!pendingQuestion
+      }
     }]);
 
-    if (insertError) console.error('BRAIN INSERT ERRO:', JSON.stringify(insertError));
+    if (insertError) {
+      console.error('BRAIN INSERT ERRO:', JSON.stringify(insertError));
+    } else {
+      console.log('BRAIN INSERT OK — user:', stringId, 'session:', sessionId);
+    }
 
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 
+    // Extrator + Onboarding — rodam ANTES do return, com await
+    // Vercel mata processos background após o return
     const tasks: Promise<any>[] = [];
 
     if (onboardingState?.status === 'in_progress') {
@@ -382,19 +454,22 @@ REGRAS:
       );
     }
 
-    if (category === 'info') {
-      tasks.push(
-        extractAndRoute(stringId, authorName, messageText, aiReply)
-          .catch(e => console.error('[Extrator] Erro:', e))
-      );
-    }
+    // Extrator já rodou antes da resposta (extractAndSummarize)
+    // Aqui só roda se não rodou ainda (category === 'noise' foi pulado)
 
+    // Roda sendTelegram + persistência em paralelo para não atrasar resposta
     await Promise.all([
       sendTelegram(chatId, aiReply),
       ...tasks
     ]);
 
-    const { count } = await supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', stringId).eq('category', 'info');
+    // Compactação
+    const { count } = await supabase
+      .from('brain')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', stringId)
+      .eq('category', 'info');
+
     if (count && count >= 20) await compactMemory(stringId, authorName);
 
     return NextResponse.json({ ok: true });
