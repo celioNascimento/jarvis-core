@@ -60,7 +60,7 @@ export async function extractAndRoute(
     const { data: userData } = await supabase
       .from('users')
       .select('pending_gaps')
-      .eq('id', parseInt(userId))
+      .eq('id', userId)
       .single();
 
     const pendingGaps: DetectedGap[] = userData?.pending_gaps || [];
@@ -77,11 +77,11 @@ export async function extractAndRoute(
     // Estágio 2: Detectar novos gaps
     const gaps = await detectGaps(userId, userMessage, aiReply, classification.contexts, pendingGaps);
     if (gaps.length > 0) {
-      await supabase.from('users').update({ pending_gaps: gaps }).eq('id', parseInt(userId));
+      await supabase.from('users').update({ pending_gaps: gaps }).eq('id', userId);
       console.log('[Extrator] Gaps salvos:', gaps.map(g => g.field).join(', '));
     } else if (pendingGaps.length > 0) {
       // Limpa gaps resolvidos
-      await supabase.from('users').update({ pending_gaps: [] }).eq('id', parseInt(userId));
+      await supabase.from('users').update({ pending_gaps: [] }).eq('id', userId);
     }
 
     // Estágio 3: Extratores em paralelo
@@ -114,7 +114,7 @@ export async function buildGapsBlock(userId: string): Promise<string> {
     const { data } = await supabase
       .from('users')
       .select('pending_gaps')
-      .eq('id', parseInt(userId))
+      .eq('id', userId)
       .single();
 
     const gaps: DetectedGap[] = data?.pending_gaps || [];
@@ -389,8 +389,15 @@ Retorne projetos: [] se nenhum mencionado.`;
     for (const proj of (data.projetos || [])) {
       if (!proj.nome || !proj.tag) continue;
       await supabase.from('projects').upsert(
-        { tag: proj.tag, name: proj.nome, description: proj.descricao || null,
-          context_technical: `Status: ${proj.status || 'em_desenvolvimento'}` },
+        {
+          tag:               proj.tag,
+          name:              proj.nome,
+          description:       proj.descricao || null,
+          context_technical: proj.contexto_tecnico || null,
+          user_id:           userId,
+          status:            proj.status || 'em_desenvolvimento',
+          updated_at:        new Date().toISOString(),
+        },
         { onConflict: 'tag' }
       );
       console.log('[Extrator/projeto]', proj.nome);
@@ -551,10 +558,10 @@ async function updateL3(userId: string): Promise<void> {
     const [profRes, kidsRes, projRes, evRes, userRes] = await Promise.all([
       supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle(),
       supabase.from('children').select('name, birth_date, life_phase').eq('parent_id', userId),
-      supabase.from('projects').select('name, description').limit(10),
+      supabase.from('projects').select('name, description').eq('user_id', userId).limit(10),
       supabase.from('events').select('title, event_date, emotional_weight')
         .eq('user_id', userId).order('event_date').limit(10),
-      supabase.from('users').select('current_context').eq('id', parseInt(userId)).single(),
+      supabase.from('users').select('current_context').eq('id', userId).single(),
     ]);
 
     const p    = profRes.data;
@@ -605,7 +612,7 @@ async function updateL3(userId: string): Promise<void> {
         : `${ctx}\n\n${section}`;
     }
 
-    await supabase.from('users').update({ current_context: ctx.trim() }).eq('id', parseInt(userId));
+    await supabase.from('users').update({ current_context: ctx.trim() }).eq('id', userId);
     console.log('[Extrator/L3] Patches:', Object.keys(patches).join(', '));
   } catch (e) {
     console.error('[Extrator/L3] Erro:', e);
