@@ -469,5 +469,4 @@ REGRAS:
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true });
   }
-            }
-                                                       
+}
