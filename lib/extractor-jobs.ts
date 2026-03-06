@@ -311,10 +311,15 @@ export async function updateL3(userId: string): Promise<void> {
 // ============================================================
 
 export async function callAI(prompt: string, maxTokens = 300): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    console.error('[callAI] Nenhuma API key encontrada (OPENAI_API_KEY ou OPENROUTER_API_KEY)');
+    throw new Error('API key ausente');
+  }
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -324,8 +329,18 @@ export async function callAI(prompt: string, maxTokens = 300): Promise<string> {
       messages: [{ role: 'user', content: prompt }],
     }),
   });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('[callAI] HTTP erro:', res.status, err.slice(0, 200));
+    throw new Error(`callAI HTTP ${res.status}`);
+  }
   const data = await res.json();
-  return (data.choices?.[0]?.message?.content || '').replace(/```json|```/g, '').trim();
+  const text = (data.choices?.[0]?.message?.content || '').replace(/```json|```/g, '').trim();
+  if (!text) {
+    console.error('[callAI] Resposta vazia:', JSON.stringify(data).slice(0, 200));
+    throw new Error('callAI resposta vazia');
+  }
+  return text;
 }
 
 export async function upsertAlias(
@@ -347,8 +362,32 @@ export async function upsertEvent(userId: string, ev: {
   priority: string; decay_type: string; emotional_weight: number;
   is_recurring?: boolean; notes?: string | null;
 }): Promise<void> {
-  const { data: ex } = await supabase.from('events').select('id')
-    .eq('user_id', userId).ilike('title', ev.title).maybeSingle();
+  // Normaliza título para comparação: remove acentos, lowercase, espaços extras
+  const norm = (s: string) => s.toLowerCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+
+  // Extrai primeiro nome da pessoa do título para match fuzzy
+  // "Aniversário Giselle", "Aniversário da Giselle", "Aniversário da Esposa" → "giselle"
+  const titleNorm = norm(ev.title);
+  const firstName = titleNorm.replace(/aniversari[oa]?\s+(d[ao]\s+)?/, '').split(' ')[0];
+
+  // Busca todos os eventos do usuário na mesma data para comparar
+  const eventYear = ev.event_date.slice(0, 4);
+  const eventMMDD = ev.event_date.slice(5); // MM-DD
+
+  const { data: candidates } = await supabase.from('events')
+    .select('id, title')
+    .eq('user_id', userId)
+    .or(`event_date.eq.${ev.event_date},event_date.like.%-${eventMMDD}`);
+
+  // Encontra duplicata por: título normalizado igual OU primeiro nome igual
+  const ex = (candidates || []).find((c: any) => {
+    const cn = norm(c.title);
+    const cf = cn.replace(/aniversari[oa]?\s+(d[ao]\s+)?/, '').split(' ')[0];
+    return cn === titleNorm || (firstName.length > 2 && cf === firstName);
+  });
+
   if (ex?.id) {
     await supabase.from('events').update({
       event_date: ev.event_date, priority: ev.priority,
