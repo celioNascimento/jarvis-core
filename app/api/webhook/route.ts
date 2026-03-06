@@ -1,479 +1,1058 @@
-import { NextResponse } from 'next/server';
-import {
-  supabase,
-  callOpenRouter,
-  generateEmbedding,
-  sendTelegram,
-  compactMemory,
-  getOrCreateSession,
-  setPendingQuestion,
-  clearPendingQuestion,
-  reinforceMemory
-} from '@/lib/jarvis';
-import { createGoogleEvent, updateGoogleEvent } from '@/lib/google';
-import {
-  classifyTemporalHorizon,
-  truncateByWeight
-} from '@/lib/context-router';
-import {
-  getOnboardingState,
-  initOnboarding,
-  processOnboardingFromMessage,
-  buildOnboardingBlock
-} from '@/lib/onboarding';
-import { extractAndRoute, extractAndSummarize, buildGapsBlock } from '@/lib/extractor';
+// ============================================================
+// lib/extractor.ts — Extrator Contínuo de Contexto
+// ============================================================
+//
+// MAPEAMENTO DE TABELAS:
+//
+// user_profiles:
+//   full_name, preferred_name, nickname, phone, whatsapp
+//   city, state, birth_city, birth_state, birth_date, gender
+//   profession (formação/área), current_job (cargo), company, job_start_date
+//   father_name, mother_name, siblings_count
+//   faith_profile, faith_notes, education_level, schools
+//   spouse_name, spouse_birthday, spouse_phone, spouse_user_id
+//   career_notes, personality_notes
+//
+// children:
+//   parent_id, name, nickname, birth_date, gender, life_phase
+//   school_name, school_grade, school_shift, child_user_id
+//
+// contact_aliases:
+//   user_id, alias, refers_to_type, refers_to_id, refers_to_name
+//
+// events, agenda, projects, users.pending_gaps
+// ============================================================
 
-export async function POST(req: Request) {
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { db: { schema: 'jarvis' } }
+);
+
+export interface DetectedGap {
+  field: string;
+  context: string;
+  hint: string;
+  urgencia?: string;
+}
+
+interface Classification {
+  has_new_facts: boolean;
+  contexts: string[];
+}
+
+const EVENT_WEIGHTS: Record<string, { priority: string; decay_type: string; emotional_weight: number }> = {
+  aniversario_esposa:   { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.95 },
+  aniversario_filho:    { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.90 },
+  aniversario_familiar: { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.80 },
+  aniversario_amigo:    { priority: 'media', decay_type: 'recurring_annual', emotional_weight: 0.50 },
+  festa_escola:         { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.60 },
+  evento_escolar:       { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.55 },
+  consulta_medica:      { priority: 'alta',  decay_type: 'deadline',         emotional_weight: 0.70 },
+  compromisso_trabalho: { priority: 'media', decay_type: 'deadline',         emotional_weight: 0.40 },
+  entrega_projeto:      { priority: 'alta',  decay_type: 'deadline',         emotional_weight: 0.60 },
+  default:              { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.50 },
+};
+
+// ============================================================
+// ENTRADA PRINCIPAL
+// ============================================================
+
+export async function extractAndRoute(
+  userId: string,
+  userName: string,
+  userMessage: string,
+  aiReply: string
+): Promise<void> {
   try {
-    const body = await req.json();
-    const message = body.message;
-    let messageText = message?.text || "";
+    const { data: userData } = await supabase
+      .from('users').select('pending_gaps').eq('id', userId).single();
 
-    // ============================================================
-    // 🎤 WHISPER — com fallback de formatos
-    // ============================================================
-    if (message?.voice) {
-      try {
-        const fileId = message.voice.file_id;
-        const getFile = await fetch(
-          `https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/getFile?file_id=${fileId}`
-        );
-        const fileData = await getFile.json();
+    const pendingGaps: DetectedGap[] = userData?.pending_gaps || [];
+    const gapsCtx = pendingGaps.length > 0
+      ? `Gaps aguardando resposta: ${pendingGaps.map(g => `${g.field} (${g.context})`).join('; ')}`
+      : '';
 
-        if (!fileData.ok) {
-          await sendTelegram(message.chat.id, "⚠️ Não consegui acessar o áudio. Tenta de novo?");
-          return NextResponse.json({ ok: true });
-        }
+    const classification = await classify(userMessage, aiReply, gapsCtx);
+    console.log('[Extrator] Classificação:', JSON.stringify(classification));
 
-        const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_TOKEN}/${fileData.result.file_path}`;
-        const audioRes = await fetch(fileUrl);
+    if (!classification.has_new_facts) return;
 
-        if (!audioRes.ok) {
-          await sendTelegram(message.chat.id, "⚠️ Falha ao baixar o áudio. Tenta de novo?");
-          return NextResponse.json({ ok: true });
-        }
+    // Detecta gaps novos
+    const gaps = await detectGaps(userId, userMessage, aiReply, classification.contexts, pendingGaps);
+    if (gaps.length > 0) {
+      await supabase.from('users').update({ pending_gaps: gaps }).eq('id', userId);
+      console.log('[Extrator] Gaps:', gaps.map(g => g.field).join(', '));
+    } else if (pendingGaps.length > 0) {
+      await supabase.from('users').update({ pending_gaps: [] }).eq('id', userId);
+    }
 
-        const buffer = await audioRes.arrayBuffer();
-        const audioFormats = [
-          { type: 'audio/mpeg', ext: 'voice.mp3' },
-          { type: 'audio/ogg',  ext: 'voice.ogg' },
-          { type: 'audio/wav',  ext: 'voice.wav' },
-        ];
+    // Extratores em paralelo
+    const tasks: Promise<void>[] = [];
+    if (classification.contexts.includes('perfil'))      tasks.push(extractPerfil(userId, userMessage, aiReply));
+    if (classification.contexts.includes('familia'))     tasks.push(extractFamilia(userId, userMessage, aiReply, pendingGaps));
+    if (classification.contexts.includes('alias'))       tasks.push(extractAlias(userId, userMessage, aiReply));
+    if (classification.contexts.includes('projeto'))     tasks.push(extractProjeto(userId, userMessage, aiReply));
+    if (classification.contexts.includes('evento'))      tasks.push(extractEvento(userId, userMessage, aiReply));
+    if (classification.contexts.includes('agenda'))      tasks.push(extractAgenda(userId, userMessage, aiReply));
+    if (classification.contexts.includes('rotina'))      tasks.push(extractRotina(userId, userMessage, aiReply));
+    if (classification.contexts.includes('preferencia')) tasks.push(extractPreferencia(userId, userMessage, aiReply));
 
-        let transcriptionRes: Response | null = null;
-        for (const fmt of audioFormats) {
-          const formData = new FormData();
-          formData.append('file', new Blob([buffer], { type: fmt.type }), fmt.ext);
-          formData.append('model', 'whisper-1');
-          formData.append('language', 'pt');
+    await Promise.allSettled(tasks);
+    await updateL3(userId);
+  } catch (e) {
+    console.error('[Extrator] Erro geral:', e);
+  }
+}
 
-          const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
-            body: formData
-          });
+// ============================================================
+// EXTRAÇÃO COM RESUMO — para feedback na resposta do Jarvis
+// Roda antes da resposta e retorna o que foi gravado
+// ============================================================
 
-          if (res.ok) { transcriptionRes = res; break; }
-        }
+export async function extractAndSummarize(
+  userId: string,
+  userName: string,
+  userMessage: string
+): Promise<string> {
+  // Usamos string vazia como aiReply pois ainda não foi gerado
+  // O classificador trabalha só com userMessage nesse modo
+  try {
+    const { data: userData } = await supabase
+      .from('users').select('pending_gaps').eq('id', userId).single();
 
-        if (!transcriptionRes) {
-          await sendTelegram(message.chat.id, "⚠️ Não consegui transcrever o áudio. Pode digitar?");
-          return NextResponse.json({ ok: true });
-        }
+    const pendingGaps: DetectedGap[] = userData?.pending_gaps || [];
+    const gapsCtx = pendingGaps.length > 0
+      ? `Gaps aguardando resposta: ${pendingGaps.map(g => `${g.field} (${g.context})`).join('; ')}`
+      : '';
 
-        const transcriptionData = await transcriptionRes.json();
-        messageText = transcriptionData.text?.trim() || "";
+    const classification = await classify(userMessage, '', gapsCtx);
+    if (!classification.has_new_facts) return '';
 
-        if (!messageText) {
-          await sendTelegram(message.chat.id, "⚠️ O áudio veio vazio. Pode repetir?");
-          return NextResponse.json({ ok: true });
-        }
+    // Gaps
+    const gaps = await detectGaps(userId, userMessage, '', classification.contexts, pendingGaps);
+    if (gaps.length > 0) {
+      await supabase.from('users').update({ pending_gaps: gaps }).eq('id', userId);
+    } else if (pendingGaps.length > 0) {
+      await supabase.from('users').update({ pending_gaps: [] }).eq('id', userId);
+    }
 
-      } catch (err) {
-        console.error("Erro no pipeline de áudio:", err);
-        await sendTelegram(message.chat.id, "⚠️ Erro ao processar áudio. Tenta digitar.");
-        return NextResponse.json({ ok: true });
+    // Extratores em paralelo
+    const tasks: Promise<void>[] = [];
+    if (classification.contexts.includes('perfil'))      tasks.push(extractPerfil(userId, userMessage, ''));
+    if (classification.contexts.includes('familia'))     tasks.push(extractFamilia(userId, userMessage, '', pendingGaps));
+    if (classification.contexts.includes('alias'))       tasks.push(extractAlias(userId, userMessage, ''));
+    if (classification.contexts.includes('projeto'))     tasks.push(extractProjeto(userId, userMessage, ''));
+    if (classification.contexts.includes('evento'))      tasks.push(extractEvento(userId, userMessage, ''));
+    if (classification.contexts.includes('agenda'))      tasks.push(extractAgenda(userId, userMessage, ''));
+    if (classification.contexts.includes('rotina'))      tasks.push(extractRotina(userId, userMessage, ''));
+    if (classification.contexts.includes('preferencia')) tasks.push(extractPreferencia(userId, userMessage, ''));
+
+    await Promise.allSettled(tasks);
+    await updateL3(userId);
+
+    // Gera resumo humano do que foi gravado
+    return summarizeContexts(classification.contexts);
+  } catch (e) {
+    console.error('[Extrator/summarize] Erro:', e);
+    return '';
+  }
+}
+
+function summarizeContexts(contexts: string[]): string {
+  const labels: Record<string, string> = {
+    perfil:      'dados do seu perfil',
+    familia:     'informações da sua família',
+    alias:       'apelido registrado',
+    projeto:     'projeto/ideia anotado',
+    evento:      'data importante salva',
+    agenda:      'compromisso na agenda',
+    rotina:      'rotina atualizada',
+    preferencia: 'preferência registrada',
+  };
+  const found = contexts.filter(c => labels[c]).map(c => labels[c]);
+  if (found.length === 0) return '';
+  if (found.length === 1) return found[0];
+  return found.slice(0, -1).join(', ') + ' e ' + found[found.length - 1];
+}
+
+export async function buildGapsBlock(userId: string): Promise<string> {
+  try {
+    const { data } = await supabase
+      .from('users').select('pending_gaps').eq('id', userId).single();
+
+    const gaps: DetectedGap[] = data?.pending_gaps || [];
+    if (gaps.length === 0) return '';
+
+    const lines = gaps
+      .map(g => `- [${(g.urgencia || 'media').toUpperCase()}] ${g.context}\n  → ${g.hint}`)
+      .join('\n');
+
+    return [
+      '[INFORMAÇÕES INCOMPLETAS — pergunte naturalmente quando houver abertura]',
+      lines,
+      'REGRA: Pergunte UMA lacuna por vez, de forma leve. Nunca interrompa o assunto principal.',
+    ].join('\n');
+  } catch {
+    return '';
+  }
+}
+
+// ============================================================
+// CLASSIFICADOR
+// ============================================================
+
+async function classify(
+  userMessage: string,
+  aiReply: string,
+  gapsCtx: string
+): Promise<Classification> {
+  const prompt = `Analise a troca e identifique contextos com FATOS NOVOS sobre o usuário.
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+${gapsCtx ? `\n${gapsCtx}` : ''}
+
+Contextos disponíveis:
+- "perfil": nome completo, nome preferido, apelido pessoal, cidade/estado atual,
+            cidade/estado natal, data de nascimento, gênero,
+            telefone, whatsapp, número de irmãos,
+            FORMAÇÃO/ÁREA (engenharia, medicina, direito) → campo profession,
+            CARGO/EMPREGO (técnico, analista, gerente) → campo current_job,
+            EMPRESA onde trabalha ou VAI trabalhar → campo company,
+            DATA DE INÍCIO de emprego → campo job_start_date,
+            nome do pai, nome da mãe, fé/religião, escola/faculdade cursada
+- "familia": esposa/marido (nome, aniversário, telefone), filhos (nome, idade, escola)
+- "alias": apelido que o usuário usa para chamar alguém ("vida"=esposa, "velho"=pai)
+- "projeto": projetos, ideias, apps, negócios
+- "evento": aniversários, festas, datas recorrentes (sem hora)
+- "agenda": compromissos com data E hora específica
+- "rotina": horários fixos, hábitos diários
+- "preferencia": gostos, lugares favoritos, hobbies
+
+REGRAS CRÍTICAS:
+- Formação acadêmica (curso, faculdade) → "perfil" NUNCA "emprego"
+- Emprego futuro ("vou começar", "a partir de", "fui contratado") → "perfil" com job_start_date
+- Telefone/WhatsApp/celular → sempre "perfil"
+- Se gaps indicarem campo pendente e usuário responder → inclua o contexto correto
+- has_new_facts: false APENAS para saudações e piadas sem info pessoal
+
+Retorne APENAS JSON:
+{"has_new_facts": true, "contexts": ["perfil"]}`;
+
+  try {
+    const raw = await callAI(prompt, 200);
+    return JSON.parse(raw);
+  } catch {
+    return { has_new_facts: false, contexts: [] };
+  }
+}
+
+// ============================================================
+// DETECTOR DE GAPS
+// ============================================================
+
+async function detectGaps(
+  userId: string,
+  userMessage: string,
+  aiReply: string,
+  contexts: string[],
+  existingGaps: DetectedGap[]
+): Promise<DetectedGap[]> {
+  if (contexts.length === 0) return [];
+
+  const [profileRes, childrenRes] = await Promise.all([
+    supabase.from('user_profiles')
+      .select('full_name, spouse_name, city, current_job, father_name, mother_name, profession')
+      .eq('user_id', userId).maybeSingle(),
+    supabase.from('children').select('name').eq('parent_id', userId),
+  ]);
+
+  const p          = profileRes.data;
+  const childNames = (childrenRes.data || []).map((c: any) => c.name);
+
+  const prompt = `Identifique lacunas de informação na troca. Máximo 2 gaps relevantes.
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+
+Já sabemos:
+- Nome: ${p?.full_name || 'desconhecido'}
+- Cônjuge: ${p?.spouse_name || 'desconhecido'}
+- Pai: ${p?.father_name || 'desconhecido'}
+- Mãe: ${p?.mother_name || 'desconhecida'}
+- Filhos: ${childNames.join(', ') || 'nenhum'}
+- Cidade: ${p?.city || 'desconhecida'}
+- Profissão/área: ${p?.profession || 'desconhecida'}
+- Cargo atual: ${p?.current_job || 'desconhecido'}
+
+Contextos detectados: ${contexts.join(', ')}
+
+Campos válidos para gaps:
+- nome_completo: mencionou primeiro nome mas sobrenome desconhecido
+- nome_esposa / nome_marido: cônjuge mencionado sem nome
+- nome_filho: filho mencionado sem nome
+- nome_pai / nome_mae: pai/mãe mencionados sem nome
+- data_nascimento_filho: filho mencionado sem idade/data
+- tema_evento: evento sem detalhes suficientes
+- data_evento: evento sem data
+- nome_medico: consulta sem nome do médico
+- nome_projeto: projeto/ideia sem nome
+
+Retorne APENAS JSON:
+{
+  "gaps": [
+    {
+      "field": "nome_esposa",
+      "context": "cônjuge mencionado mas nome desconhecido",
+      "hint": "Que legal! E como ela se chama?",
+      "urgencia": "alta"
+    }
+  ]
+}
+
+urgencia: "alta"=bloqueia ação | "media"=enriquece | "baixa"=opcional
+Retorne {"gaps": []} se não há lacunas relevantes.`;
+
+  try {
+    const raw  = await callAI(prompt, 300);
+    const data = JSON.parse(raw);
+    return (data.gaps || []).filter((g: DetectedGap) => g.urgencia !== 'baixa');
+  } catch {
+    return [];
+  }
+}
+
+// ============================================================
+// EXTRATOR: PERFIL COMPLETO
+// Separa formação (profession) de cargo (current_job)
+// Captura telefone/whatsapp independente da palavra usada
+// ============================================================
+
+async function extractPerfil(userId: string, userMessage: string, aiReply: string): Promise<void> {
+  const prompt = `Extraia dados de perfil pessoal mencionados explicitamente.
+Retorne APENAS JSON (null para campos não mencionados):
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+
+{
+  "nome_completo": null,
+  "nome_preferido": null,
+  "apelido": null,
+  "cidade": null,
+  "estado": null,
+  "cidade_natal": null,
+  "estado_natal": null,
+  "nascimento": null,
+  "genero": null,
+  "telefone": null,
+  "whatsapp": null,
+  "nome_pai": null,
+  "nome_mae": null,
+  "qtd_irmaos": null,
+  "fe": null,
+  "fe_notas": null,
+  "formacao": null,
+  "cargo_atual": null,
+  "empresa": null,
+  "data_inicio_emprego": null,
+  "escolaridade": null,
+  "escola": null
+}
+
+REGRAS CRÍTICAS:
+- FONTE DOS DADOS: extraia APENAS do que o USUÁRIO afirma explicitamente.
+  NUNCA extraia de perguntas ou afirmações do ASSISTENTE.
+  Ex: assistente perguntou "qual o nome da sua mãe?" → nome_mae=null até usuário responder
+  Ex: assistente disse "Anotei seu nome Celio!" → NÃO extrai nome daí
+- nome_completo: nome inteiro com sobrenome(s). "Celio Roberto Ramos do Nascimento" → extrai tudo
+  ATENÇÃO: "pode me chamar de Celio" ou "me chama de X" → NÃO é nome_completo, é nome_preferido
+  nome_completo só se tiver sobrenome(s) junto
+- nome_preferido: como prefere ser chamado. "pode me chamar de Celio" → nome_preferido="Celio"
+  "prefiro Jessica" → "Jessica" | "me chama de Cel" → "Cel"
+- genero: extraia EXPLICITAMENTE ("sou do sexo masculino", "sou homem/mulher")
+  TAMBÉM infira por contexto: "minha esposa" → genero="masculino" | "meu marido" → genero="feminino"
+- cidade/estado: infira estado pela cidade (Londrina→PR, São Paulo→SP). Estado = sigla 2 letras
+- cidade_natal vs cidade: natal=onde nasceu, cidade=onde mora. SÃO CAMPOS DIFERENTES
+- telefone: qualquer número de contato ("telefone", "celular", "número", "fone", "contato")
+- whatsapp: número mencionado como "whatsapp", "wpp" ou "zap"
+- formacao: ÁREA DE ESTUDO ("Engenharia de Computação", "Medicina"). NÃO é cargo, NÃO é empresa
+- cargo_atual: FUNÇÃO/CARGO ("Técnico Jr de Manutenção", "Analista"). NÃO é área de estudo
+- empresa: empresa onde trabalha ou VAI trabalhar. NÃO é escola/faculdade
+- data_inicio_emprego: "a partir do dia 12/03/2026" → "2026-03-12". Formato YYYY-MM-DD
+- escolaridade: APENAS "fundamental"|"medio"|"tecnico"|"superior_cursando"|"superior_completo"|"pos_graduacao"|"mestrado"|"doutorado"
+- escola: nome da instituição de ensino. NÃO é empresa
+- fe: APENAS "christian_declared"|"open"|"none"
+- qtd_irmaos: número inteiro
+
+EXEMPLOS:
+- "fiz Eng. Computação na Unopar" → formacao="Engenharia de Computação", escola="Unopar", empresa=null
+- "vou trabalhar na White Martins como Técnico Jr a partir de 12/03" → cargo_atual="Técnico Jr de Manutenção", empresa="White Martins", data_inicio_emprego="2026-03-12", formacao=null
+- "sou do sexo masculino" → genero="masculino"
+- "minha esposa se chama Giselle" → genero="masculino" (inferido por contexto)`;
+
+  try {
+    const data = JSON.parse(await callAI(prompt, 400));
+    const patch: Record<string, any> = {};
+
+    // full_name: só grava se ainda não existe ou se vier mais completo
+    if (data.nome_completo) {
+      const { data: existing } = await supabase
+        .from('user_profiles').select('full_name').eq('user_id', userId).maybeSingle();
+      if (!existing?.full_name) {
+        patch.full_name = data.nome_completo;
+      } else {
+        const existingWords = existing.full_name.trim().split(/\s+/).length;
+        const newWords      = data.nome_completo.trim().split(/\s+/).length;
+        // Só atualiza se vier nome MAIS COMPLETO (mais palavras)
+        if (newWords > existingWords) patch.full_name = data.nome_completo;
+        // Nome mais curto é IGNORADO — nunca sobrescreve nem vai para preferred_name
       }
     }
 
-    const chatId = message?.chat?.id;
-    const telegramUserId = message?.from?.id;
-    const userFirstName = message?.from?.first_name || "Usuário";
+    // preferred_name: só grava se vier explicitamente do campo dedicado
+    // NUNCA derivado de nome_completo
+    if (data.nome_preferido) {
+      const { data: existing } = await supabase
+        .from('user_profiles').select('preferred_name').eq('user_id', userId).maybeSingle();
+      // Só grava se ainda vazio ou se for diferente do full_name
+      const { data: prof } = await supabase
+        .from('user_profiles').select('full_name').eq('user_id', userId).maybeSingle();
+      const isSameAsFullName = prof?.full_name?.toLowerCase().startsWith(data.nome_preferido.toLowerCase());
+      if (!isSameAsFullName || !existing?.preferred_name) {
+        patch.preferred_name = data.nome_preferido;
+      }
+    }
+    if (data.apelido)             patch.nickname       = data.apelido;
+    if (data.cidade)              patch.city           = data.cidade;
+    if (data.estado)              patch.state          = data.estado;
+    if (data.cidade_natal)        patch.birth_city     = data.cidade_natal;
+    if (data.estado_natal)        patch.birth_state    = data.estado_natal;
+    if (data.nascimento)          patch.birth_date     = data.nascimento;
+    if (data.telefone)            patch.phone          = data.telefone;
+    if (data.whatsapp)            patch.whatsapp       = data.whatsapp;
+    if (data.nome_pai)            patch.father_name    = data.nome_pai;
+    if (data.nome_mae)            patch.mother_name    = data.nome_mae;
+    if (data.fe)                  patch.faith_profile  = data.fe;
+    if (data.fe_notas)            patch.faith_notes    = data.fe_notas;
+    if (data.formacao)            patch.profession     = data.formacao;
+    if (data.cargo_atual)         patch.current_job    = data.cargo_atual;
+    if (data.empresa)             patch.company        = data.empresa;
+    if (data.data_inicio_emprego) patch.job_start_date = data.data_inicio_emprego;
 
-    if (!messageText || chatId == null || telegramUserId == null) {
-      return NextResponse.json({ ok: true });
+    if (data.qtd_irmaos !== null && data.qtd_irmaos !== undefined) {
+      patch.siblings_count = parseInt(String(data.qtd_irmaos));
     }
 
-    const stringId = String(telegramUserId);
-
-    // ============================================================
-    // BUSCA EM PARALELO
-    // ============================================================
-    const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult, gapsBlock] = await Promise.all([
-      supabase
-        .from('users')
-        .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone')
-        .eq('id', stringId)
-        .single(),
-
-      getOrCreateSession(stringId),
-
-      supabase
-        .from('events')
-        .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
-        .eq('user_id', stringId)
-        .order('relevance_score', { ascending: false }),
-
-      supabase
-        .from('memory_ashes')
-        .select('ash_summary, period_start, period_end')
-        .eq('user_id', stringId)
-        .order('period_end', { ascending: false })
-        .limit(5),
-
-      supabase
-        .from('onboarding_progress')
-        .select('*')
-        .eq('user_id', stringId)
-        .single(),
-
-      buildGapsBlock(stringId)
-    ]);
-
-    const userProfile    = userProfileResult.data;
-    const authorName     = userProfile?.nickname || userFirstName;
-    const assistantName  = userProfile?.assistant_name || 'Lev';
-    const userTimezone   = userProfile?.timezone || 'America/Sao_Paulo';
-    const currentContextL3 = userProfile?.current_context || "Sem dossiê ainda.";
-    const pendingQuestion  = userProfile?.pending_question || null;
-    const pendingContext   = userProfile?.pending_context || null;
-
-    // Tratamento informal baseado no gênero detectado no dossiê
-    const isFemale = currentContextL3.toLowerCase().includes('feminino') ||
-                     currentContextL3.toLowerCase().includes('mulher');
-    const informalAddress = isFemale ? 'miga' : 'cara';
-
-    // Onboarding — inicializa se for novo usuário
-    let onboardingState = onboardingResult?.data || null;
-    if (!onboardingState) {
-      onboardingState = await initOnboarding(stringId);
+    const escValidos = ['fundamental','medio','tecnico','superior_cursando',
+                        'superior_completo','pos_graduacao','mestrado','doutorado'];
+    if (data.escolaridade && escValidos.includes(data.escolaridade)) {
+      patch.education_level = data.escolaridade;
     }
-    const onboardingBlock = buildOnboardingBlock(onboardingState);
 
-    // ============================================================
-    // EVENTOS
-    // ============================================================
-    const events = eventsResult.data || [];
-    const urgentEvents = events.filter(e => (e.relevance_score || 0) >= 0.7);
-    const radarEvents  = events.filter(e => (e.relevance_score || 0) >= 0.3 && (e.relevance_score || 0) < 0.7);
-    const eventsBlock  = events.length > 0 ? [
-      urgentEvents.length > 0
-        ? `🔴 PRÓXIMOS:\n${urgentEvents.map(e => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}`
-        : null,
-      radarEvents.length > 0
-        ? `🟡 NO RADAR:\n${radarEvents.map(e => `  - ${e.title}: ${e.event_date}`).join('\n')}`
-        : null,
-    ].filter(Boolean).join('\n\n') : "Nenhum evento cadastrado.";
-
-    // CINZAS
-    const ashes = ashesResult.data || [];
-    const ashesBlock = ashes.length > 0 ? ashes.map(a => a.ash_summary).join('\n') : null;
-
-    // ============================================================
-    // HD VETORIAL
-    // ============================================================
-    const queryEmbedding = await generateEmbedding(messageText);
-    let hdBlock = "";
-    let hdMemoryIds: string[] = [];
-
-    if (queryEmbedding) {
-      const { data: search } = await supabase.rpc('match_memories', {
-        query_embedding: queryEmbedding,
-        match_threshold: 0.4,
-        match_count: 3
-      }) as { data: any[] | null };
-
-      if (search && search.length > 0) {
-        hdBlock = search
-          .filter(r => !r.summary.startsWith('[CINZA]'))
-          .map(r => r.summary)
-          .join('\n---\n');
-        hdMemoryIds = search.map(r => r.id);
+    if (data.escola) {
+      const { data: prof } = await supabase
+        .from('user_profiles').select('schools').eq('user_id', userId).maybeSingle();
+      const existing: string[] = prof?.schools || [];
+      const normalize = (s: string) => s.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const alreadyExists = existing.some(e => normalize(e) === normalize(data.escola));
+      if (!alreadyExists) {
+        patch.schools = [...existing, data.escola];
       }
     }
 
-    // ============================================================
-    // RAM RESILIENTE — 3 níveis de fallback
-    // ============================================================
-    let ramBlock = "";
-
-    // Nível 1: sessão atual
-    const { data: historySession } = await supabase
-      .from('brain')
-      .select('content, metadata')
-      .eq('user_id', stringId)
-      .eq('session_id', sessionId)
-      .neq('category', 'noise')
-      .order('created_at', { ascending: false })
-      .limit(8);
-
-    if (historySession && historySession.length >= 2) {
-      ramBlock = [...historySession].reverse().map((h: any) => {
-        const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
-        return `${authorName}: ${h.content}\nJarvis: ${ai}`;
-      }).join('\n\n');
-      console.log('[RAM] Nível 1 — sessão:', historySession.length, 'msgs');
-
-    } else {
-      // Nível 2: histórico recente sem filtro de sessão
-      const { data: historyRecent } = await supabase
-        .from('brain')
-        .select('content, metadata')
-        .eq('user_id', stringId)
-        .neq('category', 'noise')
-        .order('created_at', { ascending: false })
-        .limit(12);
-
-      if (historyRecent && historyRecent.length > 0) {
-        const sessionSet = new Set((historySession || []).map((h: any) => h.content));
-        const extra = historyRecent.filter((h: any) => !sessionSet.has(h.content));
-        const merged = [...(historySession || []), ...extra].slice(0, 10);
-        ramBlock = [...merged].reverse().map((h: any) => {
-          const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
-          return `${authorName}: ${h.content}\nJarvis: ${ai}`;
-        }).join('\n\n');
-        console.log('[RAM] Nível 2 — recente:', merged.length, 'msgs');
-
-      } else if (hdBlock) {
-        // Nível 3: consolidação HD como base
-        ramBlock = `[Contexto anterior consolidado]\n${hdBlock}`;
-        console.log('[RAM] Nível 3 — HD como base');
+    // Gênero: explícito ou inferido (só grava se ainda não está preenchido)
+    if (data.genero) {
+      const { data: existingProf } = await supabase
+        .from('user_profiles').select('gender').eq('user_id', userId).maybeSingle();
+      if (!existingProf?.gender) {
+        const g = data.genero.toLowerCase();
+        patch.gender = g.includes('masc') || g === 'm' ? 'masculino'
+                     : g.includes('fem')  || g === 'f' ? 'feminino'
+                     : 'prefiro_nao_dizer';
       }
     }
 
-    // ============================================================
-    // CLASSIFICADOR TEMPORAL
-    // ============================================================
-    const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
-    console.log(`[Router] ${weights.horizon} | ${weights.reason}`);
+    if (Object.keys(patch).length === 0) return;
+    patch.user_id    = userId;
+    patch.updated_at = new Date().toISOString();
 
-    const truncatedRam    = truncateByWeight(ramBlock, weights.ram, 6000);
-    const truncatedL3     = truncateByWeight(currentContextL3, weights.l3, 6000);
-    const truncatedHd     = truncateByWeight(hdBlock, weights.hd, 6000);
-    const truncatedAshes  = ashesBlock ? truncateByWeight(ashesBlock, weights.ashes, 6000) : null;
-    const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
+    const { error } = await supabase.from('user_profiles').upsert(patch, { onConflict: 'user_id' });
+    if (error) console.error('[Extrator/perfil] Erro:', JSON.stringify(error));
+    else console.log('[Extrator/perfil] Gravou:', Object.keys(patch).filter(k => !['user_id','updated_at'].includes(k)).join(', '));
+  } catch (e) {
+    console.error('[Extrator/perfil] Erro:', e);
+  }
+}
 
-    // ============================================================
-    // PROMPT FINAL v1.4
-    // ============================================================
-    const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
+// ============================================================
+// EXTRATOR: FAMÍLIA
+// ============================================================
 
-    // ============================================================
-    // MONTA MESSAGES ESTRUTURADO — como uma instância real
-    // System prompt com contexto + histórico como conversa
-    // ============================================================
-    const systemPrompt = `
-Você é ${assistantName}, assistente pessoal de ${authorName}.
-Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
+async function extractFamilia(
+  userId: string,
+  userMessage: string,
+  aiReply: string,
+  gaps: DetectedGap[]
+): Promise<void> {
+  const hasEsposaGap = gaps.some(g => g.field === 'nome_esposa' || g.field === 'nome_marido');
+  const hasFilhoGap  = gaps.some(g => g.field === 'nome_filho');
 
-${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]
-${truncatedL3}` : ''}
+  const prompt = `Extraia dados familiares mencionados explicitamente.
+${hasEsposaGap ? 'PRIORIDADE: usuário fornecendo nome do cônjuge — extraia com prioridade máxima.' : ''}
+${hasFilhoGap  ? 'PRIORIDADE: usuário fornecendo nome de filho — extraia com prioridade máxima.' : ''}
 
-${truncatedEvents ? `[EVENTOS RELEVANTES]
-${truncatedEvents}` : ''}
+Retorne APENAS JSON (null para não mencionados):
 
-${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]
-${truncatedHd}` : ''}
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
 
-${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao citar]
-${truncatedAshes}` : ''}
-
-${onboardingBlock}
-
-${gapsBlock}
+{
+  "esposa":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null},
+  "marido":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null},
+  "filhos": [{"nome": null, "idade": null, "genero": null, "escola": null, "serie": null, "apelido": null}],
+  "pai":    {"nome": null, "apelido": null},
+  "mae":    {"nome": null, "apelido": null}
+}
 
 REGRAS:
-1. FOCO: Responda O QUE FOI PERGUNTADO. Nunca mude de assunto.
-   - Pronomes ("esse filme", "isso", "ele") sempre se referem ao ÚLTIMO assunto da conversa
-   - Nunca pergunte "qual?" se o histórico já deixa claro
+- filhos: retorne [] se nenhum mencionado
+- aniversario: DD/MM, YYYY-MM-DD, ou "5 de agosto"
+- genero filho: "m" | "f" | null
+- apelido: como o usuário chama a pessoa ("vida", "velho", "mãezinha")`;
 
-2. TOM: Amigo de longa data — inteligente, direto, humano.
-   - Use "${informalAddress}" com moderação — no máximo 1x por conversa, nunca para iniciar frase
-   - Humor leve e inesperado quando o momento pedir
-   - NUNCA comece com "Considerando que", "Com base no seu histórico", "Levando em conta"
-   - SEM "Em que posso te ajudar?" ou variações
+  try {
+    const data = JSON.parse(await callAI(prompt, 400));
+  // ── Cônjuge ──────────────────────────────────────────────
+    const conjuge = data.esposa?.nome ? data.esposa : data.marido?.nome ? data.marido : null;
+    if (conjuge?.nome) {
+      const patch: Record<string, any> = {
+        user_id:     userId,
+        spouse_name: conjuge.nome,
+        updated_at:  new Date().toISOString(),
+      };
+      if (conjuge.aniversario) patch.spouse_birthday = normalizeDate(conjuge.aniversario);
+      if (conjuge.telefone)    patch.spouse_phone    = conjuge.telefone;
 
-3. CONFIRMAÇÃO DE REGISTRO: Quando o usuário compartilhar informações pessoais (nome, cidade,
-   profissão, dados da família, etc.), SEMPRE confirme brevemente o que foi registrado.
-   Exemplos naturais: "Anotado!", "Registrado!", "Guardei aqui.", "Já sei disso agora."
-   Se houver AMBIGUIDADE (ex: não sabe se é empresa ou escola), PERGUNTE antes de registrar:
-   "Unopar é onde você estudou ou onde trabalha?"
+      await supabase.from('user_profiles').upsert(patch, { onConflict: 'user_id' });
+      console.log('[Extrator/familia] Cônjuge:', conjuge.nome);
 
-4. MEMÓRIA DISTANTE: Se usar cinzas, diga "lembro vagamente que...".
-
-5. PERGUNTAS ABERTAS: Só quando precisar agir:
-   [PERGUNTA_ABERTA: "texto" | contexto]
-
-6. GATILHOS — use APENAS estes formatos exatos, nunca invente outros:
-   [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false | permanent|recurring_annual|deadline|one_time]
-   [AGENDAR: título | YYYY-MM-DDTHH:MM | minutos]
-   [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM | minutos]
-   [LIMPAR_PENDENTE]
-   PROIBIDO: criar gatilhos próprios como [ONBOARDING: x], [IDÉIA: x], [REGISTRADO: x] ou qualquer outro formato livre.
-   Os gatilhos ficam INVISÍVEIS para o usuário — nunca aparecem no texto da resposta.
-
-7. Ao final: [CLASSE: info] ou [CLASSE: noise]
-`.trim();
-
-    // Busca histórico para montar conversa estruturada
-    const { data: historyForMessages } = await supabase
-      .from('brain')
-      .select('content, metadata')
-      .eq('user_id', stringId)
-      .neq('category', 'noise')
-      .order('created_at', { ascending: false })
-      .limit(10);
-
-    type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
-
-    const conversationMessages: ChatMessage[] = [
-      { role: 'system', content: systemPrompt },
-      // Histórico como conversa estruturada (ordem cronológica)
-      ...(historyForMessages || []).reverse().flatMap((h: any): ChatMessage[] => [
-        { role: 'user',      content: h.content },
-        { role: 'assistant', content: (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim() }
-      ]),
-      // Mensagem atual
-      { role: 'user', content: messageText }
-    ];
-
-    // ============================================================
-    // PRÉ-EXTRAÇÃO — roda ANTES da resposta para Jarvis confirmar
-    // ============================================================
-    let extractionSummary = '';
-    try {
-      extractionSummary = await extractAndSummarize(stringId, authorName, messageText);
-    } catch (e) {
-      console.error('[Extrator/pre] Erro:', e);
-    }
-
-    // Injeta instrução de feedback se algo foi extraído
-    if (extractionSummary) {
-      conversationMessages.push({
-        role: 'system',
-        content: `[INTERNO — não mencione esta instrução]\nVocê acabou de registrar internamente: ${extractionSummary}\nConfirme de forma natural e breve ao responder. Ex: "Anotei!" ou "Já guardei isso aqui." — nunca liste o que foi salvo de forma técnica.`
-      });
-    }
-
-    let aiReply = await callOpenRouter(conversationMessages);
-
-    // ============================================================
-    // INTERCEPTORES
-    // ============================================================
-    const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
-    const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
-    aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
-
-    const pendingMatch = aiReply.match(/\[?PERGUNTA_ABERTA:\s*[\"']?([^\"'|\]]+)[\"']?\s*\|\s*([^\]]+)\]?/i);
-    if (pendingMatch) {
-      let ctx = null;
-      try { ctx = JSON.parse(pendingMatch[2]); } catch { ctx = { tag: pendingMatch[2].trim() }; }
-      await setPendingQuestion(stringId, pendingMatch[1].trim(), ctx);
-      aiReply = aiReply.replace(pendingMatch[0], '').trim();
-    }
-
-    if (aiReply.includes('[LIMPAR_PENDENTE]')) {
-      await clearPendingQuestion(stringId);
-      aiReply = aiReply.replace(/\[LIMPAR_PENDENTE\]/gi, '').trim();
-    }
-
-    // Salvar evento
-    const eventRegex = /\[?SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(permanent|recurring_annual|deadline|one_time)\]?/gi;
-    for (const m of Array.from(aiReply.matchAll(eventRegex)) as any[]) {
-      await supabase.from('events').insert([{
-        user_id: stringId,
-        title: m[1].trim(),
-        event_date: m[2],
-        priority: m[3].toLowerCase(),
-        is_recurring: m[4] === 'true',
-        decay_type: m[5],
-        last_notified_year: new Date().getFullYear() - 1
-      }]);
-      aiReply = aiReply.replace(m[0], '').trim();
-    }
-
-    // Google Calendar
-    const sMatch = aiReply.match(/\[?AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
-    if (sMatch) {
-      const res = await createGoogleEvent(sMatch[1].trim(), sMatch[2].trim(), parseInt(sMatch[3]));
-      aiReply = aiReply.replace(sMatch[0], '').trim() + `\n\n🗓️ *Agendado:* ${res}`;
-    }
-
-    const uMatch = aiReply.match(/\[?ATUALIZAR_EVENTO:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
-    if (uMatch) {
-      const res = await updateGoogleEvent(uMatch[1].trim(), uMatch[2].trim(), uMatch[3].trim(), parseInt(uMatch[4]));
-      aiReply = aiReply.replace(uMatch[0], '').trim() + `\n\n🗓️ *Atualizado:* ${res}`;
-    }
-
-    // ============================================================
-    // PERSISTÊNCIA
-    // ============================================================
-    const { error: insertError } = await supabase.from('brain').insert([{
-      content: messageText,
-      category,
-      user_id: stringId,
-      session_id: sessionId,
-      project_tag: 'geral',
-      embedding: queryEmbedding,
-      metadata: {
-        ai_reply: aiReply,
-        user: authorName,
-        horizon: weights.horizon,
-        pending_resolved: !!pendingQuestion
+      // Salva apelido se mencionado
+      if (conjuge.apelido) {
+        await upsertAlias(userId, conjuge.apelido, 'spouse', null, conjuge.nome);
       }
-    }]);
 
-    if (insertError) {
-      console.error('BRAIN INSERT ERRO:', JSON.stringify(insertError));
-    } else {
-      console.log('BRAIN INSERT OK — user:', stringId, 'session:', sessionId);
+      if (conjuge.aniversario) {
+        await upsertEvent(userId, {
+          title:      `Aniversário ${conjuge.nome}`,
+          event_date: normalizeDate(conjuge.aniversario),
+          category:   'family',
+          ...EVENT_WEIGHTS.aniversario_esposa,
+        });
+      }
     }
 
-    for (const memId of hdMemoryIds) await reinforceMemory(memId);
+    // ── Filhos ───────────────────────────────────────────────
+    for (const filho of (data.filhos || [])) {
+      if (!filho.nome) continue;
+      const birthYear  = filho.idade ? new Date().getFullYear() - filho.idade : null;
+      const birth_date = birthYear ? `${birthYear}-01-01` : null;
+      const life_phase = getLifePhase(filho.idade);
 
-    // Extrator + Onboarding — rodam ANTES do return, com await
-    // Vercel mata processos background após o return
-    const tasks: Promise<any>[] = [];
+      const { data: ex } = await supabase
+        .from('children').select('id')
+        .eq('parent_id', userId).eq('name', filho.nome).maybeSingle();
 
-    if (onboardingState?.status === 'in_progress') {
-      tasks.push(
-        processOnboardingFromMessage(stringId, messageText, aiReply, onboardingState)
-          .catch(e => console.error('[Onboarding] Erro:', e))
+      const childData: Record<string, any> = {
+        birth_date, life_phase, updated_at: new Date().toISOString(),
+      };
+      if (filho.genero)  childData.gender       = filho.genero;
+      if (filho.escola)  childData.school_name  = filho.escola;
+      if (filho.serie)   childData.school_grade = filho.serie;
+      if (filho.apelido) childData.nickname     = filho.apelido;
+
+      if (ex?.id) {
+        await supabase.from('children').update(childData).eq('id', ex.id);
+      } else {
+        await supabase.from('children').insert({ parent_id: userId, name: filho.nome, ...childData });
+      }
+
+      if (filho.apelido) {
+        await upsertAlias(userId, filho.apelido, 'child', ex?.id || null, filho.nome);
+      }
+
+      if (birth_date) {
+        await upsertEvent(userId, {
+          title:      `Aniversário ${filho.nome}`,
+          event_date: birth_date,
+          category:   'family',
+          notes:      `${life_phase} — ${filho.idade} anos`,
+          ...EVENT_WEIGHTS.aniversario_filho,
+        });
+      }
+      console.log('[Extrator/familia] Filho:', filho.nome);
+    }
+
+    // ── Pai ──────────────────────────────────────────────────
+    if (data.pai?.nome) {
+      await supabase.from('user_profiles').upsert(
+        { user_id: userId, father_name: data.pai.nome, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
       );
+      if (data.pai.apelido) {
+        await upsertAlias(userId, data.pai.apelido, 'parent', null, data.pai.nome);
+      }
+      console.log('[Extrator/familia] Pai:', data.pai.nome);
     }
 
-    // Extrator já rodou antes da resposta (extractAndSummarize)
-    // Aqui só roda se não rodou ainda (category === 'noise' foi pulado)
+    // ── Mãe ──────────────────────────────────────────────────
+    if (data.mae?.nome) {
+      await supabase.from('user_profiles').upsert(
+        { user_id: userId, mother_name: data.mae.nome, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      );
+      if (data.mae.apelido) {
+        await upsertAlias(userId, data.mae.apelido, 'parent', null, data.mae.nome);
+      }
+      console.log('[Extrator/familia] Mãe:', data.mae.nome);
+    }
 
-    // Roda sendTelegram + persistência em paralelo para não atrasar resposta
-    await Promise.all([
-      sendTelegram(chatId, aiReply),
-      ...tasks
+  } catch (e) {
+    console.error('[Extrator/familia] Erro:', e);
+  }
+}
+
+// ============================================================
+// EXTRATOR: APELIDOS / ALIASES
+// "vida", "amor", "velho", "mãezinha"
+// ============================================================
+
+async function extractAlias(userId: string, userMessage: string, aiReply: string): Promise<void> {
+  // Busca quem o usuário já conhece para ajudar o modelo
+  const { data: prof } = await supabase
+    .from('user_profiles')
+    .select('spouse_name, father_name, mother_name')
+    .eq('user_id', userId).maybeSingle();
+
+  const { data: kids } = await supabase
+    .from('children').select('name').eq('parent_id', userId);
+
+  const conhecidos = [
+    prof?.spouse_name ? `cônjuge: ${prof.spouse_name}` : null,
+    prof?.father_name ? `pai: ${prof.father_name}` : null,
+    prof?.mother_name ? `mãe: ${prof.mother_name}` : null,
+    ...(kids || []).map((k: any) => `filho: ${k.name}`),
+  ].filter(Boolean).join(', ');
+
+  const prompt = `Identifique apelidos que o usuário usa para chamar pessoas próximas.
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+
+Pessoas conhecidas: ${conhecidos || 'nenhuma ainda'}
+
+Retorne APENAS JSON:
+{
+  "aliases": [
+    {
+      "apelido": "vida",
+      "tipo": "spouse",
+      "nome_real": "Giselle"
+    }
+  ]
+}
+
+tipos: spouse|child|parent|sibling|friend|other
+Retorne aliases: [] se nenhum apelido identificado.`;
+
+  try {
+    const data = JSON.parse(await callAI(prompt, 200));
+    for (const a of (data.aliases || [])) {
+      if (!a.apelido) continue;
+      await upsertAlias(userId, a.apelido, a.tipo || 'other', null, a.nome_real || null);
+      console.log('[Extrator/alias]', a.apelido, '→', a.nome_real);
+    }
+  } catch (e) {
+    console.error('[Extrator/alias] Erro:', e);
+  }
+}
+
+// ============================================================
+// EXTRATOR: PROJETOS
+// ============================================================
+
+async function extractProjeto(userId: string, userMessage: string, aiReply: string): Promise<void> {
+  const prompt = `Extraia projetos ou ideias mencionados.
+Retorne APENAS JSON:
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+
+{
+  "projetos": [
+    {"nome": null, "tag": null, "descricao": null, "status": null, "contexto_tecnico": null}
+  ]
+}
+
+tag: slug lowercase sem espaços (ex: "pqf", "lev-app")
+status: "ideia"|"em_desenvolvimento"|"beta"|"producao"|"pausado"
+Retorne projetos: [] se nenhum mencionado`;
+
+  try {
+    const data = JSON.parse(await callAI(prompt, 300));
+    for (const proj of (data.projetos || [])) {
+      if (!proj.nome || !proj.tag) continue;
+      const { error } = await supabase.from('projects').upsert({
+        user_id: userId, tag: proj.tag, name: proj.nome,
+        description: proj.descricao || null,
+        context_technical: proj.contexto_tecnico || null,
+        status: proj.status || 'em_desenvolvimento',
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'tag' });
+      if (error) console.error('[Extrator/projeto] Erro:', error);
+      else console.log('[Extrator/projeto]', proj.nome);
+    }
+  } catch (e) {
+    console.error('[Extrator/projeto] Erro:', e);
+  }
+}
+
+// ============================================================
+// EXTRATOR: EVENTOS
+// ============================================================
+
+async function extractEvento(userId: string, userMessage: string, aiReply: string): Promise<void> {
+  const prompt = `Extraia eventos ou datas comemorativas (SEM hora específica).
+Retorne APENAS JSON:
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+
+{
+  "eventos": [
+    {"titulo": null, "data": null, "tipo": null, "recorrente": false, "notas": null}
+  ]
+}
+
+Tipos: aniversario_esposa|aniversario_filho|aniversario_familiar|aniversario_amigo|
+       festa_escola|evento_escolar|consulta_medica|compromisso_trabalho|entrega_projeto|default
+data: YYYY-MM-DD (ano atual se não informado)
+Retorne eventos: [] se nenhum mencionado`;
+
+  try {
+    const data = JSON.parse(await callAI(prompt, 300));
+    for (const ev of (data.eventos || [])) {
+      if (!ev.titulo || !ev.data) continue;
+      const w = EVENT_WEIGHTS[ev.tipo] || EVENT_WEIGHTS.default;
+      await upsertEvent(userId, {
+        title: ev.titulo, event_date: ev.data,
+        category: getCategoryFromType(ev.tipo),
+        is_recurring: ev.recorrente ?? w.decay_type === 'recurring_annual',
+        notes: ev.notas || null, ...w,
+      });
+      console.log('[Extrator/evento]', ev.titulo);
+    }
+  } catch (e) {
+    console.error('[Extrator/evento] Erro:', e);
+  }
+}
+
+// ============================================================
+// EXTRATOR: AGENDA
+// ============================================================
+
+async function extractAgenda(userId: string, userMessage: string, aiReply: string): Promise<void> {
+  const prompt = `Extraia compromissos com data E hora explícitas.
+Retorne APENAS JSON:
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+
+{
+  "compromissos": [
+    {"descricao": null, "data_hora": null, "categoria": null}
+  ]
+}
+
+data_hora: ISO 8601 fuso -03:00 (ex: "2026-03-10T10:00:00-03:00")
+Categorias: Saúde|Trabalho|Escola|Família|Pessoal|Rotina
+Retorne compromissos: [] se nenhum mencionado`;
+
+  try {
+    const data = JSON.parse(await callAI(prompt, 250));
+    for (const comp of (data.compromissos || [])) {
+      if (!comp.descricao || !comp.data_hora) continue;
+      const { data: ex } = await supabase.from('agenda').select('id')
+        .eq('user_id', userId).eq('description', comp.descricao).eq('event_at', comp.data_hora).maybeSingle();
+      if (!ex) {
+        await supabase.from('agenda').insert({
+          user_id: userId, description: comp.descricao,
+          event_at: comp.data_hora, category: comp.categoria || 'Pessoal',
+        });
+        console.log('[Extrator/agenda]', comp.descricao);
+      }
+    }
+  } catch (e) {
+    console.error('[Extrator/agenda] Erro:', e);
+  }
+}
+
+// ============================================================
+// EXTRATOR: ROTINA
+// ============================================================
+
+async function extractRotina(userId: string, userMessage: string, aiReply: string): Promise<void> {
+  const prompt = `Extraia informações de rotina mencionadas explicitamente.
+Retorne APENAS JSON (null para não mencionados):
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+
+{"despertar": null, "dormir": null, "academia_horario": null, "trabalho_entrada": null, "trabalho_saida": null, "lembretes": []}`;
+
+  try {
+    const data  = JSON.parse(await callAI(prompt, 200));
+    const parts: string[] = [];
+    if (data.despertar)         parts.push(`Despertar: ${data.despertar}`);
+    if (data.dormir)            parts.push(`Dormir: ${data.dormir}`);
+    if (data.academia_horario)  parts.push(`Academia: ${data.academia_horario}`);
+    if (data.trabalho_entrada)  parts.push(`Trabalho entrada: ${data.trabalho_entrada}`);
+    if (data.trabalho_saida)    parts.push(`Trabalho saída: ${data.trabalho_saida}`);
+    if (data.lembretes?.length) parts.push(`Lembretes: ${data.lembretes.join(', ')}`);
+    if (parts.length === 0) return;
+
+    const { data: prof } = await supabase.from('user_profiles')
+      .select('personality_notes').eq('user_id', userId).maybeSingle();
+    const old      = prof?.personality_notes || '';
+    const newBlock = `[ROTINA] ${parts.join(' | ')}`;
+    const updated  = /\[ROTINA\]/i.test(old)
+      ? old.replace(/\[ROTINA\][^\n]*/i, newBlock)
+      : `${old}\n${newBlock}`.trim();
+
+    await supabase.from('user_profiles').upsert(
+      { user_id: userId, personality_notes: updated, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    );
+    console.log('[Extrator/rotina]', parts.join(' | '));
+  } catch (e) {
+    console.error('[Extrator/rotina] Erro:', e);
+  }
+}
+
+// ============================================================
+// EXTRATOR: PREFERÊNCIAS
+// ============================================================
+
+async function extractPreferencia(userId: string, userMessage: string, aiReply: string): Promise<void> {
+  const prompt = `Extraia preferências pessoais mencionadas.
+Retorne APENAS JSON:
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+
+{"preferencias": [{"tipo": "lugar", "descricao": "Feira do Produtor aos sábados"}]}
+
+Tipos: lugar|comida|filme|musica|esporte|hobby|outro
+Retorne preferencias: [] se nenhuma mencionada`;
+
+  try {
+    const data  = JSON.parse(await callAI(prompt, 200));
+    const prefs: any[] = data.preferencias || [];
+    if (prefs.length === 0) return;
+
+    const { data: prof } = await supabase.from('user_profiles')
+      .select('career_notes').eq('user_id', userId).maybeSingle();
+    const old     = prof?.career_notes || '';
+    const newLine = prefs.map((p: any) => `[${p.tipo}] ${p.descricao}`).join(' | ');
+    const updated = old ? `${old} | ${newLine}` : newLine;
+
+    await supabase.from('user_profiles').upsert(
+      { user_id: userId, career_notes: updated, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    );
+    console.log('[Extrator/preferencia]', newLine);
+  } catch (e) {
+    console.error('[Extrator/preferencia] Erro:', e);
+  }
+}
+
+// ============================================================
+// ATUALIZA L3 (users.current_context)
+// ============================================================
+
+async function updateL3(userId: string): Promise<void> {
+  try {
+    const [profRes, kidsRes, projRes, evRes, userRes] = await Promise.all([
+      supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle(),
+      supabase.from('children').select('name, birth_date, life_phase').eq('parent_id', userId),
+      supabase.from('projects').select('name, description, status').eq('user_id', userId).limit(10),
+      supabase.from('events').select('title, event_date, emotional_weight')
+        .eq('user_id', userId).order('event_date').limit(10),
+      supabase.from('users').select('current_context').eq('id', userId).single(),
     ]);
 
-    // Compactação
-    const { count } = await supabase
-      .from('brain')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', stringId)
-      .eq('category', 'info');
+    const p    = profRes.data;
+    const kids = kidsRes.data || [];
+    const proj = projRes.data || [];
+    const evs  = evRes.data || [];
+    let   ctx  = userRes.data?.current_context || '';
 
-    if (count && count >= 20) await compactMemory(stringId, authorName);
+    const patches: Record<string, string> = {};
 
-    return NextResponse.json({ ok: true });
+    if (p?.full_name)       patches['Nome']         = p.preferred_name ? `${p.full_name} (${p.preferred_name})` : p.full_name;
+    if (p?.city)            patches['Localização']  = `${p.city}${p.state ? `, ${p.state}` : ''}`;
+    if (p?.birth_city)      patches['Origem']       = `${p.birth_city}${p.birth_state ? `, ${p.birth_state}` : ''}`;
+    if (p?.birth_date)      patches['Nascimento']   = p.birth_date;
+    if (p?.profession)      patches['Formação']     = p.profession;
+    if (p?.current_job)     patches['Cargo']        = `${p.current_job}${p.company ? ` @ ${p.company}` : ''}${p.job_start_date ? ` (início: ${p.job_start_date})` : ''}`;
+    if (p?.faith_profile && p.faith_profile !== 'unknown') patches['Fé'] = p.faith_profile;
+    if (p?.spouse_name)     patches['Cônjuge']      = `${p.spouse_name}${p.spouse_birthday ? ` (aniv: ${p.spouse_birthday})` : ''}`;
+    if (p?.father_name)     patches['Pai']          = p.father_name;
+    if (p?.mother_name)     patches['Mãe']          = p.mother_name;
+    if (p?.education_level) patches['Educação']     = p.education_level;
 
-  } catch (error: any) {
-    console.error("Erro Jarvis:", error.message);
-    return NextResponse.json({ ok: true });
+    if (kids.length > 0) {
+      patches['Filhos'] = kids.map((k: any) => {
+        const age = k.birth_date
+          ? new Date().getFullYear() - new Date(k.birth_date).getFullYear()
+          : null;
+        return `${k.name}${age ? ` (${age} anos)` : ''}`;
+      }).join(', ');
+    }
+
+    for (const [key, val] of Object.entries(patches)) {
+      const rx   = new RegExp(`- ${key}:.*`, 'i');
+      const line = `- ${key}: ${val}`;
+      ctx = rx.test(ctx) ? ctx.replace(rx, line) : `${ctx}\n${line}`;
+    }
+
+    if (proj.length > 0) {
+      const block   = proj.map((r: any) => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
+      const section = `## PROJETOS\n${block}`;
+      ctx = /## PROJETOS[\s\S]*?(?=\n##|$)/i.test(ctx)
+        ? ctx.replace(/## PROJETOS[\s\S]*?(?=\n##|$)/i, section)
+        : `${ctx}\n\n${section}`;
+    }
+
+    const highEvs = evs.filter((e: any) => (e.emotional_weight || 0) >= 0.7);
+    if (highEvs.length > 0) {
+      const block   = highEvs.map((e: any) => `- ${e.title}: ${e.event_date}`).join('\n');
+      const section = `## DATAS IMPORTANTES\n${block}`;
+      ctx = /## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i.test(ctx)
+        ? ctx.replace(/## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i, section)
+        : `${ctx}\n\n${section}`;
+    }
+
+    const { error } = await supabase.from('users')
+      .update({ current_context: ctx.trim() }).eq('id', userId);
+    if (error) console.error('[Extrator/L3] Erro:', error);
+    else console.log('[Extrator/L3] Patches:', Object.keys(patches).join(', '));
+  } catch (e) {
+    console.error('[Extrator/L3] Erro:', e);
   }
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+async function callAI(prompt: string, maxTokens = 300): Promise<string> {
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'google/gemini-2.0-flash-001',
+      max_tokens: maxTokens,
+      temperature: 0.1,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  const data = await res.json();
+  return (data.choices?.[0]?.message?.content || '').replace(/```json|```/g, '').trim();
+}
+
+async function upsertAlias(
+  userId: string,
+  alias: string,
+  type: string,
+  referId: string | null,
+  referName: string | null
+): Promise<void> {
+  await supabase.from('contact_aliases').upsert({
+    user_id:        userId,
+    alias:          alias.toLowerCase().trim(),
+    refers_to_type: type,
+    refers_to_id:   referId,
+    refers_to_name: referName,
+    updated_at:     new Date().toISOString(),
+  }, { onConflict: 'user_id,alias' });
+}
+
+async function upsertEvent(userId: string, ev: {
+  title: string; event_date: string; category: string;
+  priority: string; decay_type: string; emotional_weight: number;
+  is_recurring?: boolean; notes?: string | null;
+}): Promise<void> {
+  const { data: ex } = await supabase.from('events').select('id')
+    .eq('user_id', userId).ilike('title', ev.title).maybeSingle();
+
+  if (ex?.id) {
+    await supabase.from('events').update({
+      event_date: ev.event_date, priority: ev.priority,
+      decay_type: ev.decay_type, emotional_weight: ev.emotional_weight,
+      notes: ev.notes || null,
+    }).eq('id', ex.id);
+  } else {
+    await supabase.from('events').insert({
+      user_id: userId, title: ev.title, event_date: ev.event_date,
+      category: ev.category, priority: ev.priority, decay_type: ev.decay_type,
+      emotional_weight: ev.emotional_weight,
+      is_recurring: ev.is_recurring ?? ev.decay_type === 'recurring_annual',
+      notes: ev.notes || null,
+      last_notified_year: new Date().getFullYear() - 1,
+      relevance_score: 1.0,
+    });
+  }
+}
+
+function normalizeDate(raw: string): string {
+  if (!raw) return raw;
+  const months: Record<string, string> = {
+    janeiro:'01', fevereiro:'02', marco:'03', abril:'04',
+    maio:'05', junho:'06', julho:'07', agosto:'08',
+    setembro:'09', outubro:'10', novembro:'11', dezembro:'12',
+  };
+  const year    = new Date().getFullYear();
+  const ptMatch = raw.match(/(\d{1,2})\s+de?\s+(\w+)/i);
+  if (ptMatch) {
+    const mon = months[ptMatch[2].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+    if (mon) return `${year}-${mon}-${ptMatch[1].padStart(2, '0')}`;
+  }
+  const parts = raw.split(/[-/]/);
+  if (parts.length === 2) return `${year}-${parts[0].padStart(2, '0')}-${parts[1].padStart(2, '0')}`;
+  if (parts.length === 3) return raw;
+  return raw;
+}
+
+function getCategoryFromType(tipo: string): string {
+  if (/escola|escolar/.test(tipo))       return 'school';
+  if (/medic|saude/.test(tipo))          return 'health';
+  if (/trabalho|projeto/.test(tipo))     return 'work';
+  if (/aniversario|familiar/.test(tipo)) return 'family';
+  return 'personal';
+}
+
+function getLifePhase(age: number | null): string {
+  if (!age || age <= 0) return 'child';
+  if (age <= 3)  return 'baby';
+  if (age <= 11) return 'child';
+  if (age <= 17) return 'teen';
+  if (age <= 24) return 'young_adult';
+  return 'adult';
 }
