@@ -706,13 +706,21 @@ async function extractRelacao(userId: string, userMessage: string): Promise<void
   const prompt = `Extraia dinâmicas relacionais afirmadas pelo USUÁRIO sobre pessoas específicas.
 
 Mensagem do usuário: "${userMessage}"
-Pessoas conhecidas: ${conhecidos || 'nenhuma ainda'}
+
+Pessoas já conhecidas (USE para determinar o tipo correto):
+${conhecidos || 'nenhuma ainda'}
+
+REGRA CRÍTICA para determinar o tipo:
+- Se a pessoa é identificada como "mãe de [filho]" ou "pai de [filho]" → tipo="ex" (outro pai/mãe do filho)
+- Se a pessoa É o cônjuge listado em "cônjuge:" acima → tipo="spouse"
+- Se for parente (irmão, tio, avô) → tipo="family"
+- Nunca assuma que uma pessoa nova é cônjuge — só se estiver na lista acima como cônjuge
 
 Retorne APENAS JSON:
 {"relacoes": [{"pessoa": "Adriana", "tipo": "ex", "dinamica": "Relação difícil, não se dão bem"}]}
 
 tipos: spouse|ex|friend|colleague|family|other
-dinamica: resumo em 1 frase do que foi dito
+dinamica: resumo objetivo em 1 frase
 Retorne relacoes: [] se nenhuma dinâmica mencionada`;
 
   try {
