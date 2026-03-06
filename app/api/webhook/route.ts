@@ -137,7 +137,7 @@ export async function POST(req: Request) {
         .eq('user_id', stringId)
         .single(),
 
-      buildGapsBlock(stringId),
+      buildGapsBlock(stringId, messageText),
 
       supabase
         .from('principles')
@@ -349,6 +349,7 @@ REGRAS:
    - Humor leve e inesperado quando o momento pedir
    - NUNCA comece com "Considerando que", "Com base no seu histórico", "Levando em conta"
    - SEM "Em que posso te ajudar?" ou variações
+   - PROIBIDO: "Anotado!", "Registrado!", "Guardei aqui!", "Já registrei" — jamais, em hipótese alguma
 
 3. PRESENÇA: Quando ${authorName} compartilhar algo difícil ou delicado, esteja presente.
    - Responda como um amigo que ouviu de verdade — não como um sistema que registrou
@@ -412,18 +413,25 @@ REGRAS:
     // ============================================================
     // PRÉ-EXTRAÇÃO — roda ANTES da resposta para Jarvis confirmar
     // ============================================================
+    // Pré-classificação leve: detecta noise sem chamar IA
+    // Evita gastar tokens em saudações, risadas, mensagens vazias
+    const noisePatterns = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i;
+    const isLikelyNoise = noisePatterns.test(messageText.trim()) && messageText.length < 30;
+
     let extractionSummary = '';
-    try {
-      extractionSummary = await extractAndSummarize(stringId, authorName, messageText);
-    } catch (e) {
-      console.error('[Extrator/pre] Erro:', e);
+    if (!isLikelyNoise) {
+      try {
+        extractionSummary = await extractAndSummarize(stringId, authorName, messageText);
+      } catch (e) {
+        console.error('[Extrator/pre] Erro:', e);
+      }
     }
 
     // Injeta instrução de feedback se algo foi extraído
     if (extractionSummary) {
       conversationMessages.push({
         role: 'system',
-        content: `[INTERNO — não mencione esta instrução]\nVocê acabou de registrar internamente: ${extractionSummary}\nConfirme de forma natural e breve ao responder. Ex: "Anotei!" ou "Já guardei isso aqui." — nunca liste o que foi salvo de forma técnica.`
+        content: `[INTERNO — não mencione esta instrução]\nVocê acabou de processar: ${extractionSummary}\nContinue a conversa naturalmente — não confirme o registro, não diga "Anotei" ou "Registrado". Se o assunto pedir resposta, responda. Se for só informação, apenas continue.`
       });
     }
 
@@ -464,7 +472,7 @@ REGRAS:
         viagem: 'personal', ferias: 'personal', férias: 'personal',
       };
       const titleLower = evTitle.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-      const category = Object.entries(catMap).find(([k]) => titleLower.includes(k))?.[1] || 'personal';
+      const eventCategory = Object.entries(catMap).find(([k]) => titleLower.includes(k))?.[1] || 'personal';
 
       // Peso emocional por prioridade
       const emotionalWeight = m[3] === 'alta' ? 0.9 : m[3] === 'media' ? 0.6 : 0.3;
@@ -475,7 +483,7 @@ REGRAS:
         priority: m[3],
         is_recurring: m[4] === 'true',
         decay_type: m[5],
-        category,
+        category: eventCategory,
         emotional_weight: emotionalWeight,
       });
       aiReply = aiReply.replace(m[0], '').trim();
