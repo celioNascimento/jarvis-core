@@ -239,7 +239,7 @@ Assistente: "${aiReply}"
 
     if (Object.keys(patch).length === 0) return;
 
-    patch.user_id    = parseInt(userId);
+    patch.user_id    = userId;
     patch.updated_at = new Date().toISOString();
 
     await supabase
@@ -287,7 +287,7 @@ Assistente: "${aiReply}"
       await supabase
         .from('user_profiles')
         .upsert({
-          user_id:     parseInt(userId),
+          user_id:     userId,
           personality_notes: `Cônjuge: ${conjuge.nome}${conjuge.aniversario ? ` (aniv: ${conjuge.aniversario})` : ''}`,
           updated_at:  new Date().toISOString()
         }, { onConflict: 'user_id' });
@@ -597,7 +597,7 @@ Retorne todos como null se nenhuma rotina foi mencionada.
     const { data: profile } = await supabase
       .from('user_profiles')
       .select('personality_notes')
-      .eq('user_id', parseInt(userId))
+      .eq('user_id', userId)
       .maybeSingle();
 
     const existing = profile?.personality_notes || '';
@@ -610,7 +610,7 @@ Retorne todos como null se nenhuma rotina foi mencionada.
 
     await supabase
       .from('user_profiles')
-      .upsert({ user_id: parseInt(userId), personality_notes: updated, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+      .upsert({ user_id: userId, personality_notes: updated, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
 
     console.log('[Extrator/rotina] Atualizado:', parts.join(' | '));
   } catch (e) {
@@ -655,7 +655,7 @@ Retorne [] se nenhuma preferência foi mencionada.
     const { data: profile } = await supabase
       .from('user_profiles')
       .select('career_notes')
-      .eq('user_id', parseInt(userId))
+      .eq('user_id', userId)
       .maybeSingle();
 
     // Usando career_notes como campo livre para preferências por ora
@@ -666,7 +666,7 @@ Retorne [] se nenhuma preferência foi mencionada.
 
     await supabase
       .from('user_profiles')
-      .upsert({ user_id: parseInt(userId), career_notes: updated, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+      .upsert({ user_id: userId, career_notes: updated, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
 
     console.log('[Extrator/preferencia]', newPrefs);
   } catch (e) {
@@ -680,15 +680,16 @@ Retorne [] se nenhuma preferência foi mencionada.
 // ============================================================
 async function patchL3FromBrain(userId: string): Promise<void> {
   try {
-    const uid = parseInt(userId);
+    // users.id é bigint — cast numérico só aqui
+    const uidInt = parseInt(userId);
 
     // Busca estado atual de todas as tabelas em paralelo
     const [profileResult, childrenResult, projectsResult, eventsResult, userResult] = await Promise.all([
-      supabase.from('user_profiles').select('*').eq('user_id', uid).maybeSingle(),
+      supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle(),
       supabase.from('children').select('name, birth_date, life_phase').eq('parent_id', userId),
       supabase.from('projects').select('name, description, context_technical').limit(10),
       supabase.from('events').select('title, event_date, priority, emotional_weight').eq('user_id', userId).order('event_date').limit(10),
-      supabase.from('users').select('current_context').eq('id', uid).single(),
+      supabase.from('users').select('current_context').eq('id', uidInt).single(),
     ]);
 
     const p    = profileResult.data;
@@ -754,7 +755,7 @@ async function patchL3FromBrain(userId: string): Promise<void> {
     await supabase
       .from('users')
       .update({ current_context: updated.trim() })
-      .eq('id', uid);
+      .eq('id', uidInt);
 
     console.log('[Extrator/L3] Atualizado com patches:', Object.keys(patches).join(', '));
   } catch (e) {
@@ -849,7 +850,7 @@ async function storeGaps(userId: string, gaps: DetectedGap[]): Promise<void> {
   await supabase
     .from('users')
     .update({ pending_gaps: relevant })
-    .eq('id', userId);
+    .eq('id', parseInt(userId));
 }
 
 // ============================================================
@@ -861,7 +862,7 @@ export async function buildGapsBlock(userId: string): Promise<string> {
     const { data } = await supabase
       .from('users')
       .select('pending_gaps')
-      .eq('id', userId)
+      .eq('id', parseInt(userId))
       .single();
 
     const gaps: DetectedGap[] = data?.pending_gaps || [];
@@ -885,7 +886,7 @@ export async function clearGaps(userId: string): Promise<void> {
   await supabase
     .from('users')
     .update({ pending_gaps: [] })
-    .eq('id', userId);
+    .eq('id', parseInt(userId));
 }
 
 // ============================================================
