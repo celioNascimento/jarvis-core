@@ -113,7 +113,7 @@ export async function POST(req: Request) {
     const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult, gapsBlock] = await Promise.all([
       supabase
         .from('users')
-        .select('nickname, current_context, pending_question, pending_context, plan')
+        .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone')
         .eq('id', stringId)
         .single(),
 
@@ -141,11 +141,13 @@ export async function POST(req: Request) {
       buildGapsBlock(stringId)
     ]);
 
-    const userProfile = userProfileResult.data;
-    const authorName = userProfile?.nickname || userFirstName;
+    const userProfile    = userProfileResult.data;
+    const authorName     = userProfile?.nickname || userFirstName;
+    const assistantName  = userProfile?.assistant_name || 'Lev';
+    const userTimezone   = userProfile?.timezone || 'America/Sao_Paulo';
     const currentContextL3 = userProfile?.current_context || "Sem dossiê ainda.";
-    const pendingQuestion = userProfile?.pending_question || null;
-    const pendingContext = userProfile?.pending_context || null;
+    const pendingQuestion  = userProfile?.pending_question || null;
+    const pendingContext   = userProfile?.pending_context || null;
 
     // Tratamento informal baseado no gênero detectado no dossiê
     const isFemale = currentContextL3.toLowerCase().includes('feminino') ||
@@ -276,15 +278,15 @@ export async function POST(req: Request) {
     // ============================================================
     // PROMPT FINAL v1.4
     // ============================================================
-    const fusoLondrina = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     // ============================================================
     // MONTA MESSAGES ESTRUTURADO — como uma instância real
     // System prompt com contexto + histórico como conversa
     // ============================================================
     const systemPrompt = `
-Você é ${authorName === 'Celio' ? 'Jarvis' : 'Lev'}, assistente pessoal de ${authorName}.
-Data/hora: ${fusoLondrina} | Modo: ${weights.horizon.toUpperCase()}
+Você é ${assistantName}, assistente pessoal de ${authorName}.
+Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
 
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]
 ${truncatedL3}` : ''}
@@ -467,4 +469,5 @@ REGRAS:
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true });
   }
-}
+            }
+                                                       
