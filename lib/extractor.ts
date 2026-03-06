@@ -448,10 +448,11 @@ REGRAS:
   "é de um casamento anterior" → outro_pai="desconhecido"
   "filho da Ana" → outro_pai="Ana"
   null se não mencionado
-- nota: fato marcante sobre a criança mencionado na conversa
+- nota: fato marcante OU dinâmica relacional mencionada sobre a criança
   "o Pedro comprou uma moto" → nota="Comprou uma moto"
+  "não nos damos bem, relação difícil" (sobre Pedro) → nota="Relação difícil com o pai"
   "o Davi ganhou mochila do Pikachu" → nota="Ganhou mochila do Pikachu"
-  null se nenhum fato marcante`;
+  null se nenhum fato ou dinâmica mencionada`;
 
   try {
     const raw  = await callAI(prompt, 800);
