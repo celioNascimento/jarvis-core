@@ -273,36 +273,55 @@ export async function updateL3(userId: string): Promise<void> {
       }).join(', ');
     }
 
-    // Aplica patches no contexto
+    // Aplica patches no contexto — só substitui se o valor mudou
+    const changed: string[] = [];
     for (const [key, val] of Object.entries(patches)) {
-      const rx   = new RegExp(`- ${key}:.*`, 'i');
+      const rx      = new RegExp(`- ${key}: (.*)`, 'i');
+      const match   = ctx.match(rx);
+      const current = match?.[1]?.trim() || '';
+      if (current === val) continue; // nada mudou — pula
       const line = `- ${key}: ${val}`;
-      ctx = rx.test(ctx) ? ctx.replace(rx, line) : `${ctx}\n${line}`;
+      ctx = match ? ctx.replace(rx, line) : `${ctx}\n${line}`;
+      changed.push(key);
     }
 
-    // Seção projetos
+    // Seção projetos — só atualiza se mudou
     if (proj.length > 0) {
-      const block   = proj.map((r: any) => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
-      const section = `## PROJETOS\n${block}`;
-      ctx = /## PROJETOS[\s\S]*?(?=\n##|$)/i.test(ctx)
-        ? ctx.replace(/## PROJETOS[\s\S]*?(?=\n##|$)/i, section)
-        : `${ctx}\n\n${section}`;
+      const block      = proj.map((r: any) => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
+      const section    = `## PROJETOS\n${block}`;
+      const existProj  = /## PROJETOS[\s\S]*?(?=\n##|$)/i.exec(ctx)?.[0] || '';
+      if (existProj !== section) {
+        ctx = existProj
+          ? ctx.replace(/## PROJETOS[\s\S]*?(?=\n##|$)/i, section)
+          : `${ctx}\n\n${section}`;
+        changed.push('Projetos');
+      }
     }
 
-    // Seção datas importantes (emotional_weight >= 0.7)
+    // Seção datas importantes — só atualiza se mudou
     const highEvs = evs.filter((e: any) => (e.emotional_weight || 0) >= 0.7);
     if (highEvs.length > 0) {
-      const block   = highEvs.map((e: any) => `- ${e.title}: ${e.event_date}`).join('\n');
-      const section = `## DATAS IMPORTANTES\n${block}`;
-      ctx = /## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i.test(ctx)
-        ? ctx.replace(/## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i, section)
-        : `${ctx}\n\n${section}`;
+      const block      = highEvs.map((e: any) => `- ${e.title}: ${e.event_date}`).join('\n');
+      const section    = `## DATAS IMPORTANTES\n${block}`;
+      const existDatas = /## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i.exec(ctx)?.[0] || '';
+      if (existDatas !== section) {
+        ctx = existDatas
+          ? ctx.replace(/## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i, section)
+          : `${ctx}\n\n${section}`;
+        changed.push('Datas');
+      }
+    }
+
+    // Só faz update se algo realmente mudou
+    if (changed.length === 0) {
+      console.log('[Extrator/L3] Sem mudanças — update ignorado');
+      return;
     }
 
     const { error } = await supabase.from('users')
       .update({ current_context: ctx.trim() }).eq('id', userId);
     if (error) console.error('[Extrator/L3] Erro:', error);
-    else console.log('[Extrator/L3] Patches:', Object.keys(patches).join(', '));
+    else console.log('[Extrator/L3] Mudanças:', changed.join(', '));
   } catch (e) { console.error('[Extrator/L3] Erro:', e); }
 }
 
