@@ -68,8 +68,14 @@ const EVENT_WEIGHTS: Record<string, { priority: string; decay_type: string; emot
 // PONTO DE ENTRADA PRINCIPAL
 // Chamado pelo webhook após persistência na brain
 // ============================================================
+export interface DetectedGap {
+  field: string;        // o que falta
+  context: string;      // contexto para a pergunta
+  hint: string;         // sugestão de como perguntar naturalmente
+}
+
 export async function extractAndRoute(
-  userId: string,      // text (Telegram ID)
+  userId: string,
   userName: string,
   userMessage: string,
   aiReply: string
@@ -85,7 +91,14 @@ export async function extractAndRoute(
 
     console.log('[Extrator] Contextos detectados:', classification.contexts);
 
-    // Estágio 2: Disparar extratores em paralelo por contexto
+    // Estágio 2: Detectar lacunas e sinalizar para o próximo turno
+    const gaps = await detectGaps(userId, userMessage, aiReply, classification.contexts);
+    if (gaps.length > 0) {
+      await storeGaps(userId, gaps);
+      console.log('[Extrator] Gaps detectados:', gaps.map(g => g.field).join(', '));
+    }
+
+    // Estágio 3: Disparar extratores em paralelo por contexto
     const tasks: Promise<any>[] = [];
 
     if (classification.contexts.includes('perfil')) {
@@ -746,6 +759,134 @@ async function patchL3FromBrain(userId: string): Promise<void> {
   } catch (e) {
     console.error('[Extrator/L3] Erro:', e);
   }
+}
+
+// ============================================================
+// DETECTOR DE LACUNAS
+// Identifica informações incompletas para o Lev perguntar naturalmente
+// ============================================================
+async function detectGaps(
+  userId: string,
+  userMessage: string,
+  aiReply: string,
+  contexts: string[]
+): Promise<DetectedGap[]> {
+  if (contexts.length === 0) return [];
+
+  // Busca o que já sabemos para não perguntar de novo
+  const [profileResult, childrenResult] = await Promise.all([
+    supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle(),
+    supabase.from('children').select('name').eq('parent_id', userId),
+  ]);
+
+  const profile  = profileResult.data;
+  const children = childrenResult.data || [];
+  const childNames = children.map((c: any) => c.name);
+
+  // Busca cônjuge de personality_notes
+  const conjugeMatch = profile?.personality_notes?.match(/C.njuge: ([^\n(|]+)/);
+  const conjugeNome  = conjugeMatch?.[1]?.trim();
+
+  const gaps: DetectedGap[] = [];
+
+  const prompt = `
+Analise a troca e identifique informações incompletas que valeria perguntar.
+
+Usuário: "${userMessage}"
+Assistente: "${aiReply}"
+
+O que JÁ SABEMOS:
+- Cônjuge: ${conjugeNome || 'nome desconhecido'}
+- Filhos cadastrados: ${childNames.length > 0 ? childNames.join(', ') : 'nenhum'}
+- Cidade: ${profile?.city || 'desconhecida'}
+- Profissão: ${profile?.current_job || 'desconhecida'}
+
+Contextos detectados na mensagem: ${contexts.join(', ')}
+
+Identifique lacunas APENAS se a mensagem sugere que a informação existe mas está incompleta.
+Retorne APENAS JSON:
+
+{
+  "gaps": [
+    {
+      "field": "nome_esposa",
+      "context": "usuário mencionou aniversário da esposa mas nome é desconhecido",
+      "hint": "Perguntar o nome dela de forma natural, ex: 'Ah, e como ela se chama?'",
+      "urgencia": "alta"
+    }
+  ]
+}
+
+Campos possíveis para gaps:
+- nome_esposa / nome_marido: cônjuge mencionado mas sem nome
+- nome_filho: filho mencionado mas sem nome (ex: 'meu filho')  
+- tema_evento: evento mencionado sem detalhes (festa, confraternização)
+- data_evento: evento sem data específica
+- nome_medico: consulta mencionada sem nome do médico
+- nome_projeto: projeto/ideia sem nome definido
+
+Regras:
+- urgencia: "alta" (bloqueia ação) | "media" (enriquece) | "baixa" (opcional)
+- Só retorne gaps realmente úteis — máximo 2 por vez
+- Retorne [] se não há lacunas relevantes
+`;
+
+  try {
+    const raw  = await callAI(prompt, 300);
+    const data = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    return data.gaps || [];
+  } catch {
+    return [];
+  }
+}
+
+async function storeGaps(userId: string, gaps: DetectedGap[]): Promise<void> {
+  // Filtra apenas gaps de alta e média urgência
+  const relevant = gaps.filter(g => g.urgencia !== 'baixa');
+  if (relevant.length === 0) return;
+
+  await supabase
+    .from('users')
+    .update({ pending_gaps: relevant })
+    .eq('id', userId);
+}
+
+// ============================================================
+// Lê os gaps pendentes e gera bloco para o prompt
+// Chamado pelo webhook ao montar o systemPrompt
+// ============================================================
+export async function buildGapsBlock(userId: string): Promise<string> {
+  try {
+    const { data } = await supabase
+      .from('users')
+      .select('pending_gaps')
+      .eq('id', userId)
+      .single();
+
+    const gaps: DetectedGap[] = data?.pending_gaps || [];
+    if (gaps.length === 0) return '';
+
+    const lines = gaps.map(g =>
+      `- LACUNA [${g.urgencia?.toUpperCase() || 'MEDIA'}]: ${g.context}
+  → ${g.hint}`
+    ).join('
+');
+
+    return `[INFORMAÇÕES INCOMPLETAS — pergunte naturalmente quando houver abertura]
+${lines}
+
+REGRA: Pergunte UMA lacuna por vez, de forma leve e contextual. Nunca interrompa o assunto principal.
+Após obter a resposta, a lacuna será resolvida automaticamente.`.trim();
+  } catch {
+    return '';
+  }
+}
+
+export async function clearGaps(userId: string): Promise<void> {
+  await supabase
+    .from('users')
+    .update({ pending_gaps: [] })
+    .eq('id', userId);
 }
 
 // ============================================================
