@@ -588,19 +588,44 @@ REGRAS:
         childData.autonomy_level = autonomyByPhase[life_phase] || 2;
       }
 
-      // nivel_escolar → life_phase override + school_grade quando creche/pre
+      // nivel_escolar → só afeta life_phase para crianças pequenas sem data de nascimento
+      // NUNCA sobrescreve life_phase calculada pela data de nascimento real
       if (filho.nivel_escolar) {
-        const nivelMap: Record<string, string> = {
-          creche: 'baby', pre: 'child', fundamental: 'child',
-          medio: 'teen', superior: 'young_adult', nao_estuda: life_phase,
-        };
-        if (nivelMap[filho.nivel_escolar]) childData.life_phase = nivelMap[filho.nivel_escolar];
+        // life_phase por nível: só aplica se não temos birth_date (sem dado real para calcular)
+        if (!birth_date && !ex?.birth_date) {
+          const nivelToPhase: Record<string, string> = {
+            creche: 'baby', pre: 'child', fundamental: 'child',
+            medio: 'teen', superior: 'young_adult',
+          };
+          if (nivelToPhase[filho.nivel_escolar]) childData.life_phase = nivelToPhase[filho.nivel_escolar];
+        }
+        // Grade padrão para creche/pre quando série não informada
         if (!filho.serie && ['creche','pre'].includes(filho.nivel_escolar)) {
           childData.school_grade = filho.nivel_escolar;
         }
+        // nao_estuda: limpa escola e grava nota com nível concluído
         if (filho.nivel_escolar === 'nao_estuda') {
           childData.school_name  = null;
           childData.school_grade = null;
+          // Registra em lev_notes o nível concluído
+          const nivelLabel: Record<string, string> = {
+            medio: 'Ensino médio concluído',
+            superior: 'Ensino superior concluído',
+            fundamental: 'Ensino fundamental concluído',
+          };
+          // Tenta inferir o nível concluído da mensagem original
+          const nivelConcluido = filho.serie
+            ? `${filho.serie} concluído`
+            : nivelLabel[filho.serie || ''] || 'Ensino médio concluído';
+          const { data: childRec } = await supabase.from('children')
+            .select('lev_notes').eq('id', ex?.id || '').maybeSingle();
+          const existingNotes = childRec?.lev_notes || '';
+          if (!existingNotes.includes('concluído')) {
+            const noteDate = new Date().toLocaleDateString('pt-BR');
+            childData.lev_notes = existingNotes
+              ? `${existingNotes}\n[${noteDate}] ${nivelConcluido}`
+              : `[${noteDate}] ${nivelConcluido}`;
+          }
         }
       }
 
