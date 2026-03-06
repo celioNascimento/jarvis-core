@@ -351,12 +351,10 @@ REGRAS:
     // PRÉ-EXTRAÇÃO — roda ANTES da resposta para Jarvis confirmar
     // ============================================================
     let extractionSummary = '';
-    if (category !== 'noise') {
-      try {
-        extractionSummary = await extractAndSummarize(stringId, authorName, messageText);
-      } catch (e) {
-        console.error('[Extrator/pre] Erro:', e);
-      }
+    try {
+      extractionSummary = await extractAndSummarize(stringId, authorName, messageText);
+    } catch (e) {
+      console.error('[Extrator/pre] Erro:', e);
     }
 
     // Injeta instrução de feedback se algo foi extraído
