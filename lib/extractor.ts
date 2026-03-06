@@ -444,6 +444,17 @@ REGRAS:
     for (const filho of (data.filhos || [])) {
       if (!filho.nome) continue;
 
+      const firstName = filho.nome.split(' ')[0].toLowerCase();
+
+      // Match por primeiro nome (case-insensitive) — evita duplicação
+      const { data: allChildren } = await supabase.from('children')
+        .select('id, name, birth_date, nickname, child_user_id')
+        .eq('parent_id', userId);
+
+      const ex = (allChildren || []).find((c: any) =>
+        c.name.split(' ')[0].toLowerCase() === firstName
+      ) || null;
+
       // Nascimento: data exata tem precedência sobre idade
       let birth_date: string | null = null;
       if (filho.nascimento) {
@@ -458,33 +469,59 @@ REGRAS:
         : filho.idade;
       const life_phase = getLifePhase(ageReal);
 
-      const { data: ex } = await supabase.from('children').select('id')
-        .eq('parent_id', userId).eq('name', filho.nome).maybeSingle();
+      // Nome: só atualiza se vier mais completo
+      const existingName  = ex?.name || '';
+      const existingWords = existingName.trim().split(/\s+/).length;
+      const newWords      = filho.nome.trim().split(/\s+/).length;
+      const nameToSave    = (!existingName || newWords > existingWords) ? filho.nome : existingName;
 
-      const childData: Record<string, any> = { birth_date, life_phase, updated_at: new Date().toISOString() };
+      // Nickname: se filho tem conta no app, usa preferred_name da conta
+      let nicknameToSave: string | null = ex?.nickname || null;
+      if (ex?.child_user_id) {
+        const { data: childUser } = await supabase
+          .from('user_profiles').select('preferred_name, full_name')
+          .eq('user_id', String(ex.child_user_id)).maybeSingle();
+        nicknameToSave = childUser?.preferred_name || childUser?.full_name?.split(' ')[0] || null;
+      } else if (filho.apelido) {
+        // Sem conta: grava se vazio ou se vier mais completo
+        const apWords  = filho.apelido.trim().split(/\s+/).length;
+        const curWords = (ex?.nickname || '').trim().split(/\s+/).length;
+        if (!ex?.nickname || apWords > curWords) nicknameToSave = filho.apelido;
+      }
+
+      const childData: Record<string, any> = {
+        name: nameToSave, birth_date, life_phase,
+        updated_at: new Date().toISOString(),
+      };
+      if (nicknameToSave)  childData.nickname          = nicknameToSave;
       if (filho.genero)    childData.gender             = filho.genero;
       if (filho.escola)    childData.school_name        = filho.escola;
       if (filho.serie)     childData.school_grade       = filho.serie;
-      if (filho.apelido)   childData.nickname           = filho.apelido;
       if (filho.outro_pai) childData.other_parent_name  = filho.outro_pai === 'desconhecido' ? null : filho.outro_pai;
-      // Se outro_pai foi mencionado, other_parent_user_id fica null até ser resolvido
 
+      let childId: string;
       if (ex?.id) {
         await supabase.from('children').update(childData).eq('id', ex.id);
+        childId = ex.id;
       } else {
-        await supabase.from('children').insert({ parent_id: userId, name: filho.nome, ...childData });
+        const { data: inserted } = await supabase.from('children')
+          .insert({ parent_id: userId, ...childData }).select('id').single();
+        childId = inserted?.id;
       }
-      if (filho.apelido && filho.apelido.toLowerCase() !== filho.nome.split(' ')[0].toLowerCase()) {
-        await upsertAlias(userId, filho.apelido, 'child', ex?.id || null, filho.nome);
+
+      // Alias: só cria se apelido ≠ primeiro nome
+      if (nicknameToSave && nicknameToSave.toLowerCase() !== firstName) {
+        await upsertAlias(userId, nicknameToSave, 'child', childId || null, nameToSave);
       }
+
       if (birth_date) {
         await upsertEvent(userId, {
-          title: `Aniversário ${filho.nome}`, event_date: birth_date, category: 'family',
-          notes: `${life_phase} — ${filho.idade} anos`,
+          title: `Aniversário ${nameToSave}`, event_date: birth_date, category: 'family',
+          notes: `${life_phase} — ${ageReal} anos`,
           priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.90,
         });
       }
-      console.log('[Extrator/familia] Filho:', filho.nome);
+      console.log('[Extrator/familia] Filho:', nameToSave, ex ? '(atualizado)' : '(novo)');
     }
 
     // ── Pai ──────────────────────────────────────────────────
