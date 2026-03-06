@@ -103,7 +103,7 @@ export async function extractAndSummarize(
     if (classification.contexts.includes('agenda'))      tasks.push(extractAgenda(userId, userMessage));
     if (classification.contexts.includes('rotina'))      tasks.push(extractRotina(userId, userMessage));
     if (classification.contexts.includes('preferencia')) tasks.push(extractPreferencia(userId, userMessage));
-    if (classification.contexts.includes('relacao'))      tasks.push(extractRelacao(userId, userMessage));
+    if (classification.contexts.includes('relacao'))     tasks.push(extractRelacao(userId, userMessage));
 
     const results = await Promise.allSettled(tasks);
     results.forEach((r, i) => {
@@ -138,6 +138,7 @@ function summarizeContexts(contexts: string[]): string {
     agenda:      'compromisso na agenda',
     rotina:      'rotina atualizada',
     preferencia: 'preferência registrada',
+    relacao:     'dinâmica relacional registrada'
   };
   const found = contexts.filter(c => labels[c]).map(c => labels[c]);
   if (found.length === 0) return '';
@@ -706,7 +707,7 @@ REGRAS:
 }
 
 // ============================================================
-// EXTRATOR: APELIDOS / ALIASES
+// EXTRATOR: RELAÇÕES
 // ============================================================
 
 async function extractRelacao(userId: string, userMessage: string): Promise<void> {
@@ -757,6 +758,10 @@ Retorne relacoes: [] se nenhuma dinâmica mencionada`;
     }
   } catch (e) { console.error('[Extrator/relacao] Erro:', e); }
 }
+
+// ============================================================
+// EXTRATOR: APELIDOS / ALIASES
+// ============================================================
 
 async function extractAlias(userId: string, userMessage: string): Promise<void> {
   const { data: prof } = await supabase
