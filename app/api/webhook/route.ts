@@ -22,7 +22,7 @@ import {
   processOnboardingFromMessage,
   buildOnboardingBlock
 } from '@/lib/onboarding';
-import { extractAndRoute } from '@/lib/extractor';
+import { extractAndRoute, buildGapsBlock } from '@/lib/extractor';
 
 export async function POST(req: Request) {
   try {
@@ -110,7 +110,7 @@ export async function POST(req: Request) {
     // ============================================================
     // BUSCA EM PARALELO
     // ============================================================
-    const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult] = await Promise.all([
+    const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult, gapsBlock] = await Promise.all([
       supabase
         .from('users')
         .select('nickname, current_context, pending_question, pending_context, plan')
@@ -136,7 +136,9 @@ export async function POST(req: Request) {
         .from('onboarding_progress')
         .select('*')
         .eq('user_id', stringId)
-        .single()
+        .single(),
+
+      buildGapsBlock(stringId)
     ]);
 
     const userProfile = userProfileResult.data;
@@ -297,6 +299,8 @@ ${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao ci
 ${truncatedAshes}` : ''}
 
 ${onboardingBlock}
+
+${gapsBlock}
 
 REGRAS:
 1. FOCO: Responda O QUE FOI PERGUNTADO. Nunca mude de assunto.
