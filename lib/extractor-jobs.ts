@@ -376,56 +376,77 @@ export async function upsertAlias(
   }, { onConflict: 'user_id,alias' });
 }
 
+// Normaliza título de evento para comparação e persistência
+function normalizeEventTitle(t: string): string {
+  return t
+    .replace(/^(aniversári[oa]?\s+)(d[ao]\s+)/gi, '$1') // remove "da/do"
+    .replace(/^(aniversári[oa]?\s+)(\S+)(\s+\S+)+$/gi, (_, prefix, first) => `${prefix}${first}`) // só primeiro nome
+    .trim();
+}
+
+// Cache local em memória para evitar duplo insert na mesma sessão Node
+const recentInserts = new Map<string, number>();
+
 export async function upsertEvent(userId: string, ev: {
   title: string; event_date: string; category: string;
   priority: string; decay_type: string; emotional_weight: number;
   is_recurring?: boolean; notes?: string | null;
 }): Promise<void> {
-  // Normaliza títulos de aniversário: "Aniversário da Giselle" → "Aniversário Giselle"
-  const normalizeTitle = (t: string) => t
-    .replace(/^Aniversário\s+(d[ao]\s+)/i, 'Aniversário ')  // remove "da/do"
-    .replace(/^(Aniversário\s+)\S+\s+\S+.*$/i, (_, prefix) => {
-      // "Aniversário Pedro Henrique Correa..." → "Aniversário Pedro"
-      const firstName = t.replace(/^Aniversário\s+(d[ao]\s+)?/i, '').split(' ')[0];
-      return `${prefix}${firstName}`;
-    })
-    .trim();
+  const title = normalizeEventTitle(ev.title);
 
-  const title = ev.title.toLowerCase().startsWith('aniversário') || ev.title.toLowerCase().startsWith('aniversario')
-    ? normalizeTitle(ev.title)
-    : ev.title;
-
-  // Normaliza para comparação: remove acentos, lowercase
+  // Normaliza para comparação local: sem acentos, lowercase
   const norm = (s: string) => s.toLowerCase().trim()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, ' ');
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
 
-  const titleNorm = norm(title);
-  const firstName = titleNorm.replace(/aniversari[oa]?\s+/, '').split(' ')[0];
+  // Chave de deduplicação: user + primeiro nome + mês/dia
+  const firstName = norm(title).replace(/aniversari[oa]?\s+/, '').split(' ')[0];
+  const mmdd      = ev.event_date.slice(5); // MM-DD
+  const dedupKey  = `${userId}:${firstName || norm(title)}:${mmdd}`;
 
-  // Busca candidatos na mesma data (mês+dia) para detectar duplicata
-  const eventMMDD = ev.event_date.slice(5);
+  // Verifica cache local — se inserimos nos últimos 10s, ignora
+  const lastInsert = recentInserts.get(dedupKey) || 0;
+  if (Date.now() - lastInsert < 10_000) {
+    console.log('[upsertEvent] Ignorado (cache):', title);
+    return;
+  }
+
+  // Busca no banco por mês/dia + título similar (uma única query)
   const { data: candidates } = await supabase.from('events')
-    .select('id, title')
+    .select('id, title, priority, emotional_weight, notes')
     .eq('user_id', userId)
-    .or(`event_date.eq.${ev.event_date},event_date.like.%-${eventMMDD}`);
+    .like('event_date', `%-${mmdd}`);
 
   const ex = (candidates || []).find((c: any) => {
-    const cn = norm(c.title);
+    const cn = norm(normalizeEventTitle(c.title));
     const cf = cn.replace(/aniversari[oa]?\s+/, '').split(' ')[0];
-    return cn === titleNorm || (firstName.length > 2 && cf === firstName);
+    const tn = norm(title);
+    const tf = tn.replace(/aniversari[oa]?\s+/, '').split(' ')[0];
+    return cn === tn || (tf.length > 2 && cf === tf);
   });
 
+  recentInserts.set(dedupKey, Date.now());
+
   if (ex?.id) {
+    // Só atualiza se o novo dado for de maior qualidade
+    const betterPriority   = ev.priority === 'alta' && ex.priority !== 'alta';
+    const betterWeight     = ev.emotional_weight > (ex.emotional_weight || 0);
+    const hasNewNote       = ev.notes && !ex.notes;
+    const titleImproved    = norm(title) !== norm(ex.title); // normalização melhorou
+
+    if (!betterPriority && !betterWeight && !hasNewNote && !titleImproved) {
+      console.log('[upsertEvent] Ignorado (sem melhoria):', title);
+      return;
+    }
     await supabase.from('events').update({
       title,
-      event_date: ev.event_date, priority: ev.priority,
-      decay_type: ev.decay_type, emotional_weight: ev.emotional_weight,
-      notes: ev.notes || null,
+      ...(betterPriority  ? { priority: ev.priority }                  : {}),
+      ...(betterWeight    ? { emotional_weight: ev.emotional_weight }   : {}),
+      ...(hasNewNote      ? { notes: ev.notes }                         : {}),
     }).eq('id', ex.id);
+    console.log('[upsertEvent] Atualizado:', title);
   } else {
     await supabase.from('events').insert({
-      user_id: userId, title: ev.title, event_date: ev.event_date,
+      user_id: userId, title, event_date: ev.event_date,
       category: ev.category, priority: ev.priority, decay_type: ev.decay_type,
       emotional_weight: ev.emotional_weight,
       is_recurring: ev.is_recurring ?? ev.decay_type === 'recurring_annual',
@@ -433,6 +454,7 @@ export async function upsertEvent(userId: string, ev: {
       last_notified_year: new Date().getFullYear() - 1,
       relevance_score: 1.0,
     });
+    console.log('[upsertEvent] Inserido:', title);
   }
 }
 
