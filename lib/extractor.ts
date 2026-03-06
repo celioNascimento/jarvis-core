@@ -36,19 +36,33 @@ interface Classification {
 // BLOCO DE GAPS PARA O PROMPT DO WEBHOOK
 // ============================================================
 
-export async function buildGapsBlock(userId: string): Promise<string> {
+export async function buildGapsBlock(userId: string, currentMessage?: string): Promise<string> {
   try {
     const { data } = await supabase
       .from('users').select('pending_gaps').eq('id', userId).single();
     const gaps: DetectedGap[] = data?.pending_gaps || [];
     if (gaps.length === 0) return '';
+
+    // Detecta se a mensagem atual tem contexto incompatível com os gaps pendentes
+    // Ex: gap sobre projeto não deve ser perguntado numa conversa sobre família
+    const msgLower = (currentMessage || '').toLowerCase();
+    const isEmotional = /dific|barra|trist|saudade|relação|família|filho|esposa|mãe|pai|deus|fé|oração/.test(msgLower);
+    const isAboutDate = /aniversário|data|nascimento|casamento|páscoa|natal/.test(msgLower);
+
     const lines = gaps
       .map(g => `- [${(g.urgencia || 'media').toUpperCase()}] ${g.context}\n  → ${g.hint}`)
       .join('\n');
+
+    const restricao = isEmotional
+      ? 'AGORA NÃO: conversa tem tom emocional — não pergunte gaps nessa mensagem.'
+      : isAboutDate
+      ? 'AGORA NÃO: conversa é sobre datas/família — só pergunte gap se for sobre o mesmo assunto.'
+      : 'REGRA: Pergunte UMA lacuna por vez, de forma leve. Nunca interrompa o assunto principal.';
+
     return [
       '[INFORMAÇÕES INCOMPLETAS — pergunte naturalmente quando houver abertura]',
       lines,
-      'REGRA: Pergunte UMA lacuna por vez, de forma leve. Nunca interrompa o assunto principal.',
+      restricao,
     ].join('\n');
   } catch { return ''; }
 }
@@ -89,7 +103,6 @@ export async function extractAndSummarize(
     if (classification.contexts.includes('agenda'))      tasks.push(extractAgenda(userId, userMessage));
     if (classification.contexts.includes('rotina'))      tasks.push(extractRotina(userId, userMessage));
     if (classification.contexts.includes('preferencia')) tasks.push(extractPreferencia(userId, userMessage));
-    if (classification.contexts.includes('relacao'))      tasks.push(extractRelacao(userId, userMessage));
     if (classification.contexts.includes('relacao'))      tasks.push(extractRelacao(userId, userMessage));
 
     const results = await Promise.allSettled(tasks);
