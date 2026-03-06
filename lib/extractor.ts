@@ -89,6 +89,8 @@ export async function extractAndSummarize(
     if (classification.contexts.includes('agenda'))      tasks.push(extractAgenda(userId, userMessage));
     if (classification.contexts.includes('rotina'))      tasks.push(extractRotina(userId, userMessage));
     if (classification.contexts.includes('preferencia')) tasks.push(extractPreferencia(userId, userMessage));
+    if (classification.contexts.includes('relacao'))      tasks.push(extractRelacao(userId, userMessage));
+    if (classification.contexts.includes('relacao'))      tasks.push(extractRelacao(userId, userMessage));
 
     const results = await Promise.allSettled(tasks);
     results.forEach((r, i) => {
@@ -182,12 +184,15 @@ Contextos disponíveis:
 - "agenda": compromissos com data E hora específica (consulta, reunião, voo)
 - "rotina": horários fixos, hábitos diários, lembretes recorrentes
 - "preferencia": gostos, lugares favoritos, comidas, hobbies, opiniões
+- "relacao": dinâmica ou sentimento sobre pessoa específica — ex parceiro, familiar distante, colega
+  "não nos damos bem", "relação difícil", "a gente não se fala", "me dou bem com"
 
 REGRAS:
 - Analise APENAS o que o USUÁRIO afirma — ignore perguntas ou afirmações do assistente
-- has_new_facts: true se QUALQUER fato pessoal for afirmado pelo usuário
+- has_new_facts: true se QUALQUER fato pessoal for afirmado — incluindo dinâmicas relacionais
 - has_new_facts: false APENAS para saudações, piadas, perguntas genéricas sem info pessoal
 - Se gaps indicarem campo pendente e usuário responder → inclua o contexto correto
+- "sim" ou "não" como resposta a gap → inclua o contexto do gap
 
 Retorne APENAS JSON:
 {"has_new_facts": true, "contexts": ["perfil"]}`;
@@ -681,6 +686,47 @@ REGRAS:
 // ============================================================
 // EXTRATOR: APELIDOS / ALIASES
 // ============================================================
+
+async function extractRelacao(userId: string, userMessage: string): Promise<void> {
+  // Busca pessoas conhecidas para dar contexto ao modelo
+  const { data: prof } = await supabase
+    .from('user_profiles').select('spouse_name, father_name, mother_name').eq('user_id', userId).maybeSingle();
+  const { data: kids } = await supabase.from('children').select('name, nickname, other_parent_name').eq('parent_id', userId);
+
+  const conhecidos = [
+    prof?.spouse_name ? `cônjuge: ${prof.spouse_name}` : null,
+    prof?.father_name ? `pai: ${prof.father_name}` : null,
+    prof?.mother_name ? `mãe: ${prof.mother_name}` : null,
+    ...(kids || []).flatMap((k: any) => [
+      `filho: ${k.name}`,
+      k.other_parent_name ? `mãe/pai de ${k.name}: ${k.other_parent_name}` : null,
+    ]),
+  ].filter(Boolean).join(', ');
+
+  const prompt = `Extraia dinâmicas relacionais afirmadas pelo USUÁRIO sobre pessoas específicas.
+
+Mensagem do usuário: "${userMessage}"
+Pessoas conhecidas: ${conhecidos || 'nenhuma ainda'}
+
+Retorne APENAS JSON:
+{"relacoes": [{"pessoa": "Adriana", "tipo": "ex", "dinamica": "Relação difícil, não se dão bem"}]}
+
+tipos: spouse|ex|friend|colleague|family|other
+dinamica: resumo em 1 frase do que foi dito
+Retorne relacoes: [] se nenhuma dinâmica mencionada`;
+
+  try {
+    const data = JSON.parse(await callAI(prompt, 300));
+    for (const r of (data.relacoes || [])) {
+      if (!r.pessoa || !r.dinamica) continue;
+      await supabase.from('person_notes').insert({
+        user_id: userId, person_name: r.pessoa,
+        person_type: r.tipo || 'other', note: r.dinamica,
+      });
+      console.log('[Extrator/relacao]', r.pessoa, '→', r.dinamica);
+    }
+  } catch (e) { console.error('[Extrator/relacao] Erro:', e); }
+}
 
 async function extractAlias(userId: string, userMessage: string): Promise<void> {
   const { data: prof } = await supabase
