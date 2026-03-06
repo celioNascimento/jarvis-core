@@ -428,20 +428,29 @@ REGRAS:
 
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 
-    await sendTelegram(chatId, aiReply);
+    // Extrator + Onboarding — rodam ANTES do return, com await
+    // Vercel mata processos background após o return
+    const tasks: Promise<any>[] = [];
 
-    // Onboarding em background — não bloqueia a resposta
     if (onboardingState?.status === 'in_progress') {
-      processOnboardingFromMessage(stringId, messageText, aiReply, onboardingState)
-        .catch(e => console.error('[Onboarding] Erro:', e));
+      tasks.push(
+        processOnboardingFromMessage(stringId, messageText, aiReply, onboardingState)
+          .catch(e => console.error('[Onboarding] Erro:', e))
+      );
     }
 
-    // Extrator contínuo — roda para TODA mensagem info, em paralelo
-    // Classifica contexto e persiste nas tabelas certas (lib/extractor.ts)
     if (category === 'info') {
-      extractAndRoute(stringId, authorName, messageText, aiReply)
-        .catch(e => console.error('[Extrator] Erro:', e));
+      tasks.push(
+        extractAndRoute(stringId, authorName, messageText, aiReply)
+          .catch(e => console.error('[Extrator] Erro:', e))
+      );
     }
+
+    // Roda sendTelegram + persistência em paralelo para não atrasar resposta
+    await Promise.all([
+      sendTelegram(chatId, aiReply),
+      ...tasks
+    ]);
 
     // Compactação
     const { count } = await supabase
