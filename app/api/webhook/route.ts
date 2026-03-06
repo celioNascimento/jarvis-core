@@ -22,6 +22,7 @@ import {
   processOnboardingFromMessage,
   buildOnboardingBlock
 } from '@/lib/onboarding';
+import { extractAndRoute } from '@/lib/extractor';
 
 export async function POST(req: Request) {
   try {
@@ -432,9 +433,9 @@ REGRAS:
     }
 
     // Extrator contínuo — roda para TODA mensagem info, em paralelo
-    // Persiste fatos novos em user_profiles, children, relationships e L3
+    // Classifica contexto e persiste nas tabelas certas (lib/extractor.ts)
     if (category === 'info') {
-      extractAndPersistFacts(stringId, authorName, messageText, aiReply)
+      extractAndRoute(stringId, authorName, messageText, aiReply)
         .catch(e => console.error('[Extrator] Erro:', e));
     }
 
