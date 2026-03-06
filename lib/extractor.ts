@@ -395,16 +395,21 @@ Retorne APENAS JSON (null para não mencionados):
 {
   "esposa":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null},
   "marido":  {"nome": null, "aniversario": null, "telefone": null, "apelido": null},
-  "filhos": [{"nome": null, "idade": null, "genero": null, "escola": null, "serie": null, "apelido": null}],
+  "filhos": [{"nome": null, "nascimento": null, "idade": null, "genero": null, "escola": null, "serie": null, "apelido": null, "outro_pai": null}],
   "pai":    {"nome": null, "apelido": null},
   "mae":    {"nome": null, "apelido": null}
 }
 
 REGRAS:
 - filhos: [] se nenhum mencionado
+- nascimento: data exata se informada, formato YYYY-MM-DD. Tem precedência sobre idade
 - aniversario: DD/MM, YYYY-MM-DD, ou "5 de agosto"
 - genero filho: "m"|"f"|null
-- apelido: como o usuário chama a pessoa ("vida", "velho", "mãezinha")`;
+- apelido: como o usuário chama a pessoa ("vida", "velho", "mãezinha")
+- outro_pai: nome do outro pai/mãe biológico SE explicitamente mencionado como diferente do cônjuge atual
+  Ex: "é de um casamento anterior" → outro_pai="desconhecido" (será perguntado depois)
+  Ex: "filho da Ana, minha ex" → outro_pai="Ana"
+  null se não mencionado`;
 
   try {
     const data = JSON.parse(await callAI(prompt, 400));
@@ -438,25 +443,40 @@ REGRAS:
     // ── Filhos ───────────────────────────────────────────────
     for (const filho of (data.filhos || [])) {
       if (!filho.nome) continue;
-      const birthYear  = filho.idade ? new Date().getFullYear() - filho.idade : null;
-      const birth_date = birthYear ? `${birthYear}-01-01` : null;
-      const life_phase = getLifePhase(filho.idade);
+
+      // Nascimento: data exata tem precedência sobre idade
+      let birth_date: string | null = null;
+      if (filho.nascimento) {
+        birth_date = normalizeDate(filho.nascimento);
+      } else if (filho.idade) {
+        birth_date = `${new Date().getFullYear() - filho.idade}-01-01`;
+      }
+
+      // Idade real a partir da data de nascimento
+      const ageReal = birth_date
+        ? Math.floor((Date.now() - new Date(birth_date).getTime()) / (1000 * 60 * 60 * 24 * 365.25))
+        : filho.idade;
+      const life_phase = getLifePhase(ageReal);
 
       const { data: ex } = await supabase.from('children').select('id')
         .eq('parent_id', userId).eq('name', filho.nome).maybeSingle();
 
       const childData: Record<string, any> = { birth_date, life_phase, updated_at: new Date().toISOString() };
-      if (filho.genero)  childData.gender       = filho.genero;
-      if (filho.escola)  childData.school_name  = filho.escola;
-      if (filho.serie)   childData.school_grade = filho.serie;
-      if (filho.apelido) childData.nickname     = filho.apelido;
+      if (filho.genero)    childData.gender             = filho.genero;
+      if (filho.escola)    childData.school_name        = filho.escola;
+      if (filho.serie)     childData.school_grade       = filho.serie;
+      if (filho.apelido)   childData.nickname           = filho.apelido;
+      if (filho.outro_pai) childData.other_parent_name  = filho.outro_pai === 'desconhecido' ? null : filho.outro_pai;
+      // Se outro_pai foi mencionado, other_parent_user_id fica null até ser resolvido
 
       if (ex?.id) {
         await supabase.from('children').update(childData).eq('id', ex.id);
       } else {
         await supabase.from('children').insert({ parent_id: userId, name: filho.nome, ...childData });
       }
-      if (filho.apelido) await upsertAlias(userId, filho.apelido, 'child', ex?.id || null, filho.nome);
+      if (filho.apelido && filho.apelido.toLowerCase() !== filho.nome.split(' ')[0].toLowerCase()) {
+        await upsertAlias(userId, filho.apelido, 'child', ex?.id || null, filho.nome);
+      }
       if (birth_date) {
         await upsertEvent(userId, {
           title: `Aniversário ${filho.nome}`, event_date: birth_date, category: 'family',
