@@ -379,6 +379,8 @@ REGRAS:
    [SALVAR_EVENTO: Aniversário Giselle | 1985-08-05 | alta | true | recurring_annual]
 
    REGRAS CRÍTICAS:
+   - SEMPRE emita SALVAR_EVENTO quando o usuário informar uma data — mesmo que já conste no contexto
+     O banco valida duplicatas; sua função é garantir que o dado chegue, não assumir que já está lá
    - Data YYYY-MM-DD é OBRIGATÓRIA — sem data o gatilho não funciona
    - Páscoa 2026 = 2026-04-05 | Natal = MM-DD 12-25 | Ano Novo = 01-01
    - Para eventos recorrentes sem data exata, use o próximo ano corrente
