@@ -280,9 +280,12 @@ Contextos detectados: ${contexts.join(', ')}
 REGRA: Só crie gap para campos que estão como "desconhecido" E que são relevantes para o contexto.
 Se o campo já está preenchido → NÃO crie gap para ele.
 
-Campos válidos para gaps:
+Campos válidos para gaps (APENAS dados pessoais e família):
 nome_completo, nome_esposa, nome_marido, nome_filho, nome_pai, nome_mae,
-data_nascimento_filho, tema_evento, data_evento, nome_medico, nome_projeto
+data_nascimento_filho, data_nascimento_esposa
+
+NUNCA crie gap para: nome_projeto, tema_evento, data_evento, nome_medico
+Esses dados chegam quando o usuário quiser informar — não pergunte.
 
 Retorne APENAS JSON:
 {"gaps": [{"field": "nome_esposa", "context": "cônjuge mencionado sem nome", "hint": "E como ela se chama?", "urgencia": "alta"}]}
@@ -291,6 +294,9 @@ Retorne {"gaps": []} se não há lacunas ou se já sabemos tudo.`;
 
   try {
     const data = JSON.parse(await callAI(prompt, 300));
+    const validContexts = ['perfil', 'familia'];
+    // Só gera gaps se o contexto for perfil ou família
+    if (!contexts.some(c => validContexts.includes(c))) return [];
     return (data.gaps || []).filter((g: DetectedGap) => g.urgencia !== 'baixa');
   } catch { return []; }
 }
