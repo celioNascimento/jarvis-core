@@ -106,6 +106,7 @@ export async function extractAndSummarize(
     }
 
     const tasks: Promise<void>[] = [];
+    console.log('[Extrator/classify] contextos:', classification.contexts);
     if (classification.contexts.includes('perfil'))      tasks.push(extractPerfil(userId, userMessage));
     if (classification.contexts.includes('familia'))     tasks.push(extractFamilia(userId, userMessage, pendingGaps));
     if (classification.contexts.includes('alias'))       tasks.push(extractAlias(userId, userMessage));
