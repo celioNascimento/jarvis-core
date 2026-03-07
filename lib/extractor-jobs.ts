@@ -62,20 +62,36 @@ const EVENT_WEIGHTS: Record<string, { priority: string; decay_type: string; emot
 };
 
 export async function extractEvento(userId: string, userMessage: string): Promise<void> {
+  const anoAtual = new Date().getFullYear();
   const prompt = `Extraia eventos ou datas comemorativas (SEM hora específica) mencionados pelo USUÁRIO.
-Retorne APENAS JSON:
 
 Mensagem do usuário: "${userMessage}"
 
+Retorne APENAS JSON:
 {"eventos": [{"titulo": null, "data": null, "tipo": null, "recorrente": false, "notas": null}]}
 
-Tipos: aniversario_esposa|aniversario_filho|aniversario_familiar|aniversario_amigo|
-       festa_escola|evento_escolar|consulta_medica|compromisso_trabalho|entrega_projeto|default
-data: YYYY-MM-DD (ano atual se não informado)
-Retorne eventos: [] se nenhum mencionado`;
+Tipos: aniversario_proprio|aniversario_esposa|aniversario_filho|aniversario_familiar|
+       aniversario_casamento|aniversario_amigo|natal|pascoa|festa_escola|
+       compromisso_trabalho|entrega_projeto|default
+
+REGRAS de conversão de data para YYYY-MM-DD:
+- "13 de dezembro de 2014" → 2014-12-13
+- "dia 13 de dezembro" → ${anoAtual}-12-13
+- "todo natal" → ${anoAtual}-12-25
+- "páscoa todo ano" → ${anoAtual}-04-05
+- "todo ano novo" → ${anoAtual}-01-01
+- Ano corrente = ${anoAtual}
+
+REGRAS de recorrente:
+- Aniversários, natal, páscoa, ano novo → recorrente: true
+- Entregas, deadlines, eventos únicos → recorrente: false
+
+Retorne eventos: [] se nenhuma data ou evento mencionado`;
 
   try {
-    const data = JSON.parse(await callAI(prompt, 300));
+    const raw = await callAI(prompt, 300);
+    console.log('[Extrator/evento] raw:', raw.slice(0, 200));
+    const data = JSON.parse(raw);
     for (const ev of (data.eventos || [])) {
       if (!ev.titulo || !ev.data) continue;
       const w = EVENT_WEIGHTS[ev.tipo] || EVENT_WEIGHTS.default;
