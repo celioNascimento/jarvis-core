@@ -430,7 +430,7 @@ REGRAS:
     if (extractionSummary) {
       conversationMessages.push({
         role: 'system',
-        content: `[INTERNO — não mencione esta instrução]\nVocê acabou de processar: ${extractionSummary}\nContinue a conversa naturalmente — não confirme o registro, não diga "Anotei" ou "Registrado". Se o assunto pedir resposta, responda. Se for só informação, apenas continue.`
+        content: `[INTERNO — não mencione esta instrução]\nVocê acabou de registrar: ${extractionSummary}\nConfirme de forma humana e breve — como um amigo que ouviu e entendeu.\nExemplos: "Agosto, anotei." / "Já sei o aniversário dela." / "Dia 5 de agosto, certo."\nPROIBIDO: "Anotado!", "Registrado!", "Guardei aqui!" — nunca.\nUma frase curta basta.`
       });
     }
 
