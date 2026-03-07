@@ -321,9 +321,6 @@ Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]
 ${truncatedL3}` : ''}
 
-${truncatedEvents ? `[EVENTOS RELEVANTES]
-${truncatedEvents}` : ''}
-
 ${personNotesBlock ? personNotesBlock : ''}
 
 ${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]
