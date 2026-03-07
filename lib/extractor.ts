@@ -46,8 +46,11 @@ export async function buildGapsBlock(userId: string, currentMessage?: string): P
     // Detecta se a mensagem atual tem contexto incompatível com os gaps pendentes
     // Ex: gap sobre projeto não deve ser perguntado numa conversa sobre família
     const msgLower = (currentMessage || '').toLowerCase();
-    const isEmotional = /dific|barra|trist|saudade|relação|família|filho|esposa|mãe|pai|deus|fé|oração/.test(msgLower);
-    const isAboutDate = /aniversário|data|nascimento|casamento|páscoa|natal/.test(msgLower);
+    const isEmotional   = /dific|barra|trist|saudade|relação|família|filho|esposa|mãe|pai|deus|fé|oração/.test(msgLower);
+    const isAboutDate   = /aniversário|data|nascimento|casamento|páscoa|natal/.test(msgLower);
+    const isAboutWork   = /trabalho|projeto|empresa|reunião|entrega|prazo|cliente/.test(msgLower);
+    const hasProjectGap = gaps.some(g => (g.field || '').match(/projeto|pqf/i));
+    const blockProjectGap = hasProjectGap && !isAboutWork;
 
     const lines = gaps
       .map(g => `- [${(g.urgencia || 'media').toUpperCase()}] ${g.context}\n  → ${g.hint}`)
@@ -56,7 +59,9 @@ export async function buildGapsBlock(userId: string, currentMessage?: string): P
     const restricao = isEmotional
       ? 'AGORA NÃO: conversa tem tom emocional — não pergunte gaps nessa mensagem.'
       : isAboutDate
-      ? 'AGORA NÃO: conversa é sobre datas/família — só pergunte gap se for sobre o mesmo assunto.'
+      ? 'AGORA NÃO: conversa é sobre datas — só pergunte gap se for sobre o mesmo assunto.'
+      : blockProjectGap
+      ? 'AGORA NÃO: não pergunte sobre projetos quando o assunto for outro.'
       : 'REGRA: Pergunte UMA lacuna por vez, de forma leve. Nunca interrompa o assunto principal.';
 
     return [
@@ -103,7 +108,7 @@ export async function extractAndSummarize(
     if (classification.contexts.includes('agenda'))      tasks.push(extractAgenda(userId, userMessage));
     if (classification.contexts.includes('rotina'))      tasks.push(extractRotina(userId, userMessage));
     if (classification.contexts.includes('preferencia')) tasks.push(extractPreferencia(userId, userMessage));
-    if (classification.contexts.includes('relacao'))     tasks.push(extractRelacao(userId, userMessage));
+    if (classification.contexts.includes('relacao'))      tasks.push(extractRelacao(userId, userMessage));
 
     const results = await Promise.allSettled(tasks);
     results.forEach((r, i) => {
@@ -138,7 +143,6 @@ function summarizeContexts(contexts: string[]): string {
     agenda:      'compromisso na agenda',
     rotina:      'rotina atualizada',
     preferencia: 'preferência registrada',
-    relacao:     'dinâmica relacional registrada'
   };
   const found = contexts.filter(c => labels[c]).map(c => labels[c]);
   if (found.length === 0) return '';
@@ -707,10 +711,9 @@ REGRAS:
 }
 
 // ============================================================
-// EXTRATOR: RELAÇÕES
+// EXTRATOR: APELIDOS / ALIASES
 // ============================================================
 
-async function extractRelacao(userId: string, userMessage: string): Promise<void> {
   // Busca pessoas conhecidas para dar contexto ao modelo
   const { data: prof } = await supabase
     .from('user_profiles').select('spouse_name, father_name, mother_name').eq('user_id', userId).maybeSingle();
@@ -758,10 +761,6 @@ Retorne relacoes: [] se nenhuma dinâmica mencionada`;
     }
   } catch (e) { console.error('[Extrator/relacao] Erro:', e); }
 }
-
-// ============================================================
-// EXTRATOR: APELIDOS / ALIASES
-// ============================================================
 
 async function extractAlias(userId: string, userMessage: string): Promise<void> {
   const { data: prof } = await supabase
