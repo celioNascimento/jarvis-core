@@ -375,13 +375,20 @@ REGRAS:
    Exemplos corretos:
    [SALVAR_EVENTO: Páscoa em família | 2026-04-05 | baixa | true | recurring_annual]
    [SALVAR_EVENTO: Aniversário Giselle | 1985-08-05 | alta | true | recurring_annual]
+   [SALVAR_EVENTO: Aniversário de Casamento | 2014-12-13 | alta | true | recurring_annual]
+   [SALVAR_EVENTO: Natal em família | 2026-12-25 | media | true | recurring_annual]
+   [SALVAR_EVENTO: Entrega projeto | 2026-03-30 | alta | false | deadline]
 
    REGRAS CRÍTICAS:
-   - SEMPRE emita SALVAR_EVENTO quando o usuário informar uma data — mesmo que já conste no contexto
-     O banco valida duplicatas; sua função é garantir que o dado chegue, não assumir que já está lá
-   - Data YYYY-MM-DD é OBRIGATÓRIA — sem data o gatilho não funciona
-   - Páscoa 2026 = 2026-04-05 | Natal = MM-DD 12-25 | Ano Novo = 01-01
-   - Para eventos recorrentes sem data exata, use o próximo ano corrente
+   - SEMPRE emita SALVAR_EVENTO quando o usuário informar uma data ou evento recorrente
+     O banco valida duplicatas; sua função é garantir que o dado chegue
+   - Data YYYY-MM-DD é OBRIGATÓRIA — converta qualquer formato:
+     "13 de dezembro de 2014" → 2014-12-13
+     "todo natal" → 2026-12-25 (ano corrente)
+     "páscoa todo ano" → 2026-04-05
+     "dia 30 de março" → 2026-03-30
+   - Aniversários e datas recorrentes: is_recurring=true, decay_type=recurring_annual
+   - Deadlines e compromissos únicos: is_recurring=false, decay_type=deadline ou one_time
    - PROIBIDO omitir qualquer campo — formato incompleto vaza no texto
    - Os gatilhos ficam INVISÍVEIS — nunca aparecem na resposta ao usuário
 
