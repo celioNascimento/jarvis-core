@@ -434,13 +434,11 @@ REGRAS:
       }
     }
 
-    // Injeta instrução de feedback se algo foi extraído
-    if (extractionSummary) {
-      conversationMessages.push({
-        role: 'system',
-        content: `[INTERNO — não mencione esta instrução]\nVocê acabou de registrar: ${extractionSummary}\nConfirme de forma humana e breve — como um amigo que ouviu e entendeu.\nExemplos: "Agosto, anotei." / "Já sei o aniversário dela." / "Dia 5 de agosto, certo."\nPROIBIDO: "Anotado!", "Registrado!", "Guardei aqui!" — nunca.\nUma frase curta basta.`
-      });
-    }
+    // Instrução de tom — sempre presente
+    const feedbackContent = extractionSummary
+      ? `[INTERNO]\nRegistrado: ${extractionSummary}\nConfirme em 1 frase curta. Ex: "Dia 13 de dezembro, certo." / "Guardei o aniversário de casamento."\nPROIBIDO: "Anota aí", "Anotado!", "Registrado!" — nunca.`
+      : `[INTERNO]\nVocê é o assistente — NUNCA diga "Anota aí" ou peça ao usuário para anotar algo.\nSe o usuário informar uma data ou fato, confirme brevemente ou responda naturalmente.`;
+    conversationMessages.push({ role: 'system', content: feedbackContent });
 
     let aiReply = await callOpenRouter(conversationMessages);
     console.log('[DEBUG aiReply bruto]', aiReply.slice(0, 300));
