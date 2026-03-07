@@ -258,6 +258,10 @@ async function detectGaps(
   const p          = profileRes.data;
   const childNames = (childrenRes.data || []).map((c: any) => c.name);
 
+  // Cruza campos relacionados — evita gap para dado que já existe com outro nome
+  const spouseBirthKnown = !!(p as any)?.spouse_birthday ||
+    (profileRes as any)?.data?.spouse_birthday;
+
   const prompt = `Identifique lacunas de informação. Máximo 2 gaps relevantes.
 
 Mensagem do usuário: "${userMessage}"
@@ -266,7 +270,7 @@ O que JÁ SABEMOS (não pergunte o que já está preenchido):
 - Nome completo: ${p?.full_name || 'desconhecido'}
 - Como prefere ser chamado: ${p?.preferred_name || 'não informado'}
 - Gênero: ${p?.gender || 'desconhecido'}
-- Cônjuge: ${p?.spouse_name || 'desconhecido'}
+- Cônjuge: ${p?.spouse_name || 'desconhecido'}${(p as any)?.spouse_birthday ? ` (aniversário: ${(p as any).spouse_birthday})` : ''}
 - Pai: ${p?.father_name || 'desconhecido'}
 - Mãe: ${p?.mother_name || 'desconhecida'}
 - Filhos: ${childNames.join(', ') || 'nenhum'}
