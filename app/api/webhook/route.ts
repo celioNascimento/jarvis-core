@@ -443,6 +443,7 @@ REGRAS:
     }
 
     let aiReply = await callOpenRouter(conversationMessages);
+    console.log('[DEBUG aiReply bruto]', aiReply.slice(0, 300));
 
     // ============================================================
     // INTERCEPTORES
