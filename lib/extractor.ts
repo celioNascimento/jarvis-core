@@ -64,10 +64,16 @@ export async function buildGapsBlock(userId: string, currentMessage?: string): P
       ? 'AGORA NÃO: não pergunte sobre projetos quando o assunto for outro.'
       : 'REGRA: Pergunte UMA lacuna por vez, de forma leve. Nunca interrompa o assunto principal.';
 
+    // Gaps são memória silenciosa — o Jarvis guarda e espera o momento certo
+    // Só aparece no prompt quando o contexto da conversa for compatível
+    const temAberturaReal = !isEmotional && !isAboutDate && !blockProjectGap;
+
+    if (!temAberturaReal) return ''; // silêncio total — não injeta no prompt
+
     return [
-      '[INFORMAÇÕES INCOMPLETAS — pergunte naturalmente quando houver abertura]',
+      '[LEMBRETE INTERNO — pergunte apenas se cair naturalmente na conversa]',
       lines,
-      restricao,
+      'Faça UMA pergunta, de forma leve, apenas se o assunto já estiver próximo.',
     ].join('\n');
   } catch { return ''; }
 }
