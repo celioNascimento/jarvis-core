@@ -110,7 +110,7 @@ export async function extractAndSummarize(
     if (classification.contexts.includes('familia'))     tasks.push(extractFamilia(userId, userMessage, pendingGaps));
     if (classification.contexts.includes('alias'))       tasks.push(extractAlias(userId, userMessage));
     if (classification.contexts.includes('projeto'))     tasks.push(extractProjeto(userId, userMessage));
-    // 'evento' não roda aqui — o gatilho SALVAR_EVENTO no webhook é o único caminho de insert
+    if (classification.contexts.includes('evento'))      tasks.push(extractEvento(userId, userMessage));
     if (classification.contexts.includes('agenda'))      tasks.push(extractAgenda(userId, userMessage));
     if (classification.contexts.includes('rotina'))      tasks.push(extractRotina(userId, userMessage));
     if (classification.contexts.includes('preferencia')) tasks.push(extractPreferencia(userId, userMessage));
@@ -208,6 +208,10 @@ Contextos disponíveis:
 - "alias": apelido que o usuário usa para chamar alguém ("vida"=esposa, "velho"=pai)
 - "projeto": projetos, ideias, apps, negócios que desenvolve ou quer desenvolver
 - "evento": aniversários, festas, datas comemorativas recorrentes (sem hora específica)
+  "aniversário de casamento é dia 13 de dezembro" → evento
+  "todo natal a gente se reúne" → evento
+  "páscoa em família todo ano" → evento
+  "meu aniversário é dia 27 de setembro" → evento + perfil
 - "agenda": compromissos com data E hora específica (consulta, reunião, voo)
 - "rotina": horários fixos, hábitos diários, lembretes recorrentes
 - "preferencia": gostos, lugares favoritos, comidas, hobbies, opiniões
