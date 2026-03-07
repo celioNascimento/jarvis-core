@@ -74,6 +74,13 @@ Tipos: aniversario_proprio|aniversario_esposa|aniversario_filho|aniversario_fami
        aniversario_casamento|aniversario_amigo|natal|pascoa|festa_escola|
        compromisso_trabalho|entrega_projeto|default
 
+REGRAS de título — SEMPRE inferir, nunca retornar null:
+- "aniversário de casamento é dia 13 de dezembro" → titulo: "Aniversário de Casamento"
+- "todo natal a gente se reúne" → titulo: "Natal em família"
+- "páscoa em família todo ano" → titulo: "Páscoa em família"
+- "aniversário da Giselle" → titulo: "Aniversário Giselle"
+- Se não houver título explícito, infere pelo contexto — NUNCA retorne titulo: null
+
 REGRAS de conversão de data para YYYY-MM-DD:
 - "13 de dezembro de 2014" → 2014-12-13
 - "dia 13 de dezembro" → ${anoAtual}-12-13

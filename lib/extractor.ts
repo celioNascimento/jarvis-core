@@ -475,7 +475,12 @@ Retorne APENAS JSON (null para não mencionados):
 
 REGRAS:
 - filhos: [] se nenhum mencionado
-- nascimento: data exata se informada, formato YYYY-MM-DD. Tem precedência sobre idade
+- nascimento: data de nascimento DO PRÓPRIO USUÁRIO. Formato YYYY-MM-DD.
+  "nasci em 27/09/1985" → nascimento="1985-09-27"
+  "meu aniversário é dia 27 de setembro" → nascimento="1985-09-27" (se ano conhecido)
+  "aniversário de casamento é dia 13 de dezembro" → nascimento=null (não é nascimento!)
+  "aniversário da Giselle é dia 5 de agosto" → nascimento=null (é de outra pessoa!)
+  NUNCA extraia nascimento de aniversários de casamento ou de terceiros
 - aniversario: DD/MM, YYYY-MM-DD, ou "5 de agosto"
 - genero: "m"|"f"|null — extraia de "ele"/"ela", "meu filho"/"minha filha", ou declaração explícita
 - pronome: "ele"|"ela"|null — pronome usado na mensagem para referir ao filho
