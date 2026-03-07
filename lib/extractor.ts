@@ -711,9 +711,10 @@ REGRAS:
 }
 
 // ============================================================
-// EXTRATOR: APELIDOS / ALIASES
+// EXTRATOR: RELAÇÕES / DINÂMICAS
 // ============================================================
 
+async function extractRelacao(userId: string, userMessage: string): Promise<void> {
   // Busca pessoas conhecidas para dar contexto ao modelo
   const { data: prof } = await supabase
     .from('user_profiles').select('spouse_name, father_name, mother_name').eq('user_id', userId).maybeSingle();
