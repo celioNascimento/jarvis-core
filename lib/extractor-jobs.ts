@@ -425,11 +425,15 @@ function normalizeEventTitle(t: string): string {
 }
 
 // Normaliza título genérico para deduplicação fuzzy
-// "Início na White Martins", "Começo White Martins", "Início White Martins" → mesmo cluster
+// "Início na White Martins", "Começo White Martins", "Início White Martins",
+// "Novo emprego White Martins" → mesmo cluster pela empresa/keyword principal
 function fuzzyTitleKey(t: string): string {
   return t.toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/^(inicio|começo|comeco|start)\s+(na?|em|no)?\s*/i, 'inicio ')
+    // Normaliza prefixos de início de emprego
+    .replace(/^(inicio|começo|comeco|novo emprego|start|entrada)\s+(na?|em|no|ao)?\s*/i, 'inicio ')
+    // Normaliza "Aniversário X Y" → "aniversario X" (já feito pelo normalizeEventTitle, mas reforça)
+    .replace(/^(aniversari[oa]?)\s+(de\s+)?/i, 'aniversario ')
     .replace(/\s+/g, ' ').trim();
 }
 
@@ -442,6 +446,13 @@ export async function upsertEvent(userId: string, ev: {
   is_recurring?: boolean; notes?: string | null;
 }): Promise<void> {
   const title = normalizeEventTitle(ev.title);
+
+  // Rejeita títulos genéricos demais — sem contexto suficiente para deduplicar
+  const titulosRejeitados = /^(aniversário|aniversario|evento|compromisso|data|lembrete)$/i;
+  if (titulosRejeitados.test(title.trim())) {
+    console.log('[upsertEvent] Rejeitado (título genérico):', title);
+    return;
+  }
 
   // Normaliza para comparação local: sem acentos, lowercase
   const norm = (s: string) => s.toLowerCase().trim()

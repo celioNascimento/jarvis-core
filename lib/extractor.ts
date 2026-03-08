@@ -132,7 +132,8 @@ export async function extractAndSummarize(
     if (temFamilia  && msgFamilia)        tasks.push(extractFamilia(userId, userMessage, pendingGaps));
     if (temAlias    && msgAlias)          tasks.push(extractAlias(userId, userMessage));
     if (temProjeto  && msgProjeto)        tasks.push(extractProjeto(userId, userMessage));
-    if (temEvento)                        tasks.push(extractEvento(userId, userMessage));
+    // extractEvento REMOVIDO — eventos são inseridos exclusivamente pelo webhook
+    // via gatilho SALVAR_EVENTO. Dois caminhos = race condition + duplicatas.
     if (temAgenda   && msgAgenda)         tasks.push(extractAgenda(userId, userMessage));
     if (temRotina   && msgRotina)         tasks.push(extractRotina(userId, userMessage));
     if (temPref)                          tasks.push(extractPreferencia(userId, userMessage));
