@@ -37,7 +37,7 @@ Retorne projetos: [] se nenhum mencionado`;
         context_technical: proj.contexto_tecnico || null,
         status: proj.status || 'em_desenvolvimento',
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'tag' });
+      }, { onConflict: 'user_id,tag' });
       if (error) console.error('[Extrator/projeto] Erro:', error);
       else console.log('[Extrator/projeto]', proj.nome);
     }
