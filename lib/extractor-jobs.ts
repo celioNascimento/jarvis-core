@@ -23,21 +23,43 @@ Mensagem do usuário: "${userMessage}"
 
 {"projetos": [{"nome": null, "tag": null, "descricao": null, "status": null, "contexto_tecnico": null}]}
 
-tag: slug lowercase sem espaços (ex: "pqf", "lev-app")
-status: "ideia"|"em_desenvolvimento"|"beta"|"producao"|"pausado"
-Retorne projetos: [] se nenhum mencionado`;
+REGRAS:
+- tag: slug lowercase sem espacos. USE a SIGLA quando houver: "PQF (Procuro Quem Faca)" -> tag="pqf"
+- sigla entre parenteses e nome completo = UM UNICO projeto, nao dois
+  "PQF (Procuro Quem Faca)" -> nome="PQF", tag="pqf", descricao="Procuro Quem Faca"
+  "Procuro Quem Faca (PQF)" -> nome="PQF", tag="pqf", descricao="Procuro Quem Faca"
+- status: "ideia"|"em_desenvolvimento"|"beta"|"producao"|"pausado"
+- Retorne projetos: [] se nenhum mencionado`;
 
   try {
     const data = JSON.parse(await callAI(prompt, 300));
     for (const proj of (data.projetos || [])) {
       if (!proj.nome || !proj.tag) continue;
-      const { error } = await supabase.from('projects').upsert({
+
+      // Busca projeto existente para nao sobrescrever com null
+      const { data: existing } = await supabase.from('projects')
+        .select('description, context_technical, status')
+        .eq('user_id', userId).eq('tag', proj.tag).maybeSingle();
+
+      const payload: Record<string, any> = {
         user_id: userId, tag: proj.tag, name: proj.nome,
-        description: proj.descricao || null,
-        context_technical: proj.contexto_tecnico || null,
-        status: proj.status || 'em_desenvolvimento',
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'user_id,tag' });
+      };
+
+      // Descricao: aceita se nao tinha, ou se a nova for mais longa
+      if (proj.descricao) {
+        if (!existing?.description || proj.descricao.length > existing.description.length) {
+          payload.description = proj.descricao;
+        }
+      }
+      // context_technical: aceita se nao tinha
+      if (proj.contexto_tecnico && !existing?.context_technical) {
+        payload.context_technical = proj.contexto_tecnico;
+      }
+      // status: aceita sempre que vier preenchido
+      if (proj.status) payload.status = proj.status;
+
+      const { error } = await supabase.from('projects').upsert(payload, { onConflict: 'user_id,tag' });
       if (error) console.error('[Extrator/projeto] Erro:', error);
       else console.log('[Extrator/projeto]', proj.nome);
     }
