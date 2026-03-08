@@ -325,7 +325,7 @@ async function extractPerfil(userId: string, userMessage: string): Promise<void>
   // Busca perfil atual UMA VEZ para usar em todas as verificações
   const { data: current } = await supabase
     .from('user_profiles')
-    .select('full_name, preferred_name, gender, schools')
+    .select('full_name, preferred_name, gender, schools, birth_date, birth_city, birth_state, phone, whatsapp, father_name, mother_name, faith_profile, profession, company')
     .eq('user_id', userId).maybeSingle();
 
   const prompt = `Extraia dados de perfil pessoal afirmados explicitamente pelo USUÁRIO.
@@ -398,6 +398,7 @@ REGRAS:
     set('state',          data.estado,              'once');
     set('birth_city',     data.cidade_natal,        'once');
     set('birth_state',    data.estado_natal,        'once');
+    console.log('[Extrator/perfil] birth_date atual:', (current as any)?.birth_date, '| novo:', data.nascimento);
     set('birth_date',     data.nascimento,          'once');
     set('phone',          data.telefone,            'once');
     set('whatsapp',       data.whatsapp,            'once');
