@@ -49,16 +49,23 @@ Retorne projetos: [] se nenhum mencionado`;
 // ============================================================
 
 const EVENT_WEIGHTS: Record<string, { priority: string; decay_type: string; emotional_weight: number }> = {
-  aniversario_esposa:   { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.95 },
-  aniversario_filho:    { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.90 },
-  aniversario_familiar: { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.80 },
-  aniversario_amigo:    { priority: 'media', decay_type: 'recurring_annual', emotional_weight: 0.50 },
-  festa_escola:         { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.60 },
-  evento_escolar:       { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.55 },
-  consulta_medica:      { priority: 'alta',  decay_type: 'deadline',         emotional_weight: 0.70 },
-  compromisso_trabalho: { priority: 'media', decay_type: 'deadline',         emotional_weight: 0.40 },
-  entrega_projeto:      { priority: 'alta',  decay_type: 'deadline',         emotional_weight: 0.60 },
-  default:              { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.50 },
+  aniversario_proprio:   { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 1.00 },
+  aniversario_casamento: { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 1.00 },
+  aniversario_esposa:    { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.95 },
+  aniversario_marido:    { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.95 },
+  aniversario_filho:     { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.90 },
+  aniversario_familiar:  { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.80 },
+  aniversario_amigo:     { priority: 'media', decay_type: 'recurring_annual', emotional_weight: 0.50 },
+  natal:                 { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.85 },
+  pascoa:                { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.80 },
+  ano_novo:              { priority: 'media', decay_type: 'recurring_annual', emotional_weight: 0.60 },
+  festa_escola:          { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.60 },
+  evento_escolar:        { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.55 },
+  consulta_medica:       { priority: 'alta',  decay_type: 'deadline',         emotional_weight: 0.70 },
+  compromisso_trabalho:  { priority: 'media', decay_type: 'deadline',         emotional_weight: 0.40 },
+  entrega_projeto:       { priority: 'alta',  decay_type: 'deadline',         emotional_weight: 0.60 },
+  inicio_emprego:        { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.50 },
+  default:               { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.50 },
 };
 
 export async function extractEvento(userId: string, userMessage: string): Promise<void> {
@@ -406,12 +413,24 @@ export async function upsertAlias(
 
 // Normaliza título de evento para comparação e persistência
 function normalizeEventTitle(t: string): string {
-  // "Aniversário de Casamento" é título composto — preserva inteiro
-  if (/^aniversári[oa]?\s+de\s+\w/i.test(t)) return t.trim();
-  return t
-    .replace(/^(aniversári[oa]?\s+)(d[ao]\s+)/gi, '$1') // remove "da/do" mas não "de X"
-    .replace(/^(aniversári[oa]?\s+)(\S+)(\s+\S+)+$/gi, (_, prefix, first) => `${prefix}${first}`) // só primeiro nome
+  const s = t.trim();
+  // Títulos compostos com "de" — preserva inteiro: "Aniversário de Casamento"
+  if (/^aniversári[oa]?\s+de\s+\w/i.test(s)) return s;
+  // Remove "da/do" após aniversário: "Aniversário da Giselle" → "Aniversário Giselle"
+  const sem_da = s.replace(/^(aniversári[oa]?\s+)(d[ao]\s+)/gi, '$1');
+  // Mantém só o primeiro nome após "Aniversário": "Aniversário Celio Roberto" → "Aniversário Celio"
+  return sem_da
+    .replace(/^(aniversári[oa]?\s+)(\S+)(\s+\S+)+$/gi, (_, prefix, first) => `${prefix}${first}`)
     .trim();
+}
+
+// Normaliza título genérico para deduplicação fuzzy
+// "Início na White Martins", "Começo White Martins", "Início White Martins" → mesmo cluster
+function fuzzyTitleKey(t: string): string {
+  return t.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/^(inicio|começo|comeco|start)\s+(na?|em|no)?\s*/i, 'inicio ')
+    .replace(/\s+/g, ' ').trim();
 }
 
 // Cache local em memória para evitar duplo insert na mesma sessão Node
@@ -428,10 +447,10 @@ export async function upsertEvent(userId: string, ev: {
   const norm = (s: string) => s.toLowerCase().trim()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
 
-  // Chave de deduplicação: user + primeiro nome + mês/dia
-  const firstName = norm(title).replace(/aniversari[oa]?\s+/, '').split(' ')[0];
+  // Chave de deduplicação: user + título fuzzy + mês/dia
   const mmdd      = ev.event_date.slice(5); // MM-DD
-  const dedupKey  = `${userId}:${firstName || norm(title)}:${mmdd}`;
+  const titleKey  = fuzzyTitleKey(title);
+  const dedupKey  = `${userId}:${titleKey}:${mmdd}`;
 
   // Verifica cache local — se inserimos nos últimos 10s, ignora
   const lastInsert = recentInserts.get(dedupKey) || 0;
@@ -440,18 +459,23 @@ export async function upsertEvent(userId: string, ev: {
     return;
   }
 
-  // Busca no banco por mês/dia + título similar (uma única query)
+  // Busca no banco por mês/dia (uma única query)
   const { data: candidates } = await supabase.from('events')
-    .select('id, title, priority, emotional_weight, notes')
+    .select('id, title, priority, emotional_weight, notes, decay_type, is_recurring')
     .eq('user_id', userId)
     .like('event_date', `%-${mmdd}`);
 
   const ex = (candidates || []).find((c: any) => {
     const cn = norm(normalizeEventTitle(c.title));
-    const cf = cn.replace(/aniversari[oa]?\s+/, '').split(' ')[0];
     const tn = norm(title);
-    const tf = tn.replace(/aniversari[oa]?\s+/, '').split(' ')[0];
-    return cn === tn || (tf.length > 2 && cf === tf);
+    // Match exato normalizado
+    if (cn === tn) return true;
+    // Match fuzzy: mesmo cluster de título (ex: "início" vs "começo")
+    if (fuzzyTitleKey(c.title) === titleKey) return true;
+    // Match por primeiro token após "aniversário" (ex: "Celio")
+    const cf = cn.replace(/aniversari[oa]?\s+(de\s+)?/, '').split(' ')[0];
+    const tf = tn.replace(/aniversari[oa]?\s+(de\s+)?/, '').split(' ')[0];
+    return tf.length > 2 && cf === tf;
   });
 
   recentInserts.set(dedupKey, Date.now());
