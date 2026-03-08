@@ -76,10 +76,15 @@ Tipos: aniversario_proprio|aniversario_esposa|aniversario_filho|aniversario_fami
 
 REGRAS de título — SEMPRE inferir, nunca retornar null:
 - "aniversário de casamento é dia 13 de dezembro" → titulo: "Aniversário de Casamento"
+- "meu aniversário é dia 27 de setembro" → titulo: "Aniversário Celio" — SEMPRE com o primeiro nome
+- "nasci em 27/09/1985" → titulo: "Aniversário Celio" — NUNCA só "Aniversário"
 - "todo natal a gente se reúne" → titulo: "Natal em família"
 - "páscoa em família todo ano" → titulo: "Páscoa em família"
 - "aniversário da Giselle" → titulo: "Aniversário Giselle"
 - Se não houver título explícito, infere pelo contexto — NUNCA retorne titulo: null
+- "aniversário de casamento" → titulo: "Aniversário de Casamento" — NUNCA "Meu Aniversário"
+- "aniversário de casamento" e "meu aniversário" são EVENTOS DISTINTOS — gere dois objetos separados se ambos mencionados
+- Aniversário próprio SEMPRE inclui o primeiro nome: "Aniversário Celio", nunca "Meu Aniversário" ou só "Aniversário"
 
 REGRAS de conversão de data para YYYY-MM-DD:
 - "13 de dezembro de 2014" → 2014-12-13
