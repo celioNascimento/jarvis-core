@@ -107,15 +107,38 @@ export async function extractAndSummarize(
 
     const tasks: Promise<void>[] = [];
     console.log('[Extrator/classify] contextos:', classification.contexts);
-    if (classification.contexts.includes('perfil'))      tasks.push(extractPerfil(userId, userMessage));
-    if (classification.contexts.includes('familia'))     tasks.push(extractFamilia(userId, userMessage, pendingGaps));
-    if (classification.contexts.includes('alias'))       tasks.push(extractAlias(userId, userMessage));
-    if (classification.contexts.includes('projeto'))     tasks.push(extractProjeto(userId, userMessage));
-    if (classification.contexts.includes('evento'))      tasks.push(extractEvento(userId, userMessage));
-    if (classification.contexts.includes('agenda'))      tasks.push(extractAgenda(userId, userMessage));
-    if (classification.contexts.includes('rotina'))      tasks.push(extractRotina(userId, userMessage));
-    if (classification.contexts.includes('preferencia')) tasks.push(extractPreferencia(userId, userMessage));
-    if (classification.contexts.includes('relacao'))      tasks.push(extractRelacao(userId, userMessage));
+    const msg = userMessage.toLowerCase();
+
+    // Guarda de contexto — evita rodar extractors desnecessários
+    const temPerfil   = classification.contexts.includes('perfil');
+    const temFamilia  = classification.contexts.includes('familia');
+    const temEvento   = classification.contexts.includes('evento');
+    const temProjeto  = classification.contexts.includes('projeto');
+    const temAgenda   = classification.contexts.includes('agenda');
+    const temRotina   = classification.contexts.includes('rotina');
+    const temPref     = classification.contexts.includes('preferencia');
+    const temRelacao  = classification.contexts.includes('relacao');
+    const temAlias    = classification.contexts.includes('alias');
+
+    // Filtros semânticos — só roda se a mensagem realmente falar do assunto
+    const msgFamilia  = /filho|filha|esposa|marido|cônjuge|pai|mãe|irmão|irmã|bebê|criança|nasceu|grávid/.test(msg);
+    const msgProjeto  = /projeto|app|sistema|negócio|ideia|desenvolv|startup|pqf/.test(msg);
+    const msgAgenda   = /\d{1,2}[\/\-:h]\d|às \d|amanhã|semana que vem|consulta|reunião|voo|compromisso/.test(msg);
+    const msgRotina   = /todo dia|toda manhã|sempre|rotina|hábito|costume|horário|acord|dorm/.test(msg);
+    const msgRelacao  = /não (nos|me|se) (damos|dou|fala)|relação|difícil|distante|próximo|me dou bem/.test(msg);
+    const msgAlias    = /chamo|chama|apelido|me chama de|chamo de/.test(msg);
+
+    if (temPerfil)                        tasks.push(extractPerfil(userId, userMessage));
+    if (temFamilia  && msgFamilia)        tasks.push(extractFamilia(userId, userMessage, pendingGaps));
+    if (temAlias    && msgAlias)          tasks.push(extractAlias(userId, userMessage));
+    if (temProjeto  && msgProjeto)        tasks.push(extractProjeto(userId, userMessage));
+    if (temEvento)                        tasks.push(extractEvento(userId, userMessage));
+    if (temAgenda   && msgAgenda)         tasks.push(extractAgenda(userId, userMessage));
+    if (temRotina   && msgRotina)         tasks.push(extractRotina(userId, userMessage));
+    if (temPref)                          tasks.push(extractPreferencia(userId, userMessage));
+    if (temRelacao  && msgRelacao)        tasks.push(extractRelacao(userId, userMessage));
+
+    console.log('[Extrator/tasks]', tasks.length, 'tarefas ativas de', classification.contexts.length, 'contextos');
 
     const results = await Promise.allSettled(tasks);
     results.forEach((r, i) => {
