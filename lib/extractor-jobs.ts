@@ -406,8 +406,10 @@ export async function upsertAlias(
 
 // Normaliza título de evento para comparação e persistência
 function normalizeEventTitle(t: string): string {
+  // "Aniversário de Casamento" é título composto — preserva inteiro
+  if (/^aniversári[oa]?\s+de\s+\w/i.test(t)) return t.trim();
   return t
-    .replace(/^(aniversári[oa]?\s+)(d[ao]\s+)/gi, '$1') // remove "da/do"
+    .replace(/^(aniversári[oa]?\s+)(d[ao]\s+)/gi, '$1') // remove "da/do" mas não "de X"
     .replace(/^(aniversári[oa]?\s+)(\S+)(\s+\S+)+$/gi, (_, prefix, first) => `${prefix}${first}`) // só primeiro nome
     .trim();
 }
