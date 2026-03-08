@@ -450,6 +450,13 @@ REGRAS:
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
 
+    // Se houve extração mas o modelo não respondeu nada (noise sem texto)
+    // gera feedback mínimo para o usuário não ficar no silêncio
+    if (!aiReply && extractionSummary) {
+      const feedbacks = ['Certo.', 'Ok.', 'Guardei.', 'Entendido.'];
+      aiReply = feedbacks[Math.floor(Math.random() * feedbacks.length)];
+    }
+
     const pendingMatch = aiReply.match(/\[?PERGUNTA_ABERTA:\s*[\"']?([^\"'|\]]+)[\"']?\s*\|\s*([^\]]+)\]?/i);
     if (pendingMatch) {
       let ctx = null;
