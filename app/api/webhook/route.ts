@@ -386,6 +386,7 @@ REGRAS:
    [AGENDAR: título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
    [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
    [LIMPAR_PENDENTE]
+   [IGNORAR_ULTIMO]
 
    Exemplos corretos:
    [SALVAR_EVENTO: Páscoa em família | 2026-04-05 | baixa | true | recurring_annual]
@@ -431,6 +432,32 @@ REGRAS:
       // Mensagem atual
       { role: 'user', content: messageText }
     ];
+
+    // ============================================================
+    // DETECÇÃO ANTECIPADA — "Jarvis, ignore isso"
+    // Roda antes de qualquer extração ou resposta
+    // ============================================================
+    const ignorePatterns = /ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|esquece|delete isso/i;
+    const isIgnoreRequest = ignorePatterns.test(messageText);
+
+    if (isIgnoreRequest) {
+      // Deleta a última entrada do brain deste usuário
+      const { data: lastEntry } = await supabase
+        .from('brain')
+        .select('id')
+        .eq('user_id', stringId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (lastEntry) {
+        await supabase.from('brain').delete().eq('id', lastEntry.id);
+        console.log('[deleteLastMemory] Entrada removida:', lastEntry.id);
+      }
+
+      await sendTelegram(chatId, 'Feito — apaguei o que foi dito antes. 🗑️');
+      return new Response('OK', { status: 200 });
+    }
 
     // ============================================================
     // PRÉ-EXTRAÇÃO — roda ANTES da resposta para Jarvis confirmar
@@ -483,6 +510,22 @@ REGRAS:
     if (aiReply.includes('[LIMPAR_PENDENTE]')) {
       await clearPendingQuestion(stringId);
       aiReply = aiReply.replace(/\[LIMPAR_PENDENTE\]/gi, '').trim();
+    }
+
+    if (aiReply.includes('[IGNORAR_ULTIMO]')) {
+      const { data: lastEntry } = await supabase
+        .from('brain')
+        .select('id')
+        .eq('user_id', stringId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (lastEntry) {
+        await supabase.from('brain').delete().eq('id', lastEntry.id);
+        console.log('[deleteLastMemory] Entrada removida via gatilho:', lastEntry.id);
+      }
+      aiReply = aiReply.replace(/\[IGNORAR_ULTIMO\]/gi, '').trim();
     }
 
     // Salvar evento
