@@ -112,7 +112,7 @@ export async function POST(req: Request) {
     const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult, gapsBlock, principlesResult] = await Promise.all([
       supabase
         .from('users')
-        .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone')
+        .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone, telegram_chat_id')
         .eq('id', stringId)
         .single(),
 
@@ -149,6 +149,13 @@ export async function POST(req: Request) {
     const authorName     = userProfile?.nickname || userFirstName;
     const assistantName  = userProfile?.assistant_name || 'Lev';
     const userTimezone   = userProfile?.timezone || 'America/Sao_Paulo';
+
+    // Salva telegram_chat_id se ainda não estiver registrado
+    if (!userProfile?.telegram_chat_id && chatId) {
+      await supabase.from('users')
+        .update({ telegram_chat_id: String(chatId) })
+        .eq('id', stringId);
+    }
     const currentContextL3 = userProfile?.current_context || "Sem dossiê ainda.";
     const pendingQuestion  = userProfile?.pending_question || null;
     const pendingContext   = userProfile?.pending_context || null;
