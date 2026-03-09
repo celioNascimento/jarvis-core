@@ -1,13 +1,49 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
+// ============================================================
+// CRON: CHECK-EVENTS v2 — Roda de hora em hora
+// Verifica eventos próximos e notifica via Telegram
+// app/api/cron/check-events/route.ts
+// ============================================================
+
 const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
 );
 
+async function sendTelegram(chatId: string, text: string): Promise<void> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+  });
+}
+
+async function callAI(prompt: string): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY;
+  const baseUrl = process.env.OPENROUTER_API_KEY
+    ? 'https://openrouter.ai/api/v1'
+    : 'https://api.openai.com/v1';
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: process.env.OPENROUTER_API_KEY ? 'google/gemini-flash-1.5' : 'gpt-4o-mini',
+      max_tokens: 200,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content?.trim() || '';
+}
+
 export async function GET(req: Request) {
+  // Autenticação — aceita header ou query param (Vercel cron usa header)
   const authHeader = req.headers.get('authorization');
   const { searchParams } = new URL(req.url);
   const authParam = searchParams.get('auth');
@@ -19,59 +55,105 @@ export async function GET(req: Request) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const agora = new Date();
-  const fuso = new Date(agora.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-  const horaAtual = fuso.getHours();
-  const anoAtual = fuso.getFullYear();
+  try {
+    const agora = new Date();
+    const fuso = new Date(agora.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+    const horaAtual = fuso.getHours();
+    const anoAtual = fuso.getFullYear();
 
-  const { data: users } = await supabase
-    .from('users')
-    .select('id, nickname, telegram_chat_id, notification_hour, timezone')
-    .eq('notification_hour', horaAtual)
-    .not('telegram_chat_id', 'is', null);
+    // Busca usuários configurados para essa hora de notificação
+    // e que tenham telegram_chat_id registrado
+    const { data: users } = await supabase
+      .from('users')
+      .select('id, nickname, telegram_chat_id, notification_hour, timezone')
+      .eq('notification_hour', horaAtual)
+      .not('telegram_chat_id', 'is', null);
 
-  if (!users || users.length === 0) {
-    return NextResponse.json({ debug: 'sem usuários', horaAtual, anoAtual });
+    if (!users || users.length === 0) {
+      return NextResponse.json({ ok: true, message: `Nenhum usuário para as ${horaAtual}h.` });
+    }
+
+    let totalNotificacoes = 0;
+
+    for (const user of users) {
+      const authorName = user.nickname || 'você';
+      const userFuso = new Date(agora.toLocaleString('en-US', {
+        timeZone: user.timezone || 'America/Sao_Paulo'
+      }));
+
+      // Busca eventos ainda não notificados este ano
+      // neq não captura NULL — usa or explícito para incluir ambos
+      const { data: events } = await supabase
+        .from('events')
+        .select('id, title, event_date, priority, decay_type, emotional_weight, last_notified_year, notes')
+        .eq('user_id', user.id)
+        .or(`last_notified_year.is.null,last_notified_year.neq.${anoAtual}`)
+        .order('emotional_weight', { ascending: false });
+
+      if (!events || events.length === 0) continue;
+
+      for (const event of events) {
+        const dataEv = new Date(event.event_date);
+        const evMes = dataEv.getUTCMonth();
+        const evDia = dataEv.getUTCDate();
+        const hoje = userFuso;
+
+        // Verifica se é hoje
+        const isHoje = evDia === hoje.getDate() && evMes === hoje.getMonth();
+
+        // Verifica se é em exatamente 7 dias
+        const seteDias = new Date(hoje);
+        seteDias.setDate(hoje.getDate() + 7);
+        const isPrevia = evDia === seteDias.getDate() && evMes === seteDias.getMonth();
+
+        // Verifica se é em exatamente 3 dias (alta prioridade)
+        const tresDias = new Date(hoje);
+        tresDias.setDate(hoje.getDate() + 3);
+        const isTresDias = evDia === tresDias.getDate() && evMes === tresDias.getMonth()
+          && event.priority === 'alta';
+
+        if (!isHoje && !isPrevia && !isTresDias) continue;
+
+        // Monta contexto para o tom
+        const statusTxt = isHoje
+          ? 'É HOJE'
+          : isTresDias
+          ? 'é daqui a 3 dias'
+          : 'é daqui a 7 dias';
+
+        const prompt = `Você é ${authorName === 'Celio' ? 'Jarvis' : 'Lev'}, assistente pessoal de ${authorName}.
+Notifique sobre: "${event.title}" — ${statusTxt}.
+Prioridade: ${event.priority}${event.notes ? `\nContexto: ${event.notes}` : ''}
+
+REGRAS:
+- Máximo 2 frases
+- Tom: amigo direto — não robótico, não exagerado
+- Se for aniversário de alguém: mencione a pessoa
+- Se for prévia (3 ou 7 dias): sugira algo prático (presente, ligação, reserva)
+- Se for hoje: seja direto e caloroso
+- NUNCA use "Anotado", "Registrado" ou termos técnicos
+- Sem hashtags, sem emojis excessivos — no máximo 1`;
+
+        const mensagem = await callAI(prompt);
+        if (!mensagem) continue;
+
+        await sendTelegram(user.telegram_chat_id, mensagem);
+        console.log(`[check-events] ${authorName} — "${event.title}" (${statusTxt})`);
+
+        // Marca como notificado este ano
+        await supabase
+          .from('events')
+          .update({ last_notified_year: anoAtual })
+          .eq('id', event.id);
+
+        totalNotificacoes++;
+      }
+    }
+
+    return NextResponse.json({ ok: true, notificacoes: totalNotificacoes });
+
+  } catch (error: any) {
+    console.error('[check-events] Erro:', error.message);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
-
-  const user = users[0];
-  const userFuso = new Date(agora.toLocaleString('en-US', {
-    timeZone: user.timezone || 'America/Sao_Paulo'
-  }));
-
-  const { data: events } = await supabase
-    .from('events')
-    .select('id, title, event_date, priority, last_notified_year')
-    .eq('user_id', user.id)
-    .or(`last_notified_year.is.null,last_notified_year.neq.${anoAtual}`);
-
-  const diagnostico = (events || []).map(ev => {
-    const dataEv = new Date(ev.event_date);
-    const evMes = dataEv.getUTCMonth();
-    const evDia = dataEv.getUTCDate();
-
-    const isHoje = evDia === userFuso.getDate() && evMes === userFuso.getMonth();
-
-    const seteDias = new Date(userFuso);
-    seteDias.setDate(userFuso.getDate() + 7);
-    const isPrevia = evDia === seteDias.getDate() && evMes === seteDias.getMonth();
-
-    const tresDias = new Date(userFuso);
-    tresDias.setDate(userFuso.getDate() + 3);
-    const isTresDias = evDia === tresDias.getDate() && evMes === tresDias.getMonth()
-      && ev.priority === 'alta';
-
-    return {
-      title: ev.title,
-      event_date: ev.event_date,
-      evDia, evMes,
-      hojeDate: userFuso.getDate(), hojeMes: userFuso.getMonth(),
-      seteDiasDate: seteDias.getDate(), seteDiasMes: seteDias.getMonth(),
-      tresDiasDate: tresDias.getDate(), tresDiasMes: tresDias.getMonth(),
-      isHoje, isPrevia, isTresDias,
-      dispara: isHoje || isPrevia || isTresDias,
-    };
-  });
-
-  return NextResponse.json({ horaAtual, anoAtual, userFuso: userFuso.toISOString(), eventos: diagnostico });
 }
