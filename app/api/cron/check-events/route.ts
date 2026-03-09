@@ -82,11 +82,12 @@ export async function GET(req: Request) {
       }));
 
       // Busca eventos ainda não notificados este ano
+      // neq não captura NULL — usa or explícito para incluir ambos
       const { data: events } = await supabase
         .from('events')
         .select('id, title, event_date, priority, decay_type, emotional_weight, last_notified_year, notes')
         .eq('user_id', user.id)
-        .neq('last_notified_year', anoAtual)
+        .or(`last_notified_year.is.null,last_notified_year.neq.${anoAtual}`)
         .order('emotional_weight', { ascending: false });
 
       if (!events || events.length === 0) continue;
