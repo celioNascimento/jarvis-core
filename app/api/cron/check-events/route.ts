@@ -85,16 +85,21 @@ export async function GET(req: Request) {
         timeZone: user.timezone || 'America/Sao_Paulo'
       }));
 
-      // Busca eventos ainda não notificados este ano
-      // neq não captura NULL — usa or explícito para incluir ambos
-      const { data: events } = await supabase
-        .from('events')
-        .select('id, title, event_date, priority, decay_type, emotional_weight, last_notified_year, notes')
-        .eq('user_id', String(user.id))
-        .or(`last_notified_year.is.null,last_notified_year.neq.${anoAtual}`)
-        .order('emotional_weight', { ascending: false });
+      // Duas queries separadas — .or() com NULL + int falha silenciosamente
+      const [evNulos, evAntigos] = await Promise.all([
+        supabase.from('events')
+          .select('id, title, event_date, priority, decay_type, emotional_weight, last_notified_year, notes')
+          .eq('user_id', user.id)
+          .is('last_notified_year', null),
+        supabase.from('events')
+          .select('id, title, event_date, priority, decay_type, emotional_weight, last_notified_year, notes')
+          .eq('user_id', user.id)
+          .neq('last_notified_year', anoAtual),
+      ]);
 
-      if (!events || events.length === 0) continue;
+      const events = [...(evNulos.data || []), ...(evAntigos.data || [])];
+      console.log(`[check-events] ${user.nickname} — ${events.length} eventos elegíveis (nulos: ${evNulos.data?.length || 0}, antigos: ${evAntigos.data?.length || 0})`);
+      if (events.length === 0) continue;
 
       for (const event of events) {
         const dataEv = new Date(event.event_date);
@@ -116,6 +121,7 @@ export async function GET(req: Request) {
         const isTresDias = evDia === tresDias.getDate() && evMes === tresDias.getMonth()
           && event.priority === 'alta';
 
+        console.log(`[check-events] "${event.title}" — isHoje:${isHoje} isPrevia:${isPrevia} isTresDias:${isTresDias} evDia:${evDia} evMes:${evMes} hojeDate:${hoje.getDate()} hojeMes:${hoje.getMonth()} tresDias:${tresDias.getDate()}/${tresDias.getMonth()}`);
         if (!isHoje && !isPrevia && !isTresDias) continue;
 
         // Monta contexto para o tom
@@ -154,7 +160,16 @@ REGRAS:
       }
     }
 
-    return NextResponse.json({ ok: true, notificacoes: totalNotificacoes });
+    return NextResponse.json({ 
+      ok: true, 
+      notificacoes: totalNotificacoes,
+      debug: {
+        horaAtual,
+        anoAtual,
+        totalUsuarios: users?.length || 0,
+        usuariosParaNotificar: usersParaNotificar.length,
+      }
+    });
 
   } catch (error: any) {
     console.error('[check-events] Erro:', error.message);
