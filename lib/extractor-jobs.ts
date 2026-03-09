@@ -4,6 +4,7 @@
 // ============================================================
 
 import { createClient } from '@supabase/supabase-js';
+import { safeParseJSON } from './extractor';
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -32,7 +33,9 @@ REGRAS:
 - Retorne projetos: [] se nenhum mencionado`;
 
   try {
-    const data = JSON.parse(await callAI(prompt, 300));
+    const raw = await callAI(prompt, 300);
+    const data = safeParseJSON(raw);
+    if (!data) { console.error('[Extrator/projeto] JSON inválido:', raw.slice(0, 100)); return; }
     for (const proj of (data.projetos || [])) {
       if (!proj.nome || !proj.tag) continue;
 
@@ -164,7 +167,9 @@ Categorias: Saúde|Trabalho|Escola|Família|Pessoal|Rotina
 Retorne compromissos: [] se nenhum mencionado`;
 
   try {
-    const data = JSON.parse(await callAI(prompt, 250));
+    const raw = await callAI(prompt, 250);
+    const data = safeParseJSON(raw);
+    if (!data) { console.error('[Extrator/agenda] JSON inválido:', raw.slice(0, 100)); return; }
     for (const comp of (data.compromissos || [])) {
       if (!comp.descricao || !comp.data_hora) continue;
       const { data: ex } = await supabase.from('agenda').select('id')
@@ -193,7 +198,9 @@ Mensagem do usuário: "${userMessage}"
 {"despertar": null, "dormir": null, "academia_horario": null, "trabalho_entrada": null, "trabalho_saida": null, "lembretes": []}`;
 
   try {
-    const data  = JSON.parse(await callAI(prompt, 200));
+    const raw = await callAI(prompt, 200);
+    const data = safeParseJSON(raw);
+    if (!data) { console.error('[Extrator/rotina] JSON inválido:', raw.slice(0, 100)); return; }
     const parts: string[] = [];
     if (data.despertar)        parts.push(`Despertar: ${data.despertar}`);
     if (data.dormir)           parts.push(`Dormir: ${data.dormir}`);
@@ -235,7 +242,9 @@ Tipos: lugar|comida|filme|musica|esporte|hobby|outro
 Retorne preferencias: [] se nenhuma mencionada`;
 
   try {
-    const data  = JSON.parse(await callAI(prompt, 200));
+    const raw  = await callAI(prompt, 200);
+    const data = safeParseJSON(raw);
+    if (!data) { console.error('[Extrator/preferencia] JSON inválido:', raw.slice(0, 100)); return; }
     const prefs: any[] = data.preferencias || [];
     if (prefs.length === 0) return;
 
