@@ -565,13 +565,10 @@ REGRAS:
           priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.95,
         });
       }
-      // Nota sobre cônjuge → person_notes
-      if (conjuge.nota) {
-        await supabase.from('person_notes').insert({
-          user_id: userId, person_name: conjuge.nome,
-          person_type: 'spouse', note: conjuge.nota,
-        });
-      }
+      // Registra cônjuge em persons
+      await upsertPerson(userId, conjuge.nome, 'spouse', {
+        noteText: conjuge.nota ?? undefined,
+      });
       console.log('[Extrator/familia] Cônjuge:', conjuge.nome);
     }
 
@@ -735,6 +732,10 @@ REGRAS:
           priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.90,
         });
       }
+      // Registra filho em persons
+      await upsertPerson(userId, nameToSave, 'child', {
+        nickname: nicknameToSave ?? undefined,
+      });
       console.log('[Extrator/familia] Filho:', nameToSave, ex ? '(atualizado)' : '(novo)');
     }
 
@@ -745,6 +746,7 @@ REGRAS:
         { onConflict: 'user_id' }
       );
       if (data.pai.apelido) await upsertAlias(userId, data.pai.apelido, 'parent', null, data.pai.nome);
+      await upsertPerson(userId, data.pai.nome, 'parent', { nickname: data.pai.apelido ?? undefined });
       console.log('[Extrator/familia] Pai:', data.pai.nome);
     }
 
@@ -755,6 +757,7 @@ REGRAS:
         { onConflict: 'user_id' }
       );
       if (data.mae.apelido) await upsertAlias(userId, data.mae.apelido, 'parent', null, data.mae.nome);
+      await upsertPerson(userId, data.mae.nome, 'parent', { nickname: data.mae.apelido ?? undefined });
       console.log('[Extrator/familia] Mãe:', data.mae.nome);
     }
 
@@ -764,6 +767,85 @@ REGRAS:
 // ============================================================
 // EXTRATOR: RELAÇÕES / DINÂMICAS
 // ============================================================
+
+// ============================================================
+// UPSERT PERSON — cria ou atualiza identidade + peso emocional
+// ============================================================
+
+const INITIAL_WEIGHTS: Record<string, number> = {
+  spouse:    1.0,
+  child:     0.9,
+  parent:    0.7,
+  sibling:   0.4,
+  friend:    0.3,
+  colleague: 0.2,
+  ex:        0.1,
+  other:     0.1,
+};
+
+async function upsertPerson(
+  userId: string,
+  name: string,
+  type: string,
+  options?: { nickname?: string; weightDelta?: number; noteText?: string }
+): Promise<string | null> {
+  try {
+    const baseWeight = INITIAL_WEIGHTS[type] ?? 0.1;
+
+    // Busca pessoa existente
+    const { data: existing } = await supabase
+      .from('persons')
+      .select('id, emotional_weight, nickname')
+      .eq('user_id', userId)
+      .eq('name', name)
+      .eq('type', type)
+      .maybeSingle();
+
+    let personId: string;
+
+    if (existing) {
+      // Atualiza peso e última menção
+      const delta = options?.weightDelta ?? 0.02; // menção = +0.02
+      const newWeight = Math.min(1.0, existing.emotional_weight + delta);
+      await supabase.from('persons').update({
+        emotional_weight: newWeight,
+        last_mentioned:   new Date().toISOString(),
+        updated_at:       new Date().toISOString(),
+        ...(options?.nickname && !existing.nickname ? { nickname: options.nickname } : {}),
+      }).eq('id', existing.id);
+      personId = existing.id;
+    } else {
+      // Cria nova pessoa
+      const { data: created } = await supabase.from('persons').insert({
+        user_id:          userId,
+        name,
+        type,
+        emotional_weight: baseWeight,
+        nickname:         options?.nickname ?? null,
+        last_mentioned:   new Date().toISOString(),
+      }).select('id').single();
+      personId = created?.id;
+    }
+
+    // Salva nota se fornecida — upsert evita duplicatas
+    if (options?.noteText && personId) {
+      await supabase.from('person_notes').upsert({
+        user_id:     userId,
+        person_name: name,
+        person_type: type,
+        person_id:   personId,
+        note:        options.noteText,
+        noted_at:    new Date().toISOString().slice(0, 10),
+      }, { onConflict: 'user_id,person_name,note,noted_at', ignoreDuplicates: true });
+    }
+
+    console.log(`[upsertPerson] ${name} (${type})`);
+    return personId ?? null;
+  } catch (e) {
+    console.error('[upsertPerson] Erro:', e);
+    return null;
+  }
+}
 
 async function extractRelacao(userId: string, userMessage: string): Promise<void> {
   // Busca pessoas conhecidas para dar contexto ao modelo
@@ -802,12 +884,13 @@ dinamica: resumo objetivo em 1 frase
 Retorne relacoes: [] se nenhuma dinâmica mencionada`;
 
   try {
-    const data = JSON.parse(await callAI(prompt, 300));
+    const raw = await callAI(prompt, 300);
+    const data = safeParseJSON(raw);
+    if (!data) { console.error('[Extrator/relacao] JSON inválido:', raw.slice(0, 100)); return; }
     for (const r of (data.relacoes || [])) {
       if (!r.pessoa || !r.dinamica) continue;
-      await supabase.from('person_notes').insert({
-        user_id: userId, person_name: r.pessoa,
-        person_type: r.tipo || 'other', note: r.dinamica,
+      await upsertPerson(userId, r.pessoa, r.tipo || 'other', {
+        noteText: r.dinamica,
       });
       console.log('[Extrator/relacao]', r.pessoa, '→', r.dinamica);
     }
