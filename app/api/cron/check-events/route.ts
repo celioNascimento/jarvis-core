@@ -90,7 +90,7 @@ export async function GET(req: Request) {
       const { data: events } = await supabase
         .from('events')
         .select('id, title, event_date, priority, decay_type, emotional_weight, last_notified_year, notes')
-        .eq('user_id', user.id)
+        .eq('user_id', String(user.id))
         .or(`last_notified_year.is.null,last_notified_year.neq.${anoAtual}`)
         .order('emotional_weight', { ascending: false });
 
