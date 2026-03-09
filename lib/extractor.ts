@@ -184,7 +184,7 @@ function summarizeContexts(contexts: string[]): string {
 // ============================================================
 // HELPER: parse seguro de JSON — tenta reparar truncamentos
 // ============================================================
-function safeParseJSON(raw: string): any | null {
+export function safeParseJSON(raw: string): any | null {
   const clean = raw.replace(/```json|```/g, '').trim();
   try {
     return JSON.parse(clean);
