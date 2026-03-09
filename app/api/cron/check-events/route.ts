@@ -145,10 +145,12 @@ REGRAS:
 - Sem hashtags, sem emojis excessivos — no máximo 1`;
 
         const mensagem = await callAI(prompt);
-        if (!mensagem) continue;
+        console.log(`[check-events] callAI retornou: "${mensagem?.slice(0, 50)}"`);
+        if (!mensagem) { console.log('[check-events] mensagem vazia — pulando'); continue; }
 
+        console.log(`[check-events] enviando para chat_id: ${user.telegram_chat_id}`);
         await sendTelegram(user.telegram_chat_id, mensagem);
-        console.log(`[check-events] ${authorName} — "${event.title}" (${statusTxt})`);
+        console.log(`[check-events] ${authorName} — "${event.title}" (${statusTxt}) ENVIADO`);
 
         // Marca como notificado este ano
         await supabase
