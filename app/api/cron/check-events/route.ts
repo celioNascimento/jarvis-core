@@ -61,21 +61,25 @@ export async function GET(req: Request) {
     const horaAtual = fuso.getHours();
     const anoAtual = fuso.getFullYear();
 
-    // Busca usuários configurados para essa hora de notificação
-    // e que tenham telegram_chat_id registrado
+    // Busca usuários com telegram_chat_id registrado
+    // notification_hour: null = notifica sempre | valor = notifica só naquela hora
     const { data: users } = await supabase
       .from('users')
       .select('id, nickname, telegram_chat_id, notification_hour, timezone')
-      .eq('notification_hour', horaAtual)
       .not('telegram_chat_id', 'is', null);
 
-    if (!users || users.length === 0) {
+    // Filtra por hora configurada (null = sempre notifica)
+    const usersParaNotificar = (users || []).filter((u: any) =>
+      u.notification_hour === null || u.notification_hour === horaAtual
+    );
+
+    if (usersParaNotificar.length === 0) {
       return NextResponse.json({ ok: true, message: `Nenhum usuário para as ${horaAtual}h.` });
     }
 
     let totalNotificacoes = 0;
 
-    for (const user of users) {
+    for (const user of usersParaNotificar) {
       const authorName = user.nickname || 'você';
       const userFuso = new Date(agora.toLocaleString('en-US', {
         timeZone: user.timezone || 'America/Sao_Paulo'
