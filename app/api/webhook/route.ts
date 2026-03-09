@@ -206,9 +206,14 @@ export async function POST(req: Request) {
       const name = (c.name || '').split(' ')[0].toLowerCase();
       return msgLower.includes(nick) || msgLower.includes(name);
     });
-    const pNotes = (personNotesResult.data || []).filter((n: any) =>
-      msgLower.includes(n.person_name.split(' ')[0].toLowerCase())
-    );
+    const pNotes = (personNotesResult.data || []).filter((n: any) => {
+      const parts = n.person_name.toLowerCase().split(' ');
+      // Exige match do primeiro nome E que seja uma palavra isolada (não substring)
+      // "Carlos" bate em "Carlos foi lá" mas não em "Carlosinho"
+      return parts.some((p: string) =>
+        p.length >= 3 && new RegExp(`\\b${p}\\b`).test(msgLower)
+      );
+    });
 
     if (childNotes.length > 0 || pNotes.length > 0) {
       const lines: string[] = [];
@@ -255,7 +260,7 @@ export async function POST(req: Request) {
       .select('content, metadata')
       .eq('user_id', stringId)
       .eq('session_id', sessionId)
-      .neq('category', 'noise')
+      .neq('category', 'archived')
       .order('created_at', { ascending: false })
       .limit(8);
 
@@ -272,7 +277,7 @@ export async function POST(req: Request) {
         .from('brain')
         .select('content, metadata')
         .eq('user_id', stringId)
-        .neq('category', 'noise')
+        .neq('category', 'archived')
         .order('created_at', { ascending: false })
         .limit(12);
 
@@ -400,7 +405,7 @@ REGRAS:
       .from('brain')
       .select('content, metadata')
       .eq('user_id', stringId)
-      .neq('category', 'noise')
+      .neq('category', 'archived')
       .order('created_at', { ascending: false })
       .limit(10);
 
