@@ -1,46 +1,11 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { supabase, callOpenRouter, sendTelegram } from '@/lib/jarvis';
 
 // ============================================================
 // CRON: CHECK-EVENTS v2 — Roda de hora em hora
 // Verifica eventos próximos e notifica via Telegram
 // app/api/cron/check-events/route.ts
 // ============================================================
-
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
-
-async function sendTelegram(chatId: string, text: string): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) return;
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
-  });
-}
-
-async function callAI(prompt: string): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY;
-  const baseUrl = process.env.OPENROUTER_API_KEY
-    ? 'https://openrouter.ai/api/v1'
-    : 'https://api.openai.com/v1';
-
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: process.env.OPENROUTER_API_KEY ? 'google/gemini-flash-1.5' : 'gpt-4o-mini',
-      max_tokens: 200,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() || '';
-}
 
 export async function GET(req: Request) {
   // Autenticação — aceita header ou query param (Vercel cron usa header)
@@ -144,9 +109,9 @@ REGRAS:
 - NUNCA use "Anotado", "Registrado" ou termos técnicos
 - Sem hashtags, sem emojis excessivos — no máximo 1`;
 
-        const mensagem = await callAI(prompt);
+        const mensagem = await callOpenRouter(prompt);
         console.log(`[check-events] callAI retornou: "${mensagem?.slice(0, 50)}"`);
-        if (!mensagem) { console.log('[check-events] mensagem vazia — pulando'); continue; }
+        if (!mensagem || mensagem.startsWith('❌')) { console.log('[check-events] mensagem inválida — pulando'); continue; }
 
         console.log(`[check-events] enviando para chat_id: ${user.telegram_chat_id}`);
         await sendTelegram(user.telegram_chat_id, mensagem);
