@@ -63,7 +63,6 @@ export async function GET(req: Request) {
       ]);
 
       const events = [...(evNulos.data || []), ...(evAntigos.data || [])];
-      console.log(`[check-events] ${user.nickname} — ${events.length} eventos elegíveis (nulos: ${evNulos.data?.length || 0}, antigos: ${evAntigos.data?.length || 0})`);
       if (events.length === 0) continue;
 
       for (const event of events) {
@@ -92,7 +91,6 @@ export async function GET(req: Request) {
         const isVespera = evDia === amanha.getDate() && evMes === amanha.getMonth()
           && event.priority === 'alta';
 
-        console.log(`[check-events] "${event.title}" — isHoje:${isHoje} isVespera:${isVespera} isPrevia:${isPrevia} isTresDias:${isTresDias} evDia:${evDia} evMes:${evMes} hojeDate:${hoje.getDate()} hojeMes:${hoje.getMonth()}`);
         if (!isHoje && !isVespera && !isPrevia && !isTresDias) continue;
 
         // Monta contexto para o tom
@@ -118,10 +116,7 @@ REGRAS:
 - Sem hashtags, sem emojis excessivos — no máximo 1`;
 
         const mensagem = await callOpenRouter(prompt);
-        console.log(`[check-events] callAI retornou: "${mensagem?.slice(0, 50)}"`);
-        if (!mensagem || mensagem.startsWith('❌')) { console.log('[check-events] mensagem inválida — pulando'); continue; }
 
-        console.log(`[check-events] enviando para chat_id: ${user.telegram_chat_id}`);
         await sendTelegram(user.telegram_chat_id, mensagem);
         console.log(`[check-events] ${authorName} — "${event.title}" (${statusTxt}) ENVIADO`);
 
