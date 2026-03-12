@@ -86,12 +86,20 @@ export async function GET(req: Request) {
         const isTresDias = evDia === tresDias.getDate() && evMes === tresDias.getMonth()
           && event.priority === 'alta';
 
-        console.log(`[check-events] "${event.title}" — isHoje:${isHoje} isPrevia:${isPrevia} isTresDias:${isTresDias} evDia:${evDia} evMes:${evMes} hojeDate:${hoje.getDate()} hojeMes:${hoje.getMonth()} tresDias:${tresDias.getDate()}/${tresDias.getMonth()}`);
-        if (!isHoje && !isPrevia && !isTresDias) continue;
+        // Verifica véspera — 1 dia antes (alta prioridade)
+        const amanha = new Date(hoje);
+        amanha.setDate(hoje.getDate() + 1);
+        const isVespera = evDia === amanha.getDate() && evMes === amanha.getMonth()
+          && event.priority === 'alta';
+
+        console.log(`[check-events] "${event.title}" — isHoje:${isHoje} isVespera:${isVespera} isPrevia:${isPrevia} isTresDias:${isTresDias} evDia:${evDia} evMes:${evMes} hojeDate:${hoje.getDate()} hojeMes:${hoje.getMonth()}`);
+        if (!isHoje && !isVespera && !isPrevia && !isTresDias) continue;
 
         // Monta contexto para o tom
         const statusTxt = isHoje
           ? 'É HOJE'
+          : isVespera
+          ? 'é AMANHÃ'
           : isTresDias
           ? 'é daqui a 3 dias'
           : 'é daqui a 7 dias';
