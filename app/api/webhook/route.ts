@@ -21,7 +21,7 @@ import {
   buildOnboardingBlock
 } from '@/lib/onboarding';
 import { extractAndSummarize, buildGapsBlock } from '@/lib/extractor';
-import { upsertEvent } from '@/lib/extractor-jobs';
+import { upsertEvent, buildRecommendationsBlock, extractRecomendacao } from '@/lib/extractor-jobs';
 
 export async function POST(req: Request) {
   try {
@@ -233,6 +233,9 @@ export async function POST(req: Request) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
+    // Recomendações relevantes ao contexto
+    const recommendationsBlock = await buildRecommendationsBlock(stringId, messageText);
+
     // ============================================================
     // HD VETORIAL
     // ============================================================
@@ -334,6 +337,8 @@ ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]
 ${truncatedL3}` : ''}
 
 ${personNotesBlock ? personNotesBlock : ''}
+
+${recommendationsBlock ? recommendationsBlock : ''}
 
 ${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]
 ${truncatedHd}` : ''}
@@ -618,7 +623,13 @@ REGRAS:
     }
 
     // Extrator já rodou antes da resposta (extractAndSummarize)
-    // Aqui só roda se não rodou ainda (category === 'noise' foi pulado)
+    // extractRecomendacao roda após aiReply — precisa da resposta do Jarvis
+    if (!isLikelyNoise) {
+      tasks.push(
+        extractRecomendacao(stringId, messageText, aiReply)
+          .catch(e => console.error('[Extrator/recomendacao] Erro:', e))
+      );
+    }
 
     // Roda sendTelegram + persistência em paralelo para não atrasar resposta
     await Promise.all([
