@@ -547,7 +547,7 @@ export async function upsertEvent(userId: string, ev: {
       emotional_weight: ev.emotional_weight,
       is_recurring: ev.is_recurring ?? ev.decay_type === 'recurring_annual',
       notes: ev.notes || null,
-      last_notified_year: new Date().getFullYear() - 1,
+      last_notified_year: null,
       relevance_score: 1.0,
     });
     console.log('[upsertEvent] Inserido:', title);
