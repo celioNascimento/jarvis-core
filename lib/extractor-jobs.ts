@@ -554,6 +554,150 @@ export async function upsertEvent(userId: string, ev: {
   }
 }
 
+// ============================================================
+// EXTRATOR: RECOMENDAÇÕES → recommendations
+// Captura: Jarvis sugere, usuário menciona indicação, usuário elogia lugar
+// ============================================================
+
+export async function extractRecomendacao(
+  userId: string,
+  userMessage: string,
+  aiReply: string
+): Promise<void> {
+  const prompt = `Analise a conversa e extraia recomendações de lugares, produtos, serviços ou pessoas.
+
+Mensagem do usuário: "${userMessage}"
+Resposta do assistente: "${aiReply}"
+
+Retorne APENAS JSON:
+{"recomendacoes": [
+  {
+    "tipo": "lugar|produto|servico|pessoa",
+    "nome": null,
+    "descricao": null,
+    "source": "jarvis|user|third_party",
+    "source_person": null,
+    "context": null,
+    "status": "pending|liked|disliked",
+    "tags": []
+  }
+]}
+
+REGRAS:
+- source="jarvis": assistente sugeriu algo ao usuário
+- source="user": usuário disse que foi/usou e gostou ("fui no X e adorei")
+- source="third_party": usuário mencionou que alguém indicou ("meu amigo indicou o X")
+- source_person: nome de quem indicou (apenas para source="third_party")
+- status="liked": usuário expressou que gostou ("adorei", "recomendo", "muito bom")
+- status="disliked": usuário expressou que não gostou
+- status="pending": sugestão ainda não visitada/testada
+- context: motivo ou contexto da recomendação (ex: "ótimo para almoço de negócios", "café tranquilo")
+- tags: array de palavras-chave relevantes (ex: ["tranquilo","família","fins-de-semana"])
+- nome: NUNCA retornar null — se não houver nome claro, retorne recomendacoes: []
+- Retorne recomendacoes: [] se nenhuma recomendação clara na conversa`;
+
+  try {
+    const raw = await callAI(prompt, 400);
+    const data = safeParseJSON(raw);
+    if (!data) { console.error('[Extrator/recomendacao] JSON inválido:', raw.slice(0, 100)); return; }
+
+    for (const rec of (data.recomendacoes || [])) {
+      if (!rec.nome || !rec.tipo) continue;
+
+      // Verifica se já existe (dedup por nome+tipo)
+      const { data: existing } = await supabase
+        .from('recommendations')
+        .select('id, status, context')
+        .eq('user_id', userId)
+        .eq('type', rec.tipo)
+        .ilike('name', rec.nome)
+        .maybeSingle();
+
+      if (existing) {
+        // Só atualiza se status melhorou (pending → liked/disliked) ou context novo
+        const shouldUpdate =
+          (rec.status !== 'pending' && existing.status === 'pending') ||
+          (rec.context && !existing.context);
+
+        if (shouldUpdate) {
+          await supabase.from('recommendations').update({
+            ...(rec.status !== 'pending' ? { status: rec.status } : {}),
+            ...(rec.context && !existing.context ? { context: rec.context } : {}),
+            updated_at: new Date().toISOString(),
+          }).eq('id', existing.id);
+          console.log('[Extrator/recomendacao] Atualizado:', rec.nome);
+        }
+        continue;
+      }
+
+      await supabase.from('recommendations').insert({
+        user_id:       userId,
+        type:          rec.tipo,
+        name:          rec.nome,
+        description:   rec.descricao || null,
+        source:        rec.source || 'jarvis',
+        source_person: rec.source_person || null,
+        context:       rec.context || null,
+        status:        rec.status || 'pending',
+        tags:          rec.tags || [],
+      });
+      console.log('[Extrator/recomendacao] Inserido:', rec.nome, `[${rec.tipo}]`);
+    }
+  } catch (e) { console.error('[Extrator/recomendacao] Erro:', e); }
+}
+
+// ============================================================
+// LOADER: RECOMENDAÇÕES para o system prompt
+// Retorna bloco formatado com recomendações relevantes ao contexto
+// ============================================================
+
+export async function buildRecommendationsBlock(
+  userId: string,
+  messageText: string
+): Promise<string> {
+  try {
+    const { data: recs } = await supabase
+      .from('recommendations')
+      .select('type, name, description, source, source_person, context, status, tags')
+      .eq('user_id', userId)
+      .neq('status', 'disliked')
+      .order('created_at', { ascending: false })
+      .limit(30);
+
+    if (!recs || recs.length === 0) return '';
+
+    const msgLower = messageText.toLowerCase();
+
+    // Filtra recomendações relevantes ao contexto da mensagem
+    const relevant = recs.filter((r: any) => {
+      // Sempre inclui se a mensagem menciona o nome ou tags
+      const nameMatch = r.name.toLowerCase().split(' ')
+        .some((w: string) => w.length > 3 && msgLower.includes(w));
+      const tagMatch = (r.tags || [])
+        .some((t: string) => msgLower.includes(t.toLowerCase()));
+      // Inclui por tipo se a mensagem pede recomendação
+      const askingForRec = /indica|recomend|sugere|onde|qual.*bom|tem.*bom/i.test(msgLower);
+      return nameMatch || tagMatch || askingForRec;
+    });
+
+    if (relevant.length === 0) return '';
+
+    const lines = relevant.map((r: any) => {
+      const sourceTxt = r.source === 'third_party' && r.source_person
+        ? `indicado por ${r.source_person}`
+        : r.source === 'jarvis' ? 'sugerido pelo Jarvis' : 'mencionado por você';
+      const statusTxt = r.status === 'liked' ? ' ✓ gostou' : '';
+      const ctx = r.context ? ` — ${r.context}` : '';
+      return `- [${r.type}] ${r.name}${ctx} (${sourceTxt}${statusTxt})`;
+    });
+
+    return `[RECOMENDAÇÕES]\n${lines.join('\n')}`;
+  } catch (e) {
+    console.error('[buildRecommendationsBlock] Erro:', e);
+    return '';
+  }
+}
+
 export function normalizeDate(raw: string): string {
   if (!raw) return raw;
   const months: Record<string, string> = {

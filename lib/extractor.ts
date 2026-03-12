@@ -7,7 +7,7 @@
 import { createClient } from '@supabase/supabase-js';
 import {
   extractProjeto, extractEvento, extractAgenda,
-  extractRotina, extractPreferencia, updateL3,
+  extractRotina, extractPreferencia, extractRecomendacao, updateL3,
   callAI, upsertAlias, upsertEvent, normalizeDate,
   getCategoryFromType, getLifePhase,
 } from '@/lib/extractor-jobs';
@@ -85,7 +85,8 @@ export async function buildGapsBlock(userId: string, currentMessage?: string): P
 export async function extractAndSummarize(
   userId: string,
   userName: string,
-  userMessage: string
+  userMessage: string,
+  aiReply: string = ''
 ): Promise<string> {
   try {
     const { data: userData } = await supabase
@@ -118,6 +119,7 @@ export async function extractAndSummarize(
     const temRotina   = classification.contexts.includes('rotina');
     const temPref     = classification.contexts.includes('preferencia');
     const temRelacao  = classification.contexts.includes('relacao');
+    const temRec      = classification.contexts.includes('recomendacao');
     const temAlias    = classification.contexts.includes('alias');
 
     // Filtros semânticos — só roda se a mensagem realmente falar do assunto
@@ -138,6 +140,7 @@ export async function extractAndSummarize(
     if (temRotina   && msgRotina)         tasks.push(extractRotina(userId, userMessage));
     if (temPref)                          tasks.push(extractPreferencia(userId, userMessage));
     if (temRelacao  && msgRelacao)        tasks.push(extractRelacao(userId, userMessage));
+    if (temRec)                           tasks.push(extractRecomendacao(userId, userMessage, aiReply));
 
     console.log('[Extrator/tasks]', tasks.length, 'tarefas ativas de', classification.contexts.length, 'contextos');
 
@@ -240,6 +243,9 @@ Contextos disponíveis:
 - "agenda": compromissos com data E hora específica (consulta, reunião, voo)
 - "rotina": horários fixos, hábitos diários, lembretes recorrentes
 - "preferencia": gostos, lugares favoritos, comidas, hobbies, opiniões
+- "recomendacao": lugares, produtos, serviços ou pessoas recomendados ou elogiados
+  "fui no X e adorei", "meu amigo indicou o restaurante Y", "o app Z é ótimo"
+  Também captura quando o assistente sugere algo e o usuário demonstra interesse
 - "relacao": dinâmica ou sentimento sobre pessoa específica — ex parceiro, familiar distante, colega
   "não nos damos bem", "relação difícil", "a gente não se fala", "me dou bem com"
 
