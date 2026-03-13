@@ -39,6 +39,7 @@ export async function getGoogleContext() {
 export async function createGoogleEvent(summary: string, startTime: string, reminderMinutes: number = 30) {
   try {
     const token = await getGoogleAccessToken();
+    console.log('[Google] createGoogleEvent token:', token ? 'OK' : 'NULL');
     if (!token) return "Erro: Token ausente.";
     
     let startIso = startTime.trim().replace(' ', 'T').substring(0, 19) + '-03:00';
