@@ -5,21 +5,26 @@ export async function getGoogleAccessToken() {
   const { data } = await supabase.from('config').select('value').eq('key', 'google_refresh_token').single();
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ 
-      client_id: process.env.GOOGLE_CLIENT_ID, 
+      client_id:     process.env.GOOGLE_CLIENT_ID, 
       client_secret: process.env.GOOGLE_CLIENT_SECRET, 
       refresh_token: data?.value, 
-      grant_type: 'refresh_token' 
+      grant_type:    'refresh_token' 
     }),
   });
   const json = await res.json();
-  return json.access_token;
+  if (!json.access_token) {
+    console.error('[Google] Erro ao obter token:', JSON.stringify(json));
+  }
+  return json.access_token || null;
 }
 
 // 2. RECUPERAÇÃO DE CONTEXTO (Usado no Briefing e LER_CONTEXTO)
 export async function getGoogleContext() {
   try {
     const token = await getGoogleAccessToken();
+    if (!token) return "Erro ao recuperar agenda do Google.";
     const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=5&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime`, {
       headers: { Authorization: `Bearer ${token}` }
     });
@@ -42,7 +47,7 @@ export async function createGoogleEvent(summary: string, startTime: string, remi
     const event = {
       summary,
       start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
-      end: { dateTime: new Date(startDate.getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' }, // Evento padrão de 1 hora
+      end:   { dateTime: new Date(startDate.getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
       reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
     };
     
@@ -61,7 +66,6 @@ export async function updateGoogleEvent(searchTerm: string, newSummary: string, 
     const token = await getGoogleAccessToken();
     if (!token) return "Erro de token.";
     
-    // Busca o evento pelo termo para pegar o ID
     const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${new Date().toISOString()}&maxResults=1`, {
       headers: { Authorization: `Bearer ${token}` }
     });
@@ -74,7 +78,7 @@ export async function updateGoogleEvent(searchTerm: string, newSummary: string, 
     const event = {
       summary: newSummary,
       start: { dateTime: startIso, timeZone: 'America/Sao_Paulo' },
-      end: { dateTime: new Date(new Date(startIso).getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
+      end:   { dateTime: new Date(new Date(startIso).getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
       reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
     };
     
@@ -87,7 +91,7 @@ export async function updateGoogleEvent(searchTerm: string, newSummary: string, 
   } catch { return "Erro interno ao atualizar."; }
 }
 
-// 5. APAGAR EVENTO NO CALENDÁRIO (Caso precise)
+// 5. APAGAR EVENTO NO CALENDÁRIO
 export async function deleteGoogleEvent(searchTerm: string) {
   try {
     const token = await getGoogleAccessToken();
@@ -103,7 +107,6 @@ export async function deleteGoogleEvent(searchTerm: string) {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` }
     });
-    
     return res.ok ? `Removido: "${searchTerm}".` : "Falha ao apagar.";
   } catch { return "Erro interno ao deletar."; }
 }
