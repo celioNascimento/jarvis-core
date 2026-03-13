@@ -1,8 +1,8 @@
-// app/api/auth/callback/route.ts
-// Rota temporária para capturar o code do Google OAuth e salvar refresh token
+// Rota temporária de debug — app/api/debug-google/route.ts
 // REMOVER após usar
 
 import { NextResponse } from 'next/server';
+import { getGoogleAccessToken } from '@/lib/google';
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -11,38 +11,38 @@ const supabase = createClient(
   { db: { schema: 'jarvis' } }
 );
 
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const code = searchParams.get('code');
+export async function GET() {
+  // Verifica vars de ambiente
+  const clientId     = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
-  if (!code) {
-    return NextResponse.json({ error: 'code ausente' }, { status: 400 });
-  }
+  // Busca refresh token no banco
+  const { data, error } = await supabase
+    .from('config')
+    .select('value')
+    .eq('key', 'google_refresh_token')
+    .single();
 
-  // Troca o code pelo refresh token
+  // Tenta obter access token e captura erro completo
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      client_id:     process.env.GOOGLE_CLIENT_ID,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET,
-      code,
-      redirect_uri:  'https://jarvis-core-three.vercel.app/api/auth/callback',
-      grant_type:    'authorization_code',
+      client_id:     clientId,
+      client_secret: clientSecret,
+      refresh_token: data?.value,
+      grant_type:    'refresh_token',
     }),
   });
 
-  const data = await res.json();
+  const json = await res.json();
 
-  if (!data.refresh_token) {
-    return NextResponse.json({ error: 'refresh_token ausente', data }, { status: 400 });
-  }
-
-  // Salva no banco
-  await supabase.from('config').upsert(
-    { key: 'google_refresh_token', value: data.refresh_token },
-    { onConflict: 'key' }
-  );
-
-  return NextResponse.json({ ok: true, message: 'Refresh token salvo com sucesso!' });
-} 
+  return NextResponse.json({
+    client_id_present:     !!clientId,
+    client_id_prefix:      clientId?.slice(0, 20),
+    client_secret_present: !!clientSecret,
+    refresh_token_present: !!data?.value,
+    refresh_token_prefix:  data?.value?.slice(0, 20),
+    oauth_response:        json,
+  });
+}
