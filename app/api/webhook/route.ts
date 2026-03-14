@@ -10,7 +10,7 @@ import {
   clearPendingQuestion,
   reinforceMemory
 } from '@/lib/jarvis';
-import { createOutlookEvent, updateOutlookEvent } from '@/lib/microsoft';
+import { createOutlookEvent, updateOutlookEvent, getRecentEmails, addEmailKeyword, removeEmailKeyword } from '@/lib/microsoft';
 import {
   classifyTemporalHorizon,
   truncateByWeight
@@ -399,6 +399,9 @@ REGRAS:
    [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false | permanent|recurring_annual|deadline|one_time]
    [AGENDAR: título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
    [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
+   [LER_EMAILS] ou [LER_EMAILS: filtro] — busca emails por keywords ou filtro livre
+   [ADICIONAR_KEYWORD_EMAIL: palavra] — adiciona palavra à lista de filtro de emails
+   [REMOVER_KEYWORD_EMAIL: palavra] — remove palavra da lista de filtro de emails
    [LIMPAR_PENDENTE]
    [IGNORAR_ULTIMO]
 
@@ -584,6 +587,31 @@ REGRAS:
     if (uMatch) {
       const res = await updateOutlookEvent(uMatch[1].trim(), uMatch[2].trim(), uMatch[3].trim(), parseInt(uMatch[4]));
       aiReply = aiReply.replace(uMatch[0], '').trim() + `\n\n🗓️ *Atualizado:* ${res}`;
+    }
+
+    // Ler emails
+    const emailMatch = aiReply.match(/\[LER_EMAILS(?::\s*([^\]]+))?\]/i);
+    if (emailMatch) {
+      const filtro = emailMatch[1]?.trim() || undefined;
+      const emails = await getRecentEmails(filtro);
+      aiReply = aiReply.replace(emailMatch[0], '').trim();
+      aiReply = aiReply ? `${aiReply}\n\n${emails}` : emails;
+    }
+
+    // Adicionar keyword de email
+    const addKwMatch = aiReply.match(/\[ADICIONAR_KEYWORD_EMAIL:\s*([^\]]+)\]/i);
+    if (addKwMatch) {
+      const resultado = await addEmailKeyword(addKwMatch[1].trim());
+      aiReply = aiReply.replace(addKwMatch[0], '').trim();
+      aiReply = aiReply ? `${aiReply}\n\n${resultado}` : resultado;
+    }
+
+    // Remover keyword de email
+    const removeKwMatch = aiReply.match(/\[REMOVER_KEYWORD_EMAIL:\s*([^\]]+)\]/i);
+    if (removeKwMatch) {
+      const resultado = await removeEmailKeyword(removeKwMatch[1].trim());
+      aiReply = aiReply.replace(removeKwMatch[0], '').trim();
+      aiReply = aiReply ? `${aiReply}\n\n${resultado}` : resultado;
     }
 
     // ============================================================
