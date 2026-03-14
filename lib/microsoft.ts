@@ -13,8 +13,6 @@ export async function getMicrosoftAccessToken(): Promise<string | null> {
     .eq('key', 'microsoft_refresh_token')
     .single();
 
-  console.log('[Microsoft] config query — data:', !!data?.value, 'error:', error?.message || 'none');
-
   if (!data?.value) {
     console.error('[Microsoft] refresh_token ausente no banco');
     return null;
@@ -41,8 +39,6 @@ export async function getMicrosoftAccessToken(): Promise<string | null> {
     console.error('[Microsoft] Erro ao obter token:', JSON.stringify(json));
     return null;
   }
-
-  console.log('[Microsoft] access_token obtido, expira em:', json.expires_in, 'segundos, token prefix:', json.access_token?.slice(0, 20));
 
   // Atualiza refresh token se vier um novo
   if (json.refresh_token) {
@@ -112,7 +108,7 @@ export async function createOutlookEvent(
     const text = await res.text();
     let errMsg = 'Erro API';
     try { errMsg = JSON.parse(text)?.error?.message || errMsg; } catch {}
-    console.error('[Microsoft] createOutlookEvent falhou:', res.status, text.slice(0, 200));
+    console.error('[Microsoft] createOutlookEvent falhou:', res.status);
     return `Falha: ${errMsg}`;
   } catch (e) {
     console.error('[Microsoft] Erro createOutlookEvent:', e);
