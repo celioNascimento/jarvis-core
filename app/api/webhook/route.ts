@@ -497,7 +497,6 @@ REGRAS:
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
     let aiReply = await callOpenRouter(conversationMessages);
-    console.log('[DEBUG aiReply bruto]', aiReply.slice(0, 300));
 
     // ============================================================
     // INTERCEPTORES
