@@ -7,11 +7,13 @@ import { supabase } from './jarvis';
 
 // 1. AUTENTICAÇÃO
 export async function getMicrosoftAccessToken(): Promise<string | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('config')
     .select('value')
     .eq('key', 'microsoft_refresh_token')
     .single();
+
+  console.log('[Microsoft] config query — data:', !!data?.value, 'error:', error?.message || 'none');
 
   if (!data?.value) {
     console.error('[Microsoft] refresh_token ausente no banco');
