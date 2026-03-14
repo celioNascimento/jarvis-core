@@ -10,7 +10,7 @@ import {
   clearPendingQuestion,
   reinforceMemory
 } from '@/lib/jarvis';
-import { createGoogleEvent, updateGoogleEvent } from '@/lib/google';
+import { createOutlookEvent, updateOutlookEvent } from '@/lib/microsoft';
 import {
   classifyTemporalHorizon,
   truncateByWeight
@@ -575,13 +575,13 @@ REGRAS:
     // Google Calendar
     const sMatch = aiReply.match(/\[?AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
     if (sMatch) {
-      const res = await createGoogleEvent(sMatch[1].trim(), sMatch[2].trim(), parseInt(sMatch[3]));
+      const res = await createOutlookEvent(sMatch[1].trim(), sMatch[2].trim(), parseInt(sMatch[3]));
       aiReply = aiReply.replace(sMatch[0], '').trim() + `\n\n🗓️ *Agendado:* ${res}`;
     }
 
     const uMatch = aiReply.match(/\[?ATUALIZAR_EVENTO:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
     if (uMatch) {
-      const res = await updateGoogleEvent(uMatch[1].trim(), uMatch[2].trim(), uMatch[3].trim(), parseInt(uMatch[4]));
+      const res = await updateOutlookEvent(uMatch[1].trim(), uMatch[2].trim(), uMatch[3].trim(), parseInt(uMatch[4]));
       aiReply = aiReply.replace(uMatch[0], '').trim() + `\n\n🗓️ *Atualizado:* ${res}`;
     }
 
