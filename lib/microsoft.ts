@@ -159,29 +159,109 @@ export async function updateOutlookEvent(
   }
 }
 
-// 5. LER EMAILS RECENTES
-export async function getRecentEmails(maxEmails: number = 5): Promise<string> {
+// 5. LER EMAILS — com filtro por keywords e/ou remetente
+export async function getRecentEmails(
+  filtro?: string,
+  maxEmails: number = 10
+): Promise<string> {
   try {
     const token = await getMicrosoftAccessToken();
     if (!token) return "Erro ao acessar emails.";
 
-    const res = await fetch(
-      `https://graph.microsoft.com/v1.0/me/messages?$top=${maxEmails}&$orderby=receivedDateTime desc&$select=subject,from,receivedDateTime,bodyPreview,isRead`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+    // Busca keywords salvas no banco
+    const { data: kwData } = await supabase
+      .from('config')
+      .select('value')
+      .eq('key', 'email_keywords')
+      .single();
+
+    const keywords: string[] = kwData?.value
+      ? JSON.parse(kwData.value)
+      : ['urgente', 'fatura', 'boleto', 'prazo', 'reunião', 'contrato', 'pagamento'];
+
+    // Monta filtro OData
+    let filterQuery = '';
+    if (filtro) {
+      const escaped = filtro.replace(/'/g, "''");
+      filterQuery = `&$search="${escaped}"`;
+    } else {
+      const kwFilter = keywords
+        .map(k => `contains(subject,'${k.replace(/'/g, "''")}')`)
+        .join(' or ');
+      filterQuery = `&$filter=${encodeURIComponent(kwFilter)}`;
+    }
+
+    const url = `https://graph.microsoft.com/v1.0/me/messages?$top=${maxEmails}&$orderby=receivedDateTime desc&$select=subject,from,receivedDateTime,bodyPreview,isRead${filterQuery}`;
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' }
+    });
 
     const data = await res.json();
-    if (!data.value?.length) return "Nenhum email recente.";
 
-    return data.value.map((m: any) => {
-      const lido = m.isRead ? '' : ' 🔵';
-      const de   = m.from?.emailAddress?.name || m.from?.emailAddress?.address || 'Desconhecido';
-      const data_str = m.receivedDateTime?.slice(0, 10);
-      return `- ${lido}[${data_str}] ${m.subject} (de: ${de})\n  ${m.bodyPreview?.slice(0, 100)}...`;
+    if (!data.value?.length) {
+      return filtro
+        ? `Nenhum email encontrado para "${filtro}".`
+        : `Nenhum email com os termos: ${keywords.join(', ')}.`;
+    }
+
+    const lista = data.value.map((m: any) => {
+      const lido    = m.isRead ? '' : ' 🔵';
+      const de      = m.from?.emailAddress?.name || m.from?.emailAddress?.address || 'Desconhecido';
+      const dataStr = m.receivedDateTime?.slice(0, 10);
+      const previa  = m.bodyPreview?.slice(0, 120).replace(/\n/g, ' ');
+      return `${lido}[${dataStr}] *${m.subject}*\nDe: ${de}\n${previa}...`;
     }).join('\n\n');
+
+    return `📧 *${data.value.length} email(s) encontrado(s):*\n\n${lista}`;
   } catch (e) {
     console.error('[Microsoft] Erro getRecentEmails:', e);
     return "Erro ao recuperar emails.";
+  }
+}
+
+// 5b. GERENCIAR KEYWORDS DE EMAIL
+export async function addEmailKeyword(palavra: string): Promise<string> {
+  try {
+    const { data } = await supabase
+      .from('config').select('value')
+      .eq('key', 'email_keywords').single();
+
+    const keywords: string[] = data?.value ? JSON.parse(data.value) : [];
+    const norm = palavra.toLowerCase().trim();
+    if (keywords.includes(norm)) return `"${norm}" já está na lista.`;
+
+    keywords.push(norm);
+    await supabase.from('config').upsert(
+      { key: 'email_keywords', value: JSON.stringify(keywords) },
+      { onConflict: 'key' }
+    );
+    return `✅ "${norm}" adicionado. Lista: ${keywords.join(', ')}.`;
+  } catch (e) {
+    console.error('[Microsoft] Erro addEmailKeyword:', e);
+    return "Erro ao atualizar palavras-chave.";
+  }
+}
+
+export async function removeEmailKeyword(palavra: string): Promise<string> {
+  try {
+    const { data } = await supabase
+      .from('config').select('value')
+      .eq('key', 'email_keywords').single();
+
+    const keywords: string[] = data?.value ? JSON.parse(data.value) : [];
+    const norm = palavra.toLowerCase().trim();
+    const updated = keywords.filter(k => k !== norm);
+    if (updated.length === keywords.length) return `"${norm}" não estava na lista.`;
+
+    await supabase.from('config').upsert(
+      { key: 'email_keywords', value: JSON.stringify(updated) },
+      { onConflict: 'key' }
+    );
+    return `✅ "${norm}" removido. Lista: ${updated.join(', ')}.`;
+  } catch (e) {
+    console.error('[Microsoft] Erro removeEmailKeyword:', e);
+    return "Erro ao atualizar palavras-chave.";
   }
 }
 
