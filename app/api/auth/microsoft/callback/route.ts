@@ -48,6 +48,7 @@ export async function GET(req: Request) {
   const data = await res.json();
 
   if (!data.refresh_token) {
+    console.error('[Microsoft/callback] Resposta completa:', JSON.stringify(data));
     return NextResponse.json({ error: 'refresh_token ausente', data }, { status: 400 });
   }
 
