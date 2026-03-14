@@ -42,6 +42,8 @@ export async function getMicrosoftAccessToken(): Promise<string | null> {
     return null;
   }
 
+  console.log('[Microsoft] access_token obtido, expira em:', json.expires_in, 'segundos, token prefix:', json.access_token?.slice(0, 20));
+
   // Atualiza refresh token se vier um novo
   if (json.refresh_token) {
     await supabase.from('config').upsert(
