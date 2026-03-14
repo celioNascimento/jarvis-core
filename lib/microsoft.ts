@@ -105,8 +105,13 @@ export async function createOutlookEvent(
       body: JSON.stringify(event),
     });
 
-    const data = await res.json();
-    return res.ok ? `Agendado: ${summary}` : `Falha: ${data.error?.message || 'Erro API'}`;
+    if (res.ok) return `Agendado: ${summary}`;
+    
+    const text = await res.text();
+    let errMsg = 'Erro API';
+    try { errMsg = JSON.parse(text)?.error?.message || errMsg; } catch {}
+    console.error('[Microsoft] createOutlookEvent falhou:', res.status, text.slice(0, 200));
+    return `Falha: ${errMsg}`;
   } catch (e) {
     console.error('[Microsoft] Erro createOutlookEvent:', e);
     return "Erro interno ao agendar.";
