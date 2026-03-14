@@ -53,10 +53,12 @@ export async function GET(req: Request) {
   }
 
   // Salva no banco
-  await supabase.from('config').upsert(
+  console.log('[Microsoft/callback] refresh_token recebido:', data.refresh_token?.slice(0, 20));
+  const { error: upsertError } = await supabase.from('config').upsert(
     { key: 'microsoft_refresh_token', value: data.refresh_token },
     { onConflict: 'key' }
   );
+  console.log('[Microsoft/callback] upsert error:', upsertError ? JSON.stringify(upsertError) : 'OK');
 
   return NextResponse.json({
     ok: true,
