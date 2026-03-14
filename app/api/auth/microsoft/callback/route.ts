@@ -11,6 +11,10 @@ const supabase = createClient(
   { db: { schema: 'jarvis' } }
 );
 
+// DEBUG — remove após confirmar funcionamento
+console.log('[Microsoft/callback] SUPABASE_URL presente:', !!process.env.SUPABASE_URL);
+console.log('[Microsoft/callback] SERVICE_ROLE_KEY presente:', !!process.env.SUPABASE_SERVICE_ROLE_KEY);
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const code  = searchParams.get('code');
