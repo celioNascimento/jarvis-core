@@ -41,18 +41,18 @@ export default function WMLogin() {
   const input = "w-full px-4 py-3.5 rounded-2xl border border-slate-200 text-sm font-medium text-slate-800 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex items-center justify-center p-6">
+    <div className="min-h-screen bg-white flex items-center justify-center p-6">
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="h-16 flex items-center justify-center mx-auto mb-4">
+          <div className="h-20 flex items-center justify-center mx-auto mb-2">
             <img src="/logo_wm.png" alt="White Martins" className="h-full w-auto object-contain" />
           </div>
-          <p className="text-blue-300 text-sm mt-1">Lab. de Instrumentação</p>
+          <p className="text-slate-400 text-xs uppercase tracking-widest">Lab. de Instrumentação</p>
         </div>
 
         {/* Card */}
-        <div className="bg-white rounded-3xl p-6 shadow-2xl space-y-4">
+        <div className="bg-slate-50 rounded-3xl p-6 shadow-sm border border-slate-200 space-y-4">
           <div>
             <h2 className="text-lg font-black text-slate-900">Acesso restrito</h2>
             <p className="text-xs text-slate-500 mt-0.5">Use suas credenciais corporativas</p>
