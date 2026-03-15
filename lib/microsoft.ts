@@ -13,8 +13,6 @@ export async function getMicrosoftAccessToken(): Promise<string | null> {
     .eq('key', 'microsoft_refresh_token')
     .single();
 
-  console.log('[Microsoft] config query — data:', !!data?.value, 'error:', error?.message || 'none');
-
   if (!data?.value) {
     console.error('[Microsoft] refresh_token ausente no banco');
     return null;
@@ -105,8 +103,13 @@ export async function createOutlookEvent(
       body: JSON.stringify(event),
     });
 
-    const data = await res.json();
-    return res.ok ? `Agendado: ${summary}` : `Falha: ${data.error?.message || 'Erro API'}`;
+    if (res.ok) return `Agendado: ${summary}`;
+    
+    const text = await res.text();
+    let errMsg = 'Erro API';
+    try { errMsg = JSON.parse(text)?.error?.message || errMsg; } catch {}
+    console.error('[Microsoft] createOutlookEvent falhou:', res.status);
+    return `Falha: ${errMsg}`;
   } catch (e) {
     console.error('[Microsoft] Erro createOutlookEvent:', e);
     return "Erro interno ao agendar.";
@@ -156,29 +159,122 @@ export async function updateOutlookEvent(
   }
 }
 
-// 5. LER EMAILS RECENTES
-export async function getRecentEmails(maxEmails: number = 5): Promise<string> {
+// 5. LER EMAILS — com filtro por keywords e/ou remetente
+export async function getRecentEmails(
+  filtro?: string,
+  maxEmails: number = 10,
+  semFiltro: boolean = false
+): Promise<string> {
   try {
     const token = await getMicrosoftAccessToken();
     if (!token) return "Erro ao acessar emails.";
 
-    const res = await fetch(
-      `https://graph.microsoft.com/v1.0/me/messages?$top=${maxEmails}&$orderby=receivedDateTime desc&$select=subject,from,receivedDateTime,bodyPreview,isRead`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+    // Busca todos os emails recentes e filtra localmente
+    // $search e $filter do Graph API são instáveis para contas pessoais Microsoft
+    const url = `https://graph.microsoft.com/v1.0/me/messages?$top=50&$orderby=receivedDateTime desc&$select=subject,from,receivedDateTime,bodyPreview,isRead`;
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
 
     const data = await res.json();
-    if (!data.value?.length) return "Nenhum email recente.";
+    let emails = data.value || [];
 
-    return data.value.map((m: any) => {
-      const lido = m.isRead ? '' : ' 🔵';
-      const de   = m.from?.emailAddress?.name || m.from?.emailAddress?.address || 'Desconhecido';
-      const data_str = m.receivedDateTime?.slice(0, 10);
-      return `- ${lido}[${data_str}] ${m.subject} (de: ${de})\n  ${m.bodyPreview?.slice(0, 100)}...`;
+    if (emails.length === 0) return "Nenhum email encontrado.";
+
+    // Filtra localmente
+    if (!semFiltro) {
+      if (filtro) {
+        // Filtro livre — busca em assunto, remetente e prévia
+        const f = filtro.toLowerCase();
+        emails = emails.filter((m: any) =>
+          m.subject?.toLowerCase().includes(f) ||
+          m.from?.emailAddress?.name?.toLowerCase().includes(f) ||
+          m.from?.emailAddress?.address?.toLowerCase().includes(f) ||
+          m.bodyPreview?.toLowerCase().includes(f)
+        );
+      } else {
+        // Filtra por keywords do banco
+        const { data: kwData } = await supabase
+          .from('config').select('value')
+          .eq('key', 'email_keywords').single();
+        const keywords: string[] = kwData?.value
+          ? JSON.parse(kwData.value)
+          : ['urgente', 'fatura', 'boleto', 'prazo', 'reunião', 'contrato', 'pagamento'];
+
+        emails = emails.filter((m: any) =>
+          keywords.some(k =>
+            m.subject?.toLowerCase().includes(k.toLowerCase()) ||
+            m.bodyPreview?.toLowerCase().includes(k.toLowerCase())
+          )
+        );
+
+        // Fallback: se keywords não acharam nada, mostra recentes
+        if (emails.length === 0) emails = data.value.slice(0, maxEmails);
+      }
+    }
+
+    emails = emails.slice(0, maxEmails);
+
+    if (!emails.length) return filtro ? `Nenhum email encontrado para "${filtro}".` : "Nenhum email encontrado.";
+
+    const lista = data.value.map((m: any) => {
+      const lido    = m.isRead ? '' : ' 🔵';
+      const de      = m.from?.emailAddress?.name || m.from?.emailAddress?.address || 'Desconhecido';
+      const dataStr = m.receivedDateTime?.slice(0, 10);
+      const previa  = m.bodyPreview?.slice(0, 120).replace(/\n/g, ' ');
+      return `${lido}[${dataStr}] *${m.subject}*\nDe: ${de}\n${previa}...`;
     }).join('\n\n');
+
+    return `📧 *${data.value.length} email(s) encontrado(s):*\n\n${lista}`;
   } catch (e) {
     console.error('[Microsoft] Erro getRecentEmails:', e);
     return "Erro ao recuperar emails.";
+  }
+}
+
+// 5b. GERENCIAR KEYWORDS DE EMAIL
+export async function addEmailKeyword(palavra: string): Promise<string> {
+  try {
+    const { data } = await supabase
+      .from('config').select('value')
+      .eq('key', 'email_keywords').single();
+
+    const keywords: string[] = data?.value ? JSON.parse(data.value) : [];
+    const norm = palavra.toLowerCase().trim();
+    if (keywords.includes(norm)) return `"${norm}" já está na lista.`;
+
+    keywords.push(norm);
+    await supabase.from('config').upsert(
+      { key: 'email_keywords', value: JSON.stringify(keywords) },
+      { onConflict: 'key' }
+    );
+    return `✅ "${norm}" adicionado. Lista: ${keywords.join(', ')}.`;
+  } catch (e) {
+    console.error('[Microsoft] Erro addEmailKeyword:', e);
+    return "Erro ao atualizar palavras-chave.";
+  }
+}
+
+export async function removeEmailKeyword(palavra: string): Promise<string> {
+  try {
+    const { data } = await supabase
+      .from('config').select('value')
+      .eq('key', 'email_keywords').single();
+
+    const keywords: string[] = data?.value ? JSON.parse(data.value) : [];
+    const norm = palavra.toLowerCase().trim();
+    const updated = keywords.filter(k => k !== norm);
+    if (updated.length === keywords.length) return `"${norm}" não estava na lista.`;
+
+    await supabase.from('config').upsert(
+      { key: 'email_keywords', value: JSON.stringify(updated) },
+      { onConflict: 'key' }
+    );
+    return `✅ "${norm}" removido. Lista: ${updated.join(', ')}.`;
+  } catch (e) {
+    console.error('[Microsoft] Erro removeEmailKeyword:', e);
+    return "Erro ao atualizar palavras-chave.";
   }
 }
 
@@ -212,4 +308,4 @@ export async function sendOutlookEmail(
     console.error('[Microsoft] Erro sendOutlookEmail:', e);
     return "Erro interno ao enviar email.";
   }
-}
+                        }
