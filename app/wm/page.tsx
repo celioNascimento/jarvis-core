@@ -125,13 +125,14 @@ function ModalEquipamento({ onClose, onSaved }: { onClose: () => void; onSaved: 
         </div>
 
         <div className="p-6 space-y-5">
-          {/* Identificação */}
-          <div>
-            <p className="text-xs font-black uppercase tracking-widest text-blue-600 mb-3">Identificação</p>
+
+          {/* Seção 1: Dados obrigatórios — preenchidos na bancada */}
+          <div className="bg-blue-50 rounded-2xl p-4 space-y-3 border border-blue-100">
+            <p className="text-xs font-black uppercase tracking-widest text-blue-600">1. Identificação obrigatória</p>
             <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2 md:col-span-1">
+              <div className="col-span-2">
                 <label className={label}>Ativo (Patrimônio) *</label>
-                <input value={form.asset_number} onChange={e => setForm({...form, asset_number: e.target.value})} className={input} placeholder="Ex: 001234" />
+                <input autoFocus value={form.asset_number} onChange={e => setForm({...form, asset_number: e.target.value})} className={input} placeholder="Ex: 001234" />
               </div>
               <div>
                 <label className={label}>Número de Série</label>
@@ -141,6 +142,13 @@ function ModalEquipamento({ onClose, onSaved }: { onClose: () => void; onSaved: 
                 <label className={label}>Número do Cliente</label>
                 <input value={form.client_number} onChange={e => setForm({...form, client_number: e.target.value})} className={input} />
               </div>
+            </div>
+          </div>
+
+          {/* Seção 2: Especificações */}
+          <div>
+            <p className="text-xs font-black uppercase tracking-widest text-slate-500 mb-3">2. Especificações</p>
+            <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className={label}>Marca</label>
                 <input value={form.brand} onChange={e => setForm({...form, brand: e.target.value})} className={input} placeholder="Ex: Emerson" />
@@ -149,7 +157,7 @@ function ModalEquipamento({ onClose, onSaved }: { onClose: () => void; onSaved: 
                 <label className={label}>Modelo</label>
                 <input value={form.model} onChange={e => setForm({...form, model: e.target.value})} className={input} />
               </div>
-              <div>
+              <div className="col-span-2">
                 <label className={label}>Tipo de Equipamento</label>
                 <input value={form.equipment_type} onChange={e => setForm({...form, equipment_type: e.target.value})} className={input} placeholder="Ex: Transmissor de pressão" />
               </div>
@@ -290,8 +298,8 @@ export default function WhiteMartinsDashboard() {
       <div className="bg-white border-b border-slate-200 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center">
-              <Shield size={18} className="text-white" />
+            <div className="w-9 h-9 rounded-xl overflow-hidden">
+              <img src="/logo_wm.png" alt="White Martins" className="w-full h-full object-contain" />
             </div>
             <div>
               <h1 className="text-base font-black text-slate-900 leading-none">White Martins</h1>
@@ -354,7 +362,7 @@ export default function WhiteMartinsDashboard() {
               placeholder="Buscar por ativo, série, marca, modelo..."
               className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none" />
           </div>
-          <div className="flex gap-2 overflow-x-auto pb-1">
+          <div className="flex gap-2 overflow-x-auto pb-2 px-1 -mx-1 scrollbar-hide">
             {[['todos','Todos'], ...Object.entries(STATUS_CONFIG).map(([k,v]) => [k, v.label])].map(([k, v]) => (
               <button key={k} onClick={() => setFilterStatus(k)}
                 className={`px-3 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border ${
@@ -437,6 +445,17 @@ export default function WhiteMartinsDashboard() {
           onSaved={carregar}
         />
       )}
+
+      {/* Botão flutuante Jarvis */}
+      <a href="https://t.me/jarvis_elite_bot"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="fixed bottom-6 right-6 w-14 h-14 bg-slate-900 rounded-full flex items-center justify-center shadow-2xl hover:bg-slate-800 active:scale-95 transition-all z-50"
+        title="Falar com Jarvis">
+        <img src="/logo_wm.png" alt="Jarvis" className="w-7 h-7 object-contain brightness-200" 
+          onError={(e) => { (e.target as HTMLImageElement).style.display='none' }} />
+        <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-white" />
+      </a>
     </div>
   )
 }
