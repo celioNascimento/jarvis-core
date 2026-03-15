@@ -162,29 +162,33 @@ export async function updateOutlookEvent(
 // 5. LER EMAILS — com filtro por keywords e/ou remetente
 export async function getRecentEmails(
   filtro?: string,
-  maxEmails: number = 10
+  maxEmails: number = 10,
+  semFiltro: boolean = false
 ): Promise<string> {
   try {
     const token = await getMicrosoftAccessToken();
     if (!token) return "Erro ao acessar emails.";
 
-    // Busca keywords salvas no banco
-    const { data: kwData } = await supabase
-      .from('config')
-      .select('value')
-      .eq('key', 'email_keywords')
-      .single();
-
-    const keywords: string[] = kwData?.value
-      ? JSON.parse(kwData.value)
-      : ['urgente', 'fatura', 'boleto', 'prazo', 'reunião', 'contrato', 'pagamento'];
-
     // Monta filtro OData
     let filterQuery = '';
-    if (filtro) {
+    if (semFiltro) {
+      // Busca recentes sem filtro — mostra os últimos emails
+      filterQuery = '';
+    } else if (filtro) {
       const escaped = filtro.replace(/'/g, "''");
       filterQuery = `&$search="${escaped}"`;
     } else {
+      // Busca keywords salvas no banco
+      const { data: kwData } = await supabase
+        .from('config')
+        .select('value')
+        .eq('key', 'email_keywords')
+        .single();
+
+      const keywords: string[] = kwData?.value
+        ? JSON.parse(kwData.value)
+        : ['urgente', 'fatura', 'boleto', 'prazo', 'reunião', 'contrato', 'pagamento'];
+
       const kwFilter = keywords
         .map(k => `contains(subject,'${k.replace(/'/g, "''")}')`)
         .join(' or ');
@@ -295,4 +299,4 @@ export async function sendOutlookEmail(
     console.error('[Microsoft] Erro sendOutlookEmail:', e);
     return "Erro interno ao enviar email.";
   }
-}
+  }
