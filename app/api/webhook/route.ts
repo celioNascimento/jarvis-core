@@ -399,7 +399,9 @@ REGRAS:
    [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false | permanent|recurring_annual|deadline|one_time]
    [AGENDAR: título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
    [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
-   [LER_EMAILS] ou [LER_EMAILS: filtro] — busca emails por keywords ou filtro livre
+   [LER_EMAILS] — busca emails pelas keywords cadastradas
+   [LER_EMAILS: *] — busca os emails mais recentes sem filtro
+   [LER_EMAILS: filtro] — busca emails por termo específico (ex: "fatura", "João")
    [ADICIONAR_KEYWORD_EMAIL: palavra] — adiciona palavra à lista de filtro de emails
    [REMOVER_KEYWORD_EMAIL: palavra] — remove palavra da lista de filtro de emails
    [LIMPAR_PENDENTE]
@@ -593,7 +595,11 @@ REGRAS:
     const emailMatch = aiReply.match(/\[LER_EMAILS(?::\s*([^\]]+))?\]/i);
     if (emailMatch) {
       const filtro = emailMatch[1]?.trim() || undefined;
-      const emails = await getRecentEmails(filtro);
+      // [LER_EMAILS: *] ou [LER_EMAILS] sem filtro = busca recentes sem keyword
+      const semFiltro = !filtro || filtro === '*' || filtro === 'todos';
+      const emails = semFiltro
+        ? await getRecentEmails(undefined, 10, true)  // true = sem filtro keywords
+        : await getRecentEmails(filtro);
       aiReply = aiReply.replace(emailMatch[0], '').trim();
       aiReply = aiReply ? `${aiReply}\n\n${emails}` : emails;
     }
