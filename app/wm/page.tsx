@@ -18,6 +18,15 @@ function getSupabase() {
   )
 }
 
+async function logout() {
+  const sb = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+  await sb.auth.signOut()
+  window.location.href = '/wm/login'
+}
+
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: any }> = {
   lastro:            { label: 'Lastro',       color: '#2563eb', bg: '#dbeafe', icon: Archive },
   backup:            { label: 'Backup',        color: '#7c3aed', bg: '#ede9fe', icon: RotateCcw },
@@ -289,11 +298,17 @@ export default function WhiteMartinsDashboard() {
               <p className="text-[10px] text-slate-500 uppercase tracking-widest">Lab. de Instrumentação</p>
             </div>
           </div>
-          <button onClick={() => setShowModal(true)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 active:scale-95 transition-all shadow-md shadow-blue-200">
-            <Plus size={16} />
-            <span className="hidden sm:inline">Novo Equipamento</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowModal(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 active:scale-95 transition-all shadow-md shadow-blue-200">
+              <Plus size={16} />
+              <span className="hidden sm:inline">Novo Equipamento</span>
+            </button>
+            <button onClick={logout}
+              className="px-3 py-2.5 rounded-xl text-xs font-bold text-slate-500 hover:bg-slate-100 transition-all border border-slate-200">
+              Sair
+            </button>
+          </div>
         </div>
       </div>
 
