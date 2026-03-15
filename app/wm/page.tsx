@@ -31,14 +31,15 @@ async function logout() {
 }
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: any; next?: string[] }> = {
-  entrada:            { label: 'Entrada',      color: '#d97706', bg: '#fef3c7', icon: Package,      next: ['limpeza','manutencao_externa','aguardando'] },
-  limpeza:            { label: 'Limpeza',       color: '#0891b2', bg: '#cffafe', icon: Droplets,     next: ['lastro','manutencao_externa','descarte'] },
-  aguardando:         { label: 'Aguardando',    color: '#92400e', bg: '#fef3c7', icon: Clock,        next: ['limpeza','manutencao_externa','descarte'] },
-  manutencao_externa: { label: 'Manutenção',    color: '#dc2626', bg: '#fee2e2', icon: Wrench,       next: ['lastro','descarte'] },
-  lastro:             { label: 'Lastro',        color: '#2563eb', bg: '#dbeafe', icon: Archive,      next: ['backup','aplicado','descarte'] },
-  backup:             { label: 'Backup',        color: '#7c3aed', bg: '#ede9fe', icon: RotateCcw,    next: ['lastro','aplicado','descarte'] },
-  aplicado:           { label: 'Aplicado',      color: '#059669', bg: '#d1fae5', icon: CheckCircle,  next: ['limpeza','manutencao_externa','descarte'] },
-  descarte:           { label: 'Descarte',      color: '#6b7280', bg: '#f3f4f6', icon: Trash2,       next: [] },
+  entrada:            { label: 'Entrada',          color: '#d97706', bg: '#fef3c7', icon: Package,      next: ['avaliacao_bancada'] },
+  avaliacao_bancada:  { label: 'Bancada',           color: '#ea580c', bg: '#ffedd5', icon: Activity,     next: ['limpeza','aguardando_pecas','manutencao_externa','descarte'] },
+  aguardando_pecas:   { label: 'Ag. Peças',         color: '#b45309', bg: '#fef9c3', icon: Clock,        next: ['limpeza','manutencao_externa','descarte'] },
+  limpeza:            { label: 'Limpeza',            color: '#0891b2', bg: '#cffafe', icon: Droplets,     next: ['lastro','backup','descarte'] },
+  manutencao_externa: { label: 'Manutenção Ext.',    color: '#dc2626', bg: '#fee2e2', icon: Wrench,       next: ['limpeza','lastro','descarte'] },
+  lastro:             { label: 'Lastro',             color: '#2563eb', bg: '#dbeafe', icon: Archive,      next: ['backup','aplicado','descarte'] },
+  backup:             { label: 'Backup',             color: '#7c3aed', bg: '#ede9fe', icon: RotateCcw,    next: ['lastro','aplicado','descarte'] },
+  aplicado:           { label: 'Aplicado',           color: '#059669', bg: '#d1fae5', icon: CheckCircle,  next: ['limpeza','manutencao_externa','descarte'] },
+  descarte:           { label: 'Descarte',           color: '#6b7280', bg: '#f3f4f6', icon: Trash2,       next: [] },
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -291,7 +292,7 @@ function ModalEquipamento({ onClose, onSaved }: { onClose: () => void; onSaved: 
           <div>
             <p className="text-xs font-black uppercase tracking-widest text-slate-500 mb-3">3. Destino Inicial</p>
             <div className="grid grid-cols-3 gap-2">
-              {(['entrada','limpeza','aguardando','manutencao_externa'] as const).map(s => {
+              {(['entrada','avaliacao_bancada','aguardando_pecas','limpeza','manutencao_externa'] as const).map(s => {
                 const cfg = STATUS_CONFIG[s]
                 const Icon = cfg.icon
                 return (
@@ -494,7 +495,8 @@ export default function WhiteMartinsDashboard() {
     aplicado:   equipment.filter(e => e.status === 'aplicado').length,
     manutencao: equipment.filter(e => e.status === 'manutencao_externa').length,
     descarte:   equipment.filter(e => e.status === 'descarte').length,
-    entrada:    equipment.filter(e => e.status === 'entrada' || e.status === 'limpeza' || e.status === 'aguardando').length,
+    entrada:    equipment.filter(e => ['entrada','avaliacao_bancada','aguardando_pecas','limpeza'].includes(e.status)).length,
+    ag_pecas:   equipment.filter(e => e.status === 'aguardando_pecas').length,
   }
 
   const calVencendo = standards.filter(s => {
@@ -534,23 +536,35 @@ export default function WhiteMartinsDashboard() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5 space-y-5">
 
         {/* Stats */}
-        <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+        <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
           {[
-            { label: 'Total',    value: stats.total,      color: 'text-slate-700', bg: 'bg-white' },
-            { label: 'Em fluxo', value: stats.entrada,    color: 'text-amber-600', bg: 'bg-amber-50' },
-            { label: 'Lastro',   value: stats.lastro,     color: 'text-blue-600',  bg: 'bg-blue-50' },
-            { label: 'Backup',   value: stats.backup,     color: 'text-purple-600',bg: 'bg-purple-50' },
-            { label: 'Aplicado', value: stats.aplicado,   color: 'text-green-600', bg: 'bg-green-50' },
-            { label: 'Manut.',   value: stats.manutencao, color: 'text-red-600',   bg: 'bg-red-50' },
-            { label: 'Descarte', value: stats.descarte,   color: 'text-slate-500', bg: 'bg-slate-100' },
+            { label: 'Total',      value: stats.total,      color: 'text-slate-700', bg: 'bg-white',       filter: 'todos' },
+            { label: 'Em fluxo',   value: stats.entrada,    color: 'text-amber-600', bg: 'bg-amber-50',    filter: 'entrada' },
+            { label: 'Ag. Peças',  value: stats.ag_pecas,   color: 'text-yellow-700',bg: 'bg-yellow-50',   filter: 'aguardando_pecas' },
+            { label: 'Lastro',     value: stats.lastro,     color: 'text-blue-600',  bg: 'bg-blue-50',     filter: 'lastro' },
+            { label: 'Backup',     value: stats.backup,     color: 'text-purple-600',bg: 'bg-purple-50',   filter: 'backup' },
+            { label: 'Aplicado',   value: stats.aplicado,   color: 'text-green-600', bg: 'bg-green-50',    filter: 'aplicado' },
+            { label: 'Manut.',     value: stats.manutencao, color: 'text-red-600',   bg: 'bg-red-50',      filter: 'manutencao_externa' },
+            { label: 'Descarte',   value: stats.descarte,   color: 'text-slate-500', bg: 'bg-slate-100',   filter: 'descarte' },
           ].map(s => (
-            <div key={s.label} className={`${s.bg} rounded-2xl p-3 border border-slate-100 cursor-pointer hover:shadow-sm transition-all`}
-              onClick={() => setFilterStatus(s.label === 'Total' ? 'todos' : s.label === 'Em fluxo' ? 'entrada' : s.label === 'Manut.' ? 'manutencao_externa' : s.label.toLowerCase())}>
+            <div key={s.label} className={`${s.bg} rounded-2xl p-3 border border-slate-100 cursor-pointer hover:shadow-sm transition-all ${filterStatus === s.filter ? 'ring-2 ring-blue-400' : ''}`}
+              onClick={() => setFilterStatus(s.filter)}>
               <p className={`text-2xl font-black ${s.color} leading-none`}>{s.value}</p>
               <p className="text-[9px] font-bold uppercase text-slate-500 mt-1 tracking-wide leading-tight">{s.label}</p>
             </div>
           ))}
         </div>
+
+        {/* Alerta peças em falta */}
+        {stats.ag_pecas > 0 && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-3 flex items-center gap-3 cursor-pointer"
+            onClick={() => setFilterStatus('aguardando_pecas')}>
+            <Clock size={16} className="text-yellow-600 shrink-0" />
+            <p className="text-sm font-bold text-yellow-800">
+              {stats.ag_pecas} equipamento(s) aguardando peças — clique para ver
+            </p>
+          </div>
+        )}
 
         {/* Alerta calibração */}
         {calVencendo.length > 0 && (
