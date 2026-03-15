@@ -59,7 +59,7 @@ function ModalEquipamento({ onClose, onSaved }: { onClose: () => void; onSaved: 
   useEffect(() => {
     supabase.from('locations').select('id, code, area, description')
       .eq('active', true).order('code')
-      .then(({ data }) => setLocations(data || []))
+      .then(({ data }: { data: any[] | null }) => setLocations(data || []))
   }, [])
 
   const salvar = async () => {
