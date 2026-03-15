@@ -17,7 +17,6 @@ function getSupabase() {
     { db: { schema: 'white_martins' } }
   )
 }
-const supabase = typeof window !== 'undefined' ? getSupabase() : null as any
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: any }> = {
   lastro:            { label: 'Lastro',       color: '#2563eb', bg: '#dbeafe', icon: Archive },
@@ -57,7 +56,7 @@ function ModalEquipamento({ onClose, onSaved }: { onClose: () => void; onSaved: 
   const [error, setError] = useState('')
 
   useEffect(() => {
-    supabase.from('locations').select('id, code, area, description')
+    getSupabase().from('locations').select('id, code, area, description')
       .eq('active', true).order('code')
       .then(({ data }: { data: any[] | null }) => setLocations(data || []))
   }, [])
@@ -73,7 +72,7 @@ function ModalEquipamento({ onClose, onSaved }: { onClose: () => void; onSaved: 
       location_id = loc?.id || null
     }
 
-    const { error: err } = await supabase.from('equipment').insert({
+    const { error: err } = await getSupabase().from('equipment').insert({
       asset_number: form.asset_number.trim(),
       serial_number: form.serial_number || null,
       client_number: form.client_number || null,
@@ -238,10 +237,10 @@ export default function WhiteMartinsDashboard() {
   const carregar = async () => {
     setLoading(true)
     const [eqRes, stRes] = await Promise.all([
-      supabase.from('equipment')
+      getSupabase().from('equipment')
         .select('*, location:locations(code, area)')
         .order('created_at', { ascending: false }),
-      supabase.from('standards')
+      getSupabase().from('standards')
         .select('*')
         .order('next_calibration', { ascending: true })
     ])
