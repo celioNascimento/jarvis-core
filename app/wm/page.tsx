@@ -252,6 +252,17 @@ export default function WhiteMartinsDashboard() {
   const [showModal, setShowModal] = useState(false)
 
   const carregar = async () => {
+    // Verifica sessão antes de carregar
+    const { data: { session } } = await createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    ).auth.getSession()
+
+    if (!session) {
+      window.location.href = '/wm/login'
+      return
+    }
+
     setLoading(true)
     const [eqRes, stRes] = await Promise.all([
       getSupabase().from('equipment')
@@ -298,12 +309,8 @@ export default function WhiteMartinsDashboard() {
       <div className="bg-white border-b border-slate-200 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl overflow-hidden">
-              <img src="/logo_wm.png" alt="White Martins" className="w-full h-full object-contain" />
-            </div>
-            <div>
-              <h1 className="text-base font-black text-slate-900 leading-none">White Martins</h1>
-              <p className="text-[10px] text-slate-500 uppercase tracking-widest">Lab. de Instrumentação</p>
+            <div className="h-10 flex items-center">
+              <img src="/logo_wm.png" alt="White Martins" className="h-full w-auto object-contain" />
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -446,16 +453,7 @@ export default function WhiteMartinsDashboard() {
         />
       )}
 
-      {/* Botão flutuante Jarvis */}
-      <a href="https://t.me/jarvis_elite_bot"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="fixed bottom-6 right-6 w-14 h-14 bg-slate-900 rounded-full flex items-center justify-center shadow-2xl hover:bg-slate-800 active:scale-95 transition-all z-50"
-        title="Falar com Jarvis">
-        <img src="/logo_wm.png" alt="Jarvis" className="w-7 h-7 object-contain brightness-200" 
-          onError={(e) => { (e.target as HTMLImageElement).style.display='none' }} />
-        <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-white" />
-      </a>
+
     </div>
   )
 }
