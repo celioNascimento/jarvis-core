@@ -315,6 +315,114 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   )
 }
 
+// ── Peças por Equipamento (bancada) ──────────────────────
+function PecasEquipamento({ equipId, modelId }: { equipId: string; modelId?: string }) {
+  const [pecas, setPecas] = useState<any[]>([])
+  const [estados, setEstados] = useState<Record<string, string>>({})
+  const [notas, setNotas] = useState<Record<string, string>>({})
+  const [salvando, setSalvando] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    // Busca peças compatíveis: genéricas + específicas do modelo
+    db().from('spare_parts')
+      .select('*, compatible_model:equipment_models(brand,model,nickname)')
+      .or(`compatible_model_id.is.null${modelId ? `,compatible_model_id.eq.${modelId}` : ''}`)
+      .order('category').order('name')
+      .then(({ data }) => {
+        setPecas(data || [])
+        // Carrega estados já registrados
+        db().from('equipment_part_status')
+          .select('spare_part_id, status, notes')
+          .eq('equipment_id', equipId)
+          .then(({ data: est }) => {
+            const map: Record<string,string> = {}
+            const notMap: Record<string,string> = {}
+            ;(est || []).forEach(e => { map[e.spare_part_id] = e.status; notMap[e.spare_part_id] = e.notes || '' })
+            setEstados(map)
+            setNotas(notMap)
+          })
+      })
+  }, [equipId, modelId])
+
+  const salvar = async () => {
+    if (Object.keys(estados).length === 0) return
+    setSalvando(true)
+    for (const [partId, status] of Object.entries(estados)) {
+      await db().from('equipment_part_status').upsert({
+        equipment_id: equipId, spare_part_id: partId,
+        status, notes: notas[partId] || null, recorded_by: 'Celio',
+      }, { onConflict: 'equipment_id,spare_part_id' })
+      // Se sem_estoque, decrementa estoque
+      if (status === 'sem_estoque') {
+        const peca = pecas.find(p => p.id === partId)
+        if (peca && peca.stock_current > 0) {
+          await db().from('spare_parts').update({ stock_current: peca.stock_current - 1 }).eq('id', partId)
+        }
+      }
+      // Se novo, decrementa estoque
+      if (status === 'novo') {
+        const peca = pecas.find(p => p.id === partId)
+        if (peca && peca.stock_current > 0) {
+          await db().from('spare_parts').update({ stock_current: peca.stock_current - 1 }).eq('id', partId)
+        }
+      }
+    }
+    setSalvando(false); setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  if (pecas.length === 0) return null
+
+  return (
+    <div className="bg-white rounded-3xl border border-stone-200 p-5 shadow-sm">
+      <p className="text-[10px] font-black uppercase tracking-widest text-stone-400 mb-4 flex items-center gap-2">
+        <Zap size={11} /> Estado das Peças — Avaliação de Bancada
+      </p>
+      <div className="space-y-3">
+        {pecas.map(p => (
+          <div key={p.id} className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-xs font-bold text-stone-700">{p.name}</span>
+                {p.compatible_model && (
+                  <span className="text-[10px] text-blue-500 ml-2">{p.compatible_model.nickname || p.compatible_model.brand}</span>
+                )}
+                <span className={`ml-2 text-[9px] font-black px-1.5 py-0.5 rounded-full ${
+                  p.stock_current === 0 ? 'bg-red-100 text-red-600' :
+                  p.stock_current <= p.stock_minimum ? 'bg-yellow-100 text-yellow-700' : 'bg-stone-100 text-stone-500'
+                }`}>
+                  estoque: {p.stock_current}
+                </span>
+              </div>
+            </div>
+            <div className="flex gap-1.5 flex-wrap">
+              {Object.entries(PART_STATUS).map(([k, v]) => (
+                <button key={k} onClick={() => setEstados(e => ({...e, [p.id]: k}))}
+                  style={estados[p.id] === k ? { background: v.bg, color: v.color, borderColor: v.border } : {}}
+                  className={`px-2.5 py-1 rounded-xl border text-[9px] font-black uppercase tracking-wider transition-all ${
+                    estados[p.id] === k ? '' : 'border-stone-200 text-stone-400 hover:border-stone-300'
+                  }`}>{v.label}</button>
+              ))}
+            </div>
+            {(estados[p.id] === 'sem_estoque' || estados[p.id] === 'meia_vida') && (
+              <input value={notas[p.id] || ''} onChange={e => setNotas(n => ({...n, [p.id]: e.target.value}))}
+                className="w-full px-3 py-2 rounded-xl border border-stone-200 text-xs text-stone-600 outline-none focus:border-blue-400"
+                placeholder="Observação (opcional)..." />
+            )}
+          </div>
+        ))}
+      </div>
+      <button onClick={salvar} disabled={salvando || saved}
+        className={`w-full mt-4 py-3 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${
+          saved ? 'bg-green-500 text-white' : 'bg-stone-800 text-white hover:bg-stone-900 active:scale-[0.98]'
+        }`}>
+        {saved ? '✓ Salvo' : salvando ? 'Salvando...' : 'Salvar estado das peças'}
+      </button>
+    </div>
+  )
+}
+
 // ── Aba Fluxo ─────────────────────────────────────────────
 function AbaFluxo() {
   const [ativo, setAtivo] = useState('')
@@ -447,6 +555,11 @@ function AbaFluxo() {
                 {salvando ? 'Movendo...' : 'Confirmar'}
               </button>
             </div>
+          )}
+
+          {/* Estado das Peças */}
+          {equip.status === 'avaliacao_bancada' && (
+            <PecasEquipamento equipId={equip.id} modelId={equip.model_id} />
           )}
 
           {/* Histórico */}
@@ -641,9 +754,266 @@ function AbaRelatorios() {
   )
 }
 
+// ── Status de Peças ──────────────────────────────────────
+const PART_STATUS: Record<string, { label: string; color: string; bg: string; border: string }> = {
+  novo:            { label: 'Novo',            color: '#065f46', bg: '#f0fdf4', border: '#86efac' },
+  ok:              { label: 'OK',              color: '#1d4ed8', bg: '#eff6ff', border: '#93c5fd' },
+  meia_vida:       { label: 'Meia Vida',       color: '#92400e', bg: '#fef3c7', border: '#fcd34d' },
+  necessita_troca: { label: 'Necessita Troca', color: '#991b1b', bg: '#fef2f2', border: '#fca5a5' },
+  sem_estoque:     { label: 'Sem Estoque',     color: '#374151', bg: '#f9fafb', border: '#d1d5db' },
+}
+
+function PartBadge({ status }: { status: string }) {
+  const cfg = PART_STATUS[status]
+  if (!cfg) return null
+  return (
+    <span style={{ background: cfg.bg, color: cfg.color, borderColor: cfg.border }}
+      className="inline-flex items-center px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-wider">
+      {cfg.label}
+    </span>
+  )
+}
+
+function AbaPecas() {
+  const [pecas, setPecas] = useState<any[]>([])
+  const [models, setModels] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showNova, setShowNova] = useState(false)
+  const [novaPeca, setNovaPeca] = useState({
+    name: '', reference: '', category: 'filtro',
+    compatible_model_id: '', stock_current: 0, stock_minimum: 1,
+    unit: 'un', location_code: '', notes: ''
+  })
+  const [salvando, setSalvando] = useState(false)
+  const [semEstoque, setSemEstoque] = useState<any[]>([])
+
+  const carregar = async () => {
+    setLoading(true)
+    const [pRes, mRes, seRes] = await Promise.all([
+      db().from('spare_parts').select('*, compatible_model:equipment_models(brand,model,nickname)').order('category').order('name'),
+      db().from('equipment_models').select('id,brand,model,nickname').order('nickname'),
+      db().from('equipment_part_status')
+        .select('*, equipment:equipment(asset_number), spare_part:spare_parts(name,category)')
+        .in('status', ['sem_estoque','necessita_troca'])
+        .order('created_at', { ascending: false }),
+    ])
+    setPecas(pRes.data || [])
+    setModels(mRes.data || [])
+    setSemEstoque(seRes.data || [])
+    setLoading(false)
+  }
+
+  useEffect(() => { carregar() }, [])
+
+  const salvarPeca = async () => {
+    if (!novaPeca.name.trim()) return
+    setSalvando(true)
+    await db().from('spare_parts').insert({
+      ...novaPeca,
+      compatible_model_id: novaPeca.compatible_model_id || null,
+      stock_current: Number(novaPeca.stock_current),
+      stock_minimum: Number(novaPeca.stock_minimum),
+    })
+    setSalvando(false)
+    setShowNova(false)
+    setNovaPeca({ name: '', reference: '', category: 'filtro', compatible_model_id: '', stock_current: 0, stock_minimum: 1, unit: 'un', location_code: '', notes: '' })
+    carregar()
+  }
+
+  const ajustarEstoque = async (id: string, delta: number, atual: number) => {
+    const novo = Math.max(0, atual + delta)
+    await db().from('spare_parts').update({ stock_current: novo }).eq('id', id)
+    setPecas(p => p.map(x => x.id === id ? {...x, stock_current: novo} : x))
+  }
+
+  const inp = "w-full px-3 py-2.5 rounded-xl border border-stone-200 text-sm text-stone-800 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none transition-all"
+  const lbl = "block text-[10px] font-black uppercase tracking-widest text-stone-400 mb-1.5"
+
+  const categorias = ['filtro','sensor','acessorio','consumivel']
+  const catLabel: Record<string,string> = { filtro:'Filtros', sensor:'Sensores', acessorio:'Acessórios', consumivel:'Consumíveis' }
+
+  const pecasSemEstoque = pecas.filter(p => p.stock_current <= p.stock_minimum)
+
+  return (
+    <div className="space-y-4">
+
+      {/* Alerta estoque crítico */}
+      {pecasSemEstoque.length > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertTriangle size={15} className="text-red-500 shrink-0" />
+            <p className="text-sm font-black text-red-700">{pecasSemEstoque.length} peça(s) abaixo do estoque mínimo</p>
+          </div>
+          <div className="space-y-1">
+            {pecasSemEstoque.map(p => (
+              <div key={p.id} className="flex items-center justify-between text-xs">
+                <span className="text-red-600 font-medium">{p.name}</span>
+                <span className="font-black text-red-700">{p.stock_current}/{p.stock_minimum} {p.unit}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Equipamentos com peças críticas */}
+      {semEstoque.length > 0 && (
+        <div className="bg-stone-50 border border-stone-200 rounded-2xl p-4">
+          <p className="text-[10px] font-black uppercase tracking-widest text-stone-400 mb-3 flex items-center gap-2">
+            <Clock size={11} /> Equipamentos com peças não trocadas por falta de estoque
+          </p>
+          <div className="space-y-2">
+            {semEstoque.map(s => (
+              <div key={s.id} className="flex items-center gap-3 py-1.5 border-b border-stone-100 last:border-0">
+                <span className="font-black text-stone-700 text-xs w-16 shrink-0">{s.equipment?.asset_number}</span>
+                <span className="text-xs text-stone-500 flex-1">{s.spare_part?.name}</span>
+                <PartBadge status={s.status} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Header + botão nova peça */}
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-black uppercase tracking-widest text-stone-400">Estoque de Peças</p>
+        <button onClick={() => setShowNova(!showNova)}
+          className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 transition-all">
+          <Plus size={12} /> Nova Peça
+        </button>
+      </div>
+
+      {/* Form nova peça */}
+      {showNova && (
+        <div className="bg-white border border-blue-200 rounded-2xl p-5 space-y-3">
+          <p className="text-[10px] font-black uppercase tracking-widest text-blue-600">Cadastrar peça / consumível</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2">
+              <label className={lbl}>Nome *</label>
+              <input autoFocus value={novaPeca.name} onChange={e => setNovaPeca({...novaPeca, name: e.target.value})}
+                className={inp} placeholder="Ex: Filtro de cabeceira EverFlo" />
+            </div>
+            <div>
+              <label className={lbl}>Referência / Código</label>
+              <input value={novaPeca.reference} onChange={e => setNovaPeca({...novaPeca, reference: e.target.value})}
+                className={inp} placeholder="Ex: 1020733" />
+            </div>
+            <div>
+              <label className={lbl}>Categoria</label>
+              <select value={novaPeca.category} onChange={e => setNovaPeca({...novaPeca, category: e.target.value})} className={inp}>
+                {categorias.map(c => <option key={c} value={c}>{catLabel[c]}</option>)}
+              </select>
+            </div>
+            <div className="col-span-2">
+              <label className={lbl}>Compatível com (deixe vazio = genérico)</label>
+              <select value={novaPeca.compatible_model_id} onChange={e => setNovaPeca({...novaPeca, compatible_model_id: e.target.value})} className={inp}>
+                <option value="">— Genérico (todos os modelos) —</option>
+                {models.map(m => (
+                  <option key={m.id} value={m.id}>{m.nickname || m.equipment_type || ''} — {m.brand} {m.model}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={lbl}>Estoque atual</label>
+              <input type="number" min={0} value={novaPeca.stock_current}
+                onChange={e => setNovaPeca({...novaPeca, stock_current: Number(e.target.value)})} className={inp} />
+            </div>
+            <div>
+              <label className={lbl}>Estoque mínimo</label>
+              <input type="number" min={1} value={novaPeca.stock_minimum}
+                onChange={e => setNovaPeca({...novaPeca, stock_minimum: Number(e.target.value)})} className={inp} />
+            </div>
+            <div>
+              <label className={lbl}>Unidade</label>
+              <input value={novaPeca.unit} onChange={e => setNovaPeca({...novaPeca, unit: e.target.value})} className={inp} placeholder="un, cx, par" />
+            </div>
+            <div>
+              <label className={lbl}>Localização</label>
+              <input value={novaPeca.location_code} onChange={e => setNovaPeca({...novaPeca, location_code: e.target.value})} className={inp} placeholder="Ex: AP-A2" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={salvarPeca} disabled={salvando}
+              className="flex-1 py-3 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest disabled:opacity-60">
+              {salvando ? 'Salvando...' : 'Cadastrar'}
+            </button>
+            <button onClick={() => setShowNova(false)}
+              className="px-4 py-3 rounded-xl border border-stone-200 text-xs font-black text-stone-500">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Lista por categoria */}
+      {loading ? (
+        <div className="p-8 flex items-center justify-center bg-white rounded-2xl border border-stone-200">
+          <Activity size={20} className="text-blue-500 animate-spin" />
+        </div>
+      ) : pecas.length === 0 ? (
+        <div className="p-8 text-center bg-white rounded-2xl border border-stone-200">
+          <Zap size={24} className="text-stone-300 mx-auto mb-2" />
+          <p className="text-stone-400 text-sm">Nenhuma peça cadastrada.</p>
+        </div>
+      ) : (
+        categorias.map(cat => {
+          const lista = pecas.filter(p => p.category === cat)
+          if (lista.length === 0) return null
+          return (
+            <div key={cat} className="bg-white rounded-2xl border border-stone-200 overflow-hidden">
+              <div className="px-5 py-3 bg-stone-50 border-b border-stone-100">
+                <p className="text-[10px] font-black uppercase tracking-widest text-stone-500">{catLabel[cat]}</p>
+              </div>
+              <div className="divide-y divide-stone-50">
+                {lista.map(p => {
+                  const critico = p.stock_current <= p.stock_minimum
+                  const zero = p.stock_current === 0
+                  return (
+                    <div key={p.id} className="px-5 py-3.5 flex items-center gap-4">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-stone-800 truncate">{p.name}</p>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          {p.reference && <span className="text-[10px] text-stone-400 font-mono">{p.reference}</span>}
+                          {p.compatible_model ? (
+                            <span className="text-[10px] text-blue-500 font-medium">
+                              {p.compatible_model.nickname || p.compatible_model.brand} {p.compatible_model.model}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-stone-300">genérico</span>
+                          )}
+                          {p.location_code && <span className="text-[10px] text-stone-400">{p.location_code}</span>}
+                        </div>
+                      </div>
+
+                      {/* Controle de estoque */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button onClick={() => ajustarEstoque(p.id, -1, p.stock_current)}
+                          className="w-7 h-7 rounded-full border border-stone-200 flex items-center justify-center text-stone-500 hover:bg-stone-100 transition-all font-black text-lg leading-none">
+                          −
+                        </button>
+                        <div className={`text-center w-14 py-1.5 rounded-xl border ${zero ? 'bg-red-50 border-red-200' : critico ? 'bg-yellow-50 border-yellow-200' : 'bg-stone-50 border-stone-200'}`}>
+                          <p className={`text-sm font-black ${zero ? 'text-red-600' : critico ? 'text-yellow-700' : 'text-stone-700'}`}>{p.stock_current}</p>
+                          <p className="text-[8px] text-stone-400 uppercase">/{p.stock_minimum} min</p>
+                        </div>
+                        <button onClick={() => ajustarEstoque(p.id, 1, p.stock_current)}
+                          className="w-7 h-7 rounded-full border border-stone-200 flex items-center justify-center text-stone-500 hover:bg-stone-100 transition-all font-black text-lg leading-none">
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })
+      )}
+    </div>
+  )
+}
+
 // ── Dashboard Principal ───────────────────────────────────
 export default function WMDashboard() {
-  const [aba, setAba] = useState<'equipamentos' | 'fluxo' | 'relatorios'>('equipamentos')
+  const [aba, setAba] = useState<'equipamentos' | 'fluxo' | 'pecas' | 'relatorios'>('equipamentos')
   const [equipment, setEquipment] = useState<any[]>([])
   const [standards, setStandards] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -694,6 +1064,7 @@ export default function WMDashboard() {
   const ABAS = [
     { id: 'equipamentos', label: 'Equipamentos', icon: Package },
     { id: 'fluxo',        label: 'Fluxo',        icon: ArrowRight },
+    { id: 'pecas',        label: 'Peças',        icon: Zap },
     { id: 'relatorios',   label: 'Relatórios',   icon: FileText },
   ] as const
 
@@ -849,6 +1220,9 @@ export default function WMDashboard() {
 
         {/* ── ABA FLUXO ── */}
         {aba === 'fluxo' && <AbaFluxo />}
+
+        {/* ── ABA PEÇAS ── */}
+        {aba === 'pecas' && <AbaPecas />}
 
         {/* ── ABA RELATÓRIOS ── */}
         {aba === 'relatorios' && <AbaRelatorios />}
