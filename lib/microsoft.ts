@@ -169,65 +169,54 @@ export async function getRecentEmails(
     const token = await getMicrosoftAccessToken();
     if (!token) return "Erro ao acessar emails.";
 
-    // Monta filtro OData
-    let filterQuery = '';
-    if (semFiltro) {
-      // Busca recentes sem filtro — mostra os últimos emails
-      filterQuery = '';
-    } else if (filtro) {
-      const escaped = filtro.replace(/'/g, "''");
-      filterQuery = `&$search="${escaped}"`;
-    } else {
-      // Busca keywords salvas no banco
-      const { data: kwData } = await supabase
-        .from('config')
-        .select('value')
-        .eq('key', 'email_keywords')
-        .single();
-
-      const keywords: string[] = kwData?.value
-        ? JSON.parse(kwData.value)
-        : ['urgente', 'fatura', 'boleto', 'prazo', 'reunião', 'contrato', 'pagamento'];
-
-      const kwFilter = keywords
-        .map(k => `contains(subject,'${k.replace(/'/g, "''")}')`)
-        .join(' or ');
-      filterQuery = `&$filter=${encodeURIComponent(kwFilter)}`;
-    }
-
-    const url = `https://graph.microsoft.com/v1.0/me/messages?$top=${maxEmails}&$orderby=receivedDateTime desc&$select=subject,from,receivedDateTime,bodyPreview,isRead${filterQuery}`;
+    // Busca todos os emails recentes e filtra localmente
+    // $search e $filter do Graph API são instáveis para contas pessoais Microsoft
+    const url = `https://graph.microsoft.com/v1.0/me/messages?$top=50&$orderby=receivedDateTime desc&$select=subject,from,receivedDateTime,bodyPreview,isRead`;
 
     const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' }
+      headers: { Authorization: `Bearer ${token}` }
     });
 
     const data = await res.json();
+    let emails = data.value || [];
 
-    // Se não encontrou nada com keywords, tenta busca sem filtro como fallback
-    if (!data.value?.length && !semFiltro && !filtro) {
-      const urlSemFiltro = `https://graph.microsoft.com/v1.0/me/messages?$top=${maxEmails}&$orderby=receivedDateTime desc&$select=subject,from,receivedDateTime,bodyPreview,isRead`;
-      const resFallback = await fetch(urlSemFiltro, {
-        headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' }
-      });
-      const dataFallback = await resFallback.json();
-      if (dataFallback.value?.length) {
-        const lista = dataFallback.value.map((m: any) => {
-          const lido    = m.isRead ? '' : ' 🔵';
-          const de      = m.from?.emailAddress?.name || m.from?.emailAddress?.address || 'Desconhecido';
-          const dataStr = m.receivedDateTime?.slice(0, 10);
-          const previa  = m.bodyPreview?.slice(0, 120).replace(/\n/g, ' ');
-          return `${lido}[${dataStr}] *${m.subject}*\nDe: ${de}\n${previa}...`;
-        }).join('\n\n');
-        return `📧 *${dataFallback.value.length} email(s) recente(s):*\n\n${lista}`;
+    if (emails.length === 0) return "Nenhum email encontrado.";
+
+    // Filtra localmente
+    if (!semFiltro) {
+      if (filtro) {
+        // Filtro livre — busca em assunto, remetente e prévia
+        const f = filtro.toLowerCase();
+        emails = emails.filter((m: any) =>
+          m.subject?.toLowerCase().includes(f) ||
+          m.from?.emailAddress?.name?.toLowerCase().includes(f) ||
+          m.from?.emailAddress?.address?.toLowerCase().includes(f) ||
+          m.bodyPreview?.toLowerCase().includes(f)
+        );
+      } else {
+        // Filtra por keywords do banco
+        const { data: kwData } = await supabase
+          .from('config').select('value')
+          .eq('key', 'email_keywords').single();
+        const keywords: string[] = kwData?.value
+          ? JSON.parse(kwData.value)
+          : ['urgente', 'fatura', 'boleto', 'prazo', 'reunião', 'contrato', 'pagamento'];
+
+        emails = emails.filter((m: any) =>
+          keywords.some(k =>
+            m.subject?.toLowerCase().includes(k.toLowerCase()) ||
+            m.bodyPreview?.toLowerCase().includes(k.toLowerCase())
+          )
+        );
+
+        // Fallback: se keywords não acharam nada, mostra recentes
+        if (emails.length === 0) emails = data.value.slice(0, maxEmails);
       }
-      return "Nenhum email encontrado.";
     }
 
-    if (!data.value?.length) {
-      return filtro
-        ? `Nenhum email encontrado para "${filtro}".`
-        : "Nenhum email encontrado.";
-    }
+    emails = emails.slice(0, maxEmails);
+
+    if (!emails.length) return filtro ? `Nenhum email encontrado para "${filtro}".` : "Nenhum email encontrado.";
 
     const lista = data.value.map((m: any) => {
       const lido    = m.isRead ? '' : ' 🔵';
@@ -319,4 +308,4 @@ export async function sendOutlookEmail(
     console.error('[Microsoft] Erro sendOutlookEmail:', e);
     return "Erro interno ao enviar email.";
   }
-    }
+                        }
