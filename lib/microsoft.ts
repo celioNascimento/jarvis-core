@@ -203,10 +203,30 @@ export async function getRecentEmails(
 
     const data = await res.json();
 
+    // Se não encontrou nada com keywords, tenta busca sem filtro como fallback
+    if (!data.value?.length && !semFiltro && !filtro) {
+      const urlSemFiltro = `https://graph.microsoft.com/v1.0/me/messages?$top=${maxEmails}&$orderby=receivedDateTime desc&$select=subject,from,receivedDateTime,bodyPreview,isRead`;
+      const resFallback = await fetch(urlSemFiltro, {
+        headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' }
+      });
+      const dataFallback = await resFallback.json();
+      if (dataFallback.value?.length) {
+        const lista = dataFallback.value.map((m: any) => {
+          const lido    = m.isRead ? '' : ' 🔵';
+          const de      = m.from?.emailAddress?.name || m.from?.emailAddress?.address || 'Desconhecido';
+          const dataStr = m.receivedDateTime?.slice(0, 10);
+          const previa  = m.bodyPreview?.slice(0, 120).replace(/\n/g, ' ');
+          return `${lido}[${dataStr}] *${m.subject}*\nDe: ${de}\n${previa}...`;
+        }).join('\n\n');
+        return `📧 *${dataFallback.value.length} email(s) recente(s):*\n\n${lista}`;
+      }
+      return "Nenhum email encontrado.";
+    }
+
     if (!data.value?.length) {
       return filtro
         ? `Nenhum email encontrado para "${filtro}".`
-        : `Nenhum email com os termos: ${keywords.join(', ')}.`;
+        : "Nenhum email encontrado.";
     }
 
     const lista = data.value.map((m: any) => {
@@ -299,4 +319,4 @@ export async function sendOutlookEmail(
     console.error('[Microsoft] Erro sendOutlookEmail:', e);
     return "Erro interno ao enviar email.";
   }
-  }
+    }
