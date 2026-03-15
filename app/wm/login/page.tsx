@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic'
 
 import { useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
-import { Shield, Eye, EyeOff, AlertTriangle } from 'lucide-react'
+import { Eye, EyeOff, AlertTriangle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 
 function getSupabase() {
@@ -45,10 +45,9 @@ export default function WMLogin() {
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-blue-600 rounded-3xl flex items-center justify-center mx-auto mb-4 shadow-2xl shadow-blue-500/30">
-            <Shield size={28} className="text-white" />
+          <div className="h-16 flex items-center justify-center mx-auto mb-4">
+            <img src="/logo_wm.png" alt="White Martins" className="h-full w-auto object-contain" />
           </div>
-          <h1 className="text-2xl font-black text-white tracking-tight">White Martins</h1>
           <p className="text-blue-300 text-sm mt-1">Lab. de Instrumentação</p>
         </div>
 
