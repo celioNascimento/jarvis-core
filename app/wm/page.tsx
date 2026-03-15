@@ -10,11 +10,14 @@ import {
   BarChart3, Shield, Zap
 } from 'lucide-react'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-  { db: { schema: 'white_martins' } }
-)
+function getSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { db: { schema: 'white_martins' } }
+  )
+}
+const supabase = typeof window !== 'undefined' ? getSupabase() : null as any
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: any }> = {
   lastro:            { label: 'Lastro',       color: '#2563eb', bg: '#dbeafe', icon: Archive },
