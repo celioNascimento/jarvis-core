@@ -12,21 +12,31 @@ import {
 } from 'lucide-react'
 
 // ── Clientes Supabase ────────────────────────────────────
-// Usa NEXT_PUBLIC_SUPABASE_SERVICE_KEY para bypass do RLS no frontend
-// A segurança é garantida pelo middleware (só usuários autenticados chegam aqui)
-function db() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_SERVICE_KEY!,
-    { db: { schema: 'white_martins' } }
-  )
-}
+// Instâncias singleton — compartilham o mesmo storage de sessão
+let _auth: any = null
+let _wm: any = null
 
 function authClient() {
-  return createClient(
+  if (typeof window === 'undefined') return null as any
+  if (!_auth) _auth = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { auth: { storageKey: 'wm-auth' } }
   )
+  return _auth
+}
+
+function db() {
+  if (typeof window === 'undefined') return null as any
+  if (!_wm) _wm = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      db: { schema: 'white_martins' },
+      auth: { storageKey: 'wm-auth' }  // mesmo storage = mesma sessão
+    }
+  )
+  return _wm
 }
 async function logout() {
   await authClient().auth.signOut()
