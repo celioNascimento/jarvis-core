@@ -1347,7 +1347,7 @@ export default function WMDashboard() {
                     const nome = eq.equipment_model?.nickname || eq.equipment_type
                     const detalhe = [eq.equipment_model?.brand || eq.brand, eq.equipment_model?.model || eq.model].filter(Boolean).join(' ')
                     return (
-                      <div key={eq.id} onClick={() => setAba('fluxo')}
+                      <div key={eq.id}
                         className={`grid grid-cols-[80px_1fr_auto] sm:grid-cols-[80px_1fr_90px_120px_70px_32px] gap-2 sm:gap-3 px-4 sm:px-5 py-3.5 items-center border-b border-gray-50 last:border-0 hover:bg-gray-50 cursor-pointer transition-colors ${i%2!==0?'bg-gray-50/30':''}`}
                         onClick={() => setEquipDetalhe(eq)}>
                         <span className="font-black text-gray-900 text-sm">{eq.asset_number}</span>
