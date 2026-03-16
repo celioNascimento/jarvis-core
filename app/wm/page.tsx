@@ -11,18 +11,29 @@ import {
   Menu, ChevronDown
 } from 'lucide-react'
 
-function db() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { db: { schema: 'white_martins' } }
-  )
-}
+// Um único cliente compartilhado — mantém sessão entre chamadas
+let _client: any = null
+let _dbClient: any = null
+
 function authClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  )
+  if (!_client) {
+    _client = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    )
+  }
+  return _client
+}
+
+function db() {
+  if (!_dbClient) {
+    _dbClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { db: { schema: 'white_martins' } }
+    )
+  }
+  return _dbClient
 }
 async function logout() {
   await authClient().auth.signOut()
@@ -97,10 +108,21 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   const modelSel = models.find(m => m.id === form.model_id)
   const modelsFilt = models.filter(m => !modelSearch || [m.brand, m.model, m.nickname, m.equipment_type].some(v => v?.toLowerCase().includes(modelSearch.toLowerCase())))
 
+  const [salvandoMod, setSalvandoMod] = useState(false)
+  const [modSalvo, setModSalvo] = useState(false)
+
   const salvarMod = async () => {
     if (!novoMod.brand || !novoMod.model) return
-    const { data } = await db().from('equipment_models').insert(novoMod).select().single()
-    if (data) { setModels(p => [...p, data]); setForm(f => ({...f, model_id: data.id})); setShowNovoMod(false) }
+    setSalvandoMod(true)
+    const { data, error } = await db().from('equipment_models').insert(novoMod).select().single()
+    setSalvandoMod(false)
+    if (error) { alert(error.message); return }
+    if (data) {
+      setModels(p => [...p, data])
+      setForm(f => ({...f, model_id: data.id}))
+      setModSalvo(true)
+      setTimeout(() => { setModSalvo(false); setShowNovoMod(false) }, 1000)
+    }
   }
 
   const salvar = async () => {
@@ -167,7 +189,10 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
                   <input value={novoMod.equipment_type} onChange={e => setNovoMod({...novoMod, equipment_type: e.target.value})} className={inp} placeholder="Tipo" />
                   <input value={novoMod.measure_unit} onChange={e => setNovoMod({...novoMod, measure_unit: e.target.value})} className={inp} placeholder="Unidade" />
                 </div>
-                <button onClick={salvarMod} className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest">Salvar</button>
+                <button onClick={salvarMod} disabled={salvandoMod || modSalvo}
+                  className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${modSalvo ? 'bg-green-500 text-white' : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60'}`}>
+                  {modSalvo ? '✓ Modelo salvo!' : salvandoMod ? 'Salvando...' : 'Salvar modelo'}
+                </button>
               </div>
             )}
             {modelSel ? (
