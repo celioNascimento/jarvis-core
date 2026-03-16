@@ -968,7 +968,7 @@ function DrawerEquipamento({ equip, onClose, onUpdated }: { equip: any; onClose:
   useEffect(() => {
     db().from('movements').select('*').eq('equipment_id', equip.id)
       .order('moved_at', { ascending: false })
-      .then(({ data }) => { setHistorico(data || []); setLoading(false) })
+      .then(({ data }: { data: any[] | null }) => { setHistorico(data || []); setLoading(false) })
   }, [equip.id])
 
   const isConcentrador = equip.equipment_category === 'concentrador' || equip.equipment_type?.toLowerCase().includes('concentrador')
