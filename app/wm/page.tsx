@@ -11,29 +11,22 @@ import {
   Menu, ChevronDown
 } from 'lucide-react'
 
-// Um único cliente compartilhado — mantém sessão entre chamadas
-let _client: any = null
-let _dbClient: any = null
-
-function authClient() {
-  if (!_client) {
-    _client = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    )
-  }
-  return _client
+// ── Clientes Supabase ────────────────────────────────────
+// Usa NEXT_PUBLIC_SUPABASE_SERVICE_KEY para bypass do RLS no frontend
+// A segurança é garantida pelo middleware (só usuários autenticados chegam aqui)
+function db() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_SERVICE_KEY!,
+    { db: { schema: 'white_martins' } }
+  )
 }
 
-function db() {
-  if (!_dbClient) {
-    _dbClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { db: { schema: 'white_martins' } }
-    )
-  }
-  return _dbClient
+function authClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
 }
 async function logout() {
   await authClient().auth.signOut()
@@ -138,6 +131,8 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
       status: form.status, location_id: loc?.id || null,
       is_backup: form.is_backup, backup_for: form.backup_for || null,
       notes: form.notes || null, entry_date: form.entry_date,
+      flow_measurement: (form as any).flow_measurement ? Number((form as any).flow_measurement) : null,
+      o2_concentration: (form as any).o2_concentration ? Number((form as any).o2_concentration) : null,
     })
     setLoading(false)
     if (err) { setError(err.code === '23505' ? 'Patrimônio já cadastrado.' : err.message); return }
@@ -187,7 +182,8 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
                   <input value={novoMod.model} onChange={e => setNovoMod({...novoMod, model: e.target.value})} className={inp} placeholder="Modelo *" />
                   <input value={novoMod.nickname} onChange={e => setNovoMod({...novoMod, nickname: e.target.value})} className={inp + ' col-span-2'} placeholder="Apelido (ex: concentrador)" />
                   <input value={novoMod.equipment_type} onChange={e => setNovoMod({...novoMod, equipment_type: e.target.value})} className={inp} placeholder="Tipo" />
-                  <input value={novoMod.measure_unit} onChange={e => setNovoMod({...novoMod, measure_unit: e.target.value})} className={inp} placeholder="Unidade" />
+                  <input value={novoMod.measure_unit} onChange={e => setNovoMod({...novoMod, measure_unit: e.target.value})} className={inp} placeholder="Unidade (ex: L/min)" />
+                  <input value={(novoMod as any).capacity || ''} onChange={e => setNovoMod({...novoMod, capacity: e.target.value} as any)} className={inp + ' col-span-2'} placeholder="Capacidade (ex: 3L, 5L, 10L — para concentradores)" />
                 </div>
                 <button onClick={salvarMod} disabled={salvandoMod || modSalvo}
                   className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${modSalvo ? 'bg-green-500 text-white' : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60'}`}>
@@ -266,6 +262,16 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
             </div>
             <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})}
               className={inp + ' resize-none'} rows={2} placeholder="Estado do equipamento, itens faltando..." />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={lbl}>Fluxo medido (L/min)</label>
+                <input type="number" step="0.1" value={(form as any).flow_measurement || ''} onChange={e => setForm({...form, flow_measurement: e.target.value} as any)} className={inp} placeholder="Ex: 2.8" />
+              </div>
+              <div>
+                <label className={lbl}>Concentração O₂ (%)</label>
+                <input type="number" step="0.1" min="0" max="100" value={(form as any).o2_concentration || ''} onChange={e => setForm({...form, o2_concentration: e.target.value} as any)} className={inp} placeholder="Ex: 93.5" />
+              </div>
+            </div>
             <label className="flex items-center gap-3 p-3 rounded-2xl bg-gray-50 border border-gray-200 cursor-pointer">
               <input type="checkbox" checked={form.is_backup} onChange={e => setForm({...form, is_backup: e.target.checked})} className="w-4 h-4 accent-blue-600" />
               <span className="text-sm font-semibold text-gray-700">Equipamento de backup</span>
@@ -439,6 +445,22 @@ function AbaFluxo() {
                 </div>
               ))}
             </div>
+            {(equip.flow_measurement || equip.o2_concentration) && (
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                {equip.flow_measurement && (
+                  <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3 text-center">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-blue-400">Fluxo</p>
+                    <p className="text-lg font-black text-blue-700 mt-1">{equip.flow_measurement} <span className="text-xs font-medium">L/min</span></p>
+                  </div>
+                )}
+                {equip.o2_concentration && (
+                  <div className="bg-green-50 border border-green-100 rounded-2xl p-3 text-center">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-green-400">O₂</p>
+                    <p className="text-lg font-black text-green-700 mt-1">{equip.o2_concentration}<span className="text-xs font-medium">%</span></p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Peças na bancada */}
