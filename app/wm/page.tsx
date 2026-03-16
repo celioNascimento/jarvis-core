@@ -297,10 +297,10 @@ function PecasEquipamento({ equipId, modelId }: { equipId: string; modelId?: str
       .select('*, compatible_model:equipment_models(brand,model,nickname)')
       .or(`compatible_model_id.is.null${modelId ? `,compatible_model_id.eq.${modelId}` : ''}`)
       .order('category').order('name')
-      .then(({ data }) => {
+      .then(({ data }: { data: any[] | null }) => {
         setPecas(data || [])
         db().from('equipment_part_status').select('spare_part_id,status,notes').eq('equipment_id', equipId)
-          .then(({ data: est }) => {
+          .then(({ data: est }: { data: any[] | null }) => {
             const m: Record<string,string> = {}; const n: Record<string,string> = {}
             ;(est || []).forEach(e => { m[e.spare_part_id] = e.status; n[e.spare_part_id] = e.notes || '' })
             setEstados(m); setNotas(n)
