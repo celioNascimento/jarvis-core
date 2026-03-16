@@ -91,15 +91,47 @@ const inp = "w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-g
 const lbl = "block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5"
 
 // ── Modal Nova Entrada ────────────────────────────────────
+const SENSOR_STATUS: Record<string, string> = {
+  presente:           'Presente',
+  saiu_com_paciente:  'Saiu c/ Paciente',
+  em_outro_cliente:   'Em outro cliente',
+  danificado:         'Danificado',
+  ausente:            'Ausente',
+}
+const FILTER_STATUS: Record<string, {label: string; color: string}> = {
+  ok:               { label: 'OK',              color: 'text-green-600' },
+  meia_vida:        { label: 'Meia Vida',       color: 'text-yellow-600' },
+  necessita_troca:  { label: 'Necessita Troca', color: 'text-red-600' },
+  trocado:          { label: 'Trocado',         color: 'text-blue-600' },
+  sem_estoque:      { label: 'Sem Estoque',     color: 'text-gray-500' },
+}
+
 function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ asset_number: '', serial_number: '', client_number: '', model_id: '', status: 'entrada', location_code: '', is_backup: false, backup_for: '', notes: '', entry_date: new Date().toISOString().slice(0, 10) })
+  const [tipo, setTipo] = useState<'concentrador'|'oximetro'>('concentrador')
+  const [form, setForm] = useState<any>({
+    asset_number: '', serial_number: '', client_number: '',
+    model_id: '', status: 'entrada', location_code: '',
+    notes: '', entry_date: new Date().toISOString().slice(0, 10),
+    // concentrador
+    flow_measurement: '', o2_concentration: '',
+    filter_status: 'ok', filter_last_change: '', filter_next_change: '',
+    cannula_status: 'ok', has_humidifier: false, opi_indicator: false,
+    alarm_status: 'ok',
+    // oxímetro
+    sensor_adult_status: 'presente', sensor_pediatric_status: 'presente',
+    sensor_adult_client: '', sensor_pediatric_client: '',
+    battery_status: 'ok', display_status: 'ok',
+    spo2_reading: '', hr_reading: '',
+  })
   const [models, setModels] = useState<any[]>([])
   const [locations, setLocations] = useState<any[]>([])
   const [modelSearch, setModelSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [showNovoMod, setShowNovoMod] = useState(false)
-  const [novoMod, setNovoMod] = useState({ brand: '', model: '', nickname: '', equipment_type: '', measure_unit: '' })
+  const [novoMod, setNovoMod] = useState({ brand: '', model: '', nickname: '', equipment_type: '', measure_unit: '', capacity: '' })
+  const [salvandoMod, setSalvandoMod] = useState(false)
+  const [modSalvo, setModSalvo] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -109,20 +141,25 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   }, [])
 
   const modelSel = models.find(m => m.id === form.model_id)
-  const modelsFilt = models.filter(m => !modelSearch || [m.brand, m.model, m.nickname, m.equipment_type].some(v => v?.toLowerCase().includes(modelSearch.toLowerCase())))
-
-  const [salvandoMod, setSalvandoMod] = useState(false)
-  const [modSalvo, setModSalvo] = useState(false)
+  const modelsFilt = models.filter(m => {
+    if (!modelSearch) return true
+    const s = modelSearch.toLowerCase()
+    return [m.brand, m.model, m.nickname, m.equipment_type].some(v => v?.toLowerCase().includes(s))
+  })
 
   const salvarMod = async () => {
     if (!novoMod.brand || !novoMod.model) return
     setSalvandoMod(true)
-    const { data, error } = await db().from('equipment_models').insert(novoMod).select().single()
+    const { data, error } = await db().from('equipment_models').insert({
+      ...novoMod,
+      nickname: novoMod.nickname || (tipo === 'concentrador' ? 'Concentrador' : 'Oxímetro'),
+      equipment_type: novoMod.equipment_type || (tipo === 'concentrador' ? 'Concentrador de Oxigênio' : 'Oxímetro de Pulso'),
+    }).select().single()
     setSalvandoMod(false)
     if (error) { alert(error.message); return }
     if (data) {
       setModels(p => [...p, data])
-      setForm(f => ({...f, model_id: data.id}))
+      setForm((f: any) => ({...f, model_id: data.id}))
       setModSalvo(true)
       setTimeout(() => { setModSalvo(false); setShowNovoMod(false) }, 1000)
     }
@@ -130,37 +167,75 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
 
   const salvar = async () => {
     if (!form.asset_number.trim()) { setError('Número de patrimônio obrigatório'); return }
-    setLoading(true)
+    setLoading(true); setError('')
     const loc = locations.find(l => l.code === form.location_code)
     const mod = models.find(m => m.id === form.model_id)
-    const { error: err } = await db().from('equipment').insert({
-      asset_number: form.asset_number.trim(), serial_number: form.serial_number || null,
-      client_number: form.client_number || null, model_id: form.model_id || null,
+    const payload: any = {
+      asset_number: form.asset_number.trim(),
+      serial_number: form.serial_number || null,
+      client_number: form.client_number || null,
+      model_id: form.model_id || null,
       brand: mod?.brand || null, model: mod?.model || null,
-      equipment_type: mod?.equipment_type || null, measure_unit: mod?.measure_unit || null,
-      status: form.status, location_id: loc?.id || null,
-      is_backup: form.is_backup, backup_for: form.backup_for || null,
-      notes: form.notes || null, entry_date: form.entry_date,
-      flow_measurement: (form as any).flow_measurement ? Number((form as any).flow_measurement) : null,
-      o2_concentration: (form as any).o2_concentration ? Number((form as any).o2_concentration) : null,
-    })
+      equipment_type: mod?.equipment_type || (tipo === 'concentrador' ? 'Concentrador de Oxigênio' : 'Oxímetro de Pulso'),
+      measure_unit: mod?.measure_unit || null,
+      equipment_category: tipo,
+      status: form.status,
+      location_id: loc?.id || null,
+      notes: form.notes || null,
+      entry_date: form.entry_date,
+    }
+    if (tipo === 'concentrador') {
+      payload.flow_measurement = form.flow_measurement ? Number(form.flow_measurement) : null
+      payload.o2_concentration = form.o2_concentration ? Number(form.o2_concentration) : null
+      payload.filter_status = form.filter_status
+      payload.filter_last_change = form.filter_last_change || null
+      payload.filter_next_change = form.filter_next_change || null
+      payload.cannula_status = form.cannula_status
+      payload.has_humidifier = form.has_humidifier
+      payload.opi_indicator = form.opi_indicator
+      payload.alarm_status = form.alarm_status
+    } else {
+      payload.sensor_adult_status = form.sensor_adult_status
+      payload.sensor_pediatric_status = form.sensor_pediatric_status
+      payload.sensor_adult_client = form.sensor_adult_client || null
+      payload.sensor_pediatric_client = form.sensor_pediatric_client || null
+      payload.battery_status = form.battery_status
+      payload.display_status = form.display_status
+      payload.spo2_reading = form.spo2_reading ? Number(form.spo2_reading) : null
+      payload.hr_reading = form.hr_reading ? Number(form.hr_reading) : null
+    }
+    const { error: err } = await db().from('equipment').insert(payload)
     setLoading(false)
     if (err) { setError(err.code === '23505' ? 'Patrimônio já cadastrado.' : err.message); return }
     onSaved(); onClose()
   }
 
+  const f = (field: string, val: any) => setForm((p: any) => ({...p, [field]: val}))
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-white w-full sm:max-w-lg sm:rounded-3xl rounded-t-3xl max-h-[92vh] overflow-y-auto">
-        <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-4 flex items-center justify-between rounded-t-3xl z-10">
-          <div>
+      <div className="bg-white w-full sm:max-w-lg sm:rounded-3xl rounded-t-3xl max-h-[94vh] overflow-y-auto">
+
+        {/* Header com tipo */}
+        <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-4 rounded-t-3xl z-10">
+          <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-black text-gray-900">Nova Entrada</h2>
-            <p className="text-xs text-gray-400">Registro de chegada ao laboratório</p>
+            <button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center"><X size={14} /></button>
           </div>
-          <button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center"><X size={14} /></button>
+          {/* Abas de tipo */}
+          <div className="flex gap-2">
+            {([['concentrador','Concentrador O₂'],['oximetro','Oxímetro']] as const).map(([t, label]) => (
+              <button key={t} onClick={() => setTipo(t)}
+                className={`flex-1 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${tipo === t ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
+
         <div className="px-5 py-5 space-y-5">
-          {/* 1. ID */}
+
+          {/* 1. Identificação — igual para todos */}
           <div className="space-y-3">
             <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-400">
               <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] flex items-center justify-center font-black">1</span>
@@ -169,10 +244,10 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
                 <label className={lbl}>Nº Patrimônio *</label>
-                <input autoFocus value={form.asset_number} onChange={e => setForm({...form, asset_number: e.target.value})} className={inp + ' font-black text-base'} placeholder="Ex: 001234" />
+                <input autoFocus value={form.asset_number} onChange={e => f('asset_number', e.target.value)} className={inp + ' font-black text-base'} placeholder="Ex: 001234" />
               </div>
-              <div><label className={lbl}>Série</label><input value={form.serial_number} onChange={e => setForm({...form, serial_number: e.target.value})} className={inp} placeholder="S/N" /></div>
-              <div><label className={lbl}>Nº Cliente</label><input value={form.client_number} onChange={e => setForm({...form, client_number: e.target.value})} className={inp} /></div>
+              <div><label className={lbl}>Série</label><input value={form.serial_number} onChange={e => f('serial_number', e.target.value)} className={inp} placeholder="S/N" /></div>
+              <div><label className={lbl}>Nº Cliente</label><input value={form.client_number} onChange={e => f('client_number', e.target.value)} className={inp} /></div>
             </div>
           </div>
 
@@ -190,13 +265,14 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
                 <div className="grid grid-cols-2 gap-2">
                   <input value={novoMod.brand} onChange={e => setNovoMod({...novoMod, brand: e.target.value})} className={inp} placeholder="Marca *" />
                   <input value={novoMod.model} onChange={e => setNovoMod({...novoMod, model: e.target.value})} className={inp} placeholder="Modelo *" />
-                  <input value={novoMod.nickname} onChange={e => setNovoMod({...novoMod, nickname: e.target.value})} className={inp + ' col-span-2'} placeholder="Apelido (ex: concentrador)" />
-                  <input value={novoMod.equipment_type} onChange={e => setNovoMod({...novoMod, equipment_type: e.target.value})} className={inp} placeholder="Tipo" />
+                  <input value={novoMod.nickname} onChange={e => setNovoMod({...novoMod, nickname: e.target.value})} className={inp + ' col-span-2'} placeholder="Apelido (ex: concentrador 5L)" />
+                  {tipo === 'concentrador' && (
+                    <input value={novoMod.capacity} onChange={e => setNovoMod({...novoMod, capacity: e.target.value})} className={inp} placeholder="Capacidade (ex: 5L, 10L)" />
+                  )}
                   <input value={novoMod.measure_unit} onChange={e => setNovoMod({...novoMod, measure_unit: e.target.value})} className={inp} placeholder="Unidade (ex: L/min)" />
-                  <input value={(novoMod as any).capacity || ''} onChange={e => setNovoMod({...novoMod, capacity: e.target.value} as any)} className={inp + ' col-span-2'} placeholder="Capacidade (ex: 3L, 5L, 10L — para concentradores)" />
                 </div>
                 <button onClick={salvarMod} disabled={salvandoMod || modSalvo}
-                  className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${modSalvo ? 'bg-green-500 text-white' : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60'}`}>
+                  className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${modSalvo ? 'bg-green-500 text-white' : 'bg-blue-600 text-white disabled:opacity-60'}`}>
                   {modSalvo ? '✓ Modelo salvo!' : salvandoMod ? 'Salvando...' : 'Salvar modelo'}
                 </button>
               </div>
@@ -204,8 +280,11 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
             {modelSel ? (
               <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-2xl">
                 <CheckCircle size={14} className="text-green-600 shrink-0" />
-                <div className="flex-1"><p className="text-sm font-black text-green-800">{modelSel.nickname || modelSel.equipment_type}</p><p className="text-[11px] text-green-600">{modelSel.brand} {modelSel.model}{modelSel.measure_unit ? ` · ${modelSel.measure_unit}` : ''}</p></div>
-                <button onClick={() => setForm({...form, model_id: ''})}><X size={12} className="text-green-400" /></button>
+                <div className="flex-1">
+                  <p className="text-sm font-black text-green-800">{modelSel.nickname || modelSel.equipment_type}</p>
+                  <p className="text-[11px] text-green-600">{modelSel.brand} {modelSel.model}{modelSel.capacity ? ` · ${modelSel.capacity}` : ''}{modelSel.measure_unit ? ` · ${modelSel.measure_unit}` : ''}</p>
+                </div>
+                <button onClick={() => f('model_id', '')}><X size={12} className="text-green-400" /></button>
               </div>
             ) : (
               <div className="border border-gray-200 rounded-2xl overflow-hidden">
@@ -216,10 +295,10 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
                 <div className="max-h-32 overflow-y-auto">
                   {modelsFilt.length === 0 ? <p className="p-3 text-xs text-gray-400 text-center">{models.length === 0 ? 'Nenhum modelo.' : 'Sem resultados.'}</p>
                   : modelsFilt.slice(0,12).map(m => (
-                    <button key={m.id} onClick={() => { setForm({...form, model_id: m.id}); setModelSearch('') }}
+                    <button key={m.id} onClick={() => { f('model_id', m.id); setModelSearch('') }}
                       className="w-full px-4 py-2.5 text-left hover:bg-gray-50 flex items-center gap-2 border-b border-gray-50 last:border-0">
                       <span className="text-sm font-bold text-gray-800">{m.nickname || m.equipment_type || '—'}</span>
-                      <span className="text-xs text-gray-400">{m.brand} {m.model}</span>
+                      <span className="text-xs text-gray-400">{m.brand} {m.model}{m.capacity ? ` ${m.capacity}` : ''}</span>
                     </button>
                   ))}
                 </div>
@@ -227,78 +306,201 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
             )}
           </div>
 
-          {/* 3. Destino */}
-          <div className="space-y-2">
-            <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-400">
-              <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] flex items-center justify-center font-black">3</span>
-              Destino Inicial
+          {/* 3. Campos específicos por tipo */}
+          {tipo === 'concentrador' ? (
+            <div className="space-y-4">
+              <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-400">
+                <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] flex items-center justify-center font-black">3</span>
+                Avaliação — Concentrador
+              </p>
+
+              {/* Medições */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Fluxo medido (L/min)</label>
+                  <input type="number" step="0.1" value={form.flow_measurement} onChange={e => f('flow_measurement', e.target.value)} className={inp} placeholder="Ex: 4.8" />
+                </div>
+                <div>
+                  <label className={lbl}>Concentração O₂ (%)</label>
+                  <input type="number" step="0.1" min="0" max="100" value={form.o2_concentration} onChange={e => f('o2_concentration', e.target.value)} className={inp} placeholder="Ex: 93" />
+                </div>
+              </div>
+
+              {/* Filtro */}
+              <div>
+                <label className={lbl}>Filtro de Ar</label>
+                <div className="flex gap-2 flex-wrap mb-2">
+                  {Object.entries(FILTER_STATUS).map(([k, v]) => (
+                    <button key={k} onClick={() => f('filter_status', k)}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${form.filter_status === k ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-500'}`}>
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={lbl}>Última troca</label>
+                    <input type="date" value={form.filter_last_change} onChange={e => f('filter_last_change', e.target.value)} className={inp} />
+                  </div>
+                  <div>
+                    <label className={lbl}>Próxima troca</label>
+                    <input type="date" value={form.filter_next_change} onChange={e => f('filter_next_change', e.target.value)} className={inp} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Cânula */}
+              <div>
+                <label className={lbl}>Cânula / Cateter</label>
+                <div className="flex gap-2 flex-wrap">
+                  {Object.entries(FILTER_STATUS).filter(([k]) => k !== 'sem_estoque').map(([k, v]) => (
+                    <button key={k} onClick={() => f('cannula_status', k)}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${form.cannula_status === k ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-500'}`}>
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Alarme e acessórios */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Alarme</label>
+                  <select value={form.alarm_status} onChange={e => f('alarm_status', e.target.value)} className={inp}>
+                    <option value="ok">OK</option>
+                    <option value="falha">Falha</option>
+                    <option value="nao_testado">Não testado</option>
+                  </select>
+                </div>
+              </div>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={form.has_humidifier} onChange={e => f('has_humidifier', e.target.checked)} className="w-4 h-4 accent-blue-600" />
+                  <span className="text-sm font-semibold text-gray-700">Tem umidificador</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={form.opi_indicator} onChange={e => f('opi_indicator', e.target.checked)} className="w-4 h-4 accent-blue-600" />
+                  <span className="text-sm font-semibold text-gray-700">Tem OPI</span>
+                </label>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-400">
+                <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] flex items-center justify-center font-black">3</span>
+                Avaliação — Oxímetro
+              </p>
+
+              {/* Medições */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>SpO₂ medido (%)</label>
+                  <input type="number" step="0.1" min="0" max="100" value={form.spo2_reading} onChange={e => f('spo2_reading', e.target.value)} className={inp} placeholder="Ex: 98" />
+                </div>
+                <div>
+                  <label className={lbl}>Freq. Cardíaca (bpm)</label>
+                  <input type="number" value={form.hr_reading} onChange={e => f('hr_reading', e.target.value)} className={inp} placeholder="Ex: 72" />
+                </div>
+              </div>
+
+              {/* Sensores */}
+              <div className="space-y-3">
+                <label className={lbl}>Sensor Adulto</label>
+                <div className="flex gap-2 flex-wrap">
+                  {Object.entries(SENSOR_STATUS).map(([k, v]) => (
+                    <button key={k} onClick={() => f('sensor_adult_status', k)}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${form.sensor_adult_status === k ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-500'}`}>
+                      {v}
+                    </button>
+                  ))}
+                </div>
+                {(form.sensor_adult_status === 'saiu_com_paciente' || form.sensor_adult_status === 'em_outro_cliente') && (
+                  <input value={form.sensor_adult_client} onChange={e => f('sensor_adult_client', e.target.value)} className={inp} placeholder="Nº do cliente com o sensor" />
+                )}
+
+                <label className={lbl}>Sensor Pediátrico</label>
+                <div className="flex gap-2 flex-wrap">
+                  {Object.entries(SENSOR_STATUS).map(([k, v]) => (
+                    <button key={k} onClick={() => f('sensor_pediatric_status', k)}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${form.sensor_pediatric_status === k ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-500'}`}>
+                      {v}
+                    </button>
+                  ))}
+                </div>
+                {(form.sensor_pediatric_status === 'saiu_com_paciente' || form.sensor_pediatric_status === 'em_outro_cliente') && (
+                  <input value={form.sensor_pediatric_client} onChange={e => f('sensor_pediatric_client', e.target.value)} className={inp} placeholder="Nº do cliente com o sensor" />
+                )}
+              </div>
+
+              {/* Hardware */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Bateria</label>
+                  <select value={form.battery_status} onChange={e => f('battery_status', e.target.value)} className={inp}>
+                    <option value="ok">OK</option>
+                    <option value="fraca">Fraca</option>
+                    <option value="necessita_troca">Necessita troca</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={lbl}>Display</label>
+                  <select value={form.display_status} onChange={e => f('display_status', e.target.value)} className={inp}>
+                    <option value="ok">OK</option>
+                    <option value="danificado">Danificado</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 4. Destino + Endereço */}
+          <div className="space-y-3">
+            <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-300">
+              <span className="w-4 h-4 rounded-full bg-gray-200 text-gray-500 text-[9px] flex items-center justify-center font-black">4</span>
+              Destino e localização
             </p>
             <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
               {(['entrada','avaliacao_bancada','aguardando_pecas','limpeza','manutencao_externa'] as const).map(s => {
                 const cfg = S[s]; const Icon = cfg.icon; const sel = form.status === s
                 return (
-                  <button key={s} onClick={() => setForm({...form, status: s})}
+                  <button key={s} onClick={() => f('status', s)}
                     style={sel ? { background: cfg.bg, borderColor: cfg.border, color: cfg.color } : {}}
-                    className={`flex flex-col items-center gap-1.5 p-3 rounded-2xl border-2 transition-all ${sel ? '' : 'border-gray-200 text-gray-400 hover:border-gray-300'}`}>
-                    <Icon size={16} /><span className="text-[9px] font-black uppercase leading-tight text-center">{cfg.label}</span>
+                    className={`flex flex-col items-center gap-1 p-2.5 rounded-2xl border-2 transition-all ${sel ? '' : 'border-gray-200 text-gray-400'}`}>
+                    <Icon size={15} /><span className="text-[9px] font-black uppercase leading-tight text-center">{cfg.label}</span>
                   </button>
                 )
               })}
             </div>
-          </div>
-
-          {/* 4. Detalhes */}
-          <div className="space-y-3">
-            <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-300">
-              <span className="w-4 h-4 rounded-full bg-gray-200 text-gray-500 text-[9px] flex items-center justify-center font-black">4</span>
-              Detalhes opcionais
-            </p>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2 sm:col-span-1">
-                <label className={lbl}>Endereço</label>
-                <select value={form.location_code} onChange={e => setForm({...form, location_code: e.target.value})} className={inp}>
-                  <option value="">— Sem endereço —</option>
-                  {['sala_lastro','container','armario','externo'].map(area => (
-                    <optgroup key={area} label={area.replace('_',' ').toUpperCase()}>
-                      {locations.filter(l => l.area === area).map(l => <option key={l.id} value={l.code}>{l.code} — {l.description}</option>)}
-                    </optgroup>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className={lbl}>Data de entrada</label>
-                <input type="date" value={form.entry_date} onChange={e => setForm({...form, entry_date: e.target.value})} className={inp} />
-              </div>
-            </div>
-            <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})}
-              className={inp + ' resize-none'} rows={2} placeholder="Estado do equipamento, itens faltando..." />
+            <select value={form.location_code} onChange={e => f('location_code', e.target.value)} className={inp}>
+              <option value="">— Sem endereço —</option>
+              {['sala_lastro','container','armario','externo'].map(area => (
+                <optgroup key={area} label={area.replace('_',' ').toUpperCase()}>
+                  {locations.filter(l => l.area === area).map(l => <option key={l.id} value={l.code}>{l.code} — {l.description}</option>)}
+                </optgroup>
+              ))}
+            </select>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={lbl}>Fluxo medido (L/min)</label>
-                <input type="number" step="0.1" value={(form as any).flow_measurement || ''} onChange={e => setForm({...form, flow_measurement: e.target.value} as any)} className={inp} placeholder="Ex: 2.8" />
-              </div>
-              <div>
-                <label className={lbl}>Concentração O₂ (%)</label>
-                <input type="number" step="0.1" min="0" max="100" value={(form as any).o2_concentration || ''} onChange={e => setForm({...form, o2_concentration: e.target.value} as any)} className={inp} placeholder="Ex: 93.5" />
+                <label className={lbl}>Data entrada</label>
+                <input type="date" value={form.entry_date} onChange={e => f('entry_date', e.target.value)} className={inp} />
               </div>
             </div>
-            <label className="flex items-center gap-3 p-3 rounded-2xl bg-gray-50 border border-gray-200 cursor-pointer">
-              <input type="checkbox" checked={form.is_backup} onChange={e => setForm({...form, is_backup: e.target.checked})} className="w-4 h-4 accent-blue-600" />
-              <span className="text-sm font-semibold text-gray-700">Equipamento de backup</span>
-            </label>
-            {form.is_backup && <input value={form.backup_for} onChange={e => setForm({...form, backup_for: e.target.value})} className={inp} placeholder="Substitui o ativo nº..." />}
+            <textarea value={form.notes} onChange={e => f('notes', e.target.value)}
+              className={inp + ' resize-none'} rows={2} placeholder="Observações adicionais..." />
           </div>
 
           {error && <div className="flex items-center gap-2 p-3 rounded-xl bg-red-50 border border-red-200"><AlertTriangle size={13} className="text-red-500" /><p className="text-xs text-red-600">{error}</p></div>}
 
-          <button onClick={salvar} disabled={loading} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-60 shadow-lg shadow-blue-100">
-            {loading ? 'Registrando...' : 'Registrar Entrada'}
+          <button onClick={salvar} disabled={loading}
+            className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-60 shadow-lg shadow-blue-100">
+            {loading ? 'Registrando...' : `Registrar ${tipo === 'concentrador' ? 'Concentrador' : 'Oxímetro'}`}
           </button>
         </div>
       </div>
     </div>
   )
 }
+
 
 // ── Peças por Equipamento ─────────────────────────────────
 function PecasEquipamento({ equipId, modelId }: { equipId: string; modelId?: string }) {
@@ -758,6 +960,196 @@ function AbaRelatorios() {
   )
 }
 
+// ── Drawer de Detalhes do Equipamento ────────────────────
+function DrawerEquipamento({ equip, onClose, onUpdated }: { equip: any; onClose: () => void; onUpdated: () => void }) {
+  const [historico, setHistorico] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    db().from('movements').select('*').eq('equipment_id', equip.id)
+      .order('moved_at', { ascending: false })
+      .then(({ data }) => { setHistorico(data || []); setLoading(false) })
+  }, [equip.id])
+
+  const isConcentrador = equip.equipment_category === 'concentrador' || equip.equipment_type?.toLowerCase().includes('concentrador')
+  const isOximetro = equip.equipment_category === 'oximetro' || equip.equipment_type?.toLowerCase().includes('oxímetro') || equip.equipment_type?.toLowerCase().includes('oximetro')
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white w-full max-w-md h-full overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-4 flex items-start justify-between z-10">
+          <div>
+            <p className="text-2xl font-black text-gray-900">{equip.asset_number}</p>
+            <p className="text-sm text-gray-500">{equip.equipment_model?.nickname || equip.equipment_type || '—'}</p>
+            <p className="text-xs text-gray-400">{equip.brand || equip.equipment_model?.brand} {equip.model || equip.equipment_model?.model}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge status={equip.status} />
+            <button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center ml-2"><X size={14} /></button>
+          </div>
+        </div>
+
+        <div className="px-5 py-5 space-y-5">
+
+          {/* Info básica */}
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              ['Série', equip.serial_number || '—'],
+              ['Cliente', equip.client_number || '—'],
+              ['Local', equip.location?.code || '—'],
+            ].map(([l, v]) => (
+              <div key={l} className="bg-gray-50 rounded-2xl p-3 text-center">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">{l}</p>
+                <p className="text-sm font-bold text-gray-700 mt-1 truncate">{v}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Medições */}
+          {(equip.flow_measurement || equip.o2_concentration || equip.spo2_reading || equip.hr_reading) && (
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">Medições</p>
+              <div className="grid grid-cols-2 gap-2">
+                {equip.flow_measurement && (
+                  <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3 text-center">
+                    <p className="text-[9px] font-black uppercase text-blue-400">Fluxo</p>
+                    <p className="text-xl font-black text-blue-700">{equip.flow_measurement} <span className="text-xs">L/min</span></p>
+                  </div>
+                )}
+                {equip.o2_concentration && (
+                  <div className="bg-green-50 border border-green-100 rounded-2xl p-3 text-center">
+                    <p className="text-[9px] font-black uppercase text-green-400">O₂</p>
+                    <p className="text-xl font-black text-green-700">{equip.o2_concentration}<span className="text-xs">%</span></p>
+                  </div>
+                )}
+                {equip.spo2_reading && (
+                  <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3 text-center">
+                    <p className="text-[9px] font-black uppercase text-blue-400">SpO₂</p>
+                    <p className="text-xl font-black text-blue-700">{equip.spo2_reading}<span className="text-xs">%</span></p>
+                  </div>
+                )}
+                {equip.hr_reading && (
+                  <div className="bg-red-50 border border-red-100 rounded-2xl p-3 text-center">
+                    <p className="text-[9px] font-black uppercase text-red-400">FC</p>
+                    <p className="text-xl font-black text-red-700">{equip.hr_reading}<span className="text-xs">bpm</span></p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Concentrador — filtro e acessórios */}
+          {isConcentrador && (
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">Componentes</p>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl">
+                  <span className="text-sm font-bold text-gray-700">Filtro de ar</span>
+                  <span className={`text-xs font-black uppercase ${FILTER_STATUS[equip.filter_status || 'ok']?.color || 'text-gray-500'}`}>
+                    {FILTER_STATUS[equip.filter_status || 'ok']?.label}
+                  </span>
+                </div>
+                {equip.filter_next_change && (
+                  <div className="flex items-center justify-between px-3 py-2 text-xs text-gray-500">
+                    <span>Próxima troca do filtro</span>
+                    <span className="font-bold">{fmtDate(equip.filter_next_change)}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl">
+                  <span className="text-sm font-bold text-gray-700">Cânula</span>
+                  <span className={`text-xs font-black uppercase ${FILTER_STATUS[equip.cannula_status || 'ok']?.color || 'text-gray-500'}`}>
+                    {FILTER_STATUS[equip.cannula_status || 'ok']?.label}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl">
+                  <span className="text-sm font-bold text-gray-700">Alarme</span>
+                  <span className={`text-xs font-black uppercase ${equip.alarm_status === 'ok' ? 'text-green-600' : 'text-red-600'}`}>
+                    {equip.alarm_status === 'ok' ? 'OK' : equip.alarm_status === 'falha' ? 'Falha' : 'Não testado'}
+                  </span>
+                </div>
+                <div className="flex gap-3 px-1">
+                  {equip.has_humidifier && <span className="text-xs text-blue-600 font-bold">✓ Umidificador</span>}
+                  {equip.opi_indicator && <span className="text-xs text-blue-600 font-bold">✓ OPI</span>}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Oxímetro — sensores */}
+          {isOximetro && (
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">Sensores</p>
+              <div className="space-y-2">
+                {[
+                  ['Sensor Adulto', equip.sensor_adult_status, equip.sensor_adult_client],
+                  ['Sensor Pediátrico', equip.sensor_pediatric_status, equip.sensor_pediatric_client],
+                ].map(([label, status, client]) => (
+                  <div key={label as string} className="p-3 bg-gray-50 rounded-2xl">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-bold text-gray-700">{label}</span>
+                      <span className={`text-xs font-black uppercase ${
+                        status === 'presente' ? 'text-green-600' :
+                        status === 'danificado' || status === 'ausente' ? 'text-red-600' : 'text-amber-600'
+                      }`}>
+                        {SENSOR_STATUS[status as string] || status}
+                      </span>
+                    </div>
+                    {client && <p className="text-xs text-gray-400 mt-1">Cliente: {client}</p>}
+                  </div>
+                ))}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl">
+                    <span className="text-xs font-bold text-gray-600">Bateria</span>
+                    <span className={`text-xs font-black ${equip.battery_status === 'ok' ? 'text-green-600' : 'text-red-600'}`}>
+                      {equip.battery_status === 'ok' ? 'OK' : equip.battery_status === 'fraca' ? 'Fraca' : 'Trocar'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl">
+                    <span className="text-xs font-bold text-gray-600">Display</span>
+                    <span className={`text-xs font-black ${equip.display_status === 'ok' ? 'text-green-600' : 'text-red-600'}`}>
+                      {equip.display_status === 'ok' ? 'OK' : 'Danificado'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Histórico */}
+          {!loading && historico.length > 0 && (
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3 flex items-center gap-2">
+                <History size={11} />Histórico
+              </p>
+              <div className="space-y-1.5">
+                {historico.map(m => (
+                  <div key={m.id} className="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0 flex-wrap">
+                    <Badge status={m.from_status} size="sm" />
+                    <ArrowRight size={10} className="text-gray-300 shrink-0" />
+                    <Badge status={m.to_status} size="sm" />
+                    {m.reason && <span className="text-xs text-gray-400 flex-1 min-w-0 truncate">{m.reason}</span>}
+                    <span className="text-[10px] text-gray-300 ml-auto shrink-0">{fmtDate(m.moved_at)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Botão ir para fluxo */}
+          {S[equip.status]?.next.length > 0 && (
+            <button onClick={() => { onClose() }}
+              className="w-full py-3.5 border-2 border-blue-600 text-blue-600 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-50 transition-all flex items-center justify-center gap-2">
+              <ArrowRight size={16} />Movimentar no Fluxo
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Dashboard Principal ───────────────────────────────────
 export default function WMDashboard() {
   const [aba, setAba] = useState<'equipamentos' | 'fluxo' | 'pecas' | 'relatorios'>('equipamentos')
@@ -768,6 +1160,7 @@ export default function WMDashboard() {
   const [filterStatus, setFilterStatus] = useState('todos')
   const [showEntrada, setShowEntrada] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [equipDetalhe, setEquipDetalhe] = useState<any>(null)
 
   const carregar = useCallback(async () => {
     const { data: { session } } = await authClient().auth.getSession()
@@ -948,14 +1341,15 @@ export default function WMDashboard() {
               ) : (
                 <>
                   <div className="hidden sm:grid grid-cols-[80px_1fr_90px_120px_70px_32px] gap-3 px-5 py-2.5 bg-gray-50 border-b border-gray-100">
-                    {['Ativo','Equipamento','Status','Série','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}
+                    {['Ativo','Equipamento','Série','Status','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}
                   </div>
                   {equipFiltrado.map((eq, i) => {
                     const nome = eq.equipment_model?.nickname || eq.equipment_type
                     const detalhe = [eq.equipment_model?.brand || eq.brand, eq.equipment_model?.model || eq.model].filter(Boolean).join(' ')
                     return (
                       <div key={eq.id} onClick={() => setAba('fluxo')}
-                        className={`grid grid-cols-[80px_1fr_auto] sm:grid-cols-[80px_1fr_90px_120px_70px_32px] gap-2 sm:gap-3 px-4 sm:px-5 py-3.5 items-center border-b border-gray-50 last:border-0 hover:bg-gray-50 cursor-pointer transition-colors ${i%2!==0?'bg-gray-50/30':''}`}>
+                        className={`grid grid-cols-[80px_1fr_auto] sm:grid-cols-[80px_1fr_90px_120px_70px_32px] gap-2 sm:gap-3 px-4 sm:px-5 py-3.5 items-center border-b border-gray-50 last:border-0 hover:bg-gray-50 cursor-pointer transition-colors ${i%2!==0?'bg-gray-50/30':''}`}
+                        onClick={() => setEquipDetalhe(eq)}>
                         <span className="font-black text-gray-900 text-sm">{eq.asset_number}</span>
                         <div className="min-w-0">
                           {nome && <p className="text-sm font-bold text-gray-700 truncate">{nome}</p>}
@@ -981,6 +1375,7 @@ export default function WMDashboard() {
       </main>
 
       {showEntrada && <ModalEntrada onClose={() => setShowEntrada(false)} onSaved={carregar} />}
+      {equipDetalhe && <DrawerEquipamento equip={equipDetalhe} onClose={() => setEquipDetalhe(null)} onUpdated={carregar} />}
     </div>
   )
 }
