@@ -35,7 +35,11 @@ export default function WMLogin() {
       setError('Email ou senha incorretos.')
       return
     }
-    router.push('/wm')
+
+    // Redireciona para a página que tentou acessar, ou /wm
+    const params = new URLSearchParams(window.location.search)
+    const redirectTo = params.get('redirectTo') || '/wm'
+    router.push(redirectTo)
     router.refresh()
   }
 
