@@ -142,6 +142,8 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
 
   const modelSel = models.find(m => m.id === form.model_id)
   const modelsFilt = models.filter(m => {
+    // Filtra por categoria do modelo
+    if (m.equipment_category && m.equipment_category !== tipo) return false
     if (!modelSearch) return true
     const s = modelSearch.toLowerCase()
     return [m.brand, m.model, m.nickname, m.equipment_type].some(v => v?.toLowerCase().includes(s))
@@ -248,6 +250,7 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
               </div>
               <div><label className={lbl}>Série</label><input value={form.serial_number} onChange={e => f('serial_number', e.target.value)} className={inp} placeholder="S/N" /></div>
               <div><label className={lbl}>Nº Cliente</label><input value={form.client_number} onChange={e => f('client_number', e.target.value)} className={inp} /></div>
+              <div><label className={lbl}>Nº Lacre</label><input value={form.seal_number || ''} onChange={e => f('seal_number', e.target.value)} className={inp} placeholder="Ex: LC-0012" /></div>
             </div>
           </div>
 
@@ -580,8 +583,8 @@ function PecasEquipamento({ equipId, modelId }: { equipId: string; modelId?: str
 }
 
 // ── Aba Fluxo ─────────────────────────────────────────────
-function AbaFluxo() {
-  const [ativo, setAtivo] = useState('')
+function AbaFluxo({ initialAtivo = '', onMoved }: { initialAtivo?: string; onMoved?: () => void }) {
+  const [ativo, setAtivo] = useState(initialAtivo)
   const [equip, setEquip] = useState<any>(null)
   const [historico, setHistorico] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
@@ -589,6 +592,8 @@ function AbaFluxo() {
   const [motivo, setMotivo] = useState('')
   const [salvando, setSalvando] = useState(false)
   const [notFound, setNotFound] = useState(false)
+
+  useEffect(() => { if (initialAtivo) buscar() }, [initialAtivo])
 
   const buscar = async () => {
     if (!ativo.trim()) return
@@ -614,7 +619,7 @@ function AbaFluxo() {
     const updatedEquip = { ...equip, status: novoStatus }
     setEquip(updatedEquip); setNovoStatus(S[novoStatus]?.next[0] || ''); setMotivo('')
     const { data: mov } = await db().from('movements').select('*').eq('equipment_id', equip.id).order('moved_at', { ascending: false })
-    setHistorico(mov || []); setSalvando(false)
+    setHistorico(mov || []); setSalvando(false); onMoved?.()
   }
 
   return (
@@ -864,6 +869,19 @@ function AbaPecas() {
   )
 }
 
+// ── Export Excel ─────────────────────────────────────────
+function exportExcel(dados: any[], nome: string) {
+  if (!dados.length) return
+  const headers = Object.keys(dados[0]).filter(k => typeof dados[0][k] !== 'object')
+  const rows = dados.map(d => headers.map(h => d[h] ?? '').join('\t')).join('\n')
+  const csv = headers.join('\t') + '\n' + rows
+  const blob = new Blob([csv], { type: 'text/tab-separated-values;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = `${nome}_${new Date().toISOString().slice(0,10)}.xls`
+  a.click(); URL.revokeObjectURL(url)
+}
+
 // ── Aba Relatórios ────────────────────────────────────────
 function AbaRelatorios() {
   const [tipo, setTipo] = useState<string | null>(null)
@@ -919,7 +937,10 @@ function AbaRelatorios() {
         <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-100">
             <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">{dados.length} registro(s)</p>
-            <button onClick={() => window.print()} className="flex items-center gap-1.5 text-xs font-bold text-blue-600"><Download size={13} />PDF</button>
+            <div className="flex items-center gap-3">
+              <button onClick={() => window.print()} className="flex items-center gap-1.5 text-xs font-bold text-blue-600"><Download size={13} />PDF</button>
+              <button onClick={() => exportExcel(dados, tipo || 'relatorio')} className="flex items-center gap-1.5 text-xs font-bold text-green-600"><Download size={13} />Excel</button>
+            </div>
           </div>
           <div className="divide-y divide-gray-50">
             {(tipo === 'por_status' || tipo === 'manutencao' || tipo === 'ag_pecas') && dados.map(eq => (
@@ -961,7 +982,7 @@ function AbaRelatorios() {
 }
 
 // ── Drawer de Detalhes do Equipamento ────────────────────
-function DrawerEquipamento({ equip, onClose, onUpdated }: { equip: any; onClose: () => void; onUpdated: () => void }) {
+function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: any; onClose: () => void; onUpdated: () => void; onGoFluxo: (ativo: string) => void }) {
   const [historico, setHistorico] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -1139,7 +1160,7 @@ function DrawerEquipamento({ equip, onClose, onUpdated }: { equip: any; onClose:
 
           {/* Botão ir para fluxo */}
           {S[equip.status]?.next.length > 0 && (
-            <button onClick={() => { onClose() }}
+            <button onClick={() => onGoFluxo(equip.asset_number)}
               className="w-full py-3.5 border-2 border-blue-600 text-blue-600 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-50 transition-all flex items-center justify-center gap-2">
               <ArrowRight size={16} />Movimentar no Fluxo
             </button>
@@ -1161,6 +1182,7 @@ export default function WMDashboard() {
   const [showEntrada, setShowEntrada] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [equipDetalhe, setEquipDetalhe] = useState<any>(null)
+  const [fluxoAtivo, setFluxoAtivo] = useState('')
 
   const carregar = useCallback(async () => {
     const { data: { session } } = await authClient().auth.getSession()
@@ -1369,13 +1391,17 @@ export default function WMDashboard() {
           </>
         )}
 
-        {aba === 'fluxo' && <AbaFluxo />}
+        {aba === 'fluxo' && <AbaFluxo initialAtivo={fluxoAtivo} onMoved={carregar} />}
         {aba === 'pecas' && <AbaPecas />}
         {aba === 'relatorios' && <AbaRelatorios />}
       </main>
 
       {showEntrada && <ModalEntrada onClose={() => setShowEntrada(false)} onSaved={carregar} />}
-      {equipDetalhe && <DrawerEquipamento equip={equipDetalhe} onClose={() => setEquipDetalhe(null)} onUpdated={carregar} />}
+      {equipDetalhe && <DrawerEquipamento equip={equipDetalhe}
+        onClose={() => setEquipDetalhe(null)}
+        onUpdated={() => { carregar(); setEquipDetalhe(null) }}
+        onGoFluxo={(ativo: string) => { setEquipDetalhe(null); setFluxoAtivo(ativo); setAba('fluxo') }}
+      />}
     </div>
   )
 }
