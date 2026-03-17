@@ -1158,13 +1158,26 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
             </div>
           )}
 
-          {/* Botão ir para fluxo */}
-          {S[equip.status]?.next.length > 0 && (
+          {/* Botões de ação */}
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => window.location.href = `/wm/editar/${equip.id}`}
+              className="py-3 border-2 border-gray-300 text-gray-600 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-gray-50 transition-all">
+              ✏️ Editar
+            </button>
+            <button onClick={() => onGoFluxo(equip.asset_number)}
+              className="py-3 border-2 border-blue-600 text-blue-600 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-blue-50 transition-all flex items-center justify-center gap-1">
+              <ArrowRight size={13} />Fluxo
+            </button>
+          </div>
+
+          {/* Botão ir para fluxo (oculto — mantido para compatibilidade) */}
+          {S[equip.status]?.next.length > 0 && false && (
             <button onClick={() => onGoFluxo(equip.asset_number)}
               className="w-full py-3.5 border-2 border-blue-600 text-blue-600 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-50 transition-all flex items-center justify-center gap-2">
               <ArrowRight size={16} />Movimentar no Fluxo
             </button>
           )}
+
         </div>
       </div>
     </div>
@@ -1230,8 +1243,12 @@ export default function WMDashboard() {
       {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-4 py-3">
-          {/* Logo */}
-          <img src="/logo_wm.png" alt="White Martins" className="h-8 w-auto object-contain shrink-0" />
+          {/* Logo Lev + cliente WM */}
+          <div className="flex items-center gap-3 shrink-0">
+            <img src="/logo_lev.png" alt="Lev" className="h-7 w-auto object-contain" />
+            <div className="w-px h-6 bg-gray-200" />
+            <img src="/logo_wm.png" alt="White Martins" className="h-6 w-auto object-contain opacity-70" />
+          </div>
 
           {/* Abas — no desktop ficam no centro do header */}
           <nav className="hidden sm:flex items-center gap-1 flex-1">
@@ -1304,6 +1321,50 @@ export default function WMDashboard() {
               </div>
             )}
 
+            {/* Cards de ação contextual — guia o usuário */}
+            {equipment.length === 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {[
+                  { icon: Package, color: 'blue', title: 'Registrar entrada', desc: 'Primeiro passo — dê entrada no equipamento ao chegar', action: () => setShowEntrada(true), btn: '+ Nova entrada' },
+                  { icon: Activity, color: 'orange', title: 'Avaliar na bancada', desc: 'Registre fluxo, O₂, filtros e estado de cada peça', action: () => setAba('fluxo'), btn: 'Ir para o Fluxo' },
+                  { icon: Archive, color: 'green', title: 'Enviar para lastro', desc: 'Após limpeza, o equipamento fica disponível para uso', action: () => setAba('fluxo'), btn: 'Movimentar' },
+                ].map((c, i) => {
+                  const Icon = c.icon
+                  const colors: Record<string, string> = { blue: 'bg-blue-50 text-blue-600', orange: 'bg-amber-50 text-amber-600', green: 'bg-green-50 text-green-600' }
+                  const btnColors: Record<string, string> = { blue: 'bg-blue-600 hover:bg-blue-700', orange: 'bg-amber-500 hover:bg-amber-600', green: 'bg-green-600 hover:bg-green-700' }
+                  return (
+                    <div key={i} className="bg-white rounded-3xl border border-gray-200 p-5 space-y-3">
+                      <div className={`w-10 h-10 rounded-2xl flex items-center justify-center ${colors[c.color]}`}>
+                        <Icon size={20} />
+                      </div>
+                      <div>
+                        <p className="font-black text-gray-900 text-sm">{c.title}</p>
+                        <p className="text-xs text-gray-400 mt-1 leading-relaxed">{c.desc}</p>
+                      </div>
+                      <button onClick={c.action} className={`w-full py-2.5 text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 ${btnColors[c.color]}`}>
+                        {c.btn}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="flex gap-3 overflow-x-auto pb-1 scrollbar-hide">
+                {[
+                  stats.fluxo > 0 && { label: `${stats.fluxo} em fluxo`, sub: 'aguardando avaliação', color: 'bg-amber-50 border-amber-200 text-amber-700', action: () => setFilterStatus('entrada') },
+                  stats.ag_pecas > 0 && { label: `${stats.ag_pecas} ag. peças`, sub: 'parados por falta de peça', color: 'bg-yellow-50 border-yellow-200 text-yellow-700', action: () => setFilterStatus('aguardando_pecas') },
+                  stats.manutencao > 0 && { label: `${stats.manutencao} em manutenção`, sub: 'manutenção externa', color: 'bg-red-50 border-red-200 text-red-700', action: () => setFilterStatus('manutencao_externa') },
+                  calVencendo.length > 0 && { label: `${calVencendo.length} calibração`, sub: 'vencendo em 30 dias', color: 'bg-purple-50 border-purple-200 text-purple-700', action: () => setAba('relatorios') },
+                ].filter(Boolean).map((c: any, i) => (
+                  <button key={i} onClick={c.action}
+                    className={`shrink-0 px-4 py-3 rounded-2xl border text-left transition-all hover:shadow-sm active:scale-95 ${c.color}`}>
+                    <p className="font-black text-sm">{c.label}</p>
+                    <p className="text-[10px] mt-0.5 opacity-70">{c.sub}</p>
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Busca + filtros */}
             <div className="space-y-2">
               <div className="relative">
@@ -1328,42 +1389,15 @@ export default function WMDashboard() {
                 <div className="p-12 flex items-center justify-center"><Activity size={22} className="text-blue-500 animate-spin" /></div>
               ) : equipFiltrado.length === 0 ? (
                 <div className="p-8 sm:p-12">
-                  {equipment.length === 0 ? (
-                    <div className="max-w-sm mx-auto text-center space-y-6">
-                      <div className="w-16 h-16 bg-blue-50 rounded-3xl flex items-center justify-center mx-auto">
-                        <Package size={28} className="text-blue-400" />
-                      </div>
-                      <div>
-                        <p className="text-gray-900 font-black text-base">Laboratório vazio</p>
-                        <p className="text-gray-400 text-sm mt-1">Registre o primeiro equipamento para começar o controle.</p>
-                      </div>
-                      <div className="text-left space-y-3">
-                        {[
-                          { n: '1', t: 'Registre a entrada', d: 'Clique em "+ Entrada" e preencha o patrimônio' },
-                          { n: '2', t: 'Avalie na bancada', d: 'Use a aba Fluxo para acompanhar o equipamento' },
-                          { n: '3', t: 'Mova para o lastro', d: 'Após limpeza, o equipamento fica disponível' },
-                        ].map(s => (
-                          <div key={s.n} className="flex items-start gap-3 p-3 bg-gray-50 rounded-2xl">
-                            <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-black flex items-center justify-center shrink-0 mt-0.5">{s.n}</span>
-                            <div><p className="text-sm font-bold text-gray-700">{s.t}</p><p className="text-xs text-gray-400 mt-0.5">{s.d}</p></div>
-                          </div>
-                        ))}
-                      </div>
-                      <button onClick={() => setShowEntrada(true)} className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-700 active:scale-[0.98] transition-all shadow-lg shadow-blue-100">
-                        + Registrar primeiro equipamento
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="text-center space-y-2">
-                      <Search size={24} className="text-gray-300 mx-auto" />
-                      <p className="text-gray-400 text-sm">Nenhum resultado para a busca.</p>
-                    </div>
-                  )}
+                  <div className="text-center space-y-2">
+                    <Search size={24} className="text-gray-300 mx-auto" />
+                    <p className="text-gray-400 text-sm">Nenhum resultado para a busca.</p>
+                  </div>
                 </div>
               ) : (
                 <>
                   <div className="hidden sm:grid grid-cols-[80px_1fr_90px_120px_70px_32px] gap-3 px-5 py-2.5 bg-gray-50 border-b border-gray-100">
-                    {['Ativo','Equipamento','Status','Série','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}
+                    {['Ativo','Equipamento','Série','Status','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}
                   </div>
                   {equipFiltrado.map((eq, i) => {
                     const nome = eq.equipment_model?.nickname || eq.equipment_type
