@@ -154,6 +154,12 @@ export async function POST(req: Request) {
     const assistantName  = userProfile?.assistant_name || 'Lev';
     const userTimezone   = userProfile?.timezone || 'America/Sao_Paulo';
 
+    // --- CORREÇÃO PONTUAL: Impede o Jarvis de receber o texto "Erro" se a API falhar ---
+    const cleanGoogleContext = typeof googleContextBlock === 'string' && googleContextBlock.includes('Erro')
+      ? null
+      : googleContextBlock;
+    // -----------------------------------------------------------------------------------
+
     // Salva telegram_chat_id se ainda não estiver registrado
     if (!userProfile?.telegram_chat_id && chatId) {
       await supabase.from('users')
@@ -337,7 +343,7 @@ export async function POST(req: Request) {
 Você é ${assistantName}, assistente pessoal de ${authorName}.
 Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
 
-${googleContextBlock ? `[AGENDA GOOGLE ATUALIZADA]\n${googleContextBlock}` : ''}
+${cleanGoogleContext ? `[AGENDA GOOGLE ATUALIZADA]\n${cleanGoogleContext}` : ''}
 
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]
 ${truncatedL3}` : ''}
