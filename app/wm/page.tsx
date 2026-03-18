@@ -57,11 +57,11 @@ const S: Record<string, { label: string; short: string; color: string; bg: strin
 }
 
 const PART_STATUS: Record<string, { label: string; color: string; bg: string }> = {
-  novo:            { label: 'Novo',            color: '#14532d', bg: '#f0fdf4' },
-  ok:              { label: 'OK',              color: '#1e3a8a', bg: '#eff6ff' },
-  meia_vida:       { label: 'Meia Vida',       color: '#713f12', bg: '#fefce8' },
+  novo:            { label: 'Novo',             color: '#14532d', bg: '#f0fdf4' },
+  ok:              { label: 'OK',               color: '#1e3a8a', bg: '#eff6ff' },
+  meia_vida:       { label: 'Meia Vida',        color: '#713f12', bg: '#fefce8' },
   necessita_troca: { label: 'Necessita Troca', color: '#7f1d1d', bg: '#fef2f2' },
-  sem_estoque:     { label: 'Sem Estoque',     color: '#374151', bg: '#f3f4f6' },
+  sem_estoque:     { label: 'Sem Estoque',      color: '#374151', bg: '#f3f4f6' },
 }
 
 function Badge({ status, size = 'md' }: { status: string; size?: 'sm' | 'md' }) {
@@ -99,11 +99,11 @@ const SENSOR_STATUS: Record<string, string> = {
   ausente:            'Ausente',
 }
 const FILTER_STATUS: Record<string, {label: string; color: string}> = {
-  ok:               { label: 'OK',              color: 'text-green-600' },
-  meia_vida:        { label: 'Meia Vida',       color: 'text-yellow-600' },
+  ok:               { label: 'OK',               color: 'text-green-600' },
+  meia_vida:        { label: 'Meia Vida',        color: 'text-yellow-600' },
   necessita_troca:  { label: 'Necessita Troca', color: 'text-red-600' },
-  trocado:          { label: 'Trocado',         color: 'text-blue-600' },
-  sem_estoque:      { label: 'Sem Estoque',     color: 'text-gray-500' },
+  trocado:          { label: 'Trocado',          color: 'text-blue-600' },
+  sem_estoque:      { label: 'Sem Estoque',      color: 'text-gray-500' },
 }
 
 function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
@@ -246,7 +246,7 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
                 <label className={lbl}>Nº Patrimônio *</label>
-                <input autoFocus value={form.asset_number} onChange={e => f('asset_number', e.target.value)} className={inp + ' font-black text-base'} placeholder="Ex: 001234" />
+                <input value={form.asset_number} onChange={e => f('asset_number', e.target.value)} className={inp + ' font-black text-base'} placeholder="Ex: 001234" />
               </div>
               <div><label className={lbl}>Série</label><input value={form.serial_number} onChange={e => f('serial_number', e.target.value)} className={inp} placeholder="S/N" /></div>
               <div><label className={lbl}>Nº Cliente</label><input value={form.client_number} onChange={e => f('client_number', e.target.value)} className={inp} /></div>
@@ -631,7 +631,7 @@ function AbaFluxo({ initialAtivo = '', onMoved }: { initialAtivo?: string; onMov
           <div className="relative flex-1">
             <Scan size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
             <input value={ativo} onChange={e => setAtivo(e.target.value)} onKeyDown={e => e.key === 'Enter' && buscar()}
-              className="w-full pl-10 pr-4 py-3 rounded-2xl border border-gray-200 text-base font-black text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none" placeholder="Digite ou escaneie" autoFocus />
+              className="w-full pl-10 pr-4 py-3 rounded-2xl border border-gray-200 text-base font-black text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none" placeholder="Digite ou escaneie" />
           </div>
           <button onClick={buscar} disabled={loading} className="px-5 py-3 bg-blue-600 text-white rounded-2xl font-black text-sm hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-60">
             {loading ? <Activity size={16} className="animate-spin" /> : <ArrowRight size={16} />}
@@ -814,7 +814,7 @@ function AbaPecas() {
         <div className="bg-white border border-blue-200 rounded-2xl p-5 space-y-3">
           <p className="text-[10px] font-black uppercase tracking-widest text-blue-600">Cadastrar peça</p>
           <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2"><label className={lbl}>Nome *</label><input autoFocus value={nova.name} onChange={e => setNova({...nova, name: e.target.value})} className={inp} placeholder="Ex: Filtro de cabeceira EverFlo" /></div>
+            <div className="col-span-2"><label className={lbl}>Nome *</label><input value={nova.name} onChange={e => setNova({...nova, name: e.target.value})} className={inp} placeholder="Ex: Filtro de cabeceira EverFlo" /></div>
             <div><label className={lbl}>Referência</label><input value={nova.reference} onChange={e => setNova({...nova, reference: e.target.value})} className={inp} /></div>
             <div><label className={lbl}>Categoria</label><select value={nova.category} onChange={e => setNova({...nova, category: e.target.value})} className={inp}>{Object.entries(catLabel).map(([k,v]) => <option key={k} value={k}>{v}</option>)}</select></div>
             <div className="col-span-2"><label className={lbl}>Compatível com (vazio = genérico)</label><select value={nova.compatible_model_id} onChange={e => setNova({...nova, compatible_model_id: e.target.value})} className={inp}><option value="">— Genérico —</option>{models.map(m => <option key={m.id} value={m.id}>{m.nickname || ''} {m.brand} {m.model}</option>)}</select></div>
@@ -1322,7 +1322,9 @@ export default function WMDashboard() {
             )}
 
             {/* Cards de ação contextual — guia o usuário */}
-            {equipment.length === 0 ? (
+            {loading ? (
+              <div className="h-32 bg-gray-100 rounded-3xl animate-pulse"></div> // Skeleton segurando o espaço
+            ) : equipment.length === 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {[
                   { icon: Package, color: 'blue', title: 'Registrar entrada', desc: 'Primeiro passo — dê entrada no equipamento ao chegar', action: () => setShowEntrada(true), btn: '+ Nova entrada' },
@@ -1386,7 +1388,7 @@ export default function WMDashboard() {
             {/* Lista */}
             <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
               {loading ? (
-                <div className="p-12 flex items-center justify-center"><Activity size={22} className="text-blue-500 animate-spin" /></div>
+                <div className="min-h-[400px] flex items-center justify-center"><Activity size={22} className="text-blue-500 animate-spin" /></div>
               ) : equipFiltrado.length === 0 ? (
                 <div className="p-8 sm:p-12">
                   <div className="text-center space-y-2">
