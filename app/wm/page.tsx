@@ -12,7 +12,6 @@ import {
 } from 'lucide-react'
 
 // ── Clientes Supabase ────────────────────────────────────
-// Instâncias singleton — compartilham o mesmo storage de sessão
 let _auth: any = null
 let _wm: any = null
 
@@ -33,7 +32,7 @@ function db() {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       db: { schema: 'white_martins' },
-      auth: { storageKey: 'wm-auth' }  // mesmo storage = mesma sessão
+      auth: { storageKey: 'wm-auth' }
     }
   )
   return _wm
@@ -112,12 +111,10 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     asset_number: '', serial_number: '', client_number: '',
     model_id: '', status: 'entrada', location_code: '',
     notes: '', entry_date: new Date().toISOString().slice(0, 10),
-    // concentrador
     flow_measurement: '', o2_concentration: '',
     filter_status: 'ok', filter_last_change: '', filter_next_change: '',
     cannula_status: 'ok', has_humidifier: false, opi_indicator: false,
     alarm_status: 'ok',
-    // oxímetro
     sensor_adult_status: 'presente', sensor_pediatric_status: 'presente',
     sensor_adult_client: '', sensor_pediatric_client: '',
     battery_status: 'ok', display_status: 'ok',
@@ -142,7 +139,6 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
 
   const modelSel = models.find(m => m.id === form.model_id)
   const modelsFilt = models.filter(m => {
-    // Filtra por categoria do modelo
     if (m.equipment_category && m.equipment_category !== tipo) return false
     if (!modelSearch) return true
     const s = modelSearch.toLowerCase()
@@ -236,8 +232,7 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
         </div>
 
         <div className="px-5 py-5 space-y-5">
-
-          {/* 1. Identificação — igual para todos */}
+          {/* 1. Identificação */}
           <div className="space-y-3">
             <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-400">
               <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] flex items-center justify-center font-black">1</span>
@@ -309,15 +304,13 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
             )}
           </div>
 
-          {/* 3. Campos específicos por tipo */}
+          {/* 3. Campos específicos */}
           {tipo === 'concentrador' ? (
             <div className="space-y-4">
               <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-400">
                 <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] flex items-center justify-center font-black">3</span>
                 Avaliação — Concentrador
               </p>
-
-              {/* Medições */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={lbl}>Fluxo medido (L/min)</label>
@@ -328,8 +321,6 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
                   <input type="number" step="0.1" min="0" max="100" value={form.o2_concentration} onChange={e => f('o2_concentration', e.target.value)} className={inp} placeholder="Ex: 93" />
                 </div>
               </div>
-
-              {/* Filtro */}
               <div>
                 <label className={lbl}>Filtro de Ar</label>
                 <div className="flex gap-2 flex-wrap mb-2">
@@ -351,8 +342,6 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
                   </div>
                 </div>
               </div>
-
-              {/* Cânula */}
               <div>
                 <label className={lbl}>Cânula / Cateter</label>
                 <div className="flex gap-2 flex-wrap">
@@ -364,8 +353,6 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
                   ))}
                 </div>
               </div>
-
-              {/* Alarme e acessórios */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={lbl}>Alarme</label>
@@ -393,8 +380,6 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
                 <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] flex items-center justify-center font-black">3</span>
                 Avaliação — Oxímetro
               </p>
-
-              {/* Medições */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={lbl}>SpO₂ medido (%)</label>
@@ -405,8 +390,6 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
                   <input type="number" value={form.hr_reading} onChange={e => f('hr_reading', e.target.value)} className={inp} placeholder="Ex: 72" />
                 </div>
               </div>
-
-              {/* Sensores */}
               <div className="space-y-3">
                 <label className={lbl}>Sensor Adulto</label>
                 <div className="flex gap-2 flex-wrap">
@@ -434,8 +417,6 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
                   <input value={form.sensor_pediatric_client} onChange={e => f('sensor_pediatric_client', e.target.value)} className={inp} placeholder="Nº do cliente com o sensor" />
                 )}
               </div>
-
-              {/* Hardware */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={lbl}>Bateria</label>
@@ -504,8 +485,6 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   )
 }
 
-
-// ── Peças por Equipamento ─────────────────────────────────
 function PecasEquipamento({ equipId, modelId }: { equipId: string; modelId?: string }) {
   const [pecas, setPecas] = useState<any[]>([])
   const [estados, setEstados] = useState<Record<string, string>>({})
@@ -582,7 +561,6 @@ function PecasEquipamento({ equipId, modelId }: { equipId: string; modelId?: str
   )
 }
 
-// ── Aba Fluxo ─────────────────────────────────────────────
 function AbaFluxo({ initialAtivo = '', onMoved }: { initialAtivo?: string; onMoved?: () => void }) {
   const [ativo, setAtivo] = useState(initialAtivo)
   const [equip, setEquip] = useState<any>(null)
@@ -680,10 +658,8 @@ function AbaFluxo({ initialAtivo = '', onMoved }: { initialAtivo?: string; onMov
             )}
           </div>
 
-          {/* Peças na bancada */}
           {equip.status === 'avaliacao_bancada' && <PecasEquipamento equipId={equip.id} modelId={equip.model_id} />}
 
-          {/* Próximo passo */}
           {S[equip.status]?.next.length > 0 && (
             <div className="bg-white rounded-3xl border border-gray-200 p-5 shadow-sm space-y-4">
               <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Próximo passo</p>
@@ -712,7 +688,6 @@ function AbaFluxo({ initialAtivo = '', onMoved }: { initialAtivo?: string; onMov
             </div>
           )}
 
-          {/* Histórico */}
           {historico.length > 0 && (
             <div className="bg-white rounded-3xl border border-gray-200 p-5 shadow-sm">
               <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4 flex items-center gap-2"><History size={11} />Histórico</p>
@@ -735,7 +710,6 @@ function AbaFluxo({ initialAtivo = '', onMoved }: { initialAtivo?: string; onMov
   )
 }
 
-// ── Aba Peças ─────────────────────────────────────────────
 function AbaPecas() {
   const [pecas, setPecas] = useState<any[]>([])
   const [models, setModels] = useState<any[]>([])
@@ -869,7 +843,6 @@ function AbaPecas() {
   )
 }
 
-// ── Export Excel ─────────────────────────────────────────
 function exportExcel(dados: any[], nome: string) {
   if (!dados.length) return
   const headers = Object.keys(dados[0]).filter(k => typeof dados[0][k] !== 'object')
@@ -882,7 +855,6 @@ function exportExcel(dados: any[], nome: string) {
   a.click(); URL.revokeObjectURL(url)
 }
 
-// ── Aba Relatórios ────────────────────────────────────────
 function AbaRelatorios() {
   const [tipo, setTipo] = useState<string | null>(null)
   const [dados, setDados] = useState<any[]>([])
@@ -981,7 +953,6 @@ function AbaRelatorios() {
   )
 }
 
-// ── Drawer de Detalhes do Equipamento ────────────────────
 function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: any; onClose: () => void; onUpdated: () => void; onGoFluxo: (ativo: string) => void }) {
   const [historico, setHistorico] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -999,7 +970,6 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm" onClick={onClose}>
       <div className="bg-white w-full max-w-md h-full overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
 
-        {/* Header */}
         <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-4 flex items-start justify-between z-10">
           <div>
             <p className="text-2xl font-black text-gray-900">{equip.asset_number}</p>
@@ -1013,8 +983,6 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
         </div>
 
         <div className="px-5 py-5 space-y-5">
-
-          {/* Info básica */}
           <div className="grid grid-cols-3 gap-2">
             {[
               ['Série', equip.serial_number || '—'],
@@ -1028,7 +996,6 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
             ))}
           </div>
 
-          {/* Medições */}
           {(equip.flow_measurement || equip.o2_concentration || equip.spo2_reading || equip.hr_reading) && (
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">Medições</p>
@@ -1061,7 +1028,6 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
             </div>
           )}
 
-          {/* Concentrador — filtro e acessórios */}
           {isConcentrador && (
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">Componentes</p>
@@ -1098,7 +1064,6 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
             </div>
           )}
 
-          {/* Oxímetro — sensores */}
           {isOximetro && (
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">Sensores</p>
@@ -1138,7 +1103,6 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
             </div>
           )}
 
-          {/* Histórico */}
           {!loading && historico.length > 0 && (
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3 flex items-center gap-2">
@@ -1158,7 +1122,6 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
             </div>
           )}
 
-          {/* Botões de ação */}
           <div className="grid grid-cols-2 gap-2">
             <button onClick={() => window.location.href = `/wm/editar/${equip.id}`}
               className="py-3 border-2 border-gray-300 text-gray-600 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-gray-50 transition-all">
@@ -1169,15 +1132,6 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
               <ArrowRight size={13} />Fluxo
             </button>
           </div>
-
-          {/* Botão ir para fluxo (oculto — mantido para compatibilidade) */}
-          {S[equip.status]?.next.length > 0 && false && (
-            <button onClick={() => onGoFluxo(equip.asset_number)}
-              className="w-full py-3.5 border-2 border-blue-600 text-blue-600 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-50 transition-all flex items-center justify-center gap-2">
-              <ArrowRight size={16} />Movimentar no Fluxo
-            </button>
-          )}
-
         </div>
       </div>
     </div>
@@ -1192,8 +1146,13 @@ export default function WMDashboard() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('todos')
+  
+  // Novos estados para os Filtros Avançados
+  const [filterBrand, setFilterBrand] = useState('')
+  const [filterModel, setFilterModel] = useState('')
+  const [filterDate, setFilterDate] = useState({ de: '', ate: '' })
+
   const [showEntrada, setShowEntrada] = useState(false)
-  const [menuOpen, setMenuOpen] = useState(false)
   const [equipDetalhe, setEquipDetalhe] = useState<any>(null)
   const [fluxoAtivo, setFluxoAtivo] = useState('')
 
@@ -1224,11 +1183,28 @@ export default function WMDashboard() {
 
   const calVencendo = standards.filter(s => s.next_calibration && Math.floor((new Date(s.next_calibration).getTime() - Date.now()) / 86400000) <= 30)
 
+  // Extrair Marcas e Modelos Únicos
+  const brands = Array.from(new Set(equipment.map(e => e.equipment_model?.brand || e.brand).filter(Boolean))).sort()
+  const models = Array.from(new Set(equipment.filter(e => !filterBrand || (e.equipment_model?.brand || e.brand) === filterBrand).map(e => e.equipment_model?.nickname || e.equipment_model?.model || e.model).filter(Boolean))).sort()
+
   const equipFiltrado = equipment.filter(e => {
     const q = search.toLowerCase()
     const matchSearch = !search || [e.asset_number, e.serial_number, e.brand, e.model, e.equipment_type, e.client_number, e.equipment_model?.nickname].some(v => v?.toLowerCase().includes(q))
-    const matchStatus = filterStatus === 'todos' || e.status === filterStatus
-    return matchSearch && matchStatus
+    
+    // Agora o Em Fluxo filtra corretamente as 4 etapas
+    const matchStatus = filterStatus === 'todos' 
+      ? true 
+      : filterStatus === 'em_fluxo'
+        ? ['entrada','avaliacao_bancada','aguardando_pecas','limpeza'].includes(e.status)
+        : e.status === filterStatus
+
+    // Filtros Avançados
+    const matchBrand = !filterBrand || (e.equipment_model?.brand || e.brand) === filterBrand
+    const matchModel = !filterModel || (e.equipment_model?.nickname || e.equipment_model?.model || e.model) === filterModel
+    const matchDate = (!filterDate.de || (e.entry_date && e.entry_date >= filterDate.de)) && 
+                      (!filterDate.ate || (e.entry_date && e.entry_date <= filterDate.ate))
+
+    return matchSearch && matchStatus && matchBrand && matchModel && matchDate
   })
 
   const ABAS = [
@@ -1240,17 +1216,14 @@ export default function WMDashboard() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-4 py-3">
-          {/* Logo Lev + cliente WM */}
           <div className="flex items-center gap-3 shrink-0">
             <img src="/logo_lev.png" alt="Lev" className="h-7 w-auto object-contain" />
             <div className="w-px h-6 bg-gray-200" />
             <img src="/logo_wm.png" alt="White Martins" className="h-6 w-auto object-contain opacity-70" />
           </div>
 
-          {/* Abas — no desktop ficam no centro do header */}
           <nav className="hidden sm:flex items-center gap-1 flex-1">
             {ABAS.map(a => {
               const Icon = a.icon
@@ -1263,7 +1236,6 @@ export default function WMDashboard() {
             })}
           </nav>
 
-          {/* Ações */}
           <div className="flex items-center gap-2 shrink-0">
             <button onClick={() => setShowEntrada(true)}
               className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition-all shadow-sm">
@@ -1275,7 +1247,6 @@ export default function WMDashboard() {
           </div>
         </div>
 
-        {/* Abas mobile — linha separada com scroll */}
         <div className="sm:hidden flex border-t border-gray-100 overflow-x-auto scrollbar-hide px-2">
           {ABAS.map(a => {
             const Icon = a.icon
@@ -1291,13 +1262,11 @@ export default function WMDashboard() {
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-5 space-y-4">
 
-        {/* ── EQUIPAMENTOS ── */}
         {aba === 'equipamentos' && (
           <>
-            {/* Stats grid responsivo */}
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
               <StatCard label="Total"          value={stats.total}      color="#111827" bg="#ffffff" active={filterStatus==='todos'}             onClick={() => setFilterStatus('todos')} />
-              <StatCard label="Em Fluxo"       value={stats.fluxo}      color="#92400e" bg="#fffbeb" active={filterStatus==='entrada'}           onClick={() => setFilterStatus('entrada')} />
+              <StatCard label="Em Fluxo"       value={stats.fluxo}      color="#92400e" bg="#fffbeb" active={filterStatus==='em_fluxo'}          onClick={() => setFilterStatus('em_fluxo')} />
               <StatCard label="Ag. Peças"      value={stats.ag_pecas}   color="#713f12" bg="#fefce8" active={filterStatus==='aguardando_pecas'}  onClick={() => setFilterStatus('aguardando_pecas')} />
               <StatCard label="Lastro"         value={stats.lastro}     color="#1e3a8a" bg="#eff6ff" active={filterStatus==='lastro'}            onClick={() => setFilterStatus('lastro')} />
               <StatCard label="Backup"         value={stats.backup}     color="#4c1d95" bg="#f5f3ff" active={filterStatus==='backup'}            onClick={() => setFilterStatus('backup')} />
@@ -1306,7 +1275,6 @@ export default function WMDashboard() {
               <StatCard label="Descarte"       value={stats.descarte}   color="#374151" bg="#f9fafb" active={filterStatus==='descarte'}          onClick={() => setFilterStatus('descarte')} />
             </div>
 
-            {/* Alertas */}
             {stats.ag_pecas > 0 && (
               <button onClick={() => setFilterStatus('aguardando_pecas')} className="w-full bg-amber-50 border border-amber-200 rounded-2xl p-3 flex items-center gap-3 hover:bg-amber-100 transition-all">
                 <Clock size={14} className="text-amber-600 shrink-0" />
@@ -1321,9 +1289,8 @@ export default function WMDashboard() {
               </div>
             )}
 
-            {/* Cards de ação contextual — guia o usuário */}
             {loading ? (
-              <div className="h-32 bg-gray-100 rounded-3xl animate-pulse"></div> // Skeleton segurando o espaço
+              <div className="h-32 bg-gray-100 rounded-3xl animate-pulse"></div>
             ) : equipment.length === 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {[
@@ -1353,7 +1320,7 @@ export default function WMDashboard() {
             ) : (
               <div className="flex gap-3 overflow-x-auto pb-1 scrollbar-hide">
                 {[
-                  stats.fluxo > 0 && { label: `${stats.fluxo} em fluxo`, sub: 'aguardando avaliação', color: 'bg-amber-50 border-amber-200 text-amber-700', action: () => setFilterStatus('entrada') },
+                  stats.fluxo > 0 && { label: `${stats.fluxo} em fluxo`, sub: 'aguardando avaliação', color: 'bg-amber-50 border-amber-200 text-amber-700', action: () => setFilterStatus('em_fluxo') },
                   stats.ag_pecas > 0 && { label: `${stats.ag_pecas} ag. peças`, sub: 'parados por falta de peça', color: 'bg-yellow-50 border-yellow-200 text-yellow-700', action: () => setFilterStatus('aguardando_pecas') },
                   stats.manutencao > 0 && { label: `${stats.manutencao} em manutenção`, sub: 'manutenção externa', color: 'bg-red-50 border-red-200 text-red-700', action: () => setFilterStatus('manutencao_externa') },
                   calVencendo.length > 0 && { label: `${calVencendo.length} calibração`, sub: 'vencendo em 30 dias', color: 'bg-purple-50 border-purple-200 text-purple-700', action: () => setAba('relatorios') },
@@ -1367,63 +1334,122 @@ export default function WMDashboard() {
               </div>
             )}
 
-            {/* Busca + filtros */}
-            <div className="space-y-2">
-              <div className="relative">
-                <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input value={search} onChange={e => setSearch(e.target.value)}
-                  placeholder="Buscar ativo, apelido, marca, série..."
-                  className="w-full pl-10 pr-4 py-3 rounded-2xl border border-gray-200 bg-white text-sm text-gray-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none" />
-              </div>
-              <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
-                {[['todos','Todos'], ...Object.entries(S).map(([k,v]) => [k, v.label])].map(([k, v]) => (
-                  <button key={k} onClick={() => setFilterStatus(k)}
-                    className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border shrink-0 ${filterStatus === k ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>
-                    {v}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Lista */}
-            <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
-              {loading ? (
-                <div className="min-h-[400px] flex items-center justify-center"><Activity size={22} className="text-blue-500 animate-spin" /></div>
-              ) : equipFiltrado.length === 0 ? (
-                <div className="p-8 sm:p-12">
-                  <div className="text-center space-y-2">
-                    <Search size={24} className="text-gray-300 mx-auto" />
-                    <p className="text-gray-400 text-sm">Nenhum resultado para a busca.</p>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="hidden sm:grid grid-cols-[80px_1fr_90px_120px_70px_32px] gap-3 px-5 py-2.5 bg-gray-50 border-b border-gray-100">
-                    {['Ativo','Equipamento','Série','Status','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}
-                  </div>
-                  {equipFiltrado.map((eq, i) => {
-                    const nome = eq.equipment_model?.nickname || eq.equipment_type
-                    const detalhe = [eq.equipment_model?.brand || eq.brand, eq.equipment_model?.model || eq.model].filter(Boolean).join(' ')
-                    return (
-                      <div key={eq.id}
-                        className={`grid grid-cols-[80px_1fr_auto] sm:grid-cols-[80px_1fr_90px_120px_70px_32px] gap-2 sm:gap-3 px-4 sm:px-5 py-3.5 items-center border-b border-gray-50 last:border-0 hover:bg-gray-50 cursor-pointer transition-colors ${i%2!==0?'bg-gray-50/30':''}`}
-                        onClick={() => setEquipDetalhe(eq)}>
-                        <span className="font-black text-gray-900 text-sm">{eq.asset_number}</span>
-                        <div className="min-w-0">
-                          {nome && <p className="text-sm font-bold text-gray-700 truncate">{nome}</p>}
-                          {detalhe && <p className="text-[11px] text-gray-400 truncate">{detalhe}</p>}
+            {/* Container Principal: Sidebar Esquerda + Tabela Direita */}
+            <div className="flex flex-col md:flex-row gap-5 items-start mt-4">
+              
+              {/* Sidebar de Filtros Avançados */}
+              <div className="w-full md:w-56 shrink-0 space-y-4">
+                
+                {/* Painel de Detalhamento do Fluxo (Aparece ao clicar em "Em Fluxo") */}
+                {filterStatus === 'em_fluxo' && stats.fluxo > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-2">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 mb-2">Detalhes do Fluxo</p>
+                    {['entrada','avaliacao_bancada','aguardando_pecas','limpeza'].map(st => {
+                      const count = equipment.filter(e => e.status === st).length
+                      if (count === 0) return null
+                      return (
+                        <div key={st} className="flex justify-between items-center text-xs py-1 border-b border-amber-100 last:border-0">
+                          <span className="text-amber-800 font-bold">{S[st].label}</span>
+                          <span className="font-black text-amber-900 bg-amber-200 px-1.5 py-0.5 rounded-md">{count}</span>
                         </div>
-                        <Badge status={eq.status} size="sm" />
-                        <span className="hidden sm:block text-xs text-gray-400 font-mono">{eq.serial_number || '—'}</span>
-                        <div className="hidden sm:flex items-center gap-1"><MapPin size={9} className="text-gray-300 shrink-0" /><span className="text-[11px] font-bold text-gray-500">{eq.location?.code || '—'}</span></div>
-                        <ChevronRight size={13} className="text-gray-300" />
+                      )
+                    })}
+                  </div>
+                )}
+
+                <div className="bg-white rounded-2xl border border-gray-200 p-4 space-y-4">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Filtros Avançados</p>
+                  
+                  <div>
+                    <label className={lbl}>Marca</label>
+                    <select value={filterBrand} onChange={e => { setFilterBrand(e.target.value); setFilterModel('') }} className={inp}>
+                      <option value="">Todas</option>
+                      {brands.map((b: any) => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className={lbl}>Modelo / Apelido</label>
+                    <select value={filterModel} onChange={e => setFilterModel(e.target.value)} className={inp}>
+                      <option value="">Todos</option>
+                      {models.map((m: any) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className={lbl}>Data de Entrada</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input type="date" value={filterDate.de} onChange={e => setFilterDate({...filterDate, de: e.target.value})} className={inp + ' px-2 text-[11px]'} title="De" />
+                      <input type="date" value={filterDate.ate} onChange={e => setFilterDate({...filterDate, ate: e.target.value})} className={inp + ' px-2 text-[11px]'} title="Até" />
+                    </div>
+                  </div>
+
+                  {(filterBrand || filterModel || filterDate.de || filterDate.ate) && (
+                    <button onClick={() => { setFilterBrand(''); setFilterModel(''); setFilterDate({de:'', ate:''}) }} className="w-full py-2 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-red-500 transition-colors">
+                      Limpar Filtros
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Área Principal (Busca + Chips de Status + Tabela) */}
+              <div className="flex-1 min-w-0 space-y-3">
+                <div className="relative">
+                  <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input value={search} onChange={e => setSearch(e.target.value)}
+                    placeholder="Buscar ativo, apelido, marca, série..."
+                    className="w-full pl-10 pr-4 py-3 rounded-2xl border border-gray-200 bg-white text-sm text-gray-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none" />
+                </div>
+                
+                <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+                  {[['todos','Todos'], ['em_fluxo','Em Fluxo'], ...Object.entries(S).map(([k,v]) => [k, v.label])].map(([k, v]) => (
+                    <button key={k} onClick={() => setFilterStatus(k)}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border shrink-0 ${filterStatus === k ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>
+                      {v}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+                  {loading ? (
+                    <div className="min-h-[400px] flex items-center justify-center"><Activity size={22} className="text-blue-500 animate-spin" /></div>
+                  ) : equipFiltrado.length === 0 ? (
+                    <div className="p-8 sm:p-12">
+                      <div className="text-center space-y-2">
+                        <Search size={24} className="text-gray-300 mx-auto" />
+                        <p className="text-gray-400 text-sm">Nenhum resultado para a busca.</p>
                       </div>
-                    )
-                  })}
-                </>
-              )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="hidden sm:grid grid-cols-[80px_1fr_90px_120px_70px_32px] gap-3 px-5 py-2.5 bg-gray-50 border-b border-gray-100">
+                        {['Ativo','Equipamento','Série','Status','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}
+                      </div>
+                      {equipFiltrado.map((eq, i) => {
+                        const nome = eq.equipment_model?.nickname || eq.equipment_type
+                        const detalhe = [eq.equipment_model?.brand || eq.brand, eq.equipment_model?.model || eq.model].filter(Boolean).join(' ')
+                        return (
+                          <div key={eq.id}
+                            className={`grid grid-cols-[80px_1fr_auto] sm:grid-cols-[80px_1fr_90px_120px_70px_32px] gap-2 sm:gap-3 px-4 sm:px-5 py-3.5 items-center border-b border-gray-50 last:border-0 hover:bg-gray-50 cursor-pointer transition-colors ${i%2!==0?'bg-gray-50/30':''}`}
+                            onClick={() => setEquipDetalhe(eq)}>
+                            <span className="font-black text-gray-900 text-sm">{eq.asset_number}</span>
+                            <div className="min-w-0">
+                              {nome && <p className="text-sm font-bold text-gray-700 truncate">{nome}</p>}
+                              {detalhe && <p className="text-[11px] text-gray-400 truncate">{detalhe}</p>}
+                            </div>
+                            <Badge status={eq.status} size="sm" />
+                            <span className="hidden sm:block text-xs text-gray-400 font-mono">{eq.serial_number || '—'}</span>
+                            <div className="hidden sm:flex items-center gap-1"><MapPin size={9} className="text-gray-300 shrink-0" /><span className="text-[11px] font-bold text-gray-500">{eq.location?.code || '—'}</span></div>
+                            <ChevronRight size={13} className="text-gray-300" />
+                          </div>
+                        )
+                      })}
+                    </>
+                  )}
+                </div>
+                <p className="text-center text-[10px] text-gray-400">{equipment.length} equipamento(s) · Londrina</p>
+              </div>
             </div>
-            <p className="text-center text-[10px] text-gray-400">{equipment.length} equipamento(s) · Londrina</p>
           </>
         )}
 
