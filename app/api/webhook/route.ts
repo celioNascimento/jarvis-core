@@ -11,6 +11,7 @@ import {
   reinforceMemory
 } from '@/lib/jarvis';
 import { createOutlookEvent, updateOutlookEvent, getRecentEmails, addEmailKeyword, removeEmailKeyword } from '@/lib/microsoft';
+import { getGoogleContext, createGoogleEvent, updateGoogleEvent, deleteGoogleEvent } from '@/lib/google'; // <-- Import Google adicionado
 import {
   classifyTemporalHorizon,
   truncateByWeight
@@ -109,7 +110,8 @@ export async function POST(req: Request) {
     // ============================================================
     // BUSCA EM PARALELO
     // ============================================================
-    const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult, gapsBlock, principlesResult] = await Promise.all([
+    // <-- Adicionado googleContextBlock no array de desestruturação
+    const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult, gapsBlock, principlesResult, googleContextBlock] = await Promise.all([
       supabase
         .from('users')
         .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone, telegram_chat_id')
@@ -142,7 +144,9 @@ export async function POST(req: Request) {
       supabase
         .from('principles')
         .select('content, category')
-        .order('created_at', { ascending: true })
+        .order('created_at', { ascending: true }),
+        
+      getGoogleContext() // <-- Busca agenda do Google adicionada
     ]);
 
     const userProfile    = userProfileResult.data;
@@ -333,6 +337,8 @@ export async function POST(req: Request) {
 Você é ${assistantName}, assistente pessoal de ${authorName}.
 Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
 
+${googleContextBlock ? `[AGENDA GOOGLE ATUALIZADA]\n${googleContextBlock}` : ''}
+
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]
 ${truncatedL3}` : ''}
 
@@ -399,6 +405,9 @@ REGRAS:
    [SALVAR_EVENTO: título | YYYY-MM-DD | alta|media|baixa | true|false | permanent|recurring_annual|deadline|one_time]
    [AGENDAR: título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
    [ATUALIZAR_EVENTO: busca | título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
+   [AGENDAR_GOOGLE: título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
+   [ATUALIZAR_GOOGLE: busca | título | YYYY-MM-DDTHH:MM:SS-03:00 | minutos]
+   [DELETAR_GOOGLE: busca]
    [LER_EMAILS] — busca emails pelas keywords cadastradas
    [LER_EMAILS: *] — busca os emails mais recentes sem filtro
    [LER_EMAILS: filtro] — busca emails por termo específico (ex: "fatura", "João")
@@ -578,18 +587,38 @@ REGRAS:
       aiReply = aiReply.replace(m[0], '').trim();
     }
 
-    // Google Calendar
+    // Outlook Calendar
     const sMatch = aiReply.match(/\[?AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
     if (sMatch) {
       const res = await createOutlookEvent(sMatch[1].trim(), sMatch[2].trim(), parseInt(sMatch[3]));
-      aiReply = aiReply.replace(sMatch[0], '').trim() + `\n\n🗓️ *Agendado:* ${res}`;
+      aiReply = aiReply.replace(sMatch[0], '').trim() + `\n\n🗓️ *Agendado (Outlook):* ${res}`;
     }
 
     const uMatch = aiReply.match(/\[?ATUALIZAR_EVENTO:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
     if (uMatch) {
       const res = await updateOutlookEvent(uMatch[1].trim(), uMatch[2].trim(), uMatch[3].trim(), parseInt(uMatch[4]));
-      aiReply = aiReply.replace(uMatch[0], '').trim() + `\n\n🗓️ *Atualizado:* ${res}`;
+      aiReply = aiReply.replace(uMatch[0], '').trim() + `\n\n🗓️ *Atualizado (Outlook):* ${res}`;
     }
+
+    // --- INÍCIO INTEGRAÇÃO GOOGLE ---
+    const gMatch = aiReply.match(/\[?AGENDAR_GOOGLE:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
+    if (gMatch) {
+      const res = await createGoogleEvent(gMatch[1].trim(), gMatch[2].trim(), parseInt(gMatch[3]));
+      aiReply = aiReply.replace(gMatch[0], '').trim() + `\n\n🗓️ *Agendado (Google):* ${res}`;
+    }
+
+    const guMatch = aiReply.match(/\[?ATUALIZAR_GOOGLE:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
+    if (guMatch) {
+      const res = await updateGoogleEvent(guMatch[1].trim(), guMatch[2].trim(), guMatch[3].trim(), parseInt(guMatch[4]));
+      aiReply = aiReply.replace(guMatch[0], '').trim() + `\n\n🗓️ *Atualizado (Google):* ${res}`;
+    }
+
+    const gdMatch = aiReply.match(/\[?DELETAR_GOOGLE:\s*(.*?)\]?/i);
+    if (gdMatch) {
+      const res = await deleteGoogleEvent(gdMatch[1].trim());
+      aiReply = aiReply.replace(gdMatch[0], '').trim() + `\n\n🗑️ *Removido (Google):* ${res}`;
+    }
+    // --- FIM INTEGRAÇÃO GOOGLE ---
 
     // Ler emails
     const emailMatch = aiReply.match(/\[LER_EMAILS(?::\s*([^\]]+))?\]/i);
