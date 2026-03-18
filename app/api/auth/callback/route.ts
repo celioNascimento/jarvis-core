@@ -22,12 +22,20 @@ export async function GET(req: Request) {
 
     const data = await response.json();
 
-    // SE O GOOGLE DER ERRO, VAMOS VER O PORQUÊ NA TELA
     if (data.error) {
       return NextResponse.json({ 
         stage: "Erro na troca do Token no Google", 
         error: data.error, 
         description: data.error_description 
+      });
+    }
+
+    // RIGOR: O Google só envia o refresh_token se o login tiver 'prompt=consent'
+    // Se não vier, interrompemos para não sobrescrever o banco com NULL
+    if (!data.refresh_token) {
+      return NextResponse.json({ 
+        success: false, 
+        message: "O Google não enviou um novo Refresh Token. Tente novamente clicando no botão de consentimento." 
       });
     }
 
@@ -37,15 +45,24 @@ export async function GET(req: Request) {
       { db: { schema: 'jarvis' } }
     );
 
+    // UPSERT: Atualiza se a chave existir, insere se não existir.
+    // Forçamos o updated_at para ignorar o valor estático do banco.
     const { error: supaError } = await supabase
       .from('config')
-      .upsert({ key: 'google_refresh_token', value: data.refresh_token });
+      .upsert({ 
+        key: 'google_refresh_token', 
+        value: data.refresh_token,
+        updated_at: new Date().toISOString() 
+      }, { onConflict: 'key' });
 
     if (supaError) {
       return NextResponse.json({ stage: "Erro ao gravar no Supabase", error: supaError.message });
     }
 
-    return NextResponse.json({ success: true, message: "Token gravado! Verifique o Supabase agora." });
+    return NextResponse.json({ 
+      success: true, 
+      message: "Conexão estabelecida! O Jarvis agora tem acesso à sua agenda (Data: " + new Date().toLocaleString('pt-BR') + ")" 
+    });
 
   } catch (error: any) {
     return NextResponse.json({ stage: "Erro Crítico no Servidor", message: error.message });
