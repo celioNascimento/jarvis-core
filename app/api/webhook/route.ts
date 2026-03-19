@@ -12,6 +12,7 @@ import {
 } from '@/lib/jarvis';
 import { createOutlookEvent, updateOutlookEvent, getRecentEmails, addEmailKeyword, removeEmailKeyword } from '@/lib/microsoft';
 import { getGoogleContext, createGoogleEvent, updateGoogleEvent, deleteGoogleEvent } from '@/lib/google'; // <-- Import Google adicionado
+import { checkProximidade } from '@/lib/geo'; // <-- Import Geo adicionado
 import {
   classifyTemporalHorizon,
   truncateByWeight
@@ -105,7 +106,8 @@ export async function POST(req: Request) {
     let locationContext = "";
     if (message?.location) {
       const { latitude, longitude } = message.location;
-      locationContext = `[LOCALIZAÇÃO ATUAL DO CELIO]\nLat: ${latitude}, Lng: ${longitude}\nCidade: Londrina, PR`;
+      // Chamamos o radar passando as coordenadas do Telegram
+      locationContext = await checkProximidade(latitude, longitude); 
       // Preenche messageText caso o envio tenha sido apenas o pino de localização
       if (!messageText) messageText = "[Enviou Localização]"; 
     }
