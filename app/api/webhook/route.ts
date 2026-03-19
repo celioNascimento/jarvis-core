@@ -16,7 +16,7 @@ import {
   getRecentEmails, 
   addEmailKeyword, 
   removeEmailKeyword,
-  getMicrosoftCalendarContext // <-- CORREÇÃO: Import da leitura da agenda adicionado
+  getMicrosoftCalendarContext
 } from '@/lib/microsoft';
 import { getGoogleContext, createGoogleEvent, updateGoogleEvent, deleteGoogleEvent } from '@/lib/google'; 
 import { checkProximidade } from '@/lib/geo'; 
@@ -124,9 +124,8 @@ export async function POST(req: Request) {
     const stringId = String(telegramUserId);
 
     // ============================================================
-    // BUSCA EM PARALELO
+    // BUSCA EM PARALELO (com radar de e-mails Microsoft integrado)
     // ============================================================
-    // <-- CORREÇÃO: microsoftContextBlock adicionado ao array de desestruturação
     const [
       userProfileResult, 
       sessionId, 
@@ -136,7 +135,8 @@ export async function POST(req: Request) {
       gapsBlock, 
       principlesResult, 
       googleContextBlock,
-      microsoftContextBlock // <-- Adicionado
+      microsoftContextBlock,
+      emailRadarBlock // ← CAPACIDADE DE LEITURA DE E-MAILS MICROSOFT (proactive radar com keywords)
     ] = await Promise.all([
       supabase
         .from('users')
@@ -173,7 +173,8 @@ export async function POST(req: Request) {
         .order('created_at', { ascending: true }),
         
       getGoogleContext(),
-      getMicrosoftCalendarContext() // <-- CORREÇÃO: Chamada para ler a agenda adicionada
+      getMicrosoftCalendarContext(),
+      getRecentEmails(undefined, 3, false) // ← Radar proactive: 3 e-mails baseados nas keywords cadastradas
     ]);
 
     const userProfile    = userProfileResult.data;
@@ -189,6 +190,10 @@ export async function POST(req: Request) {
     const cleanMicrosoftContext = typeof microsoftContextBlock === 'string' && microsoftContextBlock.includes('Erro')
       ? null
       : microsoftContextBlock;
+
+    const cleanEmailRadarBlock = typeof emailRadarBlock === 'string' && emailRadarBlock.includes('Erro')
+      ? null
+      : emailRadarBlock;
     // ------------------------------------------------
 
     // Salva telegram_chat_id se ainda não estiver registrado
@@ -256,7 +261,6 @@ export async function POST(req: Request) {
     });
     const pNotes = (personNotesResult.data || []).filter((n: any) => {
       const parts = n.person_name.toLowerCase().split(' ');
-      // Exige match do primeiro nome E que seja uma palavra isolada (não substring)
       return parts.some((p: string) =>
         p.length >= 3 && new RegExp(`\\b${p}\\b`).test(msgLower)
       );
@@ -361,20 +365,17 @@ export async function POST(req: Request) {
     const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
 
     // ============================================================
-    // PROMPT FINAL v1.4
+    // PROMPT FINAL v1.4 + RADAR DE E-MAILS MICROSOFT
     // ============================================================
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
-    // ============================================================
-    // MONTA MESSAGES ESTRUTURADO — como uma instância real
-    // System prompt com contexto + histórico como conversa
-    // ============================================================
     const systemPrompt = `
 Você é ${assistantName}, assistente pessoal de ${authorName}.
 Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
 
 ${cleanGoogleContext ? `[AGENDA GOOGLE ATUALIZADA]\n${cleanGoogleContext}` : ''}
 ${cleanMicrosoftContext ? `[AGENDA OUTLOOK ATUALIZADA]\n${cleanMicrosoftContext}` : ''}
+${cleanEmailRadarBlock ? `[RADAR DE EMAILS RELEVANTES]\n${cleanEmailRadarBlock}` : ''}
 ${locationContext ? `\n${locationContext}` : ''}
 
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]
@@ -660,7 +661,7 @@ REGRAS:
     }
     // --- FIM INTEGRAÇÃO GOOGLE ---
 
-    // Ler emails
+    // Ler emails (gatilho manual — mantém toda a inteligência anterior)
     const emailMatch = aiReply.match(/\[LER_EMAILS(?::\s*([^\]]+))?\]/i);
     if (emailMatch) {
       const filtro = emailMatch[1]?.trim() || undefined;
