@@ -862,7 +862,7 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
       <div className="bg-white w-full max-w-md h-full overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-4 flex items-start justify-between z-10">
           <div><p className="text-2xl font-black text-gray-900">{equip.asset_number}</p><p className="text-sm text-gray-500">{equip.equipment_model?.nickname || equip.equipment_type || '—'}</p><p className="text-xs text-gray-400">{equip.brand || equip.equipment_model?.brand} {equip.model || equip.equipment_model?.model}</p></div>
-          <div className="flex items-center gap-2"><Badge status={equip.status} /><button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center ml-2"><X size={14} /></button></div>
+          <div className="flex items-center gap-2"><Badge status={(equip.status === 'lastro' && equip.is_backup) ? 'backup' : equip.status} /><button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center ml-2"><X size={14} /></button></div>
         </div>
 
         <div className="px-5 py-5 space-y-5">
@@ -928,6 +928,8 @@ export default function WMDashboard() {
   const [filterBrand, setFilterBrand] = useState('')
   const [filterModel, setFilterModel] = useState('')
   const [filterDate, setFilterDate] = useState({ de: '', ate: '' })
+  const [filterLocation, setFilterLocation] = useState('')
+  const [filterZone, setFilterZone] = useState('')
 
   const [showVerificaEntrada, setShowVerificaEntrada] = useState(false)
   const [showEntrada, setShowEntrada] = useState(false)
@@ -961,8 +963,8 @@ export default function WMDashboard() {
     total:      equipment.length,
     fluxo:      equipment.filter(e => ['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].includes(e.status)).length,
     ag_pecas:   equipment.filter(e => e.status === 'aguardando_pecas').length,
-    lastro:     equipment.filter(e => e.status === 'lastro').length,
-    backup:     equipment.filter(e => e.status === 'backup').length,
+    lastro:     equipment.filter(e => e.status === 'lastro' && !e.is_backup).length,
+    backup:     equipment.filter(e => e.status === 'lastro' && e.is_backup === true).length,
     aplicado:   equipment.filter(e => e.status === 'aplicado').length,
     manutencao: equipment.filter(e => e.status === 'manutencao_externa').length,
     descarte:   equipment.filter(e => e.status === 'descarte').length,
@@ -972,15 +974,25 @@ export default function WMDashboard() {
 
   const brands = Array.from(new Set(equipment.map(e => e.brand).filter(Boolean))).sort()
   const models = Array.from(new Set(equipment.filter(e => !filterBrand || e.brand === filterBrand).map(e => e.equipment_model?.nickname || e.equipment_model?.model || e.model).filter(Boolean))).sort()
+  const locations = Array.from(new Set(equipment.map(e => e.location?.code).filter(Boolean))).sort()
 
   const equipFiltrado = equipment.filter(e => {
     const q = search.toLowerCase()
     const matchSearch = !search || [e.asset_number, e.serial_number, e.brand, e.model, e.equipment_type, e.client_number, e.equipment_model?.nickname].some(v => v?.toLowerCase().includes(q))
-    const matchStatus = filterStatus === 'todos' ? true : filterStatus === 'em_fluxo' ? ['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].includes(e.status) : e.status === filterStatus
+    const matchStatus = filterStatus === 'todos' ? true
+      : filterStatus === 'em_fluxo' ? ['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].includes(e.status)
+      : filterStatus === 'backup'  ? (e.status === 'lastro' && e.is_backup === true)
+      : filterStatus === 'lastro'  ? (e.status === 'lastro' && !e.is_backup)
+      : e.status === filterStatus
     const matchBrand = !filterBrand || e.brand === filterBrand
     const matchModel = !filterModel || (e.equipment_model?.nickname || e.equipment_model?.model || e.model) === filterModel
     const matchDate = (!filterDate.de || (e.entry_date && e.entry_date >= filterDate.de)) && (!filterDate.ate || (e.entry_date && e.entry_date <= filterDate.ate))
-    return matchSearch && matchStatus && matchBrand && matchModel && matchDate
+    const matchLocation = !filterLocation || e.location?.code === filterLocation
+    const matchZone = !filterZone
+      || (filterZone === 'backup' && e.is_backup === true)
+      || (filterZone === 'estoque' && !e.is_backup && e.status === 'lastro')
+      || (filterZone === 'bloqueado' && e.is_blocked === true)
+    return matchSearch && matchStatus && matchBrand && matchModel && matchDate && matchLocation && matchZone
   })
 
   const ABAS = [
@@ -1079,8 +1091,10 @@ export default function WMDashboard() {
                   <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Filtros Avançados</p>
                   <div><label className={lbl}>Marca</label><select value={filterBrand} onChange={e => { setFilterBrand(e.target.value); setFilterModel('') }} className={inp}><option value="">Todas</option>{brands.map((b: any) => <option key={b} value={b}>{b}</option>)}</select></div>
                   <div><label className={lbl}>Modelo / Apelido</label><select value={filterModel} onChange={e => setFilterModel(e.target.value)} className={inp}><option value="">Todos</option>{models.map((m: any) => <option key={m} value={m}>{m}</option>)}</select></div>
+                  <div><label className={lbl}>Endereço</label><select value={filterLocation} onChange={e => setFilterLocation(e.target.value)} className={inp}><option value="">Todos</option>{locations.map((l: any) => <option key={l} value={l}>{l}</option>)}</select></div>
+                  <div><label className={lbl}>Zona</label><select value={filterZone} onChange={e => setFilterZone(e.target.value)} className={inp}><option value="">Todas</option><option value="estoque">Estoque</option><option value="backup">Backup</option><option value="bloqueado">Bloqueado</option></select></div>
                   <div><label className={lbl}>Data de Entrada</label><div className="grid grid-cols-2 gap-2"><input type="date" value={filterDate.de} onChange={e => setFilterDate({...filterDate, de: e.target.value})} className={inp + ' px-2 text-[11px]'} title="De" /><input type="date" value={filterDate.ate} onChange={e => setFilterDate({...filterDate, ate: e.target.value})} className={inp + ' px-2 text-[11px]'} title="Até" /></div></div>
-                  {(filterBrand || filterModel || filterDate.de || filterDate.ate) && (<button onClick={() => { setFilterBrand(''); setFilterModel(''); setFilterDate({de:'', ate:''}) }} className="w-full py-2 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-red-500 transition-colors">Limpar Filtros</button>)}
+                  {(filterBrand || filterModel || filterDate.de || filterDate.ate || filterLocation || filterZone) && (<button onClick={() => { setFilterBrand(''); setFilterModel(''); setFilterDate({de:'', ate:''}); setFilterLocation(''); setFilterZone('') }} className="w-full py-2 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-red-500 transition-colors">Limpar Filtros</button>)}
                 </div>
               </div>
 
@@ -1098,6 +1112,7 @@ export default function WMDashboard() {
                       {equipFiltrado.map((eq, i) => {
                         const nome = eq.equipment_model?.nickname || eq.equipment_type
                         const detalhe = [eq.brand, eq.equipment_model?.model || eq.model].filter(Boolean).join(' ')
+                        const badgeStatus = (eq.status === 'lastro' && eq.is_backup) ? 'backup' : eq.status
                         return (
                           <div key={eq.id} className={`grid grid-cols-[80px_1fr_auto] sm:grid-cols-[80px_1fr_90px_120px_70px_32px] gap-2 sm:gap-3 px-4 sm:px-5 py-3.5 items-center border-b border-gray-50 last:border-0 hover:bg-gray-50 cursor-pointer transition-colors ${i%2!==0?'bg-gray-50/30':''}`} onClick={() => setEquipDetalhe(eq)}>
                             <div className="flex items-center gap-1.5">
@@ -1105,7 +1120,7 @@ export default function WMDashboard() {
                                <span className={`font-black text-sm ${eq.is_blocked ? 'text-red-700' : 'text-gray-900'}`}>{eq.asset_number}</span>
                             </div>
                             <div className="min-w-0">{nome && <p className="text-sm font-bold text-gray-700 truncate">{nome}</p>}{detalhe && <p className="text-[11px] text-gray-400 truncate">{detalhe}</p>}</div>
-                            <Badge status={eq.status} size="sm" />
+                            <Badge status={badgeStatus} size="sm" />
                             <span className="hidden sm:block text-xs text-gray-400 font-mono">{eq.serial_number || '—'}</span>
                             <div className="hidden sm:flex items-center gap-1"><MapPin size={9} className="text-gray-300 shrink-0" /><span className="text-[11px] font-bold text-gray-500">{eq.location?.code || '—'}</span></div>
                             <ChevronRight size={13} className="hidden sm:block text-gray-300" />
