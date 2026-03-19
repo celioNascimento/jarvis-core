@@ -89,6 +89,56 @@ const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('pt-BR') : '�
 const inp = "w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-800 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none transition-all font-medium"
 const lbl = "block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5"
 
+// ── Modal de Verificação (Pré-Cadastro) ───────────────────
+function ModalVerificaEntrada({ onClose, onCadastrar }: { onClose: () => void; onCadastrar: (ativo: string) => void }) {
+  const [ativo, setAtivo] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const verificar = async () => {
+    if (!ativo.trim()) { setError('Digite o patrimônio'); return }
+    setLoading(true); setError('')
+    const { data } = await db().from('equipment').select('id').eq('asset_number', ativo.trim()).maybeSingle()
+    setLoading(false)
+    if (data) {
+      window.location.href = `/wm/editar/${data.id}`
+    } else {
+      onCadastrar(ativo.trim())
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-black text-gray-900">Novo Cadastro</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center"><X size={14} /></button>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">Escaneie ou digite o patrimônio para iniciar. Se já existir, iremos para a edição.</p>
+        
+        <div className="relative mb-4">
+          <Scan size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input 
+            autoFocus
+            value={ativo} 
+            onChange={e => setAtivo(e.target.value)} 
+            onKeyDown={e => e.key === 'Enter' && verificar()}
+            className="w-full pl-10 pr-4 py-3 rounded-2xl border border-gray-200 text-base font-black text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none" 
+            placeholder="Nº Patrimônio" 
+          />
+        </div>
+
+        {error && <p className="text-xs text-red-500 font-medium mb-4 text-center">{error}</p>}
+
+        <button onClick={verificar} disabled={loading}
+          className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2">
+          {loading ? <Activity size={16} className="animate-spin" /> : <ArrowRight size={16} />} Continuar
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Modal Nova Entrada ────────────────────────────────────
 const SENSOR_STATUS: Record<string, string> = {
   presente:           'Presente',
@@ -105,10 +155,10 @@ const FILTER_STATUS: Record<string, {label: string; color: string}> = {
   sem_estoque:      { label: 'Sem Estoque',      color: 'text-gray-500' },
 }
 
-function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+function ModalEntrada({ initialAtivo, onClose, onSaved }: { initialAtivo?: string, onClose: () => void; onSaved: () => void }) {
   const [tipo, setTipo] = useState<'concentrador'|'oximetro'>('concentrador')
   const [form, setForm] = useState<any>({
-    asset_number: '', serial_number: '', client_number: '',
+    asset_number: initialAtivo || '', serial_number: '', client_number: '',
     model_id: '', status: 'entrada', location_code: '',
     notes: '', entry_date: new Date().toISOString().slice(0, 10),
     flow_measurement: '', o2_concentration: '',
@@ -122,19 +172,34 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   })
   const [models, setModels] = useState<any[]>([])
   const [locations, setLocations] = useState<any[]>([])
+  const [brands, setBrands] = useState<any[]>([]) // Novo estado para as marcas
   const [modelSearch, setModelSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  
   const [showNovoMod, setShowNovoMod] = useState(false)
-  const [novoMod, setNovoMod] = useState({ brand: '', model: '', nickname: '', equipment_type: '', measure_unit: '', capacity: '' })
+  const [novoMod, setNovoMod] = useState({ brand_id: '', model: '', nickname: '', equipment_type: '', measure_unit: '', capacity: '' })
+  
+  const [showNovaMarca, setShowNovaMarca] = useState(false)
+  const [novaMarcaNome, setNovaMarcaNome] = useState('')
   const [salvandoMod, setSalvandoMod] = useState(false)
   const [modSalvo, setModSalvo] = useState(false)
 
   useEffect(() => {
     Promise.all([
-      db().from('equipment_models').select('*').order('nickname').order('brand'),
-      db().from('locations').select('id,code,area,description').eq('active', true).order('code')
-    ]).then(([m, l]) => { setModels(m.data || []); setLocations(l.data || []) })
+      db().from('equipment_models').select('*, equipment_brands(name)').order('nickname').order('model'),
+      db().from('locations').select('id,code,area,description').eq('active', true).order('code'),
+      db().from('equipment_brands').select('*').order('name') // Busca as marcas
+    ]).then(([m, l, b]) => { 
+      // Formata os modelos para incluir o nome da marca na propriedade brand para manter compatibilidade
+      const formattedModels = (m.data || []).map((mod: any) => ({
+        ...mod,
+        brand: mod.equipment_brands?.name || mod.brand
+      }))
+      setModels(formattedModels); 
+      setLocations(l.data || []);
+      setBrands(b.data || [])
+    })
   }, [])
 
   const modelSel = models.find(m => m.id === form.model_id)
@@ -145,21 +210,49 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     return [m.brand, m.model, m.nickname, m.equipment_type].some(v => v?.toLowerCase().includes(s))
   })
 
+  const salvarMarca = async () => {
+    if (!novaMarcaNome.trim()) return null
+    const { data, error } = await db().from('equipment_brands').insert({ name: novaMarcaNome.trim() }).select().single()
+    if (data) {
+      setBrands(p => [...p, data].sort((a,b) => a.name.localeCompare(b.name)))
+      setShowNovaMarca(false)
+      setNovaMarcaNome('')
+      return data.id
+    }
+    return null
+  }
+
   const salvarMod = async () => {
-    if (!novoMod.brand || !novoMod.model) return
+    if (!novoMod.model) return
+    let brandId = novoMod.brand_id
+    
+    // Se estiver criando uma marca nova no momento
+    if (showNovaMarca && novaMarcaNome) {
+      const newBrandId = await salvarMarca()
+      if (newBrandId) brandId = newBrandId
+    }
+
+    if (!brandId) { alert("Selecione ou crie uma marca."); return }
+
     setSalvandoMod(true)
     const { data, error } = await db().from('equipment_models').insert({
-      ...novoMod,
+      brand_id: brandId,
+      model: novoMod.model,
       nickname: novoMod.nickname || (tipo === 'concentrador' ? 'Concentrador' : 'Oxímetro'),
       equipment_type: novoMod.equipment_type || (tipo === 'concentrador' ? 'Concentrador de Oxigênio' : 'Oxímetro de Pulso'),
-    }).select().single()
+      capacity: novoMod.capacity,
+      measure_unit: novoMod.measure_unit,
+      equipment_category: tipo
+    }).select('*, equipment_brands(name)').single()
+    
     setSalvandoMod(false)
     if (error) { alert(error.message); return }
     if (data) {
-      setModels(p => [...p, data])
+      const formatMod = { ...data, brand: data.equipment_brands?.name }
+      setModels(p => [...p, formatMod])
       setForm((f: any) => ({...f, model_id: data.id}))
       setModSalvo(true)
-      setTimeout(() => { setModSalvo(false); setShowNovoMod(false) }, 1000)
+      setTimeout(() => { setModSalvo(false); setShowNovoMod(false); setNovoMod({ brand_id: '', model: '', nickname: '', equipment_type: '', measure_unit: '', capacity: '' }) }, 1000)
     }
   }
 
@@ -217,7 +310,7 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
         {/* Header com tipo */}
         <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-4 rounded-t-3xl z-10">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-black text-gray-900">Nova Entrada</h2>
+            <h2 className="text-base font-black text-gray-900">Completar Cadastro</h2>
             <button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center"><X size={14} /></button>
           </div>
           {/* Abas de tipo */}
@@ -259,15 +352,35 @@ function ModalEntrada({ onClose, onSaved }: { onClose: () => void; onSaved: () =
               <button onClick={() => setShowNovoMod(!showNovoMod)} className="text-[10px] font-black text-blue-600 flex items-center gap-1"><Plus size={10} />Novo</button>
             </div>
             {showNovoMod && (
-              <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 space-y-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <input value={novoMod.brand} onChange={e => setNovoMod({...novoMod, brand: e.target.value})} className={inp} placeholder="Marca *" />
-                  <input value={novoMod.model} onChange={e => setNovoMod({...novoMod, model: e.target.value})} className={inp} placeholder="Modelo *" />
-                  <input value={novoMod.nickname} onChange={e => setNovoMod({...novoMod, nickname: e.target.value})} className={inp + ' col-span-2'} placeholder="Apelido (ex: concentrador 5L)" />
+              <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  
+                  {/* Seletor de Marca / Nova Marca */}
+                  <div className="col-span-2">
+                    <div className="flex justify-between items-end mb-1">
+                       <label className={lbl + " !mb-0"}>Marca *</label>
+                       {!showNovaMarca && <button onClick={() => setShowNovaMarca(true)} className="text-[9px] text-blue-600 font-bold">+ Cadastrar nova marca</button>}
+                    </div>
+                    {showNovaMarca ? (
+                      <div className="flex gap-2">
+                        <input autoFocus value={novaMarcaNome} onChange={e => setNovaMarcaNome(e.target.value)} className={inp} placeholder="Nome da nova marca..." />
+                        <button onClick={() => {setShowNovaMarca(false); setNovaMarcaNome('')}} className="px-3 rounded-xl border border-blue-200 text-blue-500 bg-white"><X size={14}/></button>
+                      </div>
+                    ) : (
+                      <select value={novoMod.brand_id} onChange={e => setNovoMod({...novoMod, brand_id: e.target.value})} className={inp}>
+                        <option value="">Selecione a marca...</option>
+                        {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                      </select>
+                    )}
+                  </div>
+
+                  <div className="col-span-2"><label className={lbl}>Modelo *</label><input value={novoMod.model} onChange={e => setNovoMod({...novoMod, model: e.target.value})} className={inp} placeholder="Ex: EverFlo" /></div>
+                  <div className="col-span-2"><label className={lbl}>Apelido</label><input value={novoMod.nickname} onChange={e => setNovoMod({...novoMod, nickname: e.target.value})} className={inp} placeholder="Ex: Concentrador Philips 5L" /></div>
+                  
                   {tipo === 'concentrador' && (
-                    <input value={novoMod.capacity} onChange={e => setNovoMod({...novoMod, capacity: e.target.value})} className={inp} placeholder="Capacidade (ex: 5L, 10L)" />
+                    <div><label className={lbl}>Capacidade</label><input value={novoMod.capacity} onChange={e => setNovoMod({...novoMod, capacity: e.target.value})} className={inp} placeholder="Ex: 5L" /></div>
                   )}
-                  <input value={novoMod.measure_unit} onChange={e => setNovoMod({...novoMod, measure_unit: e.target.value})} className={inp} placeholder="Unidade (ex: L/min)" />
+                  <div><label className={lbl}>Unidade</label><input value={novoMod.measure_unit} onChange={e => setNovoMod({...novoMod, measure_unit: e.target.value})} className={inp} placeholder="Ex: L/min" /></div>
                 </div>
                 <button onClick={salvarMod} disabled={salvandoMod || modSalvo}
                   className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${modSalvo ? 'bg-green-500 text-white' : 'bg-blue-600 text-white disabled:opacity-60'}`}>
@@ -698,7 +811,7 @@ function AbaFluxo({ initialAtivo = '', onMoved }: { initialAtivo?: string; onMov
                     <ArrowRight size={10} className="text-gray-300 shrink-0" />
                     <Badge status={m.to_status} size="sm" />
                     {m.reason && <span className="text-xs text-gray-400 flex-1 min-w-0 truncate">{m.reason}</span>}
-                    <span className="text-[10px] text-gray-300 shrink-0 ml-auto">{fmtDate(m.moved_at)}</span>
+                    <span className="text-[10px] text-gray-300 ml-auto">{fmtDate(m.moved_at)}</span>
                   </div>
                 ))}
               </div>
@@ -1152,7 +1265,10 @@ export default function WMDashboard() {
   const [filterModel, setFilterModel] = useState('')
   const [filterDate, setFilterDate] = useState({ de: '', ate: '' })
 
+  const [showVerificaEntrada, setShowVerificaEntrada] = useState(false)
   const [showEntrada, setShowEntrada] = useState(false)
+  const [novoAtivo, setNovoAtivo] = useState('')
+  
   const [equipDetalhe, setEquipDetalhe] = useState<any>(null)
   const [fluxoAtivo, setFluxoAtivo] = useState('')
 
@@ -1161,14 +1277,26 @@ export default function WMDashboard() {
     if (!session) { window.location.href = '/wm/login'; return }
     setLoading(true)
     const [eqRes, stRes] = await Promise.all([
-      db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model)').order('created_at', { ascending: false }),
+      db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model,equipment_brands(name))').order('created_at', { ascending: false }),
       db().from('standards').select('*').order('next_calibration', { ascending: true })
     ])
-    setEquipment(eqRes.data || []); setStandards(stRes.data || [])
+    
+    const formattedEquipment = (eqRes.data || []).map((eq: any) => ({
+      ...eq,
+      brand: eq.equipment_model?.equipment_brands?.name || eq.equipment_model?.brand || eq.brand
+    }))
+
+    setEquipment(formattedEquipment); setStandards(stRes.data || [])
     setLoading(false)
   }, [])
 
   useEffect(() => { carregar() }, [carregar])
+
+  const handleIniciaCadastro = (ativo: string) => {
+    setNovoAtivo(ativo)
+    setShowVerificaEntrada(false)
+    setShowEntrada(true)
+  }
 
   const stats = {
     total:      equipment.length,
@@ -1183,9 +1311,9 @@ export default function WMDashboard() {
 
   const calVencendo = standards.filter(s => s.next_calibration && Math.floor((new Date(s.next_calibration).getTime() - Date.now()) / 86400000) <= 30)
 
-  // Extrair Marcas e Modelos Únicos
-  const brands = Array.from(new Set(equipment.map(e => e.equipment_model?.brand || e.brand).filter(Boolean))).sort()
-  const models = Array.from(new Set(equipment.filter(e => !filterBrand || (e.equipment_model?.brand || e.brand) === filterBrand).map(e => e.equipment_model?.nickname || e.equipment_model?.model || e.model).filter(Boolean))).sort()
+  // Extrair Marcas e Modelos Únicos baseados nos equipamentos já cadastrados
+  const brands = Array.from(new Set(equipment.map(e => e.brand).filter(Boolean))).sort()
+  const models = Array.from(new Set(equipment.filter(e => !filterBrand || e.brand === filterBrand).map(e => e.equipment_model?.nickname || e.equipment_model?.model || e.model).filter(Boolean))).sort()
 
   const equipFiltrado = equipment.filter(e => {
     const q = search.toLowerCase()
@@ -1199,7 +1327,7 @@ export default function WMDashboard() {
         : e.status === filterStatus
 
     // Filtros Avançados
-    const matchBrand = !filterBrand || (e.equipment_model?.brand || e.brand) === filterBrand
+    const matchBrand = !filterBrand || e.brand === filterBrand
     const matchModel = !filterModel || (e.equipment_model?.nickname || e.equipment_model?.model || e.model) === filterModel
     const matchDate = (!filterDate.de || (e.entry_date && e.entry_date >= filterDate.de)) && 
                       (!filterDate.ate || (e.entry_date && e.entry_date <= filterDate.ate))
@@ -1237,9 +1365,9 @@ export default function WMDashboard() {
           </nav>
 
           <div className="flex items-center gap-2 shrink-0">
-            <button onClick={() => setShowEntrada(true)}
+            <button onClick={() => setShowVerificaEntrada(true)}
               className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition-all shadow-sm">
-              <Plus size={14} /><span className="hidden sm:inline">Nova </span>Entrada
+              <Plus size={14} /><span className="hidden sm:inline">Novo </span>Cadastro
             </button>
             <button onClick={logout} title="Sair" className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-all">
               <LogOut size={15} />
@@ -1294,7 +1422,7 @@ export default function WMDashboard() {
             ) : equipment.length === 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {[
-                  { icon: Package, color: 'blue', title: 'Registrar entrada', desc: 'Primeiro passo — dê entrada no equipamento ao chegar', action: () => setShowEntrada(true), btn: '+ Nova entrada' },
+                  { icon: Package, color: 'blue', title: 'Registrar entrada', desc: 'Primeiro passo — dê entrada no equipamento ao chegar', action: () => setShowVerificaEntrada(true), btn: '+ Novo Cadastro' },
                   { icon: Activity, color: 'orange', title: 'Avaliar na bancada', desc: 'Registre fluxo, O₂, filtros e estado de cada peça', action: () => setAba('fluxo'), btn: 'Ir para o Fluxo' },
                   { icon: Archive, color: 'green', title: 'Enviar para lastro', desc: 'Após limpeza, o equipamento fica disponível para uso', action: () => setAba('fluxo'), btn: 'Movimentar' },
                 ].map((c, i) => {
@@ -1427,7 +1555,7 @@ export default function WMDashboard() {
                       </div>
                       {equipFiltrado.map((eq, i) => {
                         const nome = eq.equipment_model?.nickname || eq.equipment_type
-                        const detalhe = [eq.equipment_model?.brand || eq.brand, eq.equipment_model?.model || eq.model].filter(Boolean).join(' ')
+                        const detalhe = [eq.brand, eq.equipment_model?.model || eq.model].filter(Boolean).join(' ')
                         return (
                           <div key={eq.id}
                             className={`grid grid-cols-[80px_1fr_auto] sm:grid-cols-[80px_1fr_90px_120px_70px_32px] gap-2 sm:gap-3 px-4 sm:px-5 py-3.5 items-center border-b border-gray-50 last:border-0 hover:bg-gray-50 cursor-pointer transition-colors ${i%2!==0?'bg-gray-50/30':''}`}
@@ -1458,7 +1586,8 @@ export default function WMDashboard() {
         {aba === 'relatorios' && <AbaRelatorios />}
       </main>
 
-      {showEntrada && <ModalEntrada onClose={() => setShowEntrada(false)} onSaved={carregar} />}
+      {showVerificaEntrada && <ModalVerificaEntrada onClose={() => setShowVerificaEntrada(false)} onCadastrar={handleIniciaCadastro} />}
+      {showEntrada && <ModalEntrada initialAtivo={novoAtivo} onClose={() => setShowEntrada(false)} onSaved={carregar} />}
       {equipDetalhe && <DrawerEquipamento equip={equipDetalhe}
         onClose={() => setEquipDetalhe(null)}
         onUpdated={() => { carregar(); setEquipDetalhe(null) }}
