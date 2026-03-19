@@ -1,7 +1,3 @@
-// app/api/auth/microsoft/callback/route.ts
-// Captura o code do Microsoft OAuth e salva refresh token no banco
-// Manter — será reutilizado para renovar autenticação
-
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
@@ -10,10 +6,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
 );
-
-// DEBUG — remove após confirmar funcionamento
-console.log('[Microsoft/callback] SUPABASE_URL presente:', !!process.env.SUPABASE_URL);
-console.log('[Microsoft/callback] SERVICE_ROLE_KEY presente:', !!process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -28,7 +20,6 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'code ausente' }, { status: 400 });
   }
 
-  // Troca o code pelo refresh token
   const res = await fetch(
     `https://login.microsoftonline.com/${process.env.MICROSOFT_TENANT_ID}/oauth2/v2.0/token`,
     {
@@ -48,21 +39,25 @@ export async function GET(req: Request) {
   const data = await res.json();
 
   if (!data.refresh_token) {
-    console.error('[Microsoft/callback] Resposta completa:', JSON.stringify(data));
     return NextResponse.json({ error: 'refresh_token ausente', data }, { status: 400 });
   }
 
-  // Salva no banco
-  console.log('[Microsoft/callback] refresh_token recebido:', data.refresh_token?.slice(0, 20));
+  // RIGOR TÉCNICO: Upsert garantido com carimbo de tempo
   const { error: upsertError } = await supabase.from('config').upsert(
-    { key: 'microsoft_refresh_token', value: data.refresh_token },
+    { 
+      key: 'microsoft_refresh_token', 
+      value: data.refresh_token,
+      updated_at: new Date().toISOString() 
+    },
     { onConflict: 'key' }
   );
-  console.log('[Microsoft/callback] upsert error:', upsertError ? JSON.stringify(upsertError) : 'OK');
+
+  if (upsertError) {
+    return NextResponse.json({ error: 'Erro no Supabase', detail: upsertError.message }, { status: 500 });
+  }
 
   return NextResponse.json({
     ok: true,
-    message: 'Microsoft conectado com sucesso! Pode fechar esta janela.',
-    scope: data.scope,
+    message: 'Microsoft conectado com sucesso! O Jarvis agora tem acesso ao Outlook.',
   });
 }
