@@ -47,9 +47,9 @@ const S: Record<string, { label: string; short: string; color: string; bg: strin
   entrada:             { label: 'Entrada',        short: 'ENT',  color: '#92400e', bg: '#fffbeb', border: '#fde68a', dot: '#f59e0b', icon: Package,      next: ['avaliacao_bancada'] },
   avaliacao_bancada:   { label: 'Bancada',        short: 'BAN',  color: '#9a3412', bg: '#fff7ed', border: '#fed7aa', dot: '#f97316', icon: Activity,     next: ['limpeza','aguardando_pecas','aguardando_envio','manutencao_externa','descarte'] },
   aguardando_pecas:    { label: 'Ag. Peças',      short: 'PEÇ',  color: '#713f12', bg: '#fefce8', border: '#fef08a', dot: '#eab308', icon: Clock,        next: ['limpeza','aguardando_envio','manutencao_externa','descarte'] },
-  aguardando_envio:    { label: 'Ag. Envio',      short: 'ENV',  color: '#831843', bg: '#fdf2f8', border: '#fbcfe8', dot: '#ec4899', icon: Truck,        next: ['manutencao_externa','descarte'] },
+  aguardando_envio:    { label: 'Ag. Envio Ext.', short: 'ENV',  color: '#831843', bg: '#fdf2f8', border: '#fbcfe8', dot: '#ec4899', icon: Truck,        next: ['manutencao_externa','descarte'] },
   limpeza:             { label: 'Limpeza',        short: 'LIM',  color: '#155e75', bg: '#ecfeff', border: '#a5f3fc', dot: '#06b6d4', icon: Droplets,     next: ['lastro','backup','descarte'] },
-  manutencao_externa:  { label: 'Manutenção',     short: 'MAN',  color: '#7f1d1d', bg: '#fef2f2', border: '#fecaca', dot: '#ef4444', icon: Wrench,       next: ['limpeza','lastro','descarte'] },
+  manutencao_externa:  { label: 'Manut. Externa', short: 'MAN',  color: '#7f1d1d', bg: '#fef2f2', border: '#fecaca', dot: '#ef4444', icon: Wrench,       next: ['limpeza','lastro','descarte'] },
   lastro:              { label: 'Lastro',         short: 'LAS',  color: '#1e3a8a', bg: '#eff6ff', border: '#bfdbfe', dot: '#3b82f6', icon: Archive,      next: ['backup','aplicado','descarte'] },
   backup:              { label: 'Backup',         short: 'BAK',  color: '#4c1d95', bg: '#f5f3ff', border: '#ddd6fe', dot: '#8b5cf6', icon: RotateCcw,    next: ['lastro','aplicado','descarte'] },
   aplicado:            { label: 'Aplicado',       short: 'APL',  color: '#14532d', bg: '#f0fdf4', border: '#bbf7d0', dot: '#22c55e', icon: CheckCircle,  next: ['limpeza','manutencao_externa','descarte'] },
@@ -219,11 +219,13 @@ function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtiv
     }
   }
 
+  // GATILHO DE ABERTURA DE OS
   const salvar = async () => {
     if (!form.asset_number.trim()) { setError('Número de patrimônio obrigatório'); return }
     setLoading(true); setError('')
     const loc = locations.find(l => l.code === form.location_code)
     const mod = models.find(m => m.id === form.model_id)
+    
     const payload: any = {
       asset_number: form.asset_number.trim(), serial_number: form.serial_number || null, client_number: form.client_number || null,
       model_id: form.model_id || null, brand: mod?.brand || null, model: mod?.model || null,
@@ -231,6 +233,7 @@ function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtiv
       measure_unit: mod?.measure_unit || null, equipment_category: tipo, status: form.status, location_id: loc?.id || null,
       notes: form.notes || null, entry_date: form.entry_date,
     }
+    
     if (tipo === 'concentrador') {
       payload.flow_measurement = form.flow_measurement ? Number(form.flow_measurement) : null
       payload.o2_concentration = form.o2_concentration ? Number(form.o2_concentration) : null
@@ -242,10 +245,34 @@ function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtiv
       payload.battery_status = form.battery_status; payload.display_status = form.display_status
       payload.spo2_reading = form.spo2_reading ? Number(form.spo2_reading) : null; payload.hr_reading = form.hr_reading ? Number(form.hr_reading) : null
     }
-    const { error: err } = await db().from('equipment').insert(payload)
+    
+    const { data: equipData, error: err } = await db().from('equipment').insert(payload).select().single()
+    
+    if (err) { 
+      setLoading(false)
+      setError(err.code === '23505' ? 'Patrimônio já cadastrado.' : err.message)
+      return 
+    }
+
+    const { data: osData } = await db().from('service_orders').insert({
+      equipment_id: equipData.id,
+      client_number: form.client_number || null,
+      status: 'aberta'
+    }).select().single()
+
+    if (osData) {
+      await db().from('movements').insert({
+        equipment_id: equipData.id,
+        from_status: 'entrada',
+        to_status: form.status,
+        performed_by: 'Celio',
+        service_order_id: osData.id,
+        client_number: form.client_number || null
+      })
+    }
+
     setLoading(false)
-    if (err) { setError(err.code === '23505' ? 'Patrimônio já cadastrado.' : err.message); return }
-    onToast('Equipamento registrado com sucesso!')
+    onToast('Equipamento e OS registrados com sucesso!')
     onSaved(); onClose()
   }
 
@@ -270,7 +297,6 @@ function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtiv
         </div>
 
         <div className="px-5 py-5 space-y-5">
-          {/* Identificação e Modelo (Resumido para o snippet, mantém a mesma estrutura original) */}
           <div className="space-y-3">
             <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-400"><span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] flex items-center justify-center font-black">1</span> Identificação</p>
             <div className="grid grid-cols-2 gap-3">
@@ -312,7 +338,6 @@ function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtiv
             )}
           </div>
 
-          {/* 3. Avaliação Concentrador / Oximetro */}
           {tipo === 'concentrador' ? (
             <div className="space-y-4">
               <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-400"><span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] flex items-center justify-center font-black">3</span> Avaliação — Concentrador</p>
@@ -463,11 +488,19 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
     setLoading(false)
   }
 
+  // GATILHO DE FECHAMENTO DE OS E MOVIMENTAÇÃO
   const mover = async () => {
     if (!novoStatus || !equip) return
     setSalvando(true)
     
-    // Insere Movimentação com OS e Cliente
+    // 1. Busca a OS aberta deste equipamento
+    const { data: activeOS } = await db().from('service_orders')
+      .select('id')
+      .eq('equipment_id', equip.id)
+      .eq('status', 'aberta')
+      .maybeSingle()
+    
+    // 2. Insere Movimentação amarrada à OS (se existir)
     await db().from('movements').insert({ 
       equipment_id: equip.id, 
       from_status: equip.status, 
@@ -475,14 +508,21 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
       reason: motivo || null, 
       performed_by: 'Celio',
       os_number: osNumber || null,
-      client_number: clientNumber || null
+      client_number: clientNumber || null,
+      service_order_id: activeOS?.id || null
     })
 
-    // Atualiza Equipamento (Status e, se informado, o Cliente Atual)
+    // 3. Atualiza Equipamento
     const payloadUpdate: any = { status: novoStatus }
     if (clientNumber) payloadUpdate.client_number = clientNumber
-
     await db().from('equipment').update(payloadUpdate).eq('id', equip.id)
+    
+    // 4. Gatilho de Fechamento da OS
+    if (activeOS && ['lastro', 'backup', 'descarte'].includes(novoStatus)) {
+      await db().from('service_orders')
+        .update({ status: 'fechada', closed_at: new Date().toISOString() })
+        .eq('id', activeOS.id)
+    }
     
     const updatedEquip = { ...equip, ...payloadUpdate }
     setEquip(updatedEquip); setNovoStatus(S[novoStatus]?.next[0] || ''); setMotivo(''); setOsNumber(''); setClientNumber('')
@@ -664,7 +704,6 @@ function AbaPecas() {
 
   return (
     <div className="space-y-4">
-      {/* ... (mantido código exato da AbaPecas) ... */}
       {criticos.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
           <div className="flex items-center gap-2 mb-2"><AlertTriangle size={14} className="text-red-500" /><p className="text-sm font-black text-red-700">{criticos.length} peça(s) abaixo do mínimo</p></div>
@@ -821,7 +860,6 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
             {[['Série', equip.serial_number || '—'],['Cliente', equip.client_number || '—'],['Local', equip.location?.code || '—'],].map(([l, v]) => (<div key={l as string} className="bg-gray-50 rounded-2xl p-3 text-center"><p className="text-[9px] font-black uppercase tracking-widest text-gray-400">{l}</p><p className="text-sm font-bold text-gray-700 mt-1 truncate">{v}</p></div>))}
           </div>
 
-          {/* ... (Medições e Componentes permanecem iguais) ... */}
           {(equip.flow_measurement || equip.o2_concentration || equip.spo2_reading || equip.hr_reading) && (
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">Medições</p>
@@ -972,7 +1010,7 @@ export default function WMDashboard() {
               <StatCard label="Lastro"         value={stats.lastro}     color="#1e3a8a" bg="#eff6ff" active={filterStatus==='lastro'}            onClick={() => setFilterStatus('lastro')} />
               <StatCard label="Backup"         value={stats.backup}     color="#4c1d95" bg="#f5f3ff" active={filterStatus==='backup'}            onClick={() => setFilterStatus('backup')} />
               <StatCard label="Aplicado"       value={stats.aplicado}   color="#14532d" bg="#f0fdf4" active={filterStatus==='aplicado'}          onClick={() => setFilterStatus('aplicado')} />
-              <StatCard label="Manutenção"     value={stats.manutencao} color="#7f1d1d" bg="#fef2f2" active={filterStatus==='manutencao_externa'} onClick={() => setFilterStatus('manutencao_externa')} />
+              <StatCard label="Manut. Externa" value={stats.manutencao} color="#7f1d1d" bg="#fef2f2" active={filterStatus==='manutencao_externa'} onClick={() => setFilterStatus('manutencao_externa')} />
               <StatCard label="Descarte"       value={stats.descarte}   color="#374151" bg="#f9fafb" active={filterStatus==='descarte'}          onClick={() => setFilterStatus('descarte')} />
             </div>
 
@@ -1002,7 +1040,7 @@ export default function WMDashboard() {
                 {[
                   stats.fluxo > 0 && { label: `${stats.fluxo} em fluxo`, sub: 'aguardando avaliação', color: 'bg-amber-50 border-amber-200 text-amber-700', action: () => setFilterStatus('em_fluxo') },
                   stats.ag_pecas > 0 && { label: `${stats.ag_pecas} ag. peças`, sub: 'parados por falta de peça', color: 'bg-yellow-50 border-yellow-200 text-yellow-700', action: () => setFilterStatus('aguardando_pecas') },
-                  stats.manutencao > 0 && { label: `${stats.manutencao} em manutenção`, sub: 'manutenção externa', color: 'bg-red-50 border-red-200 text-red-700', action: () => setFilterStatus('manutencao_externa') },
+                  stats.manutencao > 0 && { label: `${stats.manutencao} em manut. externa`, sub: 'manutenção externa', color: 'bg-red-50 border-red-200 text-red-700', action: () => setFilterStatus('manutencao_externa') },
                   calVencendo.length > 0 && { label: `${calVencendo.length} calibração`, sub: 'vencendo em 30 dias', color: 'bg-purple-50 border-purple-200 text-purple-700', action: () => setAba('relatorios') },
                 ].filter(Boolean).map((c: any, i) => (
                   <button key={i} onClick={c.action} className={`shrink-0 px-4 py-3 rounded-2xl border text-left transition-all hover:shadow-sm active:scale-95 ${c.color}`}><p className="font-black text-sm">{c.label}</p><p className="text-[10px] mt-0.5 opacity-70">{c.sub}</p></button>
