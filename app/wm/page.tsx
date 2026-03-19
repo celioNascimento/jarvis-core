@@ -140,7 +140,7 @@ function ModalVerificaEntrada({ onClose, onCadastrar }: { onClose: () => void; o
 
 // ── Modal Nova Entrada ────────────────────────────────────
 const SENSOR_STATUS: Record<string, string> = { presente: 'Presente', saiu_com_paciente: 'Saiu c/ Paciente', em_outro_cliente: 'Em outro cliente', danificado: 'Danificado', ausente: 'Ausente' }
-const FILTER_STATUS: Record<string, {label: string; color: string}> = { ok: { label: 'OK', color: 'text-green-600' }, meia_vida: { label: 'Meia Vida', color: 'text-yellow-600' }, necessita_troca: { label: 'Necessita Troca', color: 'text-red-600' }, trocado: { label: 'Trocado', color: 'text-blue-600' }, sem_estoque: { label: 'Sem Estoque', color: 'text-gray-500' } }
+const FILTER_STATUS: Record<string, {label: string; color: string}> = { ok: { label: 'OK', color: 'text-green-600' }, meia_vida: { label: 'Meia Vida', color: 'text-yellow-600' }, necessita_troca: { label: 'Necessita Troca', color: 'text-red-600' }, novo: { label: 'Trocado', color: 'text-blue-600' }, sem_estoque: { label: 'Sem Estoque', color: 'text-gray-500' } }
 
 function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtivo?: string, onClose: () => void; onSaved: () => void; onToast: (msg: string) => void }) {
   const [tipo, setTipo] = useState<'concentrador'|'oximetro'>('concentrador')
@@ -411,7 +411,9 @@ function PecasEquipamento({ equipId, modelId, onToast }: { equipId: string; mode
     setSalvando(true)
     for (const [partId, status] of Object.entries(estados)) {
       await db().from('equipment_part_status').upsert({ equipment_id: equipId, spare_part_id: partId, status, notes: notas[partId] || null }, { onConflict: 'equipment_id,spare_part_id' })
-      if (status === 'novo' || status === 'sem_estoque') {
+      
+      // INTELIGÊNCIA DE ESTOQUE: Só dá baixa se for marcado como 'novo'
+      if (status === 'novo') {
         const p = pecas.find(x => x.id === partId)
         if (p && p.stock_current > 0) await db().from('spare_parts').update({ stock_current: p.stock_current - 1 }).eq('id', partId)
       }
@@ -486,7 +488,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
       setEquip(data); 
       setNovoStatus(S[data.status]?.next[0] || '')
       
-      // Busca OS ativa para preencher os campos se já houver registro parcial
+      // INTELIGÊNCIA: Busca OS ativa para preencher os campos automaticamente
       const { data: activeOS } = await db().from('service_orders')
         .select('os_number, client_number')
         .eq('equipment_id', data.id)
@@ -515,7 +517,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
       .eq('status', 'aberta')
       .maybeSingle()
     
-    // INCORPORAÇÃO DINÂMICA: Atualiza o registro mestre se a OS foi informada agora
+    // INTELIGÊNCIA: Incorporação dinâmica da OS antes de mover
     if (activeOS && osNumber) {
       await db().from('service_orders')
         .update({ os_number: osNumber, client_number: clientNumber || null })
@@ -538,7 +540,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
     if (clientNumber) payloadUpdate.client_number = clientNumber
     await db().from('equipment').update(payloadUpdate).eq('id', equip.id)
     
-    // GATILHO DE FECHAMENTO: Encerra o atendimento ao chegar nos estados finais
+    // GATILHO DE FECHAMENTO: Encerra o atendimento nos estados de saída
     if (activeOS && ['lastro', 'backup', 'descarte'].includes(novoStatus)) {
       await db().from('service_orders')
         .update({ status: 'fechada', closed_at: new Date().toISOString() })
