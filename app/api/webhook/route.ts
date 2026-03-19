@@ -101,6 +101,16 @@ export async function POST(req: Request) {
     const telegramUserId = message?.from?.id;
     const userFirstName = message?.from?.first_name || "Usuário";
 
+    // --- INÍCIO CORREÇÃO CIRÚRGICA: CAPTURA DE LOCALIZAÇÃO TELEGRAM ---
+    let locationContext = "";
+    if (message?.location) {
+      const { latitude, longitude } = message.location;
+      locationContext = `[LOCALIZAÇÃO ATUAL DO CELIO]\nLat: ${latitude}, Lng: ${longitude}\nCidade: Londrina, PR`;
+      // Preenche messageText caso o envio tenha sido apenas o pino de localização
+      if (!messageText) messageText = "[Enviou Localização]"; 
+    }
+    // --- FIM CORREÇÃO CIRÚRGICA ---
+
     if (!messageText || chatId == null || telegramUserId == null) {
       return NextResponse.json({ ok: true });
     }
@@ -344,6 +354,7 @@ Você é ${assistantName}, assistente pessoal de ${authorName}.
 Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
 
 ${cleanGoogleContext ? `[AGENDA GOOGLE ATUALIZADA]\n${cleanGoogleContext}` : ''}
+${locationContext ? `\n${locationContext}` : ''}
 
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]
 ${truncatedL3}` : ''}
@@ -443,6 +454,8 @@ REGRAS:
    - Os gatilhos ficam INVISÍVEIS — nunca aparecem na resposta ao usuário
 
 9. Ao final: [CLASSE: info] ou [CLASSE: noise]
+
+10. LOCALIZAÇÃO: Se [LOCALIZAÇÃO ATUAL DO CELIO] estiver presente, use as coordenadas fornecidas para contextualizar sua resposta. Se estiver próximo a locais conhecidos (como a White Martins ou mercados), mencione-os de forma natural.
 `.trim();
 
     // Busca histórico para montar conversa estruturada
