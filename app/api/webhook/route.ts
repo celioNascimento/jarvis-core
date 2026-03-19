@@ -10,9 +10,16 @@ import {
   clearPendingQuestion,
   reinforceMemory
 } from '@/lib/jarvis';
-import { createOutlookEvent, updateOutlookEvent, getRecentEmails, addEmailKeyword, removeEmailKeyword } from '@/lib/microsoft';
-import { getGoogleContext, createGoogleEvent, updateGoogleEvent, deleteGoogleEvent } from '@/lib/google'; // <-- Import Google adicionado
-import { checkProximidade } from '@/lib/geo'; // <-- Import Geo adicionado
+import { 
+  createOutlookEvent, 
+  updateOutlookEvent, 
+  getRecentEmails, 
+  addEmailKeyword, 
+  removeEmailKeyword,
+  getMicrosoftCalendarContext // <-- CORREÇÃO: Import da leitura da agenda adicionado
+} from '@/lib/microsoft';
+import { getGoogleContext, createGoogleEvent, updateGoogleEvent, deleteGoogleEvent } from '@/lib/google'; 
+import { checkProximidade } from '@/lib/geo'; 
 import {
   classifyTemporalHorizon,
   truncateByWeight
@@ -102,16 +109,13 @@ export async function POST(req: Request) {
     const telegramUserId = message?.from?.id;
     const userFirstName = message?.from?.first_name || "Usuário";
 
-    // --- INÍCIO CORREÇÃO CIRÚRGICA: CAPTURA DE LOCALIZAÇÃO TELEGRAM ---
+    // --- CAPTURA DE LOCALIZAÇÃO TELEGRAM ---
     let locationContext = "";
     if (message?.location) {
       const { latitude, longitude } = message.location;
-      // Chamamos o radar passando as coordenadas do Telegram
       locationContext = await checkProximidade(latitude, longitude); 
-      // Preenche messageText caso o envio tenha sido apenas o pino de localização
       if (!messageText) messageText = "[Enviou Localização]"; 
     }
-    // --- FIM CORREÇÃO CIRÚRGICA ---
 
     if (!messageText || chatId == null || telegramUserId == null) {
       return NextResponse.json({ ok: true });
@@ -122,8 +126,18 @@ export async function POST(req: Request) {
     // ============================================================
     // BUSCA EM PARALELO
     // ============================================================
-    // <-- Adicionado googleContextBlock no array de desestruturação
-    const [userProfileResult, sessionId, eventsResult, ashesResult, onboardingResult, gapsBlock, principlesResult, googleContextBlock] = await Promise.all([
+    // <-- CORREÇÃO: microsoftContextBlock adicionado ao array de desestruturação
+    const [
+      userProfileResult, 
+      sessionId, 
+      eventsResult, 
+      ashesResult, 
+      onboardingResult, 
+      gapsBlock, 
+      principlesResult, 
+      googleContextBlock,
+      microsoftContextBlock // <-- Adicionado
+    ] = await Promise.all([
       supabase
         .from('users')
         .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone, telegram_chat_id')
@@ -158,7 +172,8 @@ export async function POST(req: Request) {
         .select('content, category')
         .order('created_at', { ascending: true }),
         
-      getGoogleContext() // <-- Busca agenda do Google adicionada
+      getGoogleContext(),
+      getMicrosoftCalendarContext() // <-- CORREÇÃO: Chamada para ler a agenda adicionada
     ]);
 
     const userProfile    = userProfileResult.data;
@@ -166,11 +181,15 @@ export async function POST(req: Request) {
     const assistantName  = userProfile?.assistant_name || 'Lev';
     const userTimezone   = userProfile?.timezone || 'America/Sao_Paulo';
 
-    // --- CORREÇÃO PONTUAL: Impede o Jarvis de receber o texto "Erro" se a API falhar ---
+    // --- TRATAMENTO DE ERROS SILENCIOSOS NAS APIS ---
     const cleanGoogleContext = typeof googleContextBlock === 'string' && googleContextBlock.includes('Erro')
       ? null
       : googleContextBlock;
-    // -----------------------------------------------------------------------------------
+      
+    const cleanMicrosoftContext = typeof microsoftContextBlock === 'string' && microsoftContextBlock.includes('Erro')
+      ? null
+      : microsoftContextBlock;
+    // ------------------------------------------------
 
     // Salva telegram_chat_id se ainda não estiver registrado
     if (!userProfile?.telegram_chat_id && chatId) {
@@ -238,7 +257,6 @@ export async function POST(req: Request) {
     const pNotes = (personNotesResult.data || []).filter((n: any) => {
       const parts = n.person_name.toLowerCase().split(' ');
       // Exige match do primeiro nome E que seja uma palavra isolada (não substring)
-      // "Carlos" bate em "Carlos foi lá" mas não em "Carlosinho"
       return parts.some((p: string) =>
         p.length >= 3 && new RegExp(`\\b${p}\\b`).test(msgLower)
       );
@@ -356,6 +374,7 @@ Você é ${assistantName}, assistente pessoal de ${authorName}.
 Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
 
 ${cleanGoogleContext ? `[AGENDA GOOGLE ATUALIZADA]\n${cleanGoogleContext}` : ''}
+${cleanMicrosoftContext ? `[AGENDA OUTLOOK ATUALIZADA]\n${cleanMicrosoftContext}` : ''}
 ${locationContext ? `\n${locationContext}` : ''}
 
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]
@@ -457,7 +476,7 @@ REGRAS:
 
 9. Ao final: [CLASSE: info] ou [CLASSE: noise]
 
-10. LOCALIZAÇÃO: Se [LOCALIZAÇÃO ATUAL DO CELIO] estiver presente, use as coordenadas fornecidas para contextualizar sua resposta. Se estiver próximo a locais conhecidos (como a White Martins ou mercados), mencione-os de forma natural.
+10. LOCALIZAÇÃO: Se [CONTEXTO DE LOCALIZAÇÃO ATUAL] estiver presente, use o endereço formatado para contextualizar sua resposta. Não mencione as coordenadas numéricas (latitude/longitude) a menos que explicitamente solicitado. Se estiver próximo a locais conhecidos (como a White Martins ou mercados), mencione-os de forma natural.
 `.trim();
 
     // Busca histórico para montar conversa estruturada
