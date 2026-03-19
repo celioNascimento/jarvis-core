@@ -1125,7 +1125,7 @@ export default function WMDashboard() {
                     <div className="p-8 sm:p-12"><div className="text-center space-y-2"><Search size={24} className="text-gray-300 mx-auto" /><p className="text-gray-400 text-sm">Nenhum resultado para a busca.</p></div></div>
                   ) : (
                     <>
-                      <div className="hidden sm:grid grid-cols-[80px_1fr_90px_120px_70px_32px] gap-3 px-5 py-2.5 bg-gray-50 border-b border-gray-100">{['Ativo','Equipamento','Série','Status','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}</div>
+                      <div className="hidden sm:grid grid-cols-[80px_1fr_90px_120px_70px_32px] gap-3 px-5 py-2.5 bg-gray-50 border-b border-gray-100">{['Ativo','Equipamento','Status','Série','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}</div>
                       {equipFiltrado.map((eq, i) => {
                         const nome = eq.equipment_model?.nickname || eq.equipment_type
                         const detalhe = [eq.brand, eq.equipment_model?.model || eq.model].filter(Boolean).join(' ')
