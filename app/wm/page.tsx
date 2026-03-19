@@ -958,17 +958,18 @@ export default function WMDashboard() {
   const handleIniciaCadastro = (ativo: string) => { setNovoAtivo(ativo); setShowVerificaEntrada(false); setShowEntrada(true) }
 
   const stats = {
-    total:      equipment.length,
-    fluxo:      equipment.filter(e => ["entrada","avaliacao_bancada","aguardando_pecas","aguardando_envio","limpeza"].includes(e.status)).length,
-    ag_envio:   equipment.filter(e => e.status === "aguardando_envio").length,
-    ag_pecas:   equipment.filter(e => e.status === "aguardando_pecas").length,
-    limpeza:    equipment.filter(e => e.status === "limpeza").length,
-    bancada:    equipment.filter(e => e.status === "avaliacao_bancada").length,
-    lastro:     equipment.filter(e => e.status === "lastro" && !e.is_backup).length,
-    backup:     equipment.filter(e => e.status === "lastro" && e.is_backup === true).length,
-    aplicado:   equipment.filter(e => e.status === "aplicado").length,
-    manutencao: equipment.filter(e => e.status === "manutencao_externa").length,
-    descarte:   equipment.filter(e => e.status === "descarte").length,
+    disponivel:  equipment.filter(e => e.status === 'lastro' && !e.is_backup).length,
+    backup:      equipment.filter(e => e.status === 'lastro' && e.is_backup === true).length,
+    fluxo:       equipment.filter(e => ['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].includes(e.status)).length,
+    ag_envio:    equipment.filter(e => e.status === 'aguardando_envio').length,
+    ag_pecas:    equipment.filter(e => e.status === 'aguardando_pecas').length,
+    limpeza:     equipment.filter(e => e.status === 'limpeza').length,
+    bancada:     equipment.filter(e => e.status === 'avaliacao_bancada').length,
+    lastro:      equipment.filter(e => e.status === 'lastro' && !e.is_backup).length,
+    aplicado:    equipment.filter(e => e.status === 'aplicado').length,
+    manutencao:  equipment.filter(e => e.status === 'manutencao_externa').length,
+    descarte:    equipment.filter(e => e.status === 'descarte').length,
+    cadastrados: equipment.length,
   }
 
   const calVencendo = standards.filter(s => s.next_calibration && Math.floor((new Date(s.next_calibration).getTime() - Date.now()) / 86400000) <= 30)
@@ -981,8 +982,8 @@ export default function WMDashboard() {
     const matchSearch = !search || [e.asset_number, e.serial_number, e.brand, e.model, e.equipment_type, e.client_number, e.equipment_model?.nickname].some(v => v?.toLowerCase().includes(q))
     const matchStatus = filterStatus === 'todos' ? true
       : filterStatus === 'em_fluxo' ? ['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].includes(e.status)
-      : filterStatus === 'backup'  ? (e.status === 'lastro' && e.is_backup === true)
-      : filterStatus === 'lastro'  ? (e.status === 'lastro' && !e.is_backup)
+      : filterStatus === 'backup'   ? (e.status === 'lastro' && e.is_backup === true)
+      : filterStatus === 'lastro'   ? (e.status === 'lastro' && !e.is_backup)
       : e.status === filterStatus
     const matchBrand = !filterBrand || e.brand === filterBrand
     const matchModel = !filterModel || (e.equipment_model?.nickname || e.equipment_model?.model || e.model) === filterModel
@@ -1025,16 +1026,33 @@ export default function WMDashboard() {
           </div>
         ) : aba === 'equipamentos' && (
           <>
-            {/* Stats breakdown do fluxo (só aparece quando Em Fluxo está ativo) */}
+            {/* Resumo inteligente */}
+            <div className="flex flex-wrap items-center gap-2 px-1 pb-1">
+              <button onClick={() => setFilterStatus('todos')} className={`flex items-center gap-2 px-4 py-2 rounded-2xl border-2 transition-all ${filterStatus==='todos' ? 'border-gray-900 bg-white shadow-sm' : 'border-transparent bg-white/60'}`}>
+                <span className="text-2xl font-black text-blue-700">{stats.disponivel + stats.backup}</span>
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 leading-tight">disponíveis<br/>no estoque</span>
+              </button>
+              <span className="text-gray-200 font-light text-xl hidden sm:block">·</span>
+              <button onClick={() => setFilterStatus('em_fluxo')} className={`flex items-center gap-2 px-4 py-2 rounded-2xl border-2 transition-all ${filterStatus==='em_fluxo' ? 'border-gray-900 bg-white shadow-sm' : 'border-transparent bg-white/60'}`}>
+                <span className="text-2xl font-black text-amber-700">{stats.fluxo}</span>
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 leading-tight">em<br/>gestão</span>
+              </button>
+              <span className="text-gray-200 font-light text-xl hidden sm:block">·</span>
+              <button onClick={() => setFilterStatus('aplicado')} className={`flex items-center gap-2 px-4 py-2 rounded-2xl border-2 transition-all ${filterStatus==='aplicado' ? 'border-gray-900 bg-white shadow-sm' : 'border-transparent bg-white/60'}`}>
+                <span className="text-2xl font-black text-green-700">{stats.aplicado}</span>
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 leading-tight">em<br/>campo</span>
+              </button>
+              <span className="ml-auto text-[10px] text-gray-300 font-mono hidden sm:block">{stats.cadastrados} cadastrados</span>
+            </div>
+            {/* StatCards individuais para filtro */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatCard label="Total"      value={stats.total}      color="#111827" bg="#ffffff"  active={filterStatus==='todos'}              onClick={() => setFilterStatus('todos')} />
-              <StatCard label="Em Fluxo"   value={stats.fluxo}      color="#92400e" bg="#fffbeb"  active={filterStatus==='em_fluxo'}           onClick={() => setFilterStatus('em_fluxo')} />
-              <StatCard label="Lastro"     value={stats.lastro}     color="#1e3a8a" bg="#eff6ff"  active={filterStatus==='lastro'}             onClick={() => setFilterStatus('lastro')} />
-              <StatCard label="Backup"     value={stats.backup}     color="#4c1d95" bg="#f5f3ff"  active={filterStatus==='backup'}             onClick={() => setFilterStatus('backup')} />
-              <StatCard label="Aplicado"   value={stats.aplicado}   color="#14532d" bg="#f0fdf4"  active={filterStatus==='aplicado'}           onClick={() => setFilterStatus('aplicado')} />
-              <StatCard label="Ag. Envio"  value={stats.ag_envio}   color="#831843" bg="#fdf2f8"  active={filterStatus==='aguardando_envio'}   onClick={() => setFilterStatus('aguardando_envio')} />
+              <StatCard label="Lastro"      value={stats.lastro}     color="#1e3a8a" bg="#eff6ff" active={filterStatus==='lastro'}             onClick={() => setFilterStatus('lastro')} />
+              <StatCard label="Backup"      value={stats.backup}     color="#4c1d95" bg="#f5f3ff" active={filterStatus==='backup'}             onClick={() => setFilterStatus('backup')} />
+              <StatCard label="Em Fluxo"    value={stats.fluxo}      color="#92400e" bg="#fffbeb" active={filterStatus==='em_fluxo'}           onClick={() => setFilterStatus('em_fluxo')} />
+              <StatCard label="Ag. Envio"   value={stats.ag_envio}   color="#831843" bg="#fdf2f8" active={filterStatus==='aguardando_envio'}   onClick={() => setFilterStatus('aguardando_envio')} />
+              <StatCard label="Aplicado"    value={stats.aplicado}   color="#14532d" bg="#f0fdf4" active={filterStatus==='aplicado'}           onClick={() => setFilterStatus('aplicado')} />
               <StatCard label="Manut. Ext." value={stats.manutencao} color="#7f1d1d" bg="#fef2f2" active={filterStatus==='manutencao_externa'} onClick={() => setFilterStatus('manutencao_externa')} />
-              <StatCard label="Descarte"   value={stats.descarte}   color="#374151" bg="#f9fafb"  active={filterStatus==='descarte'}           onClick={() => setFilterStatus('descarte')} />
+              <StatCard label="Descarte"    value={stats.descarte}   color="#374151" bg="#f9fafb" active={filterStatus==='descarte'}           onClick={() => setFilterStatus('descarte')} />
             </div>
 
             {stats.ag_pecas > 0 && (
@@ -1062,7 +1080,7 @@ export default function WMDashboard() {
               <div className="flex gap-3 overflow-x-auto pb-1 scrollbar-hide">
                 {[
                   stats.fluxo > 0 && { label: `${stats.fluxo} em fluxo`, sub: 'aguardando avaliação', color: 'bg-amber-50 border-amber-200 text-amber-700', action: () => setFilterStatus('em_fluxo') },
-                  stats.ag_envio > 0 && { label: `${stats.ag_envio} ag. envio`, sub: 'aguardando envio para manutenção', color: 'bg-pink-50 border-pink-200 text-pink-700', action: () => setFilterStatus('aguardando_envio') },
+                  stats.ag_envio > 0 && { label: `${stats.ag_envio} ag. envio`, sub: 'aguardando envio p/ manutenção', color: 'bg-pink-50 border-pink-200 text-pink-700', action: () => setFilterStatus('aguardando_envio') },
                   stats.ag_pecas > 0 && { label: `${stats.ag_pecas} ag. peças`, sub: 'parados por falta de peça', color: 'bg-yellow-50 border-yellow-200 text-yellow-700', action: () => setFilterStatus('aguardando_pecas') },
                   stats.manutencao > 0 && { label: `${stats.manutencao} em manut. externa`, sub: 'manutenção externa', color: 'bg-red-50 border-red-200 text-red-700', action: () => setFilterStatus('manutencao_externa') },
                   calVencendo.length > 0 && { label: `${calVencendo.length} calibração`, sub: 'vencendo em 30 dias', color: 'bg-purple-50 border-purple-200 text-purple-700', action: () => setAba('relatorios') },
@@ -1077,7 +1095,7 @@ export default function WMDashboard() {
                 {filterStatus === 'em_fluxo' && stats.fluxo > 0 && (
                   <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-2">
                     <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 mb-2">Detalhes do Fluxo</p>
-                    {['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].map((st: string) => {
+                    {['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].map(st => {
                       const count = equipment.filter(e => e.status === st).length
                       if (count === 0) return null
                       return (<div key={st} className="flex justify-between items-center text-xs py-1 border-b border-amber-100 last:border-0"><span className="text-amber-800 font-bold">{S[st].label}</span><span className="font-black text-amber-900 bg-amber-200 px-1.5 py-0.5 rounded-md">{count}</span></div>)
@@ -1124,7 +1142,7 @@ export default function WMDashboard() {
                     </>
                   )}
                 </div>
-                <p className="text-center text-[10px] text-gray-400">{equipFiltrado.length} equipamento(s) · Londrina</p>
+                <p className="text-center text-[10px] text-gray-400">{equipFiltrado.length} equipamento(s) exibidos · {stats.cadastrados} cadastrados · Londrina</p>
               </div>
             </div>
           </>
