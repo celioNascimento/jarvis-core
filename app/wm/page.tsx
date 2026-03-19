@@ -219,7 +219,7 @@ function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtiv
     }
   }
 
-  // GATILHO DE ABERTURA DE OS
+  // GATILHO DE ABERTURA DE ATENDIMENTO (OS)
   const salvar = async () => {
     if (!form.asset_number.trim()) { setError('Número de patrimônio obrigatório'); return }
     setLoading(true); setError('')
@@ -254,6 +254,7 @@ function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtiv
       return 
     }
 
+    // Cria a OS mestra para este ciclo de atendimento
     const { data: osData } = await db().from('service_orders').insert({
       equipment_id: equipData.id,
       client_number: form.client_number || null,
@@ -272,7 +273,7 @@ function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtiv
     }
 
     setLoading(false)
-    onToast('Equipamento e OS registrados com sucesso!')
+    onToast('Equipamento e Atendimento iniciados!')
     onSaved(); onClose()
   }
 
@@ -461,11 +462,9 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
   const [novoStatus, setNovoStatus] = useState('')
   const [motivo, setMotivo] = useState('')
   
-  // Novos campos: OS e Cliente
   const [osNumber, setOsNumber] = useState('')
   const [clientNumber, setClientNumber] = useState('')
   
-  // Campos de Bloqueio
   const [isBlocking, setIsBlocking] = useState(false)
   const [blockReason, setBlockReason] = useState('')
 
@@ -474,33 +473,56 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
 
   useEffect(() => { if (initialAtivo) buscar() }, [initialAtivo])
 
+  // LÓGICA DE BUSCA: Recupera a OS aberta existente
   const buscar = async () => {
     if (!ativo.trim()) return
     setLoading(true); setNotFound(false); setEquip(null); setHistorico([]); setIsBlocking(false); setBlockReason('')
+    
     const { data } = await db().from('equipment')
       .select('*, location:locations(code), equipment_model:equipment_models(brand,model,nickname,measure_unit)')
       .eq('asset_number', ativo.trim()).maybeSingle()
+    
     if (data) {
-      setEquip(data); setNovoStatus(S[data.status]?.next[0] || '')
+      setEquip(data); 
+      setNovoStatus(S[data.status]?.next[0] || '')
+      
+      // Busca OS ativa para preencher os campos se já houver registro parcial
+      const { data: activeOS } = await db().from('service_orders')
+        .select('os_number, client_number')
+        .eq('equipment_id', data.id)
+        .eq('status', 'aberta')
+        .maybeSingle()
+      
+      if (activeOS) {
+        setOsNumber(activeOS.os_number || '')
+        setClientNumber(activeOS.client_number || data.client_number || '')
+      }
+
       const { data: mov } = await db().from('movements').select('*').eq('equipment_id', data.id).order('moved_at', { ascending: false })
       setHistorico(mov || [])
     } else setNotFound(true)
     setLoading(false)
   }
 
-  // GATILHO DE FECHAMENTO DE OS E MOVIMENTAÇÃO
+  // LÓGICA DE MOVIMENTAÇÃO: Incorpora número de OS e gerencia ciclo de vida
   const mover = async () => {
     if (!novoStatus || !equip) return
     setSalvando(true)
     
-    // 1. Busca a OS aberta deste equipamento
     const { data: activeOS } = await db().from('service_orders')
       .select('id')
       .eq('equipment_id', equip.id)
       .eq('status', 'aberta')
       .maybeSingle()
     
-    // 2. Insere Movimentação amarrada à OS (se existir)
+    // INCORPORAÇÃO DINÂMICA: Atualiza o registro mestre se a OS foi informada agora
+    if (activeOS && osNumber) {
+      await db().from('service_orders')
+        .update({ os_number: osNumber, client_number: clientNumber || null })
+        .eq('id', activeOS.id)
+    }
+
+    // Registra a movimentação vinculada
     await db().from('movements').insert({ 
       equipment_id: equip.id, 
       from_status: equip.status, 
@@ -512,12 +534,11 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
       service_order_id: activeOS?.id || null
     })
 
-    // 3. Atualiza Equipamento
     const payloadUpdate: any = { status: novoStatus }
     if (clientNumber) payloadUpdate.client_number = clientNumber
     await db().from('equipment').update(payloadUpdate).eq('id', equip.id)
     
-    // 4. Gatilho de Fechamento da OS
+    // GATILHO DE FECHAMENTO: Encerra o atendimento ao chegar nos estados finais
     if (activeOS && ['lastro', 'backup', 'descarte'].includes(novoStatus)) {
       await db().from('service_orders')
         .update({ status: 'fechada', closed_at: new Date().toISOString() })
@@ -550,7 +571,6 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
 
   return (
     <div className="space-y-4">
-      {/* Busca */}
       <div className="bg-white rounded-3xl border border-gray-200 p-5 shadow-sm">
         <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">Número de patrimônio</p>
         <div className="flex gap-2">
@@ -582,7 +602,6 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
 
           {equip.status === 'avaliacao_bancada' && <PecasEquipamento equipId={equip.id} modelId={equip.model_id} onToast={onToast} />}
 
-          {/* Sistema de Bloqueio */}
           {equip.is_blocked ? (
             <div className="bg-red-50 border border-red-200 rounded-3xl p-5 shadow-sm space-y-4">
               <div className="flex items-center gap-2"><Lock size={18} className="text-red-600" /><h3 className="font-black text-red-800 text-sm uppercase tracking-widest">Equipamento Bloqueado</h3></div>
@@ -605,7 +624,6 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                     </div>
                   </div>
                   
-                  {/* Campos de OS e Cliente */}
                   <div className="grid grid-cols-2 gap-3 mt-4">
                     <div><label className={lbl}>Ordem de Serviço (OS)</label><input value={osNumber} onChange={e => setOsNumber(e.target.value)} className={inp} placeholder="Ex: OS-9988" /></div>
                     <div><label className={lbl}>Nº Cliente (Origem/Destino)</label><input value={clientNumber} onChange={e => setClientNumber(e.target.value)} className={inp} placeholder="Ex: 554433" /></div>
@@ -639,8 +657,6 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                 {historico.map(m => (
                   <div key={m.id} className="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0 flex-wrap">
                     <Badge status={m.from_status} size="sm" /><ArrowRight size={10} className="text-gray-300 shrink-0" /><Badge status={m.to_status} size="sm" />
-                    
-                    {/* Renderiza OS e Cliente no Histórico */}
                     {(m.os_number || m.client_number) && (
                       <span className="text-[10px] font-mono text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100 flex items-center gap-1 shrink-0">
                         {m.os_number && <span>OS: {m.os_number}</span>}
@@ -648,7 +664,6 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                         {m.client_number && <span>CLI: {m.client_number}</span>}
                       </span>
                     )}
-
                     {m.reason && <span className="text-xs text-gray-400 flex-1 min-w-0 truncate">{m.reason}</span>}
                     <span className="text-[10px] text-gray-300 ml-auto">{fmtDate(m.moved_at)}</span>
                   </div>
@@ -906,7 +921,6 @@ export default function WMDashboard() {
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('todos')
   
-  // Toast Notification State
   const [toast, setToast] = useState<{msg: string, type: 'success'|'error'} | null>(null)
   
   const [filterBrand, setFilterBrand] = useState('')
@@ -977,7 +991,6 @@ export default function WMDashboard() {
   return (
     <div className="min-h-screen bg-gray-50">
       
-      {/* Toast Notification */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-[100] px-5 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4 bg-gray-900 border border-gray-800">
           {toast.type === 'success' ? <CheckCircle size={18} className="text-green-400" /> : <AlertTriangle size={18} className="text-red-400" />}
