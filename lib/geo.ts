@@ -5,56 +5,54 @@ export async function checkProximidade(lat: number, lng: number): Promise<string
     const apiKey = process.env.GOOGLE_PLACES_API_KEY; 
     
     if (!apiKey) {
-      console.warn("[Geo] GOOGLE_PLACES_API_KEY não configurada.");
-      return `[LOCALIZAÇÃO DO CELIO]\nCoordenadas: ${lat}, ${lng}\nCidade: Londrina, PR\n(Integração Geocoding pendente)`;
+      console.warn("[Geo] Chave API não encontrada.");
+      return `[LOCALIZAÇÃO]\nEndereço não disponível (Configuração pendente).`;
     }
 
-    const radius = 1000; // Raio de 1km
+    const radius = 1000;
 
-    // 1. REVERSE GEOCODING: Transforma coordenadas em Endereço Humano
+    // 1. REVERSE GEOCODING (Busca o endereço real)
     const geoRes = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}`);
     const geoData = await geoRes.json();
-    const enderecoHumano = geoData.results?.[0]?.formatted_address || "Endereço não identificado";
+    
+    // Pega o endereço mais preciso (geralmente o primeiro resultado)
+    const enderecoCompleto = geoData.results?.[0]?.formatted_address || "Endereço não identificado";
 
-    // 2. PLACES: Busca por Mercados Próximos
+    // 2. BUSCA DE PONTOS DE INTERESSE
     const marketRes = await fetch(`https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=supermarket&key=${apiKey}`);
     const marketData = await marketRes.json();
     
-    // 3. PLACES: Busca específica pela White Martins
     const wmRes = await fetch(`https://maps.googleapis.com/maps/api/place/textsearch/json?query=White+Martins&location=${lat},${lng}&radius=${radius}&key=${apiKey}`);
     const wmData = await wmRes.json();
 
-    // Montagem do Bloco de Contexto para o Jarvis
-    let contextString = `[INFORMAÇÃO DE LOCALIZAÇÃO GEOGRÁFICA]\n`;
-    contextString += `📍 Endereço Aproximado: ${enderecoHumano}\n`;
-    contextString += `📌 Coordenadas: ${lat}, ${lng}\n\n`;
-    contextString += `[PONTOS DE INTERESSE PRÓXIMOS (< 1km)]\n`;
+    // MONTAGEM DO CONTEXTO (Foco total no endereço)
+    let contextString = `[CONTEXTO DE LOCALIZAÇÃO ATUAL]\n`;
+    contextString += `📍 ENDEREÇO: ${enderecoCompleto}\n`;
+    contextString += `(Metadados Técnicos: lat=${lat}, lng=${lng} - NÃO MENCIONE ESTES NÚMEROS A MENOS QUE SOLICITADO)\n\n`;
+    contextString += `[ESTABELECIMENTOS PRÓXIMOS]\n`;
 
     let foundSomething = false;
 
-    // Injeta White Martins se houver match
     if (wmData.results && wmData.results.length > 0) {
-      contextString += `- 🏭 Unidade White Martins: ${wmData.results[0].name} (${wmData.results[0].formatted_address})\n`;
+      contextString += `- 🏭 White Martins: ${wmData.results[0].name}\n`;
       foundSomething = true;
     }
 
-    // Injeta até 2 mercados principais
     if (marketData.results && marketData.results.length > 0) {
-      const topMarkets = marketData.results.slice(0, 2);
-      topMarkets.forEach((m: any) => {
-        contextString += `- 🛒 Mercado: ${m.name} (${m.vicinity})\n`;
+      marketData.results.slice(0, 2).forEach((m: any) => {
+        contextString += `- 🛒 ${m.name}\n`;
       });
       foundSomething = true;
     }
 
     if (!foundSomething) {
-      contextString += "- Nenhum ponto de interesse crítico identificado no raio de 1km.\n";
+      contextString += "- Nenhuma unidade industrial ou mercado relevante no raio de 1km.\n";
     }
 
     return contextString;
 
   } catch (error) {
-    console.error("[Geo] Erro crítico no radar geográfico:", error);
-    return `[LOCALIZAÇÃO DO CELIO]\nCoordenadas: ${lat}, ${lng}\nLondrina, PR`;
+    console.error("[Geo] Erro:", error);
+    return `[LOCALIZAÇÃO]\nErro ao identificar endereço.`;
   }
 }
