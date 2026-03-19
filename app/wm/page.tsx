@@ -928,8 +928,6 @@ export default function WMDashboard() {
   const [filterBrand, setFilterBrand] = useState('')
   const [filterModel, setFilterModel] = useState('')
   const [filterDate, setFilterDate] = useState({ de: '', ate: '' })
-  const [filterLocation, setFilterLocation] = useState('')
-  const [filterZone, setFilterZone] = useState('')
 
   const [showVerificaEntrada, setShowVerificaEntrada] = useState(false)
   const [showEntrada, setShowEntrada] = useState(false)
@@ -961,20 +959,22 @@ export default function WMDashboard() {
 
   const stats = {
     total:      equipment.length,
-    fluxo:      equipment.filter(e => ['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].includes(e.status)).length,
-    ag_pecas:   equipment.filter(e => e.status === 'aguardando_pecas').length,
-    lastro:     equipment.filter(e => e.status === 'lastro' && !e.is_backup).length,
-    backup:     equipment.filter(e => e.status === 'lastro' && e.is_backup === true).length,
-    aplicado:   equipment.filter(e => e.status === 'aplicado').length,
-    manutencao: equipment.filter(e => e.status === 'manutencao_externa').length,
-    descarte:   equipment.filter(e => e.status === 'descarte').length,
+    fluxo:      equipment.filter(e => ["entrada","avaliacao_bancada","aguardando_pecas","aguardando_envio","limpeza"].includes(e.status)).length,
+    ag_envio:   equipment.filter(e => e.status === "aguardando_envio").length,
+    ag_pecas:   equipment.filter(e => e.status === "aguardando_pecas").length,
+    limpeza:    equipment.filter(e => e.status === "limpeza").length,
+    bancada:    equipment.filter(e => e.status === "avaliacao_bancada").length,
+    lastro:     equipment.filter(e => e.status === "lastro" && !e.is_backup).length,
+    backup:     equipment.filter(e => e.status === "lastro" && e.is_backup === true).length,
+    aplicado:   equipment.filter(e => e.status === "aplicado").length,
+    manutencao: equipment.filter(e => e.status === "manutencao_externa").length,
+    descarte:   equipment.filter(e => e.status === "descarte").length,
   }
 
   const calVencendo = standards.filter(s => s.next_calibration && Math.floor((new Date(s.next_calibration).getTime() - Date.now()) / 86400000) <= 30)
 
   const brands = Array.from(new Set(equipment.map(e => e.brand).filter(Boolean))).sort()
   const models = Array.from(new Set(equipment.filter(e => !filterBrand || e.brand === filterBrand).map(e => e.equipment_model?.nickname || e.equipment_model?.model || e.model).filter(Boolean))).sort()
-  const locations = Array.from(new Set(equipment.map(e => e.location?.code).filter(Boolean))).sort()
 
   const equipFiltrado = equipment.filter(e => {
     const q = search.toLowerCase()
@@ -987,12 +987,7 @@ export default function WMDashboard() {
     const matchBrand = !filterBrand || e.brand === filterBrand
     const matchModel = !filterModel || (e.equipment_model?.nickname || e.equipment_model?.model || e.model) === filterModel
     const matchDate = (!filterDate.de || (e.entry_date && e.entry_date >= filterDate.de)) && (!filterDate.ate || (e.entry_date && e.entry_date <= filterDate.ate))
-    const matchLocation = !filterLocation || e.location?.code === filterLocation
-    const matchZone = !filterZone
-      || (filterZone === 'backup' && e.is_backup === true)
-      || (filterZone === 'estoque' && !e.is_backup && e.status === 'lastro')
-      || (filterZone === 'bloqueado' && e.is_blocked === true)
-    return matchSearch && matchStatus && matchBrand && matchModel && matchDate && matchLocation && matchZone
+    return matchSearch && matchStatus && matchBrand && matchModel && matchDate
   })
 
   const ABAS = [
@@ -1030,15 +1025,16 @@ export default function WMDashboard() {
           </div>
         ) : aba === 'equipamentos' && (
           <>
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-              <StatCard label="Total"         value={stats.total}      color="#111827" bg="#ffffff" active={filterStatus==='todos'}              onClick={() => setFilterStatus('todos')} />
-              <StatCard label="Em Fluxo"       value={stats.fluxo}      color="#92400e" bg="#fffbeb" active={filterStatus==='em_fluxo'}          onClick={() => setFilterStatus('em_fluxo')} />
-              <StatCard label="Ag. Peças"      value={stats.ag_pecas}   color="#713f12" bg="#fefce8" active={filterStatus==='aguardando_pecas'}  onClick={() => setFilterStatus('aguardando_pecas')} />
-              <StatCard label="Lastro"         value={stats.lastro}     color="#1e3a8a" bg="#eff6ff" active={filterStatus==='lastro'}            onClick={() => setFilterStatus('lastro')} />
-              <StatCard label="Backup"         value={stats.backup}     color="#4c1d95" bg="#f5f3ff" active={filterStatus==='backup'}            onClick={() => setFilterStatus('backup')} />
-              <StatCard label="Aplicado"       value={stats.aplicado}   color="#14532d" bg="#f0fdf4" active={filterStatus==='aplicado'}          onClick={() => setFilterStatus('aplicado')} />
-              <StatCard label="Manut. Externa" value={stats.manutencao} color="#7f1d1d" bg="#fef2f2" active={filterStatus==='manutencao_externa'} onClick={() => setFilterStatus('manutencao_externa')} />
-              <StatCard label="Descarte"       value={stats.descarte}   color="#374151" bg="#f9fafb" active={filterStatus==='descarte'}          onClick={() => setFilterStatus('descarte')} />
+            {/* Stats breakdown do fluxo (só aparece quando Em Fluxo está ativo) */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StatCard label="Total"      value={stats.total}      color="#111827" bg="#ffffff"  active={filterStatus==='todos'}              onClick={() => setFilterStatus('todos')} />
+              <StatCard label="Em Fluxo"   value={stats.fluxo}      color="#92400e" bg="#fffbeb"  active={filterStatus==='em_fluxo'}           onClick={() => setFilterStatus('em_fluxo')} />
+              <StatCard label="Lastro"     value={stats.lastro}     color="#1e3a8a" bg="#eff6ff"  active={filterStatus==='lastro'}             onClick={() => setFilterStatus('lastro')} />
+              <StatCard label="Backup"     value={stats.backup}     color="#4c1d95" bg="#f5f3ff"  active={filterStatus==='backup'}             onClick={() => setFilterStatus('backup')} />
+              <StatCard label="Aplicado"   value={stats.aplicado}   color="#14532d" bg="#f0fdf4"  active={filterStatus==='aplicado'}           onClick={() => setFilterStatus('aplicado')} />
+              <StatCard label="Ag. Envio"  value={stats.ag_envio}   color="#831843" bg="#fdf2f8"  active={filterStatus==='aguardando_envio'}   onClick={() => setFilterStatus('aguardando_envio')} />
+              <StatCard label="Manut. Ext." value={stats.manutencao} color="#7f1d1d" bg="#fef2f2" active={filterStatus==='manutencao_externa'} onClick={() => setFilterStatus('manutencao_externa')} />
+              <StatCard label="Descarte"   value={stats.descarte}   color="#374151" bg="#f9fafb"  active={filterStatus==='descarte'}           onClick={() => setFilterStatus('descarte')} />
             </div>
 
             {stats.ag_pecas > 0 && (
@@ -1066,6 +1062,7 @@ export default function WMDashboard() {
               <div className="flex gap-3 overflow-x-auto pb-1 scrollbar-hide">
                 {[
                   stats.fluxo > 0 && { label: `${stats.fluxo} em fluxo`, sub: 'aguardando avaliação', color: 'bg-amber-50 border-amber-200 text-amber-700', action: () => setFilterStatus('em_fluxo') },
+                  stats.ag_envio > 0 && { label: `${stats.ag_envio} ag. envio`, sub: 'aguardando envio para manutenção', color: 'bg-pink-50 border-pink-200 text-pink-700', action: () => setFilterStatus('aguardando_envio') },
                   stats.ag_pecas > 0 && { label: `${stats.ag_pecas} ag. peças`, sub: 'parados por falta de peça', color: 'bg-yellow-50 border-yellow-200 text-yellow-700', action: () => setFilterStatus('aguardando_pecas') },
                   stats.manutencao > 0 && { label: `${stats.manutencao} em manut. externa`, sub: 'manutenção externa', color: 'bg-red-50 border-red-200 text-red-700', action: () => setFilterStatus('manutencao_externa') },
                   calVencendo.length > 0 && { label: `${calVencendo.length} calibração`, sub: 'vencendo em 30 dias', color: 'bg-purple-50 border-purple-200 text-purple-700', action: () => setAba('relatorios') },
@@ -1080,7 +1077,7 @@ export default function WMDashboard() {
                 {filterStatus === 'em_fluxo' && stats.fluxo > 0 && (
                   <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-2">
                     <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 mb-2">Detalhes do Fluxo</p>
-                    {['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].map(st => {
+                    {['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].map((st: string) => {
                       const count = equipment.filter(e => e.status === st).length
                       if (count === 0) return null
                       return (<div key={st} className="flex justify-between items-center text-xs py-1 border-b border-amber-100 last:border-0"><span className="text-amber-800 font-bold">{S[st].label}</span><span className="font-black text-amber-900 bg-amber-200 px-1.5 py-0.5 rounded-md">{count}</span></div>)
@@ -1091,10 +1088,8 @@ export default function WMDashboard() {
                   <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Filtros Avançados</p>
                   <div><label className={lbl}>Marca</label><select value={filterBrand} onChange={e => { setFilterBrand(e.target.value); setFilterModel('') }} className={inp}><option value="">Todas</option>{brands.map((b: any) => <option key={b} value={b}>{b}</option>)}</select></div>
                   <div><label className={lbl}>Modelo / Apelido</label><select value={filterModel} onChange={e => setFilterModel(e.target.value)} className={inp}><option value="">Todos</option>{models.map((m: any) => <option key={m} value={m}>{m}</option>)}</select></div>
-                  <div><label className={lbl}>Endereço</label><select value={filterLocation} onChange={e => setFilterLocation(e.target.value)} className={inp}><option value="">Todos</option>{locations.map((l: any) => <option key={l} value={l}>{l}</option>)}</select></div>
-                  <div><label className={lbl}>Zona</label><select value={filterZone} onChange={e => setFilterZone(e.target.value)} className={inp}><option value="">Todas</option><option value="estoque">Estoque</option><option value="backup">Backup</option><option value="bloqueado">Bloqueado</option></select></div>
                   <div><label className={lbl}>Data de Entrada</label><div className="grid grid-cols-2 gap-2"><input type="date" value={filterDate.de} onChange={e => setFilterDate({...filterDate, de: e.target.value})} className={inp + ' px-2 text-[11px]'} title="De" /><input type="date" value={filterDate.ate} onChange={e => setFilterDate({...filterDate, ate: e.target.value})} className={inp + ' px-2 text-[11px]'} title="Até" /></div></div>
-                  {(filterBrand || filterModel || filterDate.de || filterDate.ate || filterLocation || filterZone) && (<button onClick={() => { setFilterBrand(''); setFilterModel(''); setFilterDate({de:'', ate:''}); setFilterLocation(''); setFilterZone('') }} className="w-full py-2 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-red-500 transition-colors">Limpar Filtros</button>)}
+                  {(filterBrand || filterModel || filterDate.de || filterDate.ate) && (<button onClick={() => { setFilterBrand(''); setFilterModel(''); setFilterDate({de:'', ate:''}) }} className="w-full py-2 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-red-500 transition-colors">Limpar Filtros</button>)}
                 </div>
               </div>
 
@@ -1112,7 +1107,6 @@ export default function WMDashboard() {
                       {equipFiltrado.map((eq, i) => {
                         const nome = eq.equipment_model?.nickname || eq.equipment_type
                         const detalhe = [eq.brand, eq.equipment_model?.model || eq.model].filter(Boolean).join(' ')
-                        const badgeStatus = (eq.status === 'lastro' && eq.is_backup) ? 'backup' : eq.status
                         return (
                           <div key={eq.id} className={`grid grid-cols-[80px_1fr_auto] sm:grid-cols-[80px_1fr_90px_120px_70px_32px] gap-2 sm:gap-3 px-4 sm:px-5 py-3.5 items-center border-b border-gray-50 last:border-0 hover:bg-gray-50 cursor-pointer transition-colors ${i%2!==0?'bg-gray-50/30':''}`} onClick={() => setEquipDetalhe(eq)}>
                             <div className="flex items-center gap-1.5">
@@ -1120,7 +1114,7 @@ export default function WMDashboard() {
                                <span className={`font-black text-sm ${eq.is_blocked ? 'text-red-700' : 'text-gray-900'}`}>{eq.asset_number}</span>
                             </div>
                             <div className="min-w-0">{nome && <p className="text-sm font-bold text-gray-700 truncate">{nome}</p>}{detalhe && <p className="text-[11px] text-gray-400 truncate">{detalhe}</p>}</div>
-                            <Badge status={badgeStatus} size="sm" />
+                            <Badge status={(eq.status === 'lastro' && eq.is_backup) ? 'backup' : eq.status} size="sm" />
                             <span className="hidden sm:block text-xs text-gray-400 font-mono">{eq.serial_number || '—'}</span>
                             <div className="hidden sm:flex items-center gap-1"><MapPin size={9} className="text-gray-300 shrink-0" /><span className="text-[11px] font-bold text-gray-500">{eq.location?.code || '—'}</span></div>
                             <ChevronRight size={13} className="hidden sm:block text-gray-300" />
