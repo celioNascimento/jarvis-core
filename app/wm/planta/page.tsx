@@ -55,7 +55,7 @@ function modelColor(model: string): string {
   if (m.includes('7F-10W') || m.includes('10L')) return '#f59e0b' // Laranja
   if (m.includes('8F-5AW') || m.includes('5L'))  return '#10b981' // Verde
   if (m.includes('COVIDIEN') || m.includes('OXI')) return '#a855f7' // Roxo claro
-  return '#64748b' // Slate 500
+  return '#64748b' // Cinza padrão
 }
 
 function modelLabel(model: string): string {
@@ -69,7 +69,7 @@ function modelLabel(model: string): string {
 
 const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('pt-BR') : '—'
 
-// ── Célula da planta (Dark Mode e Tamanhos Dinâmicos) ─────────
+// ── Célula da planta (Lógica de Múltiplos Modelos) ────────────
 function PlantaCell({
   code, zone, equips, selected, onClick
 }: {
@@ -81,22 +81,13 @@ function PlantaCell({
 }) {
   const total = equips.length
   const bloqueados = equips.filter(e => e.is_blocked).length
-  const dominantModel = equips.length > 0
-    ? (equips[0].equipment_model?.nickname || equips[0].model || '')
-    : ''
-
+  
+  // Lógica para detetar se há uma mistura de modelos diferentes na mesma posição
+  const distinctModels = Array.from(new Set(equips.map(e => modelLabel(e.model))))
+  const isMisto = distinctModels.length > 1
+  
+  const dominantModel = equips.length > 0 ? equips[0].model : ''
   const baseColor = modelColor(dominantModel)
-
-  const bgColor = total === 0
-    ? 'transparent'
-    : baseColor + '1A'
-
-  const borderColor = selected
-    ? '#3b82f6'
-    : total === 0
-    ? (zone === 'backup' ? '#4c1d95' : '#1e293b')
-    : baseColor + '66'
-
   const isIlhaCell = code === 'SL-ILHA-N0'
 
   return (
@@ -104,22 +95,31 @@ function PlantaCell({
       onClick={onClick}
       title={code}
       style={{
-        background: bgColor,
-        borderColor: borderColor,
+        background: total === 0 ? 'transparent' : (isMisto ? 'rgba(30, 41, 59, 0.5)' : baseColor + '1A'),
+        borderColor: selected ? '#3b82f6' : (total === 0 ? (zone === 'backup' ? '#4c1d95' : '#1e293b') : (isMisto ? '#64748b' : baseColor + '66')),
         borderWidth: selected ? 2 : 1,
         boxShadow: selected ? '0 0 0 2px rgba(59, 130, 246, 0.3)' : undefined,
       }}
-      className={`relative w-full rounded-md border transition-all duration-150 cursor-pointer flex flex-col items-center justify-center p-1 min-h-[44px] ${
+      className={`relative w-full rounded-md border transition-all duration-150 flex flex-col items-center justify-center p-1 min-h-[44px] ${
         selected ? 'scale-105 z-10' : 'hover:scale-105 hover:z-10 active:scale-95'
       }`}
     >
       {total > 0 ? (
         <>
+          {/* Bolinhas indicadoras para posições mistas */}
+          {isMisto && (
+            <div className="absolute top-1 left-1 flex gap-0.5">
+              {distinctModels.slice(0, 3).map(m => (
+                <div key={m} className="w-1.5 h-1.5 rounded-full bg-slate-400" title={m} />
+              ))}
+            </div>
+          )}
+          
           <span 
-            className={`font-black uppercase tracking-wider mb-0.5 ${isIlhaCell ? 'text-xs' : 'text-[9px]'}`}
-            style={{ color: baseColor }}
+            className={`font-black uppercase tracking-wider mb-0.5 ${isIlhaCell ? 'text-xs' : 'text-[9px]'} ${isMisto ? 'text-slate-400' : ''}`}
+            style={{ color: isMisto ? undefined : baseColor }}
           >
-            {modelLabel(dominantModel)}
+            {isMisto ? 'MISTO' : modelLabel(dominantModel)}
           </span>
           <span 
             className={`font-black text-slate-100 leading-none ${isIlhaCell ? 'text-2xl' : 'text-sm'}`}
@@ -259,6 +259,7 @@ export default function PlantaLastro() {
       })
   }, [])
 
+  // Filtro que ignora espaços e maiúsculas/minúsculas
   const byLocation = (code: string) =>
     equipment.filter(e => {
       const dbCode = (e.location?.code || '').trim().toUpperCase()
@@ -286,7 +287,8 @@ export default function PlantaLastro() {
   )
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white" style={{ fontFamily: "'DM Mono', 'Courier New', monospace" }}>
+    // overflow-x-hidden previne barras de rolagem indesejadas no ecrã inteiro
+    <div className="min-h-screen bg-slate-950 text-white overflow-x-hidden" style={{ fontFamily: "'DM Mono', 'Courier New', monospace" }}>
 
       {/* Header */}
       <div className="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
@@ -309,7 +311,7 @@ export default function PlantaLastro() {
       </div>
 
       {/* Legenda */}
-      <div className="px-6 py-3 flex items-center gap-4 border-b border-slate-800 overflow-x-auto">
+      <div className="px-6 py-3 flex items-center gap-4 border-b border-slate-800 overflow-x-auto scrollbar-hide">
         <span className="text-[9px] text-slate-500 uppercase tracking-widest shrink-0">Legenda:</span>
         {[
           { color: '#3b82f6', label: 'EVERFLO 5L' },
@@ -327,6 +329,12 @@ export default function PlantaLastro() {
           <span className="text-[9px] text-slate-400">Backup vazio</span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          <div className="w-3 h-3 rounded bg-slate-700 flex items-center justify-center">
+            <div className="w-1.5 h-1.5 bg-slate-400 rounded-full" />
+          </div>
+          <span className="text-[9px] text-slate-400">Misto</span>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
           <div className="w-3 h-3 rounded bg-red-500 flex items-center justify-center">
             <Lock size={6} className="text-white" />
           </div>
@@ -334,9 +342,8 @@ export default function PlantaLastro() {
         </div>
       </div>
 
-      {/* Planta */}
-      <div className="p-6 space-y-6 overflow-x-auto">
-        {/* Estantes */}
+      {/* Planta Principal */}
+      <div className="p-4 sm:p-6 space-y-8 max-w-full">
         {ESTANTES.map(est => (
           <div key={est.id} className="space-y-2">
             <div className="flex items-center gap-3">
@@ -347,10 +354,11 @@ export default function PlantaLastro() {
               <div className="h-px flex-1 bg-slate-800" />
             </div>
 
-            <div className="bg-slate-900 rounded-2xl border border-slate-800 p-3 overflow-x-auto">
+            {/* Este container tem overflow-x-auto, permitindo deslizar apenas na estante se necessário */}
+            <div className="bg-slate-900/50 rounded-2xl border border-slate-800 p-3 overflow-x-auto">
               <div
                 className="grid gap-2"
-                style={{ gridTemplateColumns: `40px repeat(${est.cols}, minmax(48px, 1fr))` }}
+                style={{ gridTemplateColumns: `40px repeat(${est.cols}, minmax(60px, 1fr))` }}
               >
                 <div />
                 {Array.from({ length: est.cols }, (_, i) => (
@@ -387,8 +395,8 @@ export default function PlantaLastro() {
           </div>
         ))}
 
-        {/* Ilha Central */}
-        <div className="space-y-2">
+        {/* Ilha Central com as proporções aumentadas */}
+        <div className="space-y-2 pb-10">
           <div className="flex items-center gap-3">
             <div className="px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest bg-slate-800 text-slate-300 border border-slate-700">
               Ilha Central
@@ -396,17 +404,14 @@ export default function PlantaLastro() {
             <span className="text-[9px] text-slate-600">Uso misto</span>
             <div className="h-px flex-1 bg-slate-800" />
           </div>
-          <div className="bg-slate-900 rounded-2xl border border-slate-800 p-5 w-full">
-            <div className="grid gap-4" style={{ gridTemplateColumns: '60px 150px' }}>
-              <div />
-              <div className="text-center text-[10px] font-black text-slate-500 uppercase tracking-widest pb-1">
-                Chão
+          
+          <div className="bg-slate-900/50 rounded-2xl border border-slate-800 p-6 flex justify-center">
+            <div className="grid gap-6 items-center w-full max-w-xs" style={{ gridTemplateColumns: 'auto 1fr' }}>
+              <div className="flex flex-col items-end justify-center">
+                <span className="text-[12px] font-black text-slate-400">Chão</span>
+                <span className="text-[9px] text-slate-600">0,00m</span>
               </div>
-              <div className="flex flex-col items-end justify-center pr-3">
-                <span className="text-[10px] font-black text-slate-400">Chão</span>
-                <span className="text-[8px] text-slate-600">0,00m</span>
-              </div>
-              <div className="min-h-[80px] min-w-[150px] flex">
+              <div className="flex min-h-[80px]">
                 <PlantaCell
                   code="SL-ILHA-N0"
                   zone="estoque"
@@ -431,4 +436,4 @@ export default function PlantaLastro() {
       )}
     </div>
   )
-            }
+}
