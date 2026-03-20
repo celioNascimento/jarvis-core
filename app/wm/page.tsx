@@ -1023,6 +1023,7 @@ export default function WMDashboard() {
   
   const [filterBrand, setFilterBrand] = useState('')
   const [filterModel, setFilterModel] = useState('')
+  const [filterNickname, setFilterNickname] = useState('')
   const [filterDate, setFilterDate] = useState({ de: '', ate: '' })
 
   const [showVerificaEntrada, setShowVerificaEntrada] = useState(false)
@@ -1088,8 +1089,9 @@ export default function WMDashboard() {
       : e.status === filterStatus
     const matchBrand = !filterBrand || e.brand === filterBrand
     const matchModel = !filterModel || (e.equipment_model?.nickname || e.equipment_model?.model || e.model) === filterModel
+    const matchNickname = !filterNickname || (e.equipment_model?.nickname || e.equipment_model?.model || e.model) === filterNickname
     const matchDate = (!filterDate.de || (e.entry_date && e.entry_date >= filterDate.de)) && (!filterDate.ate || (e.entry_date && e.entry_date <= filterDate.ate))
-    return matchSearch && matchStatus && matchBrand && matchModel && matchDate
+    return matchSearch && matchStatus && matchBrand && matchModel && matchNickname && matchDate
   })
 
   const ABAS = [
