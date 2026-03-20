@@ -141,6 +141,7 @@ function ModalVerificaEntrada({ onClose, onCadastrar }: { onClose: () => void; o
 // ── Modal Nova Entrada ────────────────────────────────────
 const SENSOR_STATUS: Record<string, string> = { presente: 'Presente', saiu_com_paciente: 'Saiu c/ Paciente', em_outro_cliente: 'Em outro cliente', danificado: 'Danificado', ausente: 'Ausente' }
 const FILTER_STATUS: Record<string, {label: string; color: string}> = { ok: { label: 'OK', color: 'text-green-600' }, meia_vida: { label: 'Meia Vida', color: 'text-yellow-600' }, necessita_troca: { label: 'Necessita Troca', color: 'text-red-600' }, novo: { label: 'Trocado', color: 'text-blue-600' }, sem_estoque: { label: 'Sem Estoque', color: 'text-gray-500' } }
+const CANNULA_STATUS: Record<string, {label: string; color: string}> = { ok: { label: 'OK', color: 'text-green-600' }, meia_vida: { label: 'Meia Vida', color: 'text-yellow-600' }, necessita_troca: { label: 'Necessita Troca', color: 'text-red-600' }, trocada: { label: 'Trocada', color: 'text-blue-600' } }
 
 function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtivo?: string, onClose: () => void; onSaved: () => void; onToast: (msg: string) => void }) {
   const [tipo, setTipo] = useState<'concentrador'|'oximetro'>('concentrador')
@@ -347,7 +348,7 @@ function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtiv
                 <div><label className={lbl}>Concentração O₂ (%)</label><input type="number" step="0.1" min="0" max="100" value={form.o2_concentration} onChange={e => f('o2_concentration', e.target.value)} className={inp} placeholder="Ex: 93" /></div>
               </div>
               <div><label className={lbl}>Filtro de Ar</label><div className="flex gap-2 flex-wrap mb-2">{Object.entries(FILTER_STATUS).map(([k, v]) => (<button key={k} onClick={() => f('filter_status', k)} className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${form.filter_status === k ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-500'}`}>{v.label}</button>))}</div><div className="grid grid-cols-2 gap-3"><div><label className={lbl}>Última troca</label><input type="date" value={form.filter_last_change} onChange={e => f('filter_last_change', e.target.value)} className={inp} /></div><div><label className={lbl}>Próxima troca</label><input type="date" value={form.filter_next_change} onChange={e => f('filter_next_change', e.target.value)} className={inp} /></div></div></div>
-              <div><label className={lbl}>Cânula / Cateter</label><div className="flex gap-2 flex-wrap">{Object.entries(FILTER_STATUS).filter(([k]) => k !== 'sem_estoque').map(([k, v]) => (<button key={k} onClick={() => f('cannula_status', k)} className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${form.cannula_status === k ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-500'}`}>{v.label}</button>))}</div></div>
+              <div><label className={lbl}>Cânula / Cateter</label><div className="flex gap-2 flex-wrap">{Object.entries(CANNULA_STATUS).map(([k, v]) => (<button key={k} onClick={() => f('cannula_status', k)} className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${form.cannula_status === k ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-500'}`}>{v.label}</button>))}</div></div>
               <div className="grid grid-cols-2 gap-3"><div><label className={lbl}>Alarme</label><select value={form.alarm_status} onChange={e => f('alarm_status', e.target.value)} className={inp}><option value="ok">OK</option><option value="falha">Falha</option><option value="nao_testado">Não testado</option></select></div></div>
               <div className="flex gap-4"><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={form.has_humidifier} onChange={e => f('has_humidifier', e.target.checked)} className="w-4 h-4 accent-blue-600" /><span className="text-sm font-semibold text-gray-700">Tem umidificador</span></label><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={form.opi_indicator} onChange={e => f('opi_indicator', e.target.checked)} className="w-4 h-4 accent-blue-600" /><span className="text-sm font-semibold text-gray-700">Tem OPI</span></label></div>
             </div>
@@ -1011,8 +1012,6 @@ export default function WMDashboard() {
   
   const [equipDetalhe, setEquipDetalhe] = useState<any>(null)
   const [fluxoAtivo, setFluxoAtivo] = useState('')
-  const [quickSearch, setQuickSearch] = useState('')
-  const [quickNotFound, setQuickNotFound] = useState(false)
 
   const showToast = useCallback((msg: string, type: 'success'|'error' = 'success') => {
     setToast({ msg, type }); setTimeout(() => setToast(null), 4000)
@@ -1035,16 +1034,6 @@ export default function WMDashboard() {
 
   const handleIniciaCadastro = (ativo: string) => { setNovoAtivo(ativo); setShowVerificaEntrada(false); setShowEntrada(true) }
 
-  const handleQuickSearch = async () => {
-    if (!quickSearch.trim()) return
-    const { data } = await db().from('equipment').select('id').eq('asset_number', quickSearch.trim()).maybeSingle()
-    if (data) {
-      // Existe — abre no fluxo direto
-      setFluxoAtivo(quickSearch.trim()); setAba('fluxo'); setQuickSearch(''); setQuickNotFound(false)
-    } else {
-      // Não existe — mostra opção de cadastrar
-      setQuickNotFound(true)
-    }
   }
 
   const stats = {
@@ -1104,30 +1093,33 @@ export default function WMDashboard() {
       )}
 
       <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-4 py-3">
-          <div className="flex items-center gap-3 shrink-0"><div className="flex flex-col items-center"><img src="/logo_lev.png" alt="Lev" className="h-8 w-auto object-contain" /><span className="text-[8px] font-black uppercase tracking-widest text-gray-400 leading-none mt-0.5">Lev</span></div><div className="w-px h-8 bg-gray-200" /><img src="/logo_wm.png" alt="White Martins" className="h-7 w-auto object-contain" /></div>
-          <nav className="hidden sm:flex items-center gap-1 flex-1">{ABAS.map(a => { const Icon = a.icon; return (<button key={a.id} onClick={() => setAba(a.id)} className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${aba === a.id ? 'bg-blue-50 text-blue-600' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}><Icon size={13} />{a.label}</button>) })}</nav>
-          <div className="flex items-center gap-2 shrink-0">
-            <div className="relative hidden sm:block">
-              <Scan size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                value={quickSearch} onChange={e => setQuickSearch(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleQuickSearch()}
-                placeholder="Patrimônio..."
-                className="pl-9 pr-4 py-2.5 w-44 rounded-xl border border-gray-200 text-sm font-black text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none transition-all"
-              />
-              {quickSearch && quickNotFound && (
-                <div className="absolute top-full mt-1 right-0 bg-white border border-gray-200 rounded-2xl shadow-lg p-3 w-56 z-50">
-                  <p className="text-xs text-gray-500 mb-2">Ativo <span className="font-black text-gray-900">{quickSearch}</span> não cadastrado.</p>
-                  <button onClick={() => { setNovoAtivo(quickSearch); setQuickSearch(''); setQuickNotFound(false); setShowEntrada(true) }} className="w-full py-2 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700">+ Cadastrar este ativo</button>
-                </div>
-              )}
-            </div>
-
-            <button onClick={logout} title="Sair" className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-all"><LogOut size={15} /></button>
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-6 py-3.5">
+          <div className="flex items-center gap-4 shrink-0">
+            <img src="/logo_lev.png" alt="Lev" className="h-11 w-auto object-contain" />
+            <div className="w-px h-10 bg-gray-200" />
+            <img src="/logo_wm.png" alt="White Martins" className="h-8 w-auto object-contain" />
           </div>
+          <nav className="hidden sm:flex items-center gap-1 flex-1">
+            {ABAS.map(a => { const Icon = a.icon; return (
+              <button key={a.id} onClick={() => setAba(a.id)}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${aba === a.id ? 'bg-blue-50 text-blue-600' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
+                <Icon size={13} />{a.label}
+              </button>
+            )})}
+          </nav>
+          <button onClick={logout} title="Sair"
+            className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-all shrink-0">
+            <LogOut size={15} />
+          </button>
         </div>
-        <div className="sm:hidden flex border-t border-gray-100 overflow-x-auto scrollbar-hide px-2">{ABAS.map(a => { const Icon = a.icon; return (<button key={a.id} onClick={() => setAba(a.id)} className={`flex items-center gap-1.5 px-4 py-3 text-xs font-bold border-b-2 transition-all whitespace-nowrap shrink-0 ${aba === a.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400'}`}><Icon size={12} />{a.label}</button>) })}</div>
+        <div className="sm:hidden flex border-t border-gray-100 overflow-x-auto scrollbar-hide px-2">
+          {ABAS.map(a => { const Icon = a.icon; return (
+            <button key={a.id} onClick={() => setAba(a.id)}
+              className={`flex items-center gap-1.5 px-4 py-3 text-xs font-bold border-b-2 transition-all whitespace-nowrap shrink-0 ${aba === a.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400'}`}>
+              <Icon size={12} />{a.label}
+            </button>
+          )})}
+        </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-5 space-y-4">
@@ -1159,8 +1151,8 @@ export default function WMDashboard() {
             </div>
             {/* Cards clicáveis — cada equipamento conta em exatamente 1 card */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatCard label="Lastro"      value={stats.lastro}     color="#1e3a8a" bg="#eff6ff" active={filterStatus==='lastro'}      onClick={() => setFilterStatus('lastro')} />
-              <StatCard label="Backup"      value={stats.backup}     color="#4c1d95" bg="#f5f3ff" active={filterStatus==='backup'}      onClick={() => setFilterStatus('backup')} />
+              <StatCard label="Lastro"      value={stats.lastro}     color="#1e3a8a" bg="#eff6ff" active={filterStatus==='lastro'}      onClick={() => { setFilterStatus('lastro'); setFilterNickname('') }} />
+              <StatCard label="Backup"      value={stats.backup}     color="#4c1d95" bg="#f5f3ff" active={filterStatus==='backup'}      onClick={() => { setFilterStatus('backup'); setFilterNickname('') }} />
               <StatCard label="Triagem"     value={stats.triagem}    color="#92400e" bg="#fffbeb" active={filterStatus==='triagem'}     onClick={() => setFilterStatus('triagem')} />
               <StatCard label="Manutenção"  value={stats.manutencao} color="#7f1d1d" bg="#fef2f2" active={filterStatus==='manutencao'} onClick={() => setFilterStatus('manutencao')} />
               <StatCard label="Limpeza"     value={stats.limpeza}    color="#155e75" bg="#ecfeff" active={filterStatus==='limpeza'}     onClick={() => setFilterStatus('limpeza')} />
@@ -1225,6 +1217,36 @@ export default function WMDashboard() {
 
               <div className="flex-1 min-w-0 space-y-3">
                 <div className="relative"><Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar ativo, apelido, marca, série..." className="w-full pl-10 pr-4 py-3 rounded-2xl border border-gray-200 bg-white text-sm text-gray-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none" /></div>
+                {/* Cards de tipo — aparecem ao filtrar lastro ou backup */}
+                {(filterStatus === 'lastro' || filterStatus === 'backup') && (() => {
+                  const base = equipment.filter(e =>
+                    filterStatus === 'lastro' ? (e.status === 'lastro' && !e.is_backup) : (e.status === 'lastro' && e.is_backup === true)
+                  )
+                  const byNick: Record<string, number> = {}
+                  base.forEach(e => {
+                    const k = e.equipment_model?.nickname || e.equipment_model?.model || e.model || 'Sem modelo'
+                    byNick[k] = (byNick[k] || 0) + 1
+                  })
+                  const entries = Object.entries(byNick).sort((a, b) => b[1] - a[1])
+                  if (entries.length <= 1) return null
+                  return (
+                    <div className="flex gap-2 flex-wrap">
+                      {filterNickname && (
+                        <button onClick={() => setFilterNickname('')}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-gray-900 bg-gray-900 text-white text-xs font-bold transition-all">
+                          <X size={10} /> Todos ({base.length})
+                        </button>
+                      )}
+                      {entries.map(([nick, count]) => (
+                        <button key={nick} onClick={() => setFilterNickname(filterNickname === nick ? '' : nick)}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 text-xs font-bold transition-all ${filterNickname === nick ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'}`}>
+                          {nick}
+                          <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md ${filterNickname === nick ? 'bg-blue-200 text-blue-800' : 'bg-gray-100 text-gray-500'}`}>{count}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )
+                })()}
                 <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
                   {[['todos','Todos'], ['em_fluxo','Em Fluxo'], ...Object.entries(S).map(([k,v]) => [k, v.label])].map(([k, v]) => (<button key={k} onClick={() => setFilterStatus(k)} className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border shrink-0 ${filterStatus === k ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>{v}</button>))}
                 </div>
