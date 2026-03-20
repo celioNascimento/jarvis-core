@@ -54,8 +54,8 @@ function modelColor(model: string): string {
   if (m.includes('EVERFLO')) return '#3b82f6' // Azul
   if (m.includes('7F-10W') || m.includes('10L')) return '#f59e0b' // Laranja
   if (m.includes('8F-5AW') || m.includes('5L'))  return '#10b981' // Verde
-  if (m.includes('COVIDIEN') || m.includes('OXI')) return '#a855f7' // Roxo claro
-  return '#64748b' // Cinza padrão
+  if (m.includes('COVIDIEN') || m.includes('OXI')) return '#a855f7' // Roxo
+  return '#64748b' // Slate padrão
 }
 
 function modelLabel(model: string): string {
@@ -69,7 +69,7 @@ function modelLabel(model: string): string {
 
 const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('pt-BR') : '—'
 
-// ── Célula da planta (Lógica de Múltiplos Modelos) ────────────
+// ── Célula da planta ──────────────────────────────────────────
 function PlantaCell({
   code, zone, equips, selected, onClick
 }: {
@@ -81,11 +81,6 @@ function PlantaCell({
 }) {
   const total = equips.length
   const bloqueados = equips.filter(e => e.is_blocked).length
-  
-  // Lógica para detetar se há uma mistura de modelos diferentes na mesma posição
-  const distinctModels = Array.from(new Set(equips.map(e => modelLabel(e.model))))
-  const isMisto = distinctModels.length > 1
-  
   const dominantModel = equips.length > 0 ? equips[0].model : ''
   const baseColor = modelColor(dominantModel)
   const isIlhaCell = code === 'SL-ILHA-N0'
@@ -95,8 +90,8 @@ function PlantaCell({
       onClick={onClick}
       title={code}
       style={{
-        background: total === 0 ? 'transparent' : (isMisto ? 'rgba(30, 41, 59, 0.5)' : baseColor + '1A'),
-        borderColor: selected ? '#3b82f6' : (total === 0 ? (zone === 'backup' ? '#4c1d95' : '#1e293b') : (isMisto ? '#64748b' : baseColor + '66')),
+        background: total === 0 ? 'transparent' : baseColor + '1A',
+        borderColor: selected ? '#3b82f6' : (total === 0 ? (zone === 'backup' ? '#4c1d95' : '#1e293b') : baseColor + '66'),
         borderWidth: selected ? 2 : 1,
         boxShadow: selected ? '0 0 0 2px rgba(59, 130, 246, 0.3)' : undefined,
       }}
@@ -106,20 +101,11 @@ function PlantaCell({
     >
       {total > 0 ? (
         <>
-          {/* Bolinhas indicadoras para posições mistas */}
-          {isMisto && (
-            <div className="absolute top-1 left-1 flex gap-0.5">
-              {distinctModels.slice(0, 3).map(m => (
-                <div key={m} className="w-1.5 h-1.5 rounded-full bg-slate-400" title={m} />
-              ))}
-            </div>
-          )}
-          
           <span 
-            className={`font-black uppercase tracking-wider mb-0.5 ${isIlhaCell ? 'text-xs' : 'text-[9px]'} ${isMisto ? 'text-slate-400' : ''}`}
-            style={{ color: isMisto ? undefined : baseColor }}
+            className={`font-black uppercase tracking-wider mb-0.5 ${isIlhaCell ? 'text-xs' : 'text-[9px]'}`}
+            style={{ color: baseColor }}
           >
-            {isMisto ? 'MISTO' : modelLabel(dominantModel)}
+            {modelLabel(dominantModel)}
           </span>
           <span 
             className={`font-black text-slate-100 leading-none ${isIlhaCell ? 'text-2xl' : 'text-sm'}`}
@@ -242,7 +228,6 @@ function Drawer({ code, equips, zone, onClose }: {
     </div>
   )
 }
-
 // ── Componente principal ──────────────────────────────────────
 export default function PlantaLastro() {
   const [equipment, setEquipment] = useState<Equip[]>([])
@@ -259,7 +244,6 @@ export default function PlantaLastro() {
       })
   }, [])
 
-  // Filtro que ignora espaços e maiúsculas/minúsculas
   const byLocation = (code: string) =>
     equipment.filter(e => {
       const dbCode = (e.location?.code || '').trim().toUpperCase()
@@ -287,7 +271,6 @@ export default function PlantaLastro() {
   )
 
   return (
-    // overflow-x-hidden previne barras de rolagem indesejadas no ecrã inteiro
     <div className="min-h-screen bg-slate-950 text-white overflow-x-hidden" style={{ fontFamily: "'DM Mono', 'Courier New', monospace" }}>
 
       {/* Header */}
@@ -310,7 +293,7 @@ export default function PlantaLastro() {
         </div>
       </div>
 
-      {/* Legenda */}
+      {/* Legenda (Misto foi removido porque agora vemos as cores individuais) */}
       <div className="px-6 py-3 flex items-center gap-4 border-b border-slate-800 overflow-x-auto scrollbar-hide">
         <span className="text-[9px] text-slate-500 uppercase tracking-widest shrink-0">Legenda:</span>
         {[
@@ -329,12 +312,6 @@ export default function PlantaLastro() {
           <span className="text-[9px] text-slate-400">Backup vazio</span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <div className="w-3 h-3 rounded bg-slate-700 flex items-center justify-center">
-            <div className="w-1.5 h-1.5 bg-slate-400 rounded-full" />
-          </div>
-          <span className="text-[9px] text-slate-400">Misto</span>
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
           <div className="w-3 h-3 rounded bg-red-500 flex items-center justify-center">
             <Lock size={6} className="text-white" />
           </div>
@@ -344,6 +321,7 @@ export default function PlantaLastro() {
 
       {/* Planta Principal */}
       <div className="p-4 sm:p-6 space-y-8 max-w-full">
+        {/* Estantes Principais */}
         {ESTANTES.map(est => (
           <div key={est.id} className="space-y-2">
             <div className="flex items-center gap-3">
@@ -354,7 +332,6 @@ export default function PlantaLastro() {
               <div className="h-px flex-1 bg-slate-800" />
             </div>
 
-            {/* Este container tem overflow-x-auto, permitindo deslizar apenas na estante se necessário */}
             <div className="bg-slate-900/50 rounded-2xl border border-slate-800 p-3 overflow-x-auto">
               <div
                 className="grid gap-2"
@@ -377,15 +354,44 @@ export default function PlantaLastro() {
                     {Array.from({ length: est.cols }, (_, i) => {
                       const code = `SL-${est.id}${i + 1}-N${lv.n}`
                       const equips = byLocation(code)
+                      
+                      // Se a posição estiver completamente vazia, devolvemos um card vazio normal
+                      if (equips.length === 0) {
+                        return (
+                          <div key={code} className="flex flex-col justify-end w-full h-full">
+                            <PlantaCell
+                              code={code}
+                              zone={est.zone}
+                              equips={[]}
+                              selected={selected === code}
+                              onClick={() => setSelected(selected === code ? null : code)}
+                            />
+                          </div>
+                        )
+                      }
+
+                      // Agrupamos os equipamentos por modelo dentro desta posição
+                      const equipsByModel = equips.reduce((acc, eq) => {
+                        const label = modelLabel(eq.model)
+                        if (!acc[label]) acc[label] = []
+                        acc[label].push(eq)
+                        return acc
+                      }, {} as Record<string, Equip[]>)
+
+                      // Renderizamos os cards empilhados verticalmente dentro da célula da estante
                       return (
-                        <PlantaCell
-                          key={code}
-                          code={code}
-                          zone={est.zone}
-                          equips={equips}
-                          selected={selected === code}
-                          onClick={() => setSelected(selected === code ? null : code)}
-                        />
+                        <div key={code} className="flex flex-col justify-end gap-1.5 w-full h-full">
+                          {Object.entries(equipsByModel).map(([modelo, eqList]) => (
+                            <PlantaCell
+                              key={`${code}-${modelo}`}
+                              code={code}
+                              zone={est.zone}
+                              equips={eqList}
+                              selected={selected === code}
+                              onClick={() => setSelected(selected === code ? null : code)}
+                            />
+                          ))}
+                        </div>
                       )
                     })}
                   </div>
@@ -395,7 +401,7 @@ export default function PlantaLastro() {
           </div>
         ))}
 
-        {/* Ilha Central com as proporções aumentadas */}
+        {/* Ilha Central */}
         <div className="space-y-2 pb-10">
           <div className="flex items-center gap-3">
             <div className="px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest bg-slate-800 text-slate-300 border border-slate-700">
@@ -405,21 +411,54 @@ export default function PlantaLastro() {
             <div className="h-px flex-1 bg-slate-800" />
           </div>
           
-          <div className="bg-slate-900/50 rounded-2xl border border-slate-800 p-6 flex justify-center">
-            <div className="grid gap-6 items-center w-full max-w-xs" style={{ gridTemplateColumns: 'auto 1fr' }}>
-              <div className="flex flex-col items-end justify-center">
+          <div className="bg-slate-900/50 rounded-2xl border border-slate-800 p-6">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6">
+              
+              <div className="flex flex-col items-end justify-center min-w-[60px]">
                 <span className="text-[12px] font-black text-slate-400">Chão</span>
                 <span className="text-[9px] text-slate-600">0,00m</span>
               </div>
-              <div className="flex min-h-[80px]">
-                <PlantaCell
-                  code="SL-ILHA-N0"
-                  zone="estoque"
-                  equips={byLocation('SL-ILHA-N0')}
-                  selected={selected === 'SL-ILHA-N0'}
-                  onClick={() => setSelected(selected === 'SL-ILHA-N0' ? null : 'SL-ILHA-N0')}
-                />
+
+              {/* Renderizamos os cards alinhados horizontalmente (flex-wrap) na Ilha */}
+              <div className="flex flex-wrap gap-4 flex-1">
+                {(() => {
+                  const ilhaEquips = byLocation('SL-ILHA-N0')
+                  
+                  if (ilhaEquips.length === 0) {
+                    return (
+                      <div className="flex min-h-[80px] w-32">
+                        <PlantaCell
+                          code="SL-ILHA-N0"
+                          zone="estoque"
+                          equips={[]}
+                          selected={selected === 'SL-ILHA-N0'}
+                          onClick={() => setSelected(selected === 'SL-ILHA-N0' ? null : 'SL-ILHA-N0')}
+                        />
+                      </div>
+                    )
+                  }
+
+                  const equipsByModel = ilhaEquips.reduce((acc, eq) => {
+                    const label = modelLabel(eq.model)
+                    if (!acc[label]) acc[label] = []
+                    acc[label].push(eq)
+                    return acc
+                  }, {} as Record<string, Equip[]>)
+
+                  return Object.entries(equipsByModel).map(([modelo, equips]) => (
+                    <div key={modelo} className="flex min-h-[80px] w-32">
+                      <PlantaCell
+                        code="SL-ILHA-N0"
+                        zone="estoque"
+                        equips={equips}
+                        selected={selected === 'SL-ILHA-N0'}
+                        onClick={() => setSelected(selected === 'SL-ILHA-N0' ? null : 'SL-ILHA-N0')}
+                      />
+                    </div>
+                  ))
+                })()}
               </div>
+              
             </div>
           </div>
         </div>
