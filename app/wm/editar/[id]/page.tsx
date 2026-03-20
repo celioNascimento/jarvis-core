@@ -46,7 +46,11 @@ export default function EditarEquipamento() {
       db().from('equipment_models').select('*').order('nickname'),
       db().from('locations').select('id,code,area,description').eq('active', true).order('code'),
     ]).then(([eqRes, mRes, lRes]) => {
-      if (eqRes.data) setForm(eqRes.data)
+      if (eqRes.data) {
+        const eq = eqRes.data
+        // Normaliza location_code a partir do join location:locations(code)
+        setForm({ ...eq, location_code: eq.location?.code || eq.location_code || '' })
+      }
       setModels(mRes.data || [])
       setLocations(lRes.data || [])
       setLoading(false)
@@ -58,7 +62,9 @@ export default function EditarEquipamento() {
   const salvar = async () => {
     if (!form) return
     setSaving(true); setError('')
-    const loc = locations.find(l => l.code === form.location_code || l.id === form.location_id)
+    // Busca por code (seleção no dropdown) ou mantém location_id atual se não mudou
+    const loc = locations.find(l => l.code === form.location_code)
+    const finalLocationId = loc?.id || (form.location_code ? null : form.location_id)
     const { error: err } = await db().from('equipment').update({
       serial_number: form.serial_number || null,
       client_number: form.client_number || null,
@@ -66,7 +72,7 @@ export default function EditarEquipamento() {
       model_id: form.model_id || null,
       brand: models.find(m => m.id === form.model_id)?.brand || form.brand,
       model: models.find(m => m.id === form.model_id)?.model || form.model,
-      location_id: loc?.id || form.location_id,
+      location_id: finalLocationId,
       notes: form.notes || null,
       // concentrador
       flow_measurement: form.flow_measurement ? Number(form.flow_measurement) : null,
