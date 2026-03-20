@@ -101,7 +101,9 @@ export async function updateGoogleEvent(searchTerm: string, newSummary: string, 
     const token = await getGoogleAccessToken();
     if (!token) return "Erro de token.";
     
-    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${new Date().toISOString()}&maxResults=1`, {
+    // timeMin: 30 dias atrás — permite encontrar eventos do dia que já passaram
+    const timeMin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${timeMin}&maxResults=1&singleEvents=true&orderBy=startTime`, {
       headers: { Authorization: `Bearer ${token}` }
     });
     const cal = await calRes.json();
@@ -141,7 +143,9 @@ export async function deleteGoogleEvent(searchTerm: string) {
     const token = await getGoogleAccessToken();
     if (!token) return "Erro de token.";
     
-    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${new Date().toISOString()}&maxResults=1`, {
+    // timeMin: 30 dias atrás — permite encontrar eventos do dia que já passaram
+    const timeMin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${timeMin}&maxResults=1&singleEvents=true&orderBy=startTime`, {
       headers: { Authorization: `Bearer ${token}` }
     });
     const cal = await calRes.json();
