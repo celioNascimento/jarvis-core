@@ -1,7 +1,7 @@
 'use client'
 export const dynamic = 'force-dynamic'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import {
   Package, MapPin, Wrench, AlertTriangle, CheckCircle,
@@ -1082,22 +1082,22 @@ export default function WMDashboard() {
     { id: 'relatorios',   label: 'Relatórios',   icon: FileText },
   ] as const
 
-  const tipoCards = useMemo(() => {
-    if (filterStatus !== 'lastro' && filterStatus !== 'backup') return null
-    const base = equipment.filter(e =>
+  // tipoCards — cálculo direto sem useMemo/IIFE
+  let tipoCards: { base: any[], entries: [string, number][] } | null = null
+  if (filterStatus === 'lastro' || filterStatus === 'backup') {
+    const _base = equipment.filter((e: any) =>
       filterStatus === 'lastro'
         ? (e.status === 'lastro' && !e.is_backup)
         : (e.status === 'lastro' && e.is_backup === true)
     )
-    const byNick: Record<string, number> = {}
-    base.forEach((e: any) => {
+    const _byNick: Record<string, number> = {}
+    _base.forEach((e: any) => {
       const k = e.equipment_model?.nickname || e.equipment_model?.model || e.model || 'Sem modelo'
-      byNick[k] = (byNick[k] || 0) + 1
+      _byNick[k] = (_byNick[k] || 0) + 1
     })
-    const entries = Object.entries(byNick).sort((a, b) => (b[1] as number) - (a[1] as number))
-    if (entries.length <= 1) return null
-    return { base, entries }
-  }, [filterStatus, equipment])
+    const _entries = Object.entries(_byNick).sort((a, b) => b[1] - a[1]) as [string, number][]
+    if (_entries.length > 1) tipoCards = { base: _base, entries: _entries }
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
