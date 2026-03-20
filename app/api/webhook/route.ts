@@ -113,8 +113,10 @@ export async function POST(req: Request) {
     let locationContext = "";
     if (message?.location) {
       const { latitude, longitude } = message.location;
-      locationContext = await checkProximidade(latitude, longitude); 
-      if (!messageText) messageText = "[Enviou Localização]"; 
+      console.log('[Geo] Coordenadas recebidas:', { latitude, longitude });
+      locationContext = await checkProximidade(latitude, longitude);
+      console.log('[Geo] Resultado de checkProximidade:', locationContext || '(string vazia — sem match de proximidade)');
+      if (!messageText) messageText = "[Enviou Localização]";
     }
 
     if (!messageText || chatId == null || telegramUserId == null) {
@@ -136,7 +138,7 @@ export async function POST(req: Request) {
       principlesResult, 
       googleContextBlock,
       microsoftContextBlock,
-      emailRadarBlock // ← CAPACIDADE DE LEITURA DE E-MAILS MICROSOFT (proactive radar com keywords)
+      emailRadarBlock
     ] = await Promise.all([
       supabase
         .from('users')
@@ -174,8 +176,38 @@ export async function POST(req: Request) {
         
       getGoogleContext(),
       getMicrosoftCalendarContext(),
-      getRecentEmails(undefined, 3, false) // ← Radar proactive: 3 e-mails baseados nas keywords cadastradas
+      getRecentEmails(undefined, 3, false)
     ]);
+
+    // ============================================================
+    // 🔍 DEBUG — Agenda Google
+    // ============================================================
+    console.log('[Debug] googleContextBlock tipo:', typeof googleContextBlock);
+    console.log('[Debug] googleContextBlock valor:', googleContextBlock);
+    const isGoogleError = typeof googleContextBlock === 'string' && googleContextBlock.includes('Erro');
+    if (isGoogleError) {
+      console.warn('[Debug] Agenda Google filtrada por conter "Erro" — o bloco NÃO chegará ao prompt');
+    }
+
+    // ============================================================
+    // 🔍 DEBUG — Agenda Microsoft
+    // ============================================================
+    console.log('[Debug] microsoftContextBlock tipo:', typeof microsoftContextBlock);
+    console.log('[Debug] microsoftContextBlock valor:', microsoftContextBlock);
+    const isMicrosoftError = typeof microsoftContextBlock === 'string' && microsoftContextBlock.includes('Erro');
+    if (isMicrosoftError) {
+      console.warn('[Debug] Agenda Microsoft filtrada por conter "Erro" — o bloco NÃO chegará ao prompt');
+    }
+
+    // ============================================================
+    // 🔍 DEBUG — Email Radar
+    // ============================================================
+    console.log('[Debug] emailRadarBlock tipo:', typeof emailRadarBlock);
+    console.log('[Debug] emailRadarBlock valor:', emailRadarBlock);
+    const isEmailError = typeof emailRadarBlock === 'string' && emailRadarBlock.includes('Erro');
+    if (isEmailError) {
+      console.warn('[Debug] Email radar filtrado por conter "Erro" — o bloco NÃO chegará ao prompt');
+    }
 
     const userProfile    = userProfileResult.data;
     const authorName     = userProfile?.nickname || userFirstName;
@@ -183,17 +215,9 @@ export async function POST(req: Request) {
     const userTimezone   = userProfile?.timezone || 'America/Sao_Paulo';
 
     // --- TRATAMENTO DE ERROS SILENCIOSOS NAS APIS ---
-    const cleanGoogleContext = typeof googleContextBlock === 'string' && googleContextBlock.includes('Erro')
-      ? null
-      : googleContextBlock;
-      
-    const cleanMicrosoftContext = typeof microsoftContextBlock === 'string' && microsoftContextBlock.includes('Erro')
-      ? null
-      : microsoftContextBlock;
-
-    const cleanEmailRadarBlock = typeof emailRadarBlock === 'string' && emailRadarBlock.includes('Erro')
-      ? null
-      : emailRadarBlock;
+    const cleanGoogleContext = isGoogleError ? null : googleContextBlock;
+    const cleanMicrosoftContext = isMicrosoftError ? null : microsoftContextBlock;
+    const cleanEmailRadarBlock = isEmailError ? null : emailRadarBlock;
     // ------------------------------------------------
 
     // Salva telegram_chat_id se ainda não estiver registrado
@@ -493,24 +517,20 @@ REGRAS:
 
     const conversationMessages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
-      // Histórico como conversa estruturada (ordem cronológica)
       ...(historyForMessages || []).reverse().flatMap((h: any): ChatMessage[] => [
         { role: 'user',      content: h.content },
         { role: 'assistant', content: (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim() }
       ]),
-      // Mensagem atual
       { role: 'user', content: messageText }
     ];
 
     // ============================================================
     // DETECÇÃO ANTECIPADA — "Jarvis, ignore isso"
-    // Roda antes de qualquer extração ou resposta
     // ============================================================
     const ignorePatterns = /ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|esquece|delete isso/i;
     const isIgnoreRequest = ignorePatterns.test(messageText);
 
     if (isIgnoreRequest) {
-      // Deleta a última entrada do brain deste usuário
       const { data: lastEntry } = await supabase
         .from('brain')
         .select('id')
@@ -529,10 +549,8 @@ REGRAS:
     }
 
     // ============================================================
-    // PRÉ-EXTRAÇÃO — roda ANTES da resposta para Jarvis confirmar
+    // PRÉ-EXTRAÇÃO
     // ============================================================
-    // Pré-classificação leve: detecta noise sem chamar IA
-    // Evita gastar tokens em saudações, risadas, mensagens vazias
     const noisePatterns = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i;
     const isLikelyNoise = noisePatterns.test(messageText.trim()) && messageText.length < 30;
 
@@ -545,7 +563,6 @@ REGRAS:
       }
     }
 
-    // Instrução de tom — sempre presente
     const feedbackContent = extractionSummary
       ? `[INTERNO]\nRegistrado: ${extractionSummary}\nConfirme em 1 frase curta. Ex: "Dia 13 de dezembro, certo." / "Guardei o aniversário de casamento."\nPROIBIDO: "Anota aí", "Anotado!", "Registrado!" — nunca.`
       : `[INTERNO]\nVocê é o assistente — NUNCA diga "Anota aí" ou peça ao usuário para anotar algo.\nSe o usuário informar uma data ou fato, confirme brevemente ou responda naturalmente.`;
@@ -560,8 +577,6 @@ REGRAS:
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
 
-    // Se houve extração mas o modelo não respondeu nada (noise sem texto)
-    // gera feedback mínimo para o usuário não ficar no silêncio
     if (!aiReply && extractionSummary) {
       const feedbacks = ['Certo.', 'Ok.', 'Guardei.', 'Entendido.'];
       aiReply = feedbacks[Math.floor(Math.random() * feedbacks.length)];
@@ -597,11 +612,9 @@ REGRAS:
     }
 
     // Salvar evento
-    // Regex tolerante: aceita campos fora de ordem (modelo às vezes inverte)
     const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(permanent|recurring_annual|deadline|one_time)\]/gi;
     for (const m of Array.from(aiReply.matchAll(eventRegex)) as any[]) {
       const evTitle = m[1].trim();
-      // Infere categoria pelo título
       const catMap: Record<string, string> = {
         aniversario: 'family', aniversário: 'family',
         casamento: 'family', pascoa: 'family', páscoa: 'family',
@@ -612,8 +625,6 @@ REGRAS:
       };
       const titleLower = evTitle.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
       const eventCategory = Object.entries(catMap).find(([k]) => titleLower.includes(k))?.[1] || 'personal';
-
-      // Peso emocional por prioridade
       const emotionalWeight = m[3] === 'alta' ? 0.9 : m[3] === 'media' ? 0.6 : 0.3;
 
       await upsertEvent(stringId, {
@@ -641,7 +652,7 @@ REGRAS:
       aiReply = aiReply.replace(uMatch[0], '').trim() + `\n\n🗓️ *Atualizado (Outlook):* ${res}`;
     }
 
-    // --- INÍCIO INTEGRAÇÃO GOOGLE ---
+    // Google Calendar
     const gMatch = aiReply.match(/\[?AGENDAR_GOOGLE:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
     if (gMatch) {
       const res = await createGoogleEvent(gMatch[1].trim(), gMatch[2].trim(), parseInt(gMatch[3]));
@@ -659,22 +670,20 @@ REGRAS:
       const res = await deleteGoogleEvent(gdMatch[1].trim());
       aiReply = aiReply.replace(gdMatch[0], '').trim() + `\n\n🗑️ *Removido (Google):* ${res}`;
     }
-    // --- FIM INTEGRAÇÃO GOOGLE ---
 
-    // Ler emails (gatilho manual — mantém toda a inteligência anterior)
+    // Ler emails
     const emailMatch = aiReply.match(/\[LER_EMAILS(?::\s*([^\]]+))?\]/i);
     if (emailMatch) {
       const filtro = emailMatch[1]?.trim() || undefined;
-      // [LER_EMAILS: *] ou [LER_EMAILS] sem filtro = busca recentes sem keyword
       const semFiltro = !filtro || filtro === '*' || filtro === 'todos';
       const emails = semFiltro
-        ? await getRecentEmails(undefined, 10, true)  // true = sem filtro keywords
+        ? await getRecentEmails(undefined, 10, true)
         : await getRecentEmails(filtro);
       aiReply = aiReply.replace(emailMatch[0], '').trim();
       aiReply = aiReply ? `${aiReply}\n\n${emails}` : emails;
     }
 
-    // Adicionar keyword de email
+    // Keywords de email
     const addKwMatch = aiReply.match(/\[ADICIONAR_KEYWORD_EMAIL:\s*([^\]]+)\]/i);
     if (addKwMatch) {
       const resultado = await addEmailKeyword(addKwMatch[1].trim());
@@ -682,7 +691,6 @@ REGRAS:
       aiReply = aiReply ? `${aiReply}\n\n${resultado}` : resultado;
     }
 
-    // Remover keyword de email
     const removeKwMatch = aiReply.match(/\[REMOVER_KEYWORD_EMAIL:\s*([^\]]+)\]/i);
     if (removeKwMatch) {
       const resultado = await removeEmailKeyword(removeKwMatch[1].trim());
@@ -716,8 +724,6 @@ REGRAS:
 
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 
-    // Extrator + Onboarding — rodam ANTES do return, com await
-    // Vercel mata processos background após o return
     const tasks: Promise<any>[] = [];
 
     if (onboardingState?.status === 'in_progress') {
@@ -727,8 +733,6 @@ REGRAS:
       );
     }
 
-    // Extrator já rodou antes da resposta (extractAndSummarize)
-    // extractRecomendacao roda após aiReply — precisa da resposta do Jarvis
     if (!isLikelyNoise) {
       tasks.push(
         extractRecomendacao(stringId, messageText, aiReply)
@@ -736,13 +740,11 @@ REGRAS:
       );
     }
 
-    // Roda sendTelegram + persistência em paralelo para não atrasar resposta
     await Promise.all([
       sendTelegram(chatId, aiReply),
       ...tasks
     ]);
 
-    // Compactação
     const { count } = await supabase
       .from('brain')
       .select('*', { count: 'exact', head: true })

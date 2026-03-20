@@ -3,6 +3,9 @@ import { supabase } from './jarvis';
 // 1. AUTENTICAÇÃO
 export async function getGoogleAccessToken() {
   const { data } = await supabase.from('config').select('value').eq('key', 'google_refresh_token').single();
+
+  console.log('[Google] refresh_token presente:', !!data?.value);
+
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -14,6 +17,11 @@ export async function getGoogleAccessToken() {
     }),
   });
   const json = await res.json();
+
+  console.log('[Google] GOOGLE_CLIENT_ID presente:', !!process.env.GOOGLE_CLIENT_ID);
+  console.log('[Google] GOOGLE_CLIENT_SECRET presente:', !!process.env.GOOGLE_CLIENT_SECRET);
+  console.log('[Google] Resposta do token:', json.access_token ? 'OK' : `ERRO — ${JSON.stringify(json)}`);
+
   if (!json.access_token) {
     console.error('[Google] Erro ao obter token:', JSON.stringify(json));
   }
@@ -24,13 +32,33 @@ export async function getGoogleAccessToken() {
 export async function getGoogleContext() {
   try {
     const token = await getGoogleAccessToken();
-    if (!token) return "Erro ao recuperar agenda do Google.";
-    const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=5&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime`, {
+    if (!token) {
+      console.warn('[Google] getGoogleContext abortado — token ausente');
+      return "Erro ao recuperar agenda do Google.";
+    }
+
+    const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=5&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime`;
+    console.log('[Google] Buscando eventos na URL:', url);
+
+    const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` }
     });
+
+    console.log('[Google] Status da resposta do Calendar:', res.status);
+
     const data = await res.json();
-    return data.items?.map((e: any) => `- ${e.summary} (${e.start.dateTime || e.start.date})`).join('\n') || "Agenda vazia.";
-  } catch {
+
+    if (data.error) {
+      console.error('[Google] Erro na API Calendar:', JSON.stringify(data.error));
+      return "Erro ao recuperar agenda do Google.";
+    }
+
+    const result = data.items?.map((e: any) => `- ${e.summary} (${e.start.dateTime || e.start.date})`).join('\n') || "Agenda vazia.";
+    console.log('[Google] Eventos retornados:', data.items?.length ?? 0);
+    return result;
+
+  } catch (err) {
+    console.error('[Google] Exceção em getGoogleContext:', err);
     return "Erro ao recuperar agenda do Google.";
   }
 }
@@ -57,8 +85,14 @@ export async function createGoogleEvent(summary: string, startTime: string, remi
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(event)
     });
+
+    console.log('[Google] createGoogleEvent status:', res.status);
     return res.ok ? `Agendado: ${summary}` : "Falha API Google.";
-  } catch { return "Erro interno ao agendar."; }
+
+  } catch (err) {
+    console.error('[Google] Exceção em createGoogleEvent:', err);
+    return "Erro interno ao agendar.";
+  }
 }
 
 // 4. ATUALIZAR EVENTO NO CALENDÁRIO
@@ -71,6 +105,9 @@ export async function updateGoogleEvent(searchTerm: string, newSummary: string, 
       headers: { Authorization: `Bearer ${token}` }
     });
     const cal = await calRes.json();
+
+    console.log('[Google] updateGoogleEvent — eventos encontrados:', cal.items?.length ?? 0, 'para busca:', searchTerm);
+
     if (!cal.items?.length) return `Não achei "${searchTerm}".`;
     
     const eventId = cal.items[0].id;
@@ -88,8 +125,14 @@ export async function updateGoogleEvent(searchTerm: string, newSummary: string, 
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(event)
     });
+
+    console.log('[Google] updateGoogleEvent status:', res.status);
     return res.ok ? `Corrigido: ${newSummary}` : "Falha API Google.";
-  } catch { return "Erro interno ao atualizar."; }
+
+  } catch (err) {
+    console.error('[Google] Exceção em updateGoogleEvent:', err);
+    return "Erro interno ao atualizar.";
+  }
 }
 
 // 5. APAGAR EVENTO NO CALENDÁRIO
@@ -102,12 +145,21 @@ export async function deleteGoogleEvent(searchTerm: string) {
       headers: { Authorization: `Bearer ${token}` }
     });
     const cal = await calRes.json();
+
+    console.log('[Google] deleteGoogleEvent — eventos encontrados:', cal.items?.length ?? 0, 'para busca:', searchTerm);
+
     if (!cal.items?.length) return `Não achei "${searchTerm}".`;
     
     const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${cal.items[0].id}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` }
     });
+
+    console.log('[Google] deleteGoogleEvent status:', res.status);
     return res.ok ? `Removido: "${searchTerm}".` : "Falha ao apagar.";
-  } catch { return "Erro interno ao deletar."; }
+
+  } catch (err) {
+    console.error('[Google] Exceção em deleteGoogleEvent:', err);
+    return "Erro interno ao deletar.";
+  }
 }
