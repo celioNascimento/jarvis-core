@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
-import { X, AlertTriangle, Lock, Package, RotateCcw, ChevronRight } from 'lucide-react'
+import { X, AlertTriangle, Lock, Package, RotateCcw } from 'lucide-react'
 
 function db() {
   return createClient(
@@ -28,15 +28,6 @@ type Equip = {
   equipment_model?: { nickname: string; model: string }
 }
 
-type Cell = {
-  code: string        // ex: SL-A1-N0
-  estante: string     // A / B / C / D
-  col: number
-  nivel: number
-  zone: 'estoque' | 'backup'
-  height: number      // metros
-}
-
 // ── Layout da sala ────────────────────────────────────────────
 const LEVELS = [
   { n: 4, label: '4º', h: 1.82 },
@@ -59,24 +50,26 @@ function parseCode(code: string) {
 }
 
 function modelColor(model: string): string {
-  if (model?.includes('EVERFLO') || model?.includes('EverFlo')) return '#3b82f6' // Azul
-  if (model?.includes('7F-10W') || model?.includes('10L'))       return '#f59e0b' // Laranja
-  if (model?.includes('8F-5AW') || model?.includes('5L'))        return '#10b981' // Verde
-  if (model?.includes('COVIDIEN') || model?.includes('Oxí'))     return '#a855f7' // Roxo claro
+  const m = (model || '').toUpperCase()
+  if (m.includes('EVERFLO')) return '#3b82f6' // Azul
+  if (m.includes('7F-10W') || m.includes('10L')) return '#f59e0b' // Laranja
+  if (m.includes('8F-5AW') || m.includes('5L'))  return '#10b981' // Verde
+  if (m.includes('COVIDIEN') || m.includes('OXI')) return '#a855f7' // Roxo claro
   return '#64748b' // Slate 500
 }
 
 function modelLabel(model: string): string {
-  if (model?.includes('EVERFLO')) return 'EVF'
-  if (model?.includes('7F-10W'))  return 'Y10'
-  if (model?.includes('8F-5AW'))  return 'Y5'
-  if (model?.includes('COVIDIEN'))return 'OXI'
+  const m = (model || '').toUpperCase()
+  if (m.includes('EVERFLO')) return 'EVF'
+  if (m.includes('7F-10W') || m.includes('10L')) return 'Y10'
+  if (m.includes('8F-5AW') || m.includes('5L'))  return 'Y5'
+  if (m.includes('COVIDIEN') || m.includes('OXI')) return 'OXI'
   return '—'
 }
 
 const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('pt-BR') : '—'
 
-// ── Célula da planta (Refatorada para o Dark Mode) ────────────
+// ── Célula da planta (Dark Mode) ───────────────────────────────
 function PlantaCell({
   code, zone, equips, selected, onClick
 }: {
@@ -94,17 +87,15 @@ function PlantaCell({
 
   const baseColor = modelColor(dominantModel)
 
-  // Cores adaptadas para fundo escuro. 
-  // O final '1A' e '33' representam níveis de transparência (alfa) em código Hexadecimal.
   const bgColor = total === 0
-    ? 'transparent' // Vazio fica da cor do fundo
-    : baseColor + '1A' // 10% de opacidade da cor do modelo
+    ? 'transparent'
+    : baseColor + '1A'
 
   const borderColor = selected
-    ? '#3b82f6' // Azul de seleção
+    ? '#3b82f6'
     : total === 0
-    ? (zone === 'backup' ? '#4c1d95' : '#1e293b') // Roxo escuro para backup, Cinza escuro para estoque
-    : baseColor + '66' // 40% de opacidade da cor
+    ? (zone === 'backup' ? '#4c1d95' : '#1e293b')
+    : baseColor + '66'
 
   return (
     <button
@@ -120,7 +111,6 @@ function PlantaCell({
         selected ? 'scale-105 z-10' : 'hover:scale-105 hover:z-10 active:scale-95'
       }`}
     >
-      {/* Quando há itens, focamos no modelo e na contagem limpa */}
       {total > 0 ? (
         <>
           <span 
@@ -134,13 +124,11 @@ function PlantaCell({
           </span>
         </>
       ) : (
-        /* Quando vazio na zona backup, mostramos apenas uma textura pontilhada sutil */
         zone === 'backup' && (
           <div className="absolute inset-0 rounded-md border-dashed border border-purple-900/40" />
         )
       )}
 
-      {/* Bloqueado */}
       {bloqueados > 0 && (
         <div className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 bg-red-500 rounded-full flex items-center justify-center shadow shadow-red-900">
           <Lock size={8} className="text-white" />
@@ -158,12 +146,16 @@ function Drawer({ code, equips, zone, onClose }: {
   onClose: () => void
 }) {
   const parsed = parseCode(code)
-  const nivelLabel = ['Chão', '1º Nível', '2º Nível', '3º Nível', '4º Nível'][parsed?.nivel ?? 0]
-  const nivelH = [0.00, 0.67, 1.26, 1.54, 1.82][parsed?.nivel ?? 0]
+  
+  // Condição especial porque a Ilha não obedece ao parsing habitual
+  const isIlha = code === 'SL-ILHA-N0'
+  const nivelLabel = isIlha ? 'Chão' : ['Chão', '1º Nível', '2º Nível', '3º Nível', '4º Nível'][parsed?.nivel ?? 0]
+  const nivelH = isIlha ? 0.00 : [0.00, 0.67, 1.26, 1.54, 1.82][parsed?.nivel ?? 0]
+  const estanteLabel = isIlha ? 'Uso Misto' : `Estante ${parsed?.estante} Col ${parsed?.col}`
+  const titulo = isIlha ? 'Ilha Central' : code
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      {/* Oculta os itens do drawer... */}
       <div
         className="bg-slate-900 w-full max-w-sm h-full overflow-y-auto shadow-2xl border-l border-slate-800"
         onClick={e => e.stopPropagation()}
@@ -171,8 +163,8 @@ function Drawer({ code, equips, zone, onClose }: {
       >
         <div className="sticky top-0 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-5 py-4 flex items-start justify-between z-10">
           <div>
-            <p className="text-xl font-black text-slate-100 tracking-tight">{code}</p>
-            <p className="text-xs text-slate-400 mt-0.5">{nivelLabel} · {nivelH}m · Estante {parsed?.estante} Col {parsed?.col}</p>
+            <p className="text-xl font-black text-slate-100 tracking-tight">{titulo}</p>
+            <p className="text-xs text-slate-400 mt-0.5">{nivelLabel} · {nivelH}m · {estanteLabel}</p>
             <span className={`inline-flex items-center gap-1 mt-1.5 text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${zone === 'backup' ? 'bg-purple-900/30 text-purple-400 border-purple-800' : 'bg-blue-900/30 text-blue-400 border-blue-800'}`}>
               {zone === 'backup' ? <RotateCcw size={8} /> : <Package size={8} />}
               {zone === 'backup' ? 'BACKUP' : 'ESTOQUE'}
@@ -264,13 +256,20 @@ export default function PlantaLastro() {
       })
   }, [])
 
+  // Filtro blindado
   const byLocation = (code: string) =>
-    equipment.filter(e => e.location?.code === code)
+    equipment.filter(e => {
+      const dbCode = (e.location?.code || '').trim().toUpperCase()
+      const targetCode = code.trim().toUpperCase()
+      return dbCode === targetCode
+    })
 
   const selectedEquips = selected ? byLocation(selected) : []
-  const selectedZone = selected
-    ? (ESTANTES.find(e => selected.startsWith(`SL-${e.id}`))?.zone ?? 'estoque')
-    : 'estoque'
+  const selectedZone = selected === 'SL-ILHA-N0' 
+    ? 'estoque' 
+    : selected 
+      ? (ESTANTES.find(e => selected.startsWith(`SL-${e.id}`))?.zone ?? 'estoque')
+      : 'estoque'
 
   const totalEquips  = equipment.length
   const bloqueados   = equipment.filter(e => e.is_blocked).length
@@ -279,7 +278,7 @@ export default function PlantaLastro() {
     <div className="min-h-screen bg-slate-950 flex items-center justify-center">
       <div className="space-y-3 text-center">
         <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto" />
-        <p className="text-xs font-mono text-slate-500 uppercase tracking-widest">Carregando sala...</p>
+        <p className="text-xs font-mono text-slate-500 uppercase tracking-widest">A carregar sala...</p>
       </div>
     </div>
   )
@@ -385,6 +384,36 @@ export default function PlantaLastro() {
             </div>
           </div>
         ))}
+
+        {/* Ilha Central */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <div className="px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest bg-slate-800 text-slate-300 border border-slate-700">
+              Ilha Central
+            </div>
+            <span className="text-[9px] text-slate-600">Uso misto</span>
+            <div className="h-px flex-1 bg-slate-800" />
+          </div>
+          <div className="bg-slate-900 rounded-2xl border border-slate-800 p-3 w-max">
+            <div className="grid gap-2" style={{ gridTemplateColumns: '50px 80px' }}>
+              <div />
+              <div className="text-center text-[9px] font-black text-slate-500 uppercase tracking-widest pb-1">
+                Chão
+              </div>
+              <div className="flex flex-col items-end justify-center pr-2">
+                <span className="text-[9px] font-black text-slate-400">Chão</span>
+                <span className="text-[7px] text-slate-600">0,00m</span>
+              </div>
+              <PlantaCell
+                code="SL-ILHA-N0"
+                zone="estoque"
+                equips={byLocation('SL-ILHA-N0')}
+                selected={selected === 'SL-ILHA-N0'}
+                onClick={() => setSelected(selected === 'SL-ILHA-N0' ? null : 'SL-ILHA-N0')}
+              />
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Drawer */}
@@ -398,4 +427,4 @@ export default function PlantaLastro() {
       )}
     </div>
   )
-}
+          }
