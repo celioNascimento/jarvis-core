@@ -34,6 +34,10 @@ export default function EditarEquipamento() {
   const [form, setForm] = useState<any>(null)
   const [models, setModels] = useState<any[]>([])
   const [locations, setLocations] = useState<any[]>([])
+  const [activeOS, setActiveOS] = useState<any>(null)
+  const [residualValue, setResidualValue] = useState('')
+  const [residualNotes, setResidualNotes] = useState('')
+  const [savingResidual, setSavingResidual] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -45,26 +49,39 @@ export default function EditarEquipamento() {
       db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(*)').eq('id', id).single(),
       db().from('equipment_models').select('*').order('nickname'),
       db().from('locations').select('id,code,area,description').eq('active', true).order('code'),
-    ]).then(([eqRes, mRes, lRes]) => {
+      db().from('service_orders').select('id,os_number,residual_value,residual_notes,status').eq('equipment_id', id).eq('status','aberta').maybeSingle(),
+    ]).then(([eqRes, mRes, lRes, osRes]) => {
       if (eqRes.data) {
         const eq = eqRes.data
-        // Normaliza location_code a partir do join location:locations(code)
         setForm({ ...eq, location_code: eq.location?.code || eq.location_code || '' })
       }
       setModels(mRes.data || [])
       setLocations(lRes.data || [])
+      if (osRes.data) {
+        setActiveOS(osRes.data)
+        setResidualValue(osRes.data.residual_value ? String(osRes.data.residual_value) : '')
+        setResidualNotes(osRes.data.residual_notes || '')
+      }
       setLoading(false)
     })
   }, [id])
 
   const f = (field: string, val: any) => setForm((p: any) => ({...p, [field]: val}))
 
+  const salvarResidual = async () => {
+    if (!activeOS) return
+    setSavingResidual(true)
+    await db().from('service_orders').update({
+      residual_value: residualValue ? Number(residualValue) : null,
+      residual_notes: residualNotes || null,
+    }).eq('id', activeOS.id)
+    setSavingResidual(false)
+  }
+
   const salvar = async () => {
     if (!form) return
     setSaving(true); setError('')
-    // Busca por code (seleção no dropdown) ou mantém location_id atual se não mudou
-    const loc = locations.find(l => l.code === form.location_code)
-    const finalLocationId = loc?.id || (form.location_code ? null : form.location_id)
+    const loc = locations.find(l => l.code === form.location_code || l.id === form.location_id)
     const { error: err } = await db().from('equipment').update({
       serial_number: form.serial_number || null,
       client_number: form.client_number || null,
@@ -72,7 +89,7 @@ export default function EditarEquipamento() {
       model_id: form.model_id || null,
       brand: models.find(m => m.id === form.model_id)?.brand || form.brand,
       model: models.find(m => m.id === form.model_id)?.model || form.model,
-      location_id: finalLocationId,
+      location_id: loc?.id || form.location_id,
       notes: form.notes || null,
       // concentrador
       flow_measurement: form.flow_measurement ? Number(form.flow_measurement) : null,
@@ -185,6 +202,34 @@ export default function EditarEquipamento() {
             ))}
           </select>
         </div>
+
+        {/* Valor Residual — só aparece se há OS de manutenção ativa */}
+        {activeOS && ['aguardando_envio','manutencao_externa'].includes(form?.status) && (
+          <div className="bg-amber-50 rounded-3xl border border-amber-200 p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Valor Residual — OS {activeOS.os_number || 'em aberto'}</p>
+              <button onClick={salvarResidual} disabled={savingResidual} className="px-3 py-1.5 bg-amber-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-amber-700 disabled:opacity-60 transition-all">
+                {savingResidual ? 'Salvando...' : 'Salvar'}
+              </button>
+            </div>
+            <p className="text-[10px] text-amber-600">Informe o valor residual atual para avaliar custo-benefício do reparo externo.</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={lbl}>Valor Residual (R$)</label>
+                <input type="number" step="0.01" min="0" value={residualValue} onChange={e => setResidualValue(e.target.value)} className={inp} placeholder="Ex: 1500,00" />
+              </div>
+              <div>
+                <label className={lbl}>Observação</label>
+                <input value={residualNotes} onChange={e => setResidualNotes(e.target.value)} className={inp} placeholder="Ex: depreciado 40%" />
+              </div>
+            </div>
+            {residualValue && (
+              <p className="text-sm font-black text-amber-800">
+                Valor registrado: R$ {Number(residualValue).toLocaleString('pt-BR', {minimumFractionDigits:2})}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Concentrador */}
         {isConcentrador && (
