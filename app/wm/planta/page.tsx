@@ -264,7 +264,9 @@ export default function PlantaLastro() {
       .select('id, asset_number, model, brand, status, is_backup, is_blocked, block_reason, seal_number, entry_date, location:locations(code), equipment_model:equipment_models(nickname,model)')
       .eq('status', 'lastro')
       .then(({ data }) => {
-        setEquipment(data || [])
+        // CORREÇÃO AQUI: Avisamos o TypeScript que podemos confiar nesse formato de dados.
+        // O `as unknown as Equip[]` resolve a reclamação do compilador.
+        setEquipment((data as unknown as Equip[]) || [])
         setLoading(false)
       })
   }, [])
