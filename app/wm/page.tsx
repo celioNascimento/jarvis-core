@@ -475,6 +475,8 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
   const [notFound, setNotFound] = useState(false)
   const [locations, setLocations] = useState<any[]>([])
   const [locationCode, setLocationCode] = useState('')
+  const [residualValue, setResidualValue] = useState('')
+  const [residualNotes, setResidualNotes] = useState('')
 
   useEffect(() => {
     db().from('locations').select('id,code,area,zone,description').eq('active', true).eq('area','sala_lastro').order('code')
@@ -497,7 +499,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
       
       // INTELIGÊNCIA: Busca OS ativa para preencher os campos automaticamente
       const { data: activeOS } = await db().from('service_orders')
-        .select('os_number, client_number')
+        .select('os_number, client_number, residual_value, residual_notes')
         .eq('equipment_id', data.id)
         .eq('status', 'aberta')
         .maybeSingle()
@@ -505,6 +507,8 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
       if (activeOS) {
         setOsNumber(activeOS.os_number || '')
         setClientNumber(activeOS.client_number || data.client_number || '')
+        setResidualValue(activeOS.residual_value ? String(activeOS.residual_value) : '')
+        setResidualNotes(activeOS.residual_notes || '')
       }
 
       const { data: mov } = await db().from('movements').select('*').eq('equipment_id', data.id).order('moved_at', { ascending: false })
@@ -526,10 +530,15 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
       .maybeSingle()
     
     // INTELIGÊNCIA: Incorporação dinâmica da OS antes de mover
-    if (activeOS && osNumber) {
-      await db().from('service_orders')
-        .update({ os_number: osNumber, client_number: clientNumber || null })
-        .eq('id', activeOS.id)
+    if (activeOS) {
+      const osUpdate: any = {}
+      if (osNumber) osUpdate.os_number = osNumber
+      if (clientNumber) osUpdate.client_number = clientNumber
+      if (residualValue) osUpdate.residual_value = Number(residualValue)
+      if (residualNotes) osUpdate.residual_notes = residualNotes
+      if (Object.keys(osUpdate).length > 0) {
+        await db().from('service_orders').update(osUpdate).eq('id', activeOS.id)
+      }
     }
 
     // Registra a movimentação vinculada
@@ -557,7 +566,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
     }
     
     const updatedEquip = { ...equip, ...payloadUpdate }
-    setEquip(updatedEquip); setNovoStatus(S[novoStatus]?.next[0] || ''); setMotivo(''); setOsNumber(''); setClientNumber(''); setSealNumber(''); setLocationCode('')
+    setEquip(updatedEquip); setNovoStatus(S[novoStatus]?.next[0] || ''); setMotivo(''); setOsNumber(''); setClientNumber(''); setSealNumber(''); setLocationCode(''); setResidualValue(''); setResidualNotes('')
     
     const { data: mov } = await db().from('movements').select('*').eq('equipment_id', equip.id).order('moved_at', { ascending: false })
     setHistorico(mov || []); setSalvando(false); onMoved?.()
@@ -663,6 +672,35 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                     </div>
                   )}
 
+                  {['aguardando_envio','manutencao_externa'].includes(novoStatus) && (
+                    <div className="space-y-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 flex items-center gap-1.5">
+                        <span>R$</span> Valor Residual — Serviço Externo
+                      </p>
+                      <p className="text-[10px] text-amber-600">Registre o valor residual atual para avaliar o custo-benefício do reparo.</p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={lbl}>Valor Residual (R$)</label>
+                          <input
+                            type="number" step="0.01" min="0"
+                            value={residualValue}
+                            onChange={e => setResidualValue(e.target.value)}
+                            className={inp}
+                            placeholder="Ex: 1500,00"
+                          />
+                        </div>
+                        <div>
+                          <label className={lbl}>Observação</label>
+                          <input
+                            value={residualNotes}
+                            onChange={e => setResidualNotes(e.target.value)}
+                            className={inp}
+                            placeholder="Ex: depreciado 40%"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <textarea value={motivo} onChange={e => setMotivo(e.target.value)} className={inp + ' resize-none'} rows={2} placeholder="Motivo / observação (opcional)..." />
                   <button onClick={mover} disabled={salvando || !novoStatus} className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-60">{salvando ? 'Movendo...' : 'Confirmar Movimentação'}</button>
                   <div className="w-full h-px bg-gray-100 my-2"></div>
@@ -824,9 +862,9 @@ function AbaRelatorios() {
     setTipo(id); setLoading(true); setDados([])
     let res: any[] = []
     if (id === 'por_status') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model)').order('status').order('asset_number'); res = data || [] }
-    else if (id === 'manutencao') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model)').in('status', ['manutencao_externa','avaliacao_bancada']).order('entry_date'); res = data || [] }
+    else if (id === 'manutencao') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model), service_orders!inner(os_number,residual_value,residual_notes,status)').in('status', ['manutencao_externa','avaliacao_bancada','aguardando_envio']).order('entry_date'); res = (data || []).map((eq: any) => ({ ...eq, residual_value: eq.service_orders?.find((o: any) => o.status === 'aberta')?.residual_value, residual_notes: eq.service_orders?.find((o: any) => o.status === 'aberta')?.residual_notes })) }
     else if (id === 'ag_pecas') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model)').eq('status', 'aguardando_pecas').order('entry_date'); res = data || [] }
-    else if (id === 'ag_envio') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model)').eq('status', 'aguardando_envio').order('entry_date'); res = data || [] }
+    else if (id === 'ag_envio') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model), service_orders!inner(os_number,residual_value,residual_notes,status)').eq('status', 'aguardando_envio').order('entry_date'); res = (data || []).map((eq: any) => ({ ...eq, residual_value: eq.service_orders?.find((o: any) => o.status === 'aberta')?.residual_value, residual_notes: eq.service_orders?.find((o: any) => o.status === 'aberta')?.residual_notes })) }
     else if (id === 'calibracao') { const em60 = new Date(Date.now() + 60*24*60*60*1000).toISOString().slice(0,10); const { data } = await db().from('standards').select('*').lte('next_calibration', em60).order('next_calibration'); res = data || [] }
     else if (id === 'movimentacoes') { let q = db().from('movements').select('*, equipment:equipment(asset_number,brand,model)'); if (periodo.de) q = q.gte('moved_at', periodo.de); if (periodo.ate) q = q.lte('moved_at', periodo.ate + 'T23:59:59'); const { data } = await q.order('moved_at', { ascending: false }).limit(200); res = data || [] }
     else if (id === 'pecas_criticas') { const { data } = await db().from('spare_parts').select('*, compatible_model:equipment_models(brand,model,nickname)').order('stock_current'); res = (data || []).filter((p: any) => p.stock_current <= p.stock_minimum) }
@@ -852,8 +890,14 @@ function AbaRelatorios() {
           </div>
           <div className="divide-y divide-gray-50">
             {(tipo === 'por_status' || tipo === 'manutencao' || tipo === 'ag_pecas' || tipo === 'ag_envio') && dados.map(eq => (
-              <div key={eq.id} className="px-4 py-3 flex items-center gap-3">
-                <span className="font-black text-gray-900 text-sm w-20 shrink-0">{eq.asset_number}</span><div className="flex-1 min-w-0"><p className="text-sm font-semibold text-gray-700 truncate">{eq.equipment_model?.nickname || eq.equipment_type || '—'}<span className="text-gray-400 font-normal ml-1 text-xs">{eq.equipment_model?.brand} {eq.equipment_model?.model}</span></p></div><Badge status={eq.status} size="sm" /><span className="text-xs text-gray-400 shrink-0">{eq.location?.code || '—'}</span>
+              <div key={eq.id} className="px-4 py-3 flex items-center gap-3 flex-wrap">
+                <span className="font-black text-gray-900 text-sm w-20 shrink-0">{eq.asset_number}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-700 truncate">{eq.equipment_model?.nickname || eq.equipment_type || '—'}<span className="text-gray-400 font-normal ml-1 text-xs">{eq.equipment_model?.brand} {eq.equipment_model?.model}</span></p>
+                  {eq.residual_value && <p className="text-xs text-amber-700 font-bold mt-0.5">R$ {Number(eq.residual_value).toLocaleString('pt-BR', {minimumFractionDigits:2})}{eq.residual_notes && <span className="font-normal text-amber-500 ml-1">· {eq.residual_notes}</span>}</p>}
+                </div>
+                <Badge status={eq.status} size="sm" />
+                <span className="text-xs text-gray-400 shrink-0">{eq.location?.code || '—'}</span>
               </div>
             ))}
             {tipo === 'calibracao' && dados.map(s => { const dias = Math.floor((new Date(s.next_calibration).getTime() - Date.now()) / 86400000); return (
@@ -1079,7 +1123,7 @@ export default function WMDashboard() {
                 </div>
               )}
             </div>
-            <button onClick={() => setShowVerificaEntrada(true)} className="sm:hidden flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition-all shadow-sm"><Plus size={14} />Cadastro</button>
+
             <button onClick={logout} title="Sair" className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-all"><LogOut size={15} /></button>
           </div>
         </div>
@@ -1186,7 +1230,23 @@ export default function WMDashboard() {
                 </div>
                 <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
                   {equipFiltrado.length === 0 && !loading ? (
-                    <div className="p-8 sm:p-12"><div className="text-center space-y-2"><Search size={24} className="text-gray-300 mx-auto" /><p className="text-gray-400 text-sm">Nenhum resultado para a busca.</p></div></div>
+                    <div className="p-8 sm:p-12">
+                      <div className="text-center space-y-3">
+                        <Search size={24} className="text-gray-300 mx-auto" />
+                        <p className="text-gray-400 text-sm">Nenhum resultado para <span className="font-bold text-gray-600">"{search || filterStatus}"</span></p>
+                        {search.trim() && (
+                          <div className="pt-2">
+                            <p className="text-xs text-gray-400 mb-3">Esse equipamento ainda não está cadastrado?</p>
+                            <button
+                              onClick={() => { setNovoAtivo(search.trim()); setShowEntrada(true) }}
+                              className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition-all shadow-sm"
+                            >
+                              <Plus size={14} /> Cadastrar &ldquo;{search.trim()}&rdquo;
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   ) : (
                     <>
                       <div className="hidden sm:grid grid-cols-[80px_1fr_90px_120px_70px_32px] gap-3 px-5 py-2.5 bg-gray-50 border-b border-gray-100">{['Ativo','Equipamento','Status','Série','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}</div>
