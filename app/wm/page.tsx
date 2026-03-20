@@ -1,7 +1,7 @@
 'use client'
 export const dynamic = 'force-dynamic'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import {
   Package, MapPin, Wrench, AlertTriangle, CheckCircle,
@@ -1082,21 +1082,22 @@ export default function WMDashboard() {
     { id: 'relatorios',   label: 'Relatórios',   icon: FileText },
   ] as const
 
-  // Cards de tipo — pré-computados, sem IIFE no JSX (Turbopack não suporta)
-  const tipoCards = (() => {
+  const tipoCards = useMemo(() => {
     if (filterStatus !== 'lastro' && filterStatus !== 'backup') return null
     const base = equipment.filter(e =>
-      filterStatus === 'lastro' ? (e.status === 'lastro' && !e.is_backup) : (e.status === 'lastro' && e.is_backup === true)
+      filterStatus === 'lastro'
+        ? (e.status === 'lastro' && !e.is_backup)
+        : (e.status === 'lastro' && e.is_backup === true)
     )
     const byNick: Record<string, number> = {}
-    base.forEach(e => {
+    base.forEach((e: any) => {
       const k = e.equipment_model?.nickname || e.equipment_model?.model || e.model || 'Sem modelo'
       byNick[k] = (byNick[k] || 0) + 1
     })
-    const entries = Object.entries(byNick).sort((a: any, b: any) => b[1] - a[1])
+    const entries = Object.entries(byNick).sort((a, b) => (b[1] as number) - (a[1] as number))
     if (entries.length <= 1) return null
     return { base, entries }
-  })()
+  }, [filterStatus, equipment])
 
   return (
     <div className="min-h-screen bg-gray-50">
