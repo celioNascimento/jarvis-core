@@ -13,10 +13,10 @@ export async function GET(req: Request) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         code,
-        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_id:     process.env.GOOGLE_CLIENT_ID,
         client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        redirect_uri: 'https://jarvis-core-three.vercel.app/api/auth/callback',
-        grant_type: 'authorization_code',
+        redirect_uri:  process.env.GOOGLE_REDIRECT_URI, // ← via env, não hardcoded
+        grant_type:    'authorization_code',
       }),
     });
 
@@ -30,12 +30,10 @@ export async function GET(req: Request) {
       });
     }
 
-    // RIGOR: O Google só envia o refresh_token se o login tiver 'prompt=consent'
-    // Se não vier, interrompemos para não sobrescrever o banco com NULL
     if (!data.refresh_token) {
       return NextResponse.json({ 
         success: false, 
-        message: "O Google não enviou um novo Refresh Token. Tente novamente clicando no botão de consentimento." 
+        message: "O Google não enviou um novo Refresh Token. Acesse /api/auth/google?secret=... para refazer o fluxo com prompt=consent." 
       });
     }
 
@@ -45,8 +43,6 @@ export async function GET(req: Request) {
       { db: { schema: 'jarvis' } }
     );
 
-    // UPSERT: Atualiza se a chave existir, insere se não existir.
-    // Forçamos o updated_at para ignorar o valor estático do banco.
     const { error: supaError } = await supabase
       .from('config')
       .upsert({ 
@@ -61,7 +57,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ 
       success: true, 
-      message: "Conexão estabelecida! O Jarvis agora tem acesso à sua agenda (Data: " + new Date().toLocaleString('pt-BR') + ")" 
+      message: "Conexão estabelecida! O Jarvis agora tem acesso à sua agenda (Data: " + new Date().toLocaleString('pt-BR') + ")"
     });
 
   } catch (error: any) {
