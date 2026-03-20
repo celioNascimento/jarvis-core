@@ -48,10 +48,10 @@ const S: Record<string, { label: string; short: string; color: string; bg: strin
   avaliacao_bancada:   { label: 'Bancada',        short: 'BAN',  color: '#9a3412', bg: '#fff7ed', border: '#fed7aa', dot: '#f97316', icon: Activity,     next: ['limpeza','aguardando_pecas','aguardando_envio','manutencao_externa','descarte'] },
   aguardando_pecas:    { label: 'Ag. Peças',      short: 'PEÇ',  color: '#713f12', bg: '#fefce8', border: '#fef08a', dot: '#eab308', icon: Clock,        next: ['limpeza','aguardando_envio','manutencao_externa','descarte'] },
   aguardando_envio:    { label: 'Ag. Envio Ext.', short: 'ENV',  color: '#831843', bg: '#fdf2f8', border: '#fbcfe8', dot: '#ec4899', icon: Truck,        next: ['manutencao_externa','descarte'] },
-  limpeza:             { label: 'Limpeza',        short: 'LIM',  color: '#155e75', bg: '#ecfeff', border: '#a5f3fc', dot: '#06b6d4', icon: Droplets,     next: ['lastro','backup','descarte'] },
-  manutencao_externa:  { label: 'Manut. Externa', short: 'MAN',  color: '#7f1d1d', bg: '#fef2f2', border: '#fecaca', dot: '#ef4444', icon: Wrench,       next: ['limpeza','lastro','descarte'] },
-  lastro:              { label: 'Lastro',         short: 'LAS',  color: '#1e3a8a', bg: '#eff6ff', border: '#bfdbfe', dot: '#3b82f6', icon: Archive,      next: ['backup','aplicado','descarte'] },
-  backup:              { label: 'Backup',         short: 'BAK',  color: '#4c1d95', bg: '#f5f3ff', border: '#ddd6fe', dot: '#8b5cf6', icon: RotateCcw,    next: ['lastro','aplicado','descarte'] },
+  limpeza:             { label: 'Limpeza',        short: 'LIM',  color: '#155e75', bg: '#ecfeff', border: '#a5f3fc', dot: '#06b6d4', icon: Droplets,     next: ['lastro','backup','aguardando_envio','manutencao_externa','descarte'] },
+  manutencao_externa:  { label: 'Manut. Externa', short: 'MAN',  color: '#7f1d1d', bg: '#fef2f2', border: '#fecaca', dot: '#ef4444', icon: Wrench,       next: ['limpeza','lastro','aguardando_envio','descarte'] },
+  lastro:              { label: 'Lastro',         short: 'LAS',  color: '#1e3a8a', bg: '#eff6ff', border: '#bfdbfe', dot: '#3b82f6', icon: Archive,      next: ['backup','aplicado','limpeza','descarte'] },
+  backup:              { label: 'Backup',         short: 'BAK',  color: '#4c1d95', bg: '#f5f3ff', border: '#ddd6fe', dot: '#8b5cf6', icon: RotateCcw,    next: ['lastro','aplicado','limpeza','descarte'] },
   aplicado:            { label: 'Aplicado',       short: 'APL',  color: '#14532d', bg: '#f0fdf4', border: '#bbf7d0', dot: '#22c55e', icon: CheckCircle,  next: ['limpeza','manutencao_externa','descarte'] },
   descarte:            { label: 'Descarte',       short: 'DESC', color: '#374151', bg: '#f9fafb', border: '#e5e7eb', dot: '#9ca3af', icon: Trash2,       next: [] },
 }
@@ -141,6 +141,7 @@ function ModalVerificaEntrada({ onClose, onCadastrar }: { onClose: () => void; o
 // ── Modal Nova Entrada ────────────────────────────────────
 const SENSOR_STATUS: Record<string, string> = { presente: 'Presente', saiu_com_paciente: 'Saiu c/ Paciente', em_outro_cliente: 'Em outro cliente', danificado: 'Danificado', ausente: 'Ausente' }
 const FILTER_STATUS: Record<string, {label: string; color: string}> = { ok: { label: 'OK', color: 'text-green-600' }, meia_vida: { label: 'Meia Vida', color: 'text-yellow-600' }, necessita_troca: { label: 'Necessita Troca', color: 'text-red-600' }, novo: { label: 'Trocado', color: 'text-blue-600' }, sem_estoque: { label: 'Sem Estoque', color: 'text-gray-500' } }
+const CANNULA_STATUS: Record<string, {label: string; color: string}> = { ok: { label: 'OK', color: 'text-green-600' }, meia_vida: { label: 'Meia Vida', color: 'text-yellow-600' }, necessita_troca: { label: 'Necessita Troca', color: 'text-red-600' }, trocada: { label: 'Trocada', color: 'text-blue-600' } }
 
 function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtivo?: string, onClose: () => void; onSaved: () => void; onToast: (msg: string) => void }) {
   const [tipo, setTipo] = useState<'concentrador'|'oximetro'>('concentrador')
@@ -347,7 +348,7 @@ function ModalEntrada({ initialAtivo, onClose, onSaved, onToast }: { initialAtiv
                 <div><label className={lbl}>Concentração O₂ (%)</label><input type="number" step="0.1" min="0" max="100" value={form.o2_concentration} onChange={e => f('o2_concentration', e.target.value)} className={inp} placeholder="Ex: 93" /></div>
               </div>
               <div><label className={lbl}>Filtro de Ar</label><div className="flex gap-2 flex-wrap mb-2">{Object.entries(FILTER_STATUS).map(([k, v]) => (<button key={k} onClick={() => f('filter_status', k)} className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${form.filter_status === k ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-500'}`}>{v.label}</button>))}</div><div className="grid grid-cols-2 gap-3"><div><label className={lbl}>Última troca</label><input type="date" value={form.filter_last_change} onChange={e => f('filter_last_change', e.target.value)} className={inp} /></div><div><label className={lbl}>Próxima troca</label><input type="date" value={form.filter_next_change} onChange={e => f('filter_next_change', e.target.value)} className={inp} /></div></div></div>
-              <div><label className={lbl}>Cânula / Cateter</label><div className="flex gap-2 flex-wrap">{Object.entries(FILTER_STATUS).filter(([k]) => k !== 'sem_estoque').map(([k, v]) => (<button key={k} onClick={() => f('cannula_status', k)} className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${form.cannula_status === k ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-500'}`}>{v.label}</button>))}</div></div>
+              <div><label className={lbl}>Cânula / Cateter</label><div className="flex gap-2 flex-wrap">{Object.entries(CANNULA_STATUS).map(([k, v]) => (<button key={k} onClick={() => f('cannula_status', k)} className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${form.cannula_status === k ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-500'}`}>{v.label}</button>))}</div></div>
               <div className="grid grid-cols-2 gap-3"><div><label className={lbl}>Alarme</label><select value={form.alarm_status} onChange={e => f('alarm_status', e.target.value)} className={inp}><option value="ok">OK</option><option value="falha">Falha</option><option value="nao_testado">Não testado</option></select></div></div>
               <div className="flex gap-4"><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={form.has_humidifier} onChange={e => f('has_humidifier', e.target.checked)} className="w-4 h-4 accent-blue-600" /><span className="text-sm font-semibold text-gray-700">Tem umidificador</span></label><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={form.opi_indicator} onChange={e => f('opi_indicator', e.target.checked)} className="w-4 h-4 accent-blue-600" /><span className="text-sm font-semibold text-gray-700">Tem OPI</span></label></div>
             </div>
@@ -466,13 +467,22 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
   
   const [osNumber, setOsNumber] = useState('')
   const [clientNumber, setClientNumber] = useState('')
+  const [sealNumber, setSealNumber] = useState('')
   
   const [isBlocking, setIsBlocking] = useState(false)
   const [blockReason, setBlockReason] = useState('')
 
   const [salvando, setSalvando] = useState(false)
   const [notFound, setNotFound] = useState(false)
+  const [locations, setLocations] = useState<any[]>([])
+  const [locationCode, setLocationCode] = useState('')
+  const [residualValue, setResidualValue] = useState('')
+  const [residualNotes, setResidualNotes] = useState('')
 
+  useEffect(() => {
+    db().from('locations').select('id,code,area,zone,description').eq('active', true).eq('area','sala_lastro').order('code')
+      .then(({ data }: any) => setLocations(data || []))
+  }, [])
   useEffect(() => { if (initialAtivo) buscar() }, [initialAtivo])
 
   // LÓGICA DE BUSCA: Recupera a OS aberta existente
@@ -490,7 +500,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
       
       // INTELIGÊNCIA: Busca OS ativa para preencher os campos automaticamente
       const { data: activeOS } = await db().from('service_orders')
-        .select('os_number, client_number')
+        .select('os_number, client_number, residual_value, residual_notes')
         .eq('equipment_id', data.id)
         .eq('status', 'aberta')
         .maybeSingle()
@@ -498,6 +508,8 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
       if (activeOS) {
         setOsNumber(activeOS.os_number || '')
         setClientNumber(activeOS.client_number || data.client_number || '')
+        setResidualValue(activeOS.residual_value ? String(activeOS.residual_value) : '')
+        setResidualNotes(activeOS.residual_notes || '')
       }
 
       const { data: mov } = await db().from('movements').select('*').eq('equipment_id', data.id).order('moved_at', { ascending: false })
@@ -508,6 +520,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
 
   // LÓGICA DE MOVIMENTAÇÃO: Incorpora número de OS e gerencia ciclo de vida
   const mover = async () => {
+    const locationId = locationCode ? locations.find((l: any) => l.code === locationCode)?.id : null
     if (!novoStatus || !equip) return
     setSalvando(true)
     
@@ -518,10 +531,15 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
       .maybeSingle()
     
     // INTELIGÊNCIA: Incorporação dinâmica da OS antes de mover
-    if (activeOS && osNumber) {
-      await db().from('service_orders')
-        .update({ os_number: osNumber, client_number: clientNumber || null })
-        .eq('id', activeOS.id)
+    if (activeOS) {
+      const osUpdate: any = {}
+      if (osNumber) osUpdate.os_number = osNumber
+      if (clientNumber) osUpdate.client_number = clientNumber
+      if (residualValue) osUpdate.residual_value = Number(residualValue)
+      if (residualNotes) osUpdate.residual_notes = residualNotes
+      if (Object.keys(osUpdate).length > 0) {
+        await db().from('service_orders').update(osUpdate).eq('id', activeOS.id)
+      }
     }
 
     // Registra a movimentação vinculada
@@ -538,17 +556,18 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
 
     const payloadUpdate: any = { status: novoStatus }
     if (clientNumber) payloadUpdate.client_number = clientNumber
+    if (sealNumber) payloadUpdate.seal_number = sealNumber
     await db().from('equipment').update(payloadUpdate).eq('id', equip.id)
     
     // GATILHO DE FECHAMENTO: Encerra o atendimento nos estados de saída
-    if (activeOS && ['lastro', 'backup', 'descarte'].includes(novoStatus)) {
+    if (activeOS && ['lastro', 'backup', 'aplicado', 'descarte'].includes(novoStatus)) {
       await db().from('service_orders')
         .update({ status: 'fechada', closed_at: new Date().toISOString() })
         .eq('id', activeOS.id)
     }
     
     const updatedEquip = { ...equip, ...payloadUpdate }
-    setEquip(updatedEquip); setNovoStatus(S[novoStatus]?.next[0] || ''); setMotivo(''); setOsNumber(''); setClientNumber('')
+    setEquip(updatedEquip); setNovoStatus(S[novoStatus]?.next[0] || ''); setMotivo(''); setOsNumber(''); setClientNumber(''); setSealNumber(''); setLocationCode(''); setResidualValue(''); setResidualNotes('')
     
     const { data: mov } = await db().from('movements').select('*').eq('equipment_id', equip.id).order('moved_at', { ascending: false })
     setHistorico(mov || []); setSalvando(false); onMoved?.()
@@ -593,7 +612,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                 <p className="text-2xl font-black text-gray-900">{equip.asset_number}</p>
                 <p className="text-sm text-gray-500 mt-0.5">{equip.equipment_model?.nickname || equip.equipment_type || '—'}{(equip.equipment_model?.brand || equip.brand) && <span className="text-gray-400 ml-2 text-xs">{equip.equipment_model?.brand || equip.brand} {equip.equipment_model?.model || equip.model}</span>}</p>
               </div>
-              <Badge status={equip.status} />
+              <Badge status={(equip.status === 'lastro' && equip.is_backup) ? 'backup' : equip.status} />
             </div>
             <div className="grid grid-cols-3 gap-2">
               {[['Série', equip.serial_number || '—'], ['Cliente', equip.client_number || '—'], ['Local', equip.location?.code || '—']].map(([l, v]) => (
@@ -616,7 +635,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                 <>
                   <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Próximo passo</p>
                   <div className="flex items-center gap-3 flex-wrap">
-                    <Badge status={equip.status} />
+                    <Badge status={(equip.status === 'lastro' && equip.is_backup) ? 'backup' : equip.status} />
                     <ArrowRight size={14} className="text-gray-300 shrink-0" />
                     <div className="flex gap-2 flex-wrap">
                       {S[equip.status].next.map(s => {
@@ -630,7 +649,59 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                     <div><label className={lbl}>Ordem de Serviço (OS)</label><input value={osNumber} onChange={e => setOsNumber(e.target.value)} className={inp} placeholder="Ex: OS-9988" /></div>
                     <div><label className={lbl}>Nº Cliente (Origem/Destino)</label><input value={clientNumber} onChange={e => setClientNumber(e.target.value)} className={inp} placeholder="Ex: 554433" /></div>
                   </div>
+                  {['lastro','backup','limpeza'].includes(novoStatus) && (
+                    <div>
+                      <label className={lbl}>Nº Lacre{['lastro','backup'].includes(novoStatus) && <span className="ml-1 text-blue-400 normal-case font-medium">· recomendado ao entrar no estoque</span>}</label>
+                      <input value={sealNumber} onChange={e => setSealNumber(e.target.value)} className={inp} placeholder={equip.seal_number ? `Atual: ${equip.seal_number}` : 'Ex: 0005584'} />
+                    </div>
+                  )}
+                  {['lastro','backup'].includes(novoStatus) && (
+                    <div>
+                      <label className={lbl}>Endereço{equip.location?.code && <span className="ml-1 text-gray-400 normal-case font-medium">· atual: {equip.location.code}</span>}</label>
+                      <select value={locationCode} onChange={e => setLocationCode(e.target.value)} className={inp}>
+                        <option value="">— Manter endereço atual —</option>
+                        {['estoque','backup'].map(zone => {
+                          const locs = locations.filter((l: any) => l.zone === zone)
+                          if (!locs.length) return null
+                          return (
+                            <optgroup key={zone} label={zone === 'backup' ? '⚠ BACKUP' : 'ESTOQUE'}>
+                              {locs.map((l: any) => <option key={l.id} value={l.code}>{l.code}</option>)}
+                            </optgroup>
+                          )
+                        })}
+                      </select>
+                    </div>
+                  )}
 
+                  {['aguardando_envio','manutencao_externa'].includes(novoStatus) && (
+                    <div className="space-y-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 flex items-center gap-1.5">
+                        <span>R$</span> Valor Residual — Serviço Externo
+                      </p>
+                      <p className="text-[10px] text-amber-600">Registre o valor residual atual para avaliar o custo-benefício do reparo.</p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={lbl}>Valor Residual (R$)</label>
+                          <input
+                            type="number" step="0.01" min="0"
+                            value={residualValue}
+                            onChange={e => setResidualValue(e.target.value)}
+                            className={inp}
+                            placeholder="Ex: 1500,00"
+                          />
+                        </div>
+                        <div>
+                          <label className={lbl}>Observação</label>
+                          <input
+                            value={residualNotes}
+                            onChange={e => setResidualNotes(e.target.value)}
+                            className={inp}
+                            placeholder="Ex: depreciado 40%"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <textarea value={motivo} onChange={e => setMotivo(e.target.value)} className={inp + ' resize-none'} rows={2} placeholder="Motivo / observação (opcional)..." />
                   <button onClick={mover} disabled={salvando || !novoStatus} className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-60">{salvando ? 'Movendo...' : 'Confirmar Movimentação'}</button>
                   <div className="w-full h-px bg-gray-100 my-2"></div>
@@ -792,9 +863,9 @@ function AbaRelatorios() {
     setTipo(id); setLoading(true); setDados([])
     let res: any[] = []
     if (id === 'por_status') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model)').order('status').order('asset_number'); res = data || [] }
-    else if (id === 'manutencao') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model)').in('status', ['manutencao_externa','avaliacao_bancada']).order('entry_date'); res = data || [] }
+    else if (id === 'manutencao') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model), service_orders!inner(os_number,residual_value,residual_notes,status)').in('status', ['manutencao_externa','avaliacao_bancada','aguardando_envio']).order('entry_date'); res = (data || []).map((eq: any) => ({ ...eq, residual_value: eq.service_orders?.find((o: any) => o.status === 'aberta')?.residual_value, residual_notes: eq.service_orders?.find((o: any) => o.status === 'aberta')?.residual_notes })) }
     else if (id === 'ag_pecas') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model)').eq('status', 'aguardando_pecas').order('entry_date'); res = data || [] }
-    else if (id === 'ag_envio') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model)').eq('status', 'aguardando_envio').order('entry_date'); res = data || [] }
+    else if (id === 'ag_envio') { const { data } = await db().from('equipment').select('*, location:locations(code), equipment_model:equipment_models(nickname,brand,model), service_orders!inner(os_number,residual_value,residual_notes,status)').eq('status', 'aguardando_envio').order('entry_date'); res = (data || []).map((eq: any) => ({ ...eq, residual_value: eq.service_orders?.find((o: any) => o.status === 'aberta')?.residual_value, residual_notes: eq.service_orders?.find((o: any) => o.status === 'aberta')?.residual_notes })) }
     else if (id === 'calibracao') { const em60 = new Date(Date.now() + 60*24*60*60*1000).toISOString().slice(0,10); const { data } = await db().from('standards').select('*').lte('next_calibration', em60).order('next_calibration'); res = data || [] }
     else if (id === 'movimentacoes') { let q = db().from('movements').select('*, equipment:equipment(asset_number,brand,model)'); if (periodo.de) q = q.gte('moved_at', periodo.de); if (periodo.ate) q = q.lte('moved_at', periodo.ate + 'T23:59:59'); const { data } = await q.order('moved_at', { ascending: false }).limit(200); res = data || [] }
     else if (id === 'pecas_criticas') { const { data } = await db().from('spare_parts').select('*, compatible_model:equipment_models(brand,model,nickname)').order('stock_current'); res = (data || []).filter((p: any) => p.stock_current <= p.stock_minimum) }
@@ -820,8 +891,14 @@ function AbaRelatorios() {
           </div>
           <div className="divide-y divide-gray-50">
             {(tipo === 'por_status' || tipo === 'manutencao' || tipo === 'ag_pecas' || tipo === 'ag_envio') && dados.map(eq => (
-              <div key={eq.id} className="px-4 py-3 flex items-center gap-3">
-                <span className="font-black text-gray-900 text-sm w-20 shrink-0">{eq.asset_number}</span><div className="flex-1 min-w-0"><p className="text-sm font-semibold text-gray-700 truncate">{eq.equipment_model?.nickname || eq.equipment_type || '—'}<span className="text-gray-400 font-normal ml-1 text-xs">{eq.equipment_model?.brand} {eq.equipment_model?.model}</span></p></div><Badge status={eq.status} size="sm" /><span className="text-xs text-gray-400 shrink-0">{eq.location?.code || '—'}</span>
+              <div key={eq.id} className="px-4 py-3 flex items-center gap-3 flex-wrap">
+                <span className="font-black text-gray-900 text-sm w-20 shrink-0">{eq.asset_number}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-700 truncate">{eq.equipment_model?.nickname || eq.equipment_type || '—'}<span className="text-gray-400 font-normal ml-1 text-xs">{eq.equipment_model?.brand} {eq.equipment_model?.model}</span></p>
+                  {eq.residual_value && <p className="text-xs text-amber-700 font-bold mt-0.5">R$ {Number(eq.residual_value).toLocaleString('pt-BR', {minimumFractionDigits:2})}{eq.residual_notes && <span className="font-normal text-amber-500 ml-1">· {eq.residual_notes}</span>}</p>}
+                </div>
+                <Badge status={eq.status} size="sm" />
+                <span className="text-xs text-gray-400 shrink-0">{eq.location?.code || '—'}</span>
               </div>
             ))}
             {tipo === 'calibracao' && dados.map(s => { const dias = Math.floor((new Date(s.next_calibration).getTime() - Date.now()) / 86400000); return (
@@ -862,7 +939,7 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
       <div className="bg-white w-full max-w-md h-full overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-4 flex items-start justify-between z-10">
           <div><p className="text-2xl font-black text-gray-900">{equip.asset_number}</p><p className="text-sm text-gray-500">{equip.equipment_model?.nickname || equip.equipment_type || '—'}</p><p className="text-xs text-gray-400">{equip.brand || equip.equipment_model?.brand} {equip.model || equip.equipment_model?.model}</p></div>
-          <div className="flex items-center gap-2"><Badge status={equip.status} /><button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center ml-2"><X size={14} /></button></div>
+          <div className="flex items-center gap-2"><Badge status={(equip.status === 'lastro' && equip.is_backup) ? 'backup' : equip.status} /><button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center ml-2"><X size={14} /></button></div>
         </div>
 
         <div className="px-5 py-5 space-y-5">
@@ -914,6 +991,25 @@ function DrawerEquipamento({ equip, onClose, onUpdated, onGoFluxo }: { equip: an
   )
 }
 
+
+// Função pura fora do componente — compatível com Turbopack
+function calcTipoCards(filterStatus: string, equipment: any[]) {
+  if (filterStatus !== 'lastro' && filterStatus !== 'backup') return null
+  const base = equipment.filter(e =>
+    filterStatus === 'lastro'
+      ? (e.status === 'lastro' && !e.is_backup)
+      : (e.status === 'lastro' && e.is_backup === true)
+  )
+  const byNick: Record<string, number> = {}
+  base.forEach(e => {
+    const k = e.equipment_model?.nickname || e.equipment_model?.model || e.model || 'Sem modelo'
+    byNick[k] = (byNick[k] || 0) + 1
+  })
+  const entries = Object.entries(byNick).sort((a, b) => b[1] - a[1])
+  if (entries.length <= 1) return null
+  return { base, entries }
+}
+
 // ── Dashboard Principal ───────────────────────────────────
 export default function WMDashboard() {
   const [aba, setAba] = useState<'equipamentos' | 'fluxo' | 'pecas' | 'relatorios'>('equipamentos')
@@ -927,6 +1023,7 @@ export default function WMDashboard() {
   
   const [filterBrand, setFilterBrand] = useState('')
   const [filterModel, setFilterModel] = useState('')
+  const [filterNickname, setFilterNickname] = useState('')
   const [filterDate, setFilterDate] = useState({ de: '', ate: '' })
 
   const [showVerificaEntrada, setShowVerificaEntrada] = useState(false)
@@ -958,14 +1055,21 @@ export default function WMDashboard() {
   const handleIniciaCadastro = (ativo: string) => { setNovoAtivo(ativo); setShowVerificaEntrada(false); setShowEntrada(true) }
 
   const stats = {
-    total:      equipment.length,
-    fluxo:      equipment.filter(e => ['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].includes(e.status)).length,
-    ag_pecas:   equipment.filter(e => e.status === 'aguardando_pecas').length,
-    lastro:     equipment.filter(e => e.status === 'lastro').length,
-    backup:     equipment.filter(e => e.status === 'backup').length,
-    aplicado:   equipment.filter(e => e.status === 'aplicado').length,
-    manutencao: equipment.filter(e => e.status === 'manutencao_externa').length,
-    descarte:   equipment.filter(e => e.status === 'descarte').length,
+    // Grupos sem dupla contagem — soma = cadastrados
+    triagem:     equipment.filter(e => ['entrada','avaliacao_bancada','aguardando_pecas'].includes(e.status)).length,
+    manutencao:  equipment.filter(e => ['aguardando_envio','manutencao_externa'].includes(e.status)).length,
+    limpeza:     equipment.filter(e => e.status === 'limpeza').length,
+    lastro:      equipment.filter(e => e.status === 'lastro' && !e.is_backup).length,
+    backup:      equipment.filter(e => e.status === 'lastro' && e.is_backup === true).length,
+    aplicado:    equipment.filter(e => e.status === 'aplicado').length,
+    descarte:    equipment.filter(e => e.status === 'descarte').length,
+    // Detalhes internos (para breakdown — não usados nos cards principais)
+    entrada:     equipment.filter(e => e.status === 'entrada').length,
+    bancada:     equipment.filter(e => e.status === 'avaliacao_bancada').length,
+    ag_pecas:    equipment.filter(e => e.status === 'aguardando_pecas').length,
+    ag_envio:    equipment.filter(e => e.status === 'aguardando_envio').length,
+    manut_ext:   equipment.filter(e => e.status === 'manutencao_externa').length,
+    cadastrados: equipment.length,
   }
 
   const calVencendo = standards.filter(s => s.next_calibration && Math.floor((new Date(s.next_calibration).getTime() - Date.now()) / 86400000) <= 30)
@@ -976,11 +1080,18 @@ export default function WMDashboard() {
   const equipFiltrado = equipment.filter(e => {
     const q = search.toLowerCase()
     const matchSearch = !search || [e.asset_number, e.serial_number, e.brand, e.model, e.equipment_type, e.client_number, e.equipment_model?.nickname].some(v => v?.toLowerCase().includes(q))
-    const matchStatus = filterStatus === 'todos' ? true : filterStatus === 'em_fluxo' ? ['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].includes(e.status) : e.status === filterStatus
+    const matchStatus = filterStatus === 'todos'      ? true
+      : filterStatus === 'triagem'    ? ['entrada','avaliacao_bancada','aguardando_pecas'].includes(e.status)
+      : filterStatus === 'manutencao' ? ['aguardando_envio','manutencao_externa'].includes(e.status)
+      : filterStatus === 'limpeza'    ? e.status === 'limpeza'
+      : filterStatus === 'backup'     ? (e.status === 'lastro' && e.is_backup === true)
+      : filterStatus === 'lastro'     ? (e.status === 'lastro' && !e.is_backup)
+      : e.status === filterStatus
     const matchBrand = !filterBrand || e.brand === filterBrand
     const matchModel = !filterModel || (e.equipment_model?.nickname || e.equipment_model?.model || e.model) === filterModel
+    const matchNickname = !filterNickname || (e.equipment_model?.nickname || e.equipment_model?.model || e.model) === filterNickname
     const matchDate = (!filterDate.de || (e.entry_date && e.entry_date >= filterDate.de)) && (!filterDate.ate || (e.entry_date && e.entry_date <= filterDate.ate))
-    return matchSearch && matchStatus && matchBrand && matchModel && matchDate
+    return matchSearch && matchStatus && matchBrand && matchModel && matchNickname && matchDate
   })
 
   const ABAS = [
@@ -989,6 +1100,9 @@ export default function WMDashboard() {
     { id: 'pecas',        label: 'Peças',        icon: Zap },
     { id: 'relatorios',   label: 'Relatórios',   icon: FileText },
   ] as const
+  const tipoCards = calcTipoCards(filterStatus, equipment)
+
+
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -1001,12 +1115,33 @@ export default function WMDashboard() {
       )}
 
       <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-4 py-3">
-          <div className="flex items-center gap-3 shrink-0"><img src="/logo_lev.png" alt="Lev" className="h-7 w-auto object-contain" /><div className="w-px h-6 bg-gray-200" /><img src="/logo_wm.png" alt="White Martins" className="h-6 w-auto object-contain opacity-70" /></div>
-          <nav className="hidden sm:flex items-center gap-1 flex-1">{ABAS.map(a => { const Icon = a.icon; return (<button key={a.id} onClick={() => setAba(a.id)} className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${aba === a.id ? 'bg-blue-50 text-blue-600' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}><Icon size={13} />{a.label}</button>) })}</nav>
-          <div className="flex items-center gap-2 shrink-0"><button onClick={() => setShowVerificaEntrada(true)} className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition-all shadow-sm"><Plus size={14} /><span className="hidden sm:inline">Novo </span>Cadastro</button><button onClick={logout} title="Sair" className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-all"><LogOut size={15} /></button></div>
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-6 py-3.5">
+          <div className="flex items-center gap-4 shrink-0">
+            <img src="/logo_lev.png" alt="Lev" className="h-11 w-auto object-contain" />
+            <div className="w-px h-10 bg-gray-200" />
+            <img src="/logo_wm.png" alt="White Martins" className="h-8 w-auto object-contain" />
+          </div>
+          <nav className="hidden sm:flex items-center gap-1 flex-1">
+            {ABAS.map(a => { const Icon = a.icon; return (
+              <button key={a.id} onClick={() => setAba(a.id)}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${aba === a.id ? 'bg-blue-50 text-blue-600' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
+                <Icon size={13} />{a.label}
+              </button>
+            )})}
+          </nav>
+          <button onClick={logout} title="Sair"
+            className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-all shrink-0">
+            <LogOut size={15} />
+          </button>
         </div>
-        <div className="sm:hidden flex border-t border-gray-100 overflow-x-auto scrollbar-hide px-2">{ABAS.map(a => { const Icon = a.icon; return (<button key={a.id} onClick={() => setAba(a.id)} className={`flex items-center gap-1.5 px-4 py-3 text-xs font-bold border-b-2 transition-all whitespace-nowrap shrink-0 ${aba === a.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400'}`}><Icon size={12} />{a.label}</button>) })}</div>
+        <div className="sm:hidden flex border-t border-gray-100 overflow-x-auto scrollbar-hide px-2">
+          {ABAS.map(a => { const Icon = a.icon; return (
+            <button key={a.id} onClick={() => setAba(a.id)}
+              className={`flex items-center gap-1.5 px-4 py-3 text-xs font-bold border-b-2 transition-all whitespace-nowrap shrink-0 ${aba === a.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400'}`}>
+              <Icon size={12} />{a.label}
+            </button>
+          )})}
+        </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-5 space-y-4">
@@ -1018,15 +1153,33 @@ export default function WMDashboard() {
           </div>
         ) : aba === 'equipamentos' && (
           <>
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-              <StatCard label="Total"         value={stats.total}      color="#111827" bg="#ffffff" active={filterStatus==='todos'}              onClick={() => setFilterStatus('todos')} />
-              <StatCard label="Em Fluxo"       value={stats.fluxo}      color="#92400e" bg="#fffbeb" active={filterStatus==='em_fluxo'}          onClick={() => setFilterStatus('em_fluxo')} />
-              <StatCard label="Ag. Peças"      value={stats.ag_pecas}   color="#713f12" bg="#fefce8" active={filterStatus==='aguardando_pecas'}  onClick={() => setFilterStatus('aguardando_pecas')} />
-              <StatCard label="Lastro"         value={stats.lastro}     color="#1e3a8a" bg="#eff6ff" active={filterStatus==='lastro'}            onClick={() => setFilterStatus('lastro')} />
-              <StatCard label="Backup"         value={stats.backup}     color="#4c1d95" bg="#f5f3ff" active={filterStatus==='backup'}            onClick={() => setFilterStatus('backup')} />
-              <StatCard label="Aplicado"       value={stats.aplicado}   color="#14532d" bg="#f0fdf4" active={filterStatus==='aplicado'}          onClick={() => setFilterStatus('aplicado')} />
-              <StatCard label="Manut. Externa" value={stats.manutencao} color="#7f1d1d" bg="#fef2f2" active={filterStatus==='manutencao_externa'} onClick={() => setFilterStatus('manutencao_externa')} />
-              <StatCard label="Descarte"       value={stats.descarte}   color="#374151" bg="#f9fafb" active={filterStatus==='descarte'}          onClick={() => setFilterStatus('descarte')} />
+            {/* Resumo — soma exata = cadastrados */}
+            <div className="flex items-center gap-3 px-1 pb-1 flex-wrap">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-3xl font-black text-blue-700">{stats.lastro + stats.backup}</span>
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">disponíveis</span>
+              </div>
+              <span className="text-gray-200 text-xl">·</span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-3xl font-black text-amber-700">{stats.triagem + stats.manutencao + stats.limpeza}</span>
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">em gestão</span>
+              </div>
+              <span className="text-gray-200 text-xl">·</span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-3xl font-black text-green-700">{stats.aplicado}</span>
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">em campo</span>
+              </div>
+              <span className="ml-auto text-[10px] text-gray-300 font-mono">{stats.cadastrados} cadastrados</span>
+            </div>
+            {/* Cards clicáveis — cada equipamento conta em exatamente 1 card */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StatCard label="Lastro"      value={stats.lastro}     color="#1e3a8a" bg="#eff6ff" active={filterStatus==='lastro'}      onClick={() => { setFilterStatus('lastro'); setFilterNickname('') }} />
+              <StatCard label="Backup"      value={stats.backup}     color="#4c1d95" bg="#f5f3ff" active={filterStatus==='backup'}      onClick={() => { setFilterStatus('backup'); setFilterNickname('') }} />
+              <StatCard label="Triagem"     value={stats.triagem}    color="#92400e" bg="#fffbeb" active={filterStatus==='triagem'}     onClick={() => setFilterStatus('triagem')} />
+              <StatCard label="Manutenção"  value={stats.manutencao} color="#7f1d1d" bg="#fef2f2" active={filterStatus==='manutencao'} onClick={() => setFilterStatus('manutencao')} />
+              <StatCard label="Limpeza"     value={stats.limpeza}    color="#155e75" bg="#ecfeff" active={filterStatus==='limpeza'}     onClick={() => setFilterStatus('limpeza')} />
+              <StatCard label="Aplicado"    value={stats.aplicado}   color="#14532d" bg="#f0fdf4" active={filterStatus==='aplicado'}   onClick={() => setFilterStatus('aplicado')} />
+              <StatCard label="Descarte"    value={stats.descarte}   color="#374151" bg="#f9fafb" active={filterStatus==='descarte'}   onClick={() => setFilterStatus('descarte')} />
             </div>
 
             {stats.ag_pecas > 0 && (
@@ -1053,10 +1206,10 @@ export default function WMDashboard() {
             ) : (
               <div className="flex gap-3 overflow-x-auto pb-1 scrollbar-hide">
                 {[
-                  stats.fluxo > 0 && { label: `${stats.fluxo} em fluxo`, sub: 'aguardando avaliação', color: 'bg-amber-50 border-amber-200 text-amber-700', action: () => setFilterStatus('em_fluxo') },
-                  stats.ag_pecas > 0 && { label: `${stats.ag_pecas} ag. peças`, sub: 'parados por falta de peça', color: 'bg-yellow-50 border-yellow-200 text-yellow-700', action: () => setFilterStatus('aguardando_pecas') },
-                  stats.manutencao > 0 && { label: `${stats.manutencao} em manut. externa`, sub: 'manutenção externa', color: 'bg-red-50 border-red-200 text-red-700', action: () => setFilterStatus('manutencao_externa') },
-                  calVencendo.length > 0 && { label: `${calVencendo.length} calibração`, sub: 'vencendo em 30 dias', color: 'bg-purple-50 border-purple-200 text-purple-700', action: () => setAba('relatorios') },
+                  stats.triagem > 0    && { label: `${stats.triagem} em triagem`,    sub: 'entrada · bancada · ag. peças',       color: 'bg-amber-50 border-amber-200 text-amber-700',  action: () => setFilterStatus('triagem') },
+                  stats.manutencao > 0 && { label: `${stats.manutencao} em manutenção`, sub: 'ag. envio · manutenção externa',   color: 'bg-red-50 border-red-200 text-red-700',        action: () => setFilterStatus('manutencao') },
+                  stats.limpeza > 0    && { label: `${stats.limpeza} em limpeza`,    sub: 'prontos para voltar ao estoque',       color: 'bg-cyan-50 border-cyan-200 text-cyan-700',     action: () => setFilterStatus('limpeza') },
+                  calVencendo.length > 0 && { label: `${calVencendo.length} calibração`, sub: 'vencendo em 30 dias',             color: 'bg-purple-50 border-purple-200 text-purple-700', action: () => setAba('relatorios') },
                 ].filter(Boolean).map((c: any, i) => (
                   <button key={i} onClick={c.action} className={`shrink-0 px-4 py-3 rounded-2xl border text-left transition-all hover:shadow-sm active:scale-95 ${c.color}`}><p className="font-black text-sm">{c.label}</p><p className="text-[10px] mt-0.5 opacity-70">{c.sub}</p></button>
                 ))}
@@ -1065,10 +1218,10 @@ export default function WMDashboard() {
 
             <div className="flex flex-col md:flex-row gap-5 items-start mt-4">
               <div className="w-full md:w-56 shrink-0 space-y-4">
-                {filterStatus === 'em_fluxo' && stats.fluxo > 0 && (
+                {(filterStatus === 'triagem' || filterStatus === 'manutencao' || filterStatus === 'limpeza') && (
                   <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-2">
                     <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 mb-2">Detalhes do Fluxo</p>
-                    {['entrada','avaliacao_bancada','aguardando_pecas','aguardando_envio','limpeza'].map(st => {
+                    {(filterStatus === 'triagem' ? ['entrada','avaliacao_bancada','aguardando_pecas'] : filterStatus === 'manutencao' ? ['aguardando_envio','manutencao_externa'] : ['limpeza']).map((st: string) => {
                       const count = equipment.filter(e => e.status === st).length
                       if (count === 0) return null
                       return (<div key={st} className="flex justify-between items-center text-xs py-1 border-b border-amber-100 last:border-0"><span className="text-amber-800 font-bold">{S[st].label}</span><span className="font-black text-amber-900 bg-amber-200 px-1.5 py-0.5 rounded-md">{count}</span></div>)
@@ -1086,15 +1239,49 @@ export default function WMDashboard() {
 
               <div className="flex-1 min-w-0 space-y-3">
                 <div className="relative"><Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar ativo, apelido, marca, série..." className="w-full pl-10 pr-4 py-3 rounded-2xl border border-gray-200 bg-white text-sm text-gray-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none" /></div>
+                {/* Cards de tipo — lastro/backup */}
+                {tipoCards && (
+                  <div className="flex gap-2 flex-wrap">
+                    {filterNickname && (
+                      <button onClick={() => setFilterNickname('')}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-gray-900 bg-gray-900 text-white text-xs font-bold transition-all">
+                        <X size={10} /> Todos ({tipoCards.base.length})
+                      </button>
+                    )}
+                    {tipoCards.entries.map(([nick, count]: [string, number]) => (
+                      <button key={nick} onClick={() => setFilterNickname(filterNickname === nick ? '' : nick)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 text-xs font-bold transition-all ${filterNickname === nick ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'}`}>
+                        {nick}
+                        <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md ${filterNickname === nick ? 'bg-blue-200 text-blue-800' : 'bg-gray-100 text-gray-500'}`}>{count}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
                   {[['todos','Todos'], ['em_fluxo','Em Fluxo'], ...Object.entries(S).map(([k,v]) => [k, v.label])].map(([k, v]) => (<button key={k} onClick={() => setFilterStatus(k)} className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border shrink-0 ${filterStatus === k ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>{v}</button>))}
                 </div>
                 <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
                   {equipFiltrado.length === 0 && !loading ? (
-                    <div className="p-8 sm:p-12"><div className="text-center space-y-2"><Search size={24} className="text-gray-300 mx-auto" /><p className="text-gray-400 text-sm">Nenhum resultado para a busca.</p></div></div>
+                    <div className="p-8 sm:p-12">
+                      <div className="text-center space-y-3">
+                        <Search size={24} className="text-gray-300 mx-auto" />
+                        <p className="text-gray-400 text-sm">Nenhum resultado para <span className="font-bold text-gray-600">"{search || filterStatus}"</span></p>
+                        {search.trim() && (
+                          <div className="pt-2">
+                            <p className="text-xs text-gray-400 mb-3">Esse equipamento ainda não está cadastrado?</p>
+                            <button
+                              onClick={() => { setNovoAtivo(search.trim()); setShowEntrada(true) }}
+                              className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition-all shadow-sm"
+                            >
+                              <Plus size={14} /> Cadastrar &ldquo;{search.trim()}&rdquo;
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   ) : (
                     <>
-                      <div className="hidden sm:grid grid-cols-[80px_1fr_90px_120px_70px_32px] gap-3 px-5 py-2.5 bg-gray-50 border-b border-gray-100">{['Ativo','Equipamento','Série','Status','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}</div>
+                      <div className="hidden sm:grid grid-cols-[80px_1fr_90px_120px_70px_32px] gap-3 px-5 py-2.5 bg-gray-50 border-b border-gray-100">{['Ativo','Equipamento','Status','Série','Local',''].map(h => <span key={h} className="text-[9px] font-black uppercase tracking-widest text-gray-400">{h}</span>)}</div>
                       {equipFiltrado.map((eq, i) => {
                         const nome = eq.equipment_model?.nickname || eq.equipment_type
                         const detalhe = [eq.brand, eq.equipment_model?.model || eq.model].filter(Boolean).join(' ')
@@ -1105,7 +1292,7 @@ export default function WMDashboard() {
                                <span className={`font-black text-sm ${eq.is_blocked ? 'text-red-700' : 'text-gray-900'}`}>{eq.asset_number}</span>
                             </div>
                             <div className="min-w-0">{nome && <p className="text-sm font-bold text-gray-700 truncate">{nome}</p>}{detalhe && <p className="text-[11px] text-gray-400 truncate">{detalhe}</p>}</div>
-                            <Badge status={eq.status} size="sm" />
+                            <Badge status={(eq.status === 'lastro' && eq.is_backup) ? 'backup' : eq.status} size="sm" />
                             <span className="hidden sm:block text-xs text-gray-400 font-mono">{eq.serial_number || '—'}</span>
                             <div className="hidden sm:flex items-center gap-1"><MapPin size={9} className="text-gray-300 shrink-0" /><span className="text-[11px] font-bold text-gray-500">{eq.location?.code || '—'}</span></div>
                             <ChevronRight size={13} className="hidden sm:block text-gray-300" />
@@ -1115,7 +1302,7 @@ export default function WMDashboard() {
                     </>
                   )}
                 </div>
-                <p className="text-center text-[10px] text-gray-400">{equipFiltrado.length} equipamento(s) · Londrina</p>
+                <p className="text-center text-[10px] text-gray-400">{equipFiltrado.length} exibido(s) de {stats.cadastrados} · Londrina</p>
               </div>
             </div>
           </>
