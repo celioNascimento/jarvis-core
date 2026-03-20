@@ -69,7 +69,7 @@ function modelLabel(model: string): string {
 
 const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('pt-BR') : '—'
 
-// ── Célula da planta (Dark Mode) ───────────────────────────────
+// ── Célula da planta (Dark Mode e Tamanhos Dinâmicos) ─────────
 function PlantaCell({
   code, zone, equips, selected, onClick
 }: {
@@ -97,6 +97,8 @@ function PlantaCell({
     ? (zone === 'backup' ? '#4c1d95' : '#1e293b')
     : baseColor + '66'
 
+  const isIlhaCell = code === 'SL-ILHA-N0'
+
   return (
     <button
       onClick={onClick}
@@ -107,19 +109,21 @@ function PlantaCell({
         borderWidth: selected ? 2 : 1,
         boxShadow: selected ? '0 0 0 2px rgba(59, 130, 246, 0.3)' : undefined,
       }}
-      className={`relative rounded-md border transition-all duration-150 cursor-pointer flex flex-col items-center justify-center p-1 min-h-[44px] ${
+      className={`relative w-full rounded-md border transition-all duration-150 cursor-pointer flex flex-col items-center justify-center p-1 min-h-[44px] ${
         selected ? 'scale-105 z-10' : 'hover:scale-105 hover:z-10 active:scale-95'
       }`}
     >
       {total > 0 ? (
         <>
           <span 
-            className="text-[9px] font-black uppercase tracking-wider mb-0.5"
+            className={`font-black uppercase tracking-wider mb-0.5 ${isIlhaCell ? 'text-xs' : 'text-[9px]'}`}
             style={{ color: baseColor }}
           >
             {modelLabel(dominantModel)}
           </span>
-          <span className="text-sm font-black text-slate-100 leading-none">
+          <span 
+            className={`font-black text-slate-100 leading-none ${isIlhaCell ? 'text-2xl' : 'text-sm'}`}
+          >
             {total}
           </span>
         </>
@@ -147,7 +151,6 @@ function Drawer({ code, equips, zone, onClose }: {
 }) {
   const parsed = parseCode(code)
   
-  // Condição especial porque a Ilha não obedece ao parsing habitual
   const isIlha = code === 'SL-ILHA-N0'
   const nivelLabel = isIlha ? 'Chão' : ['Chão', '1º Nível', '2º Nível', '3º Nível', '4º Nível'][parsed?.nivel ?? 0]
   const nivelH = isIlha ? 0.00 : [0.00, 0.67, 1.26, 1.54, 1.82][parsed?.nivel ?? 0]
@@ -256,7 +259,6 @@ export default function PlantaLastro() {
       })
   }, [])
 
-  // Filtro blindado
   const byLocation = (code: string) =>
     equipment.filter(e => {
       const dbCode = (e.location?.code || '').trim().toUpperCase()
@@ -394,23 +396,25 @@ export default function PlantaLastro() {
             <span className="text-[9px] text-slate-600">Uso misto</span>
             <div className="h-px flex-1 bg-slate-800" />
           </div>
-          <div className="bg-slate-900 rounded-2xl border border-slate-800 p-3 w-max">
-            <div className="grid gap-2" style={{ gridTemplateColumns: '50px 80px' }}>
+          <div className="bg-slate-900 rounded-2xl border border-slate-800 p-5 w-full">
+            <div className="grid gap-4" style={{ gridTemplateColumns: '60px 150px' }}>
               <div />
-              <div className="text-center text-[9px] font-black text-slate-500 uppercase tracking-widest pb-1">
+              <div className="text-center text-[10px] font-black text-slate-500 uppercase tracking-widest pb-1">
                 Chão
               </div>
-              <div className="flex flex-col items-end justify-center pr-2">
-                <span className="text-[9px] font-black text-slate-400">Chão</span>
-                <span className="text-[7px] text-slate-600">0,00m</span>
+              <div className="flex flex-col items-end justify-center pr-3">
+                <span className="text-[10px] font-black text-slate-400">Chão</span>
+                <span className="text-[8px] text-slate-600">0,00m</span>
               </div>
-              <PlantaCell
-                code="SL-ILHA-N0"
-                zone="estoque"
-                equips={byLocation('SL-ILHA-N0')}
-                selected={selected === 'SL-ILHA-N0'}
-                onClick={() => setSelected(selected === 'SL-ILHA-N0' ? null : 'SL-ILHA-N0')}
-              />
+              <div className="min-h-[80px] min-w-[150px] flex">
+                <PlantaCell
+                  code="SL-ILHA-N0"
+                  zone="estoque"
+                  equips={byLocation('SL-ILHA-N0')}
+                  selected={selected === 'SL-ILHA-N0'}
+                  onClick={() => setSelected(selected === 'SL-ILHA-N0' ? null : 'SL-ILHA-N0')}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -427,4 +431,4 @@ export default function PlantaLastro() {
       )}
     </div>
   )
-          }
+            }
