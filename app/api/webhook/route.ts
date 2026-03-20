@@ -108,22 +108,55 @@ export async function POST(req: Request) {
     const chatId = message?.chat?.id;
     const telegramUserId = message?.from?.id;
     const userFirstName = message?.from?.first_name || "Usuário";
+    const stringId = String(telegramUserId);
 
     // --- CAPTURA DE LOCALIZAÇÃO TELEGRAM ---
     let locationContext = "";
+
     if (message?.location) {
+      // Nova localização recebida — processa e persiste no Supabase
       const { latitude, longitude } = message.location;
       console.log('[Geo] Coordenadas recebidas:', { latitude, longitude });
-      locationContext = await checkProximidade(latitude, longitude);
-      console.log('[Geo] Resultado de checkProximidade:', locationContext || '(string vazia — sem match de proximidade)');
+      const endereco = await checkProximidade(latitude, longitude);
+      console.log('[Geo] Resultado de checkProximidade:', endereco || '(string vazia — sem match de proximidade)');
+      locationContext = `${endereco}\nCoordenadas exatas: ${latitude}, ${longitude}`;
+
+      // Persiste para uso em mensagens subsequentes (sem localização anexada)
+      await supabase.from('config').upsert(
+        { key: `last_location_${stringId}`, value: JSON.stringify({ latitude, longitude, endereco, ts: Date.now() }) },
+        { onConflict: 'key' }
+      );
+      console.log('[Geo] Localização persistida no Supabase');
+
       if (!messageText) messageText = "[Enviou Localização]";
+
+    } else {
+      // Sem localização nova — recupera a última conhecida se for recente (até 1 hora)
+      const { data: lastLoc } = await supabase
+        .from('config')
+        .select('value')
+        .eq('key', `last_location_${stringId}`)
+        .single();
+
+      if (lastLoc?.value) {
+        try {
+          const loc = JSON.parse(lastLoc.value);
+          const idadeMinutos = (Date.now() - loc.ts) / 60000;
+          if (idadeMinutos <= 60) {
+            locationContext = `${loc.endereco}\nCoordenadas exatas: ${loc.latitude}, ${loc.longitude} (compartilhada há ${Math.round(idadeMinutos)} min)`;
+            console.log('[Geo] Usando localização persistida — idade:', Math.round(idadeMinutos), 'min');
+          } else {
+            console.log('[Geo] Localização persistida expirada — idade:', Math.round(idadeMinutos), 'min');
+          }
+        } catch {
+          console.warn('[Geo] Erro ao parsear localização persistida');
+        }
+      }
     }
 
     if (!messageText || chatId == null || telegramUserId == null) {
       return NextResponse.json({ ok: true });
     }
-
-    const stringId = String(telegramUserId);
 
     // ============================================================
     // BUSCA EM PARALELO (com radar de e-mails Microsoft integrado)
