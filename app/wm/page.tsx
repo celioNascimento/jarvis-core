@@ -466,6 +466,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
   
   const [osNumber, setOsNumber] = useState('')
   const [clientNumber, setClientNumber] = useState('')
+  const [sealNumber, setSealNumber] = useState('')
   
   const [isBlocking, setIsBlocking] = useState(false)
   const [blockReason, setBlockReason] = useState('')
@@ -538,6 +539,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
 
     const payloadUpdate: any = { status: novoStatus }
     if (clientNumber) payloadUpdate.client_number = clientNumber
+    if (sealNumber) payloadUpdate.seal_number = sealNumber
     await db().from('equipment').update(payloadUpdate).eq('id', equip.id)
     
     // GATILHO DE FECHAMENTO: Encerra o atendimento nos estados de saída
@@ -548,7 +550,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
     }
     
     const updatedEquip = { ...equip, ...payloadUpdate }
-    setEquip(updatedEquip); setNovoStatus(S[novoStatus]?.next[0] || ''); setMotivo(''); setOsNumber(''); setClientNumber('')
+    setEquip(updatedEquip); setNovoStatus(S[novoStatus]?.next[0] || ''); setMotivo(''); setOsNumber(''); setClientNumber(''); setSealNumber('')
     
     const { data: mov } = await db().from('movements').select('*').eq('equipment_id', equip.id).order('moved_at', { ascending: false })
     setHistorico(mov || []); setSalvando(false); onMoved?.()
@@ -630,6 +632,12 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                     <div><label className={lbl}>Ordem de Serviço (OS)</label><input value={osNumber} onChange={e => setOsNumber(e.target.value)} className={inp} placeholder="Ex: OS-9988" /></div>
                     <div><label className={lbl}>Nº Cliente (Origem/Destino)</label><input value={clientNumber} onChange={e => setClientNumber(e.target.value)} className={inp} placeholder="Ex: 554433" /></div>
                   </div>
+                  {['lastro','backup','limpeza'].includes(novoStatus) && (
+                    <div>
+                      <label className={lbl}>Nº Lacre{['lastro','backup'].includes(novoStatus) ? <span className="ml-1 text-blue-500 normal-case">· recomendado ao entrar no estoque</span> : ''}</label>
+                      <input value={sealNumber} onChange={e => setSealNumber(e.target.value)} className={inp} placeholder={equip.seal_number ? `Atual: ${equip.seal_number}` : 'Ex: 0005584'} />
+                    </div>
+                  )}
 
                   <textarea value={motivo} onChange={e => setMotivo(e.target.value)} className={inp + ' resize-none'} rows={2} placeholder="Motivo / observação (opcional)..." />
                   <button onClick={mover} disabled={salvando || !novoStatus} className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-60">{salvando ? 'Movendo...' : 'Confirmar Movimentação'}</button>
