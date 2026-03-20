@@ -1,58 +1,99 @@
-// lib/geo.ts
+import { supabase } from './jarvis';
 
-export async function checkProximidade(lat: number, lng: number): Promise<string> {
+// Distância em metros entre duas coordenadas (Haversine)
+function distanciaMetros(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Chave de cooldown no Supabase — evita spam a cada atualização do Live Location
+async function jáAvisouRecentemente(userId: string, placeId: string): Promise<boolean> {
+  const key = `geo_alert_${userId}_${placeId}`;
+  const { data } = await supabase.from('config').select('value').eq('key', key).single();
+  if (!data?.value) return false;
+  const ultimoAviso = parseInt(data.value);
+  const duasHoras = 2 * 60 * 60 * 1000;
+  return (Date.now() - ultimoAviso) < duasHoras;
+}
+
+async function registrarAviso(userId: string, placeId: string): Promise<void> {
+  const key = `geo_alert_${userId}_${placeId}`;
+  await supabase.from('config').upsert(
+    { key, value: String(Date.now()) },
+    { onConflict: 'key' }
+  );
+}
+
+export interface GeoAlertResult {
+  temAlerta: boolean;
+  mensagem: string;
+}
+
+export async function verificarAlertasDeProximidade(
+  userId: string,
+  lat: number,
+  lng: number
+): Promise<GeoAlertResult> {
   try {
-    const apiKey = process.env.GOOGLE_PLACES_API_KEY; 
-    
-    if (!apiKey) {
-      console.warn("[Geo] Chave API não encontrada.");
-      return `[LOCALIZAÇÃO]\nEndereço não disponível (Configuração pendente).`;
+    // Busca todos os lugares favoritos do usuário
+    const { data: lugares, error } = await supabase
+      .from('favorite_places')
+      .select('*')
+      .eq('user_id', userId);
+
+    if (error || !lugares?.length) {
+      console.log('[GeoAlert] Nenhum lugar favorito cadastrado para:', userId);
+      return { temAlerta: false, mensagem: '' };
     }
 
-    const radius = 1000;
+    for (const lugar of lugares) {
+      const distancia = distanciaMetros(lat, lng, lugar.lat, lugar.lng);
+      console.log(`[GeoAlert] ${lugar.name}: ${Math.round(distancia)}m (raio: ${lugar.radius_meters}m)`);
 
-    // 1. REVERSE GEOCODING (Busca o endereço real)
-    const geoRes = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}`);
-    const geoData = await geoRes.json();
-    
-    // Pega o endereço mais preciso (geralmente o primeiro resultado)
-    const enderecoCompleto = geoData.results?.[0]?.formatted_address || "Endereço não identificado";
+      if (distancia > lugar.radius_meters) continue;
 
-    // 2. BUSCA DE PONTOS DE INTERESSE
-    const marketRes = await fetch(`https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=supermarket&key=${apiKey}`);
-    const marketData = await marketRes.json();
-    
-    const wmRes = await fetch(`https://maps.googleapis.com/maps/api/place/textsearch/json?query=White+Martins&location=${lat},${lng}&radius=${radius}&key=${apiKey}`);
-    const wmData = await wmRes.json();
+      // Está dentro do raio — verifica cooldown
+      if (await jáAvisouRecentemente(userId, lugar.id)) {
+        console.log(`[GeoAlert] ${lugar.name}: cooldown ativo, pulando`);
+        continue;
+      }
 
-    // MONTAGEM DO CONTEXTO (Foco total no endereço)
-    let contextString = `[CONTEXTO DE LOCALIZAÇÃO ATUAL]\n`;
-    contextString += `📍 ENDEREÇO: ${enderecoCompleto}\n`;
-    contextString += `(Metadados Técnicos: lat=${lat}, lng=${lng} - NÃO MENCIONE ESTES NÚMEROS A MENOS QUE SOLICITADO)\n\n`;
-    contextString += `[ESTABELECIMENTOS PRÓXIMOS]\n`;
+      // Busca itens pendentes para este lugar
+      const { data: itens } = await supabase
+        .from('shopping_items')
+        .select('item')
+        .eq('user_id', userId)
+        .eq('place_id', lugar.id)
+        .eq('done', false);
 
-    let foundSomething = false;
+      if (!itens?.length) {
+        console.log(`[GeoAlert] ${lugar.name}: sem itens pendentes`);
+        continue;
+      }
 
-    if (wmData.results && wmData.results.length > 0) {
-      contextString += `- 🏭 White Martins: ${wmData.results[0].name}\n`;
-      foundSomething = true;
+      // Registra o aviso antes de retornar
+      await registrarAviso(userId, lugar.id);
+
+      const listaItens = itens.map(i => `• ${i.item}`).join('\n');
+      const mensagem =
+        `🛒 Você está perto de *${lugar.name}*!\n\n` +
+        `Itens pendentes na sua lista:\n${listaItens}\n\n` +
+        `Quer marcar algum como feito?`;
+
+      console.log(`[GeoAlert] Alerta disparado para ${lugar.name} — ${itens.length} itens`);
+      return { temAlerta: true, mensagem };
     }
 
-    if (marketData.results && marketData.results.length > 0) {
-      marketData.results.slice(0, 2).forEach((m: any) => {
-        contextString += `- 🛒 ${m.name}\n`;
-      });
-      foundSomething = true;
-    }
+    return { temAlerta: false, mensagem: '' };
 
-    if (!foundSomething) {
-      contextString += "- Nenhuma unidade industrial ou mercado relevante no raio de 1km.\n";
-    }
-
-    return contextString;
-
-  } catch (error) {
-    console.error("[Geo] Erro:", error);
-    return `[LOCALIZAÇÃO]\nErro ao identificar endereço.`;
+  } catch (err) {
+    console.error('[GeoAlert] Erro:', err);
+    return { temAlerta: false, mensagem: '' };
   }
 }
