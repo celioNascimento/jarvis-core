@@ -19,7 +19,8 @@ import {
   getMicrosoftCalendarContext
 } from '@/lib/microsoft';
 import { getGoogleContext, createGoogleEvent, updateGoogleEvent, deleteGoogleEvent } from '@/lib/google'; 
-import { checkProximidade } from '@/lib/geo'; 
+import { checkProximidade } from '@/lib/geo';
+import { verificarAlertasDeProximidade } from '@/lib/geo-alerts'; 
 import {
   classifyTemporalHorizon,
   truncateByWeight
@@ -127,6 +128,14 @@ export async function POST(req: Request) {
         { onConflict: 'key' }
       );
       console.log('[Geo] Localização persistida no Supabase');
+
+      // Verifica alertas de proximidade — dispara aviso se perto de lugar favorito com itens pendentes
+      const alertaGeo = await verificarAlertasDeProximidade(stringId, latitude, longitude);
+      if (alertaGeo.temAlerta) {
+        console.log('[GeoAlert] Alerta enviado — retornando sem chamar LLM');
+        await sendTelegram(chatId ?? message.chat.id, alertaGeo.mensagem);
+        return NextResponse.json({ ok: true });
+      }
 
       if (!messageText) messageText = "[Enviou Localização]";
 
@@ -511,6 +520,25 @@ REGRAS:
    [REMOVER_KEYWORD_EMAIL: palavra] — remove palavra da lista de filtro de emails
    [LIMPAR_PENDENTE]
    [IGNORAR_ULTIMO]
+   [SALVAR_LUGAR: nome | lat | lng | raio_metros | categoria]
+   [REMOVER_LUGAR: nome]
+   [ADICIONAR_ITEM_LISTA: item | nome_do_lugar]
+   [REMOVER_ITEM_LISTA: item | nome_do_lugar]
+   [MARCAR_FEITO: item | nome_do_lugar]
+   [VER_LISTA: nome_do_lugar]
+
+   Exemplos de lista de compras:
+   [SALVAR_LUGAR: Mercado Boa Vista | -23.2701 | -51.2047 | 150 | mercado]
+   [ADICIONAR_ITEM_LISTA: Leite integral | Mercado Boa Vista]
+   [MARCAR_FEITO: Leite integral | Mercado Boa Vista]
+   [REMOVER_ITEM_LISTA: Pão | Mercado Boa Vista]
+   [VER_LISTA: Mercado Boa Vista]
+
+   REGRAS DA LISTA:
+   - Quando usuário disser "me avisa quando eu passar no mercado X" → emita SALVAR_LUGAR com as coords do lugar se souber, ou pergunte
+   - Quando usuário disser "adiciona X na lista do mercado Y" → emita ADICIONAR_ITEM_LISTA
+   - Quando usuário disser "já comprei X" ou "pode tirar X" → emita MARCAR_FEITO ou REMOVER_ITEM_LISTA
+   - Os gatilhos ficam INVISÍVEIS — nunca aparecem na resposta ao usuário
 
    Exemplos corretos:
    [SALVAR_EVENTO: Páscoa em família | 2026-04-05 | baixa | true | recurring_annual]
@@ -729,6 +757,90 @@ REGRAS:
       const resultado = await removeEmailKeyword(removeKwMatch[1].trim());
       aiReply = aiReply.replace(removeKwMatch[0], '').trim();
       aiReply = aiReply ? `${aiReply}\n\n${resultado}` : resultado;
+    }
+
+    // ============================================================
+    // GATILHOS — LISTA DE COMPRAS E LUGARES FAVORITOS
+    // ============================================================
+
+    // SALVAR LUGAR FAVORITO
+    const salvarLugarMatch = aiReply.match(/\[SALVAR_LUGAR:\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*(\d+)\s*\|\s*([^\]]+)\]/i);
+    if (salvarLugarMatch) {
+      const [, nome, lat, lng, raio, categoria] = salvarLugarMatch;
+      const { error: placeErr } = await supabase.from('favorite_places').upsert(
+        { user_id: stringId, name: nome.trim(), lat: parseFloat(lat), lng: parseFloat(lng), radius_meters: parseInt(raio), category: categoria.trim() },
+        { onConflict: 'user_id,name' }
+      );
+      if (placeErr) console.error('[Lista] Erro ao salvar lugar:', placeErr.message);
+      else console.log('[Lista] Lugar salvo:', nome.trim());
+      aiReply = aiReply.replace(salvarLugarMatch[0], '').trim();
+    }
+
+    // REMOVER LUGAR FAVORITO
+    const removerLugarMatch = aiReply.match(/\[REMOVER_LUGAR:\s*([^\]]+)\]/i);
+    if (removerLugarMatch) {
+      await supabase.from('favorite_places').delete().eq('user_id', stringId).ilike('name', removerLugarMatch[1].trim());
+      console.log('[Lista] Lugar removido:', removerLugarMatch[1].trim());
+      aiReply = aiReply.replace(removerLugarMatch[0], '').trim();
+    }
+
+    // Helper: busca ID do lugar pelo nome
+    async function getPlaceId(userId: string, nomeLugar: string): Promise<string | null> {
+      const { data } = await supabase.from('favorite_places').select('id').eq('user_id', userId).ilike('name', nomeLugar.trim()).single();
+      return data?.id ?? null;
+    }
+
+    // ADICIONAR ITEM À LISTA
+    const addItemMatch = aiReply.match(/\[ADICIONAR_ITEM_LISTA:\s*([^|]+)\|\s*([^\]]+)\]/i);
+    if (addItemMatch) {
+      const placeId = await getPlaceId(stringId, addItemMatch[2]);
+      if (placeId) {
+        await supabase.from('shopping_items').upsert(
+          { user_id: stringId, item: addItemMatch[1].trim(), place_id: placeId, done: false },
+          { onConflict: 'user_id,item,place_id' }
+        );
+        console.log('[Lista] Item adicionado:', addItemMatch[1].trim());
+      } else {
+        console.warn('[Lista] Lugar não encontrado para adicionar item:', addItemMatch[2]);
+      }
+      aiReply = aiReply.replace(addItemMatch[0], '').trim();
+    }
+
+    // MARCAR ITEM COMO FEITO
+    const marcarFeitoMatch = aiReply.match(/\[MARCAR_FEITO:\s*([^|]+)\|\s*([^\]]+)\]/i);
+    if (marcarFeitoMatch) {
+      const placeId = await getPlaceId(stringId, marcarFeitoMatch[2]);
+      if (placeId) {
+        await supabase.from('shopping_items').update({ done: true }).eq('user_id', stringId).ilike('item', marcarFeitoMatch[1].trim()).eq('place_id', placeId);
+        console.log('[Lista] Item marcado como feito:', marcarFeitoMatch[1].trim());
+      }
+      aiReply = aiReply.replace(marcarFeitoMatch[0], '').trim();
+    }
+
+    // REMOVER ITEM DA LISTA
+    const removerItemMatch = aiReply.match(/\[REMOVER_ITEM_LISTA:\s*([^|]+)\|\s*([^\]]+)\]/i);
+    if (removerItemMatch) {
+      const placeId = await getPlaceId(stringId, removerItemMatch[2]);
+      if (placeId) {
+        await supabase.from('shopping_items').delete().eq('user_id', stringId).ilike('item', removerItemMatch[1].trim()).eq('place_id', placeId);
+        console.log('[Lista] Item removido:', removerItemMatch[1].trim());
+      }
+      aiReply = aiReply.replace(removerItemMatch[0], '').trim();
+    }
+
+    // VER LISTA DE UM LUGAR
+    const verListaMatch = aiReply.match(/\[VER_LISTA:\s*([^\]]+)\]/i);
+    if (verListaMatch) {
+      const placeId = await getPlaceId(stringId, verListaMatch[1]);
+      if (placeId) {
+        const { data: itensPendentes } = await supabase.from('shopping_items').select('item, done').eq('user_id', stringId).eq('place_id', placeId).order('done');
+        if (itensPendentes?.length) {
+          const listaTexto = itensPendentes.map(i => `${i.done ? '✅' : '•'} ${i.item}`).join('\n');
+          aiReply = aiReply.replace(verListaMatch[0], listaTexto).trim();
+        } else {
+          aiReply = aiReply.replace(verListaMatch[0], 'Lista vazia.').trim();
+        }
+      }
     }
 
     // ============================================================
