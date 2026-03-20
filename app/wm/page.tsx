@@ -1053,8 +1053,6 @@ export default function WMDashboard() {
 
   const handleIniciaCadastro = (ativo: string) => { setNovoAtivo(ativo); setShowVerificaEntrada(false); setShowEntrada(true) }
 
-  }
-
   const stats = {
     // Grupos sem dupla contagem — soma = cadastrados
     triagem:     equipment.filter(e => ['entrada','avaliacao_bancada','aguardando_pecas'].includes(e.status)).length,
