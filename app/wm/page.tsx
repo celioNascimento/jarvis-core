@@ -48,10 +48,10 @@ const S: Record<string, { label: string; short: string; color: string; bg: strin
   avaliacao_bancada:   { label: 'Bancada',        short: 'BAN',  color: '#9a3412', bg: '#fff7ed', border: '#fed7aa', dot: '#f97316', icon: Activity,     next: ['limpeza','aguardando_pecas','aguardando_envio','manutencao_externa','descarte'] },
   aguardando_pecas:    { label: 'Ag. Peças',      short: 'PEÇ',  color: '#713f12', bg: '#fefce8', border: '#fef08a', dot: '#eab308', icon: Clock,        next: ['limpeza','aguardando_envio','manutencao_externa','descarte'] },
   aguardando_envio:    { label: 'Ag. Envio Ext.', short: 'ENV',  color: '#831843', bg: '#fdf2f8', border: '#fbcfe8', dot: '#ec4899', icon: Truck,        next: ['manutencao_externa','descarte'] },
-  limpeza:             { label: 'Limpeza',        short: 'LIM',  color: '#155e75', bg: '#ecfeff', border: '#a5f3fc', dot: '#06b6d4', icon: Droplets,     next: ['lastro','backup','descarte'] },
-  manutencao_externa:  { label: 'Manut. Externa', short: 'MAN',  color: '#7f1d1d', bg: '#fef2f2', border: '#fecaca', dot: '#ef4444', icon: Wrench,       next: ['limpeza','lastro','descarte'] },
-  lastro:              { label: 'Lastro',         short: 'LAS',  color: '#1e3a8a', bg: '#eff6ff', border: '#bfdbfe', dot: '#3b82f6', icon: Archive,      next: ['backup','aplicado','descarte'] },
-  backup:              { label: 'Backup',         short: 'BAK',  color: '#4c1d95', bg: '#f5f3ff', border: '#ddd6fe', dot: '#8b5cf6', icon: RotateCcw,    next: ['lastro','aplicado','descarte'] },
+  limpeza:             { label: 'Limpeza',        short: 'LIM',  color: '#155e75', bg: '#ecfeff', border: '#a5f3fc', dot: '#06b6d4', icon: Droplets,     next: ['lastro','backup','aguardando_envio','manutencao_externa','descarte'] },
+  manutencao_externa:  { label: 'Manut. Externa', short: 'MAN',  color: '#7f1d1d', bg: '#fef2f2', border: '#fecaca', dot: '#ef4444', icon: Wrench,       next: ['limpeza','lastro','aguardando_envio','descarte'] },
+  lastro:              { label: 'Lastro',         short: 'LAS',  color: '#1e3a8a', bg: '#eff6ff', border: '#bfdbfe', dot: '#3b82f6', icon: Archive,      next: ['backup','aplicado','limpeza','descarte'] },
+  backup:              { label: 'Backup',         short: 'BAK',  color: '#4c1d95', bg: '#f5f3ff', border: '#ddd6fe', dot: '#8b5cf6', icon: RotateCcw,    next: ['lastro','aplicado','limpeza','descarte'] },
   aplicado:            { label: 'Aplicado',       short: 'APL',  color: '#14532d', bg: '#f0fdf4', border: '#bbf7d0', dot: '#22c55e', icon: CheckCircle,  next: ['limpeza','manutencao_externa','descarte'] },
   descarte:            { label: 'Descarte',       short: 'DESC', color: '#374151', bg: '#f9fafb', border: '#e5e7eb', dot: '#9ca3af', icon: Trash2,       next: [] },
 }
@@ -473,7 +473,13 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
 
   const [salvando, setSalvando] = useState(false)
   const [notFound, setNotFound] = useState(false)
+  const [locations, setLocations] = useState<any[]>([])
+  const [locationCode, setLocationCode] = useState('')
 
+  useEffect(() => {
+    db().from('locations').select('id,code,area,zone,description').eq('active', true).eq('area','sala_lastro').order('code')
+      .then(({ data }: any) => setLocations(data || []))
+  }, [])
   useEffect(() => { if (initialAtivo) buscar() }, [initialAtivo])
 
   // LÓGICA DE BUSCA: Recupera a OS aberta existente
@@ -509,6 +515,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
 
   // LÓGICA DE MOVIMENTAÇÃO: Incorpora número de OS e gerencia ciclo de vida
   const mover = async () => {
+    const locationId = locationCode ? locations.find((l: any) => l.code === locationCode)?.id : null
     if (!novoStatus || !equip) return
     setSalvando(true)
     
@@ -543,14 +550,14 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
     await db().from('equipment').update(payloadUpdate).eq('id', equip.id)
     
     // GATILHO DE FECHAMENTO: Encerra o atendimento nos estados de saída
-    if (activeOS && ['lastro', 'backup', 'descarte'].includes(novoStatus)) {
+    if (activeOS && ['lastro', 'backup', 'aplicado', 'descarte'].includes(novoStatus)) {
       await db().from('service_orders')
         .update({ status: 'fechada', closed_at: new Date().toISOString() })
         .eq('id', activeOS.id)
     }
     
     const updatedEquip = { ...equip, ...payloadUpdate }
-    setEquip(updatedEquip); setNovoStatus(S[novoStatus]?.next[0] || ''); setMotivo(''); setOsNumber(''); setClientNumber(''); setSealNumber('')
+    setEquip(updatedEquip); setNovoStatus(S[novoStatus]?.next[0] || ''); setMotivo(''); setOsNumber(''); setClientNumber(''); setSealNumber(''); setLocationCode('')
     
     const { data: mov } = await db().from('movements').select('*').eq('equipment_id', equip.id).order('moved_at', { ascending: false })
     setHistorico(mov || []); setSalvando(false); onMoved?.()
@@ -595,7 +602,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                 <p className="text-2xl font-black text-gray-900">{equip.asset_number}</p>
                 <p className="text-sm text-gray-500 mt-0.5">{equip.equipment_model?.nickname || equip.equipment_type || '—'}{(equip.equipment_model?.brand || equip.brand) && <span className="text-gray-400 ml-2 text-xs">{equip.equipment_model?.brand || equip.brand} {equip.equipment_model?.model || equip.model}</span>}</p>
               </div>
-              <Badge status={equip.status} />
+              <Badge status={(equip.status === 'lastro' && equip.is_backup) ? 'backup' : equip.status} />
             </div>
             <div className="grid grid-cols-3 gap-2">
               {[['Série', equip.serial_number || '—'], ['Cliente', equip.client_number || '—'], ['Local', equip.location?.code || '—']].map(([l, v]) => (
@@ -618,7 +625,7 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                 <>
                   <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Próximo passo</p>
                   <div className="flex items-center gap-3 flex-wrap">
-                    <Badge status={equip.status} />
+                    <Badge status={(equip.status === 'lastro' && equip.is_backup) ? 'backup' : equip.status} />
                     <ArrowRight size={14} className="text-gray-300 shrink-0" />
                     <div className="flex gap-2 flex-wrap">
                       {S[equip.status].next.map(s => {
@@ -634,8 +641,25 @@ function AbaFluxo({ initialAtivo = '', onMoved, onToast }: { initialAtivo?: stri
                   </div>
                   {['lastro','backup','limpeza'].includes(novoStatus) && (
                     <div>
-                      <label className={lbl}>Nº Lacre{['lastro','backup'].includes(novoStatus) ? <span className="ml-1 text-blue-500 normal-case">· recomendado ao entrar no estoque</span> : ''}</label>
+                      <label className={lbl}>Nº Lacre{['lastro','backup'].includes(novoStatus) && <span className="ml-1 text-blue-400 normal-case font-medium">· recomendado ao entrar no estoque</span>}</label>
                       <input value={sealNumber} onChange={e => setSealNumber(e.target.value)} className={inp} placeholder={equip.seal_number ? `Atual: ${equip.seal_number}` : 'Ex: 0005584'} />
+                    </div>
+                  )}
+                  {['lastro','backup'].includes(novoStatus) && (
+                    <div>
+                      <label className={lbl}>Endereço{equip.location?.code && <span className="ml-1 text-gray-400 normal-case font-medium">· atual: {equip.location.code}</span>}</label>
+                      <select value={locationCode} onChange={e => setLocationCode(e.target.value)} className={inp}>
+                        <option value="">— Manter endereço atual —</option>
+                        {['estoque','backup'].map(zone => {
+                          const locs = locations.filter((l: any) => l.zone === zone)
+                          if (!locs.length) return null
+                          return (
+                            <optgroup key={zone} label={zone === 'backup' ? '⚠ BACKUP' : 'ESTOQUE'}>
+                              {locs.map((l: any) => <option key={l.id} value={l.code}>{l.code}</option>)}
+                            </optgroup>
+                          )
+                        })}
+                      </select>
                     </div>
                   )}
 
@@ -943,6 +967,8 @@ export default function WMDashboard() {
   
   const [equipDetalhe, setEquipDetalhe] = useState<any>(null)
   const [fluxoAtivo, setFluxoAtivo] = useState('')
+  const [quickSearch, setQuickSearch] = useState('')
+  const [quickNotFound, setQuickNotFound] = useState(false)
 
   const showToast = useCallback((msg: string, type: 'success'|'error' = 'success') => {
     setToast({ msg, type }); setTimeout(() => setToast(null), 4000)
@@ -964,6 +990,18 @@ export default function WMDashboard() {
   useEffect(() => { carregar() }, [carregar])
 
   const handleIniciaCadastro = (ativo: string) => { setNovoAtivo(ativo); setShowVerificaEntrada(false); setShowEntrada(true) }
+
+  const handleQuickSearch = async () => {
+    if (!quickSearch.trim()) return
+    const { data } = await db().from('equipment').select('id').eq('asset_number', quickSearch.trim()).maybeSingle()
+    if (data) {
+      // Existe — abre no fluxo direto
+      setFluxoAtivo(quickSearch.trim()); setAba('fluxo'); setQuickSearch(''); setQuickNotFound(false)
+    } else {
+      // Não existe — mostra opção de cadastrar
+      setQuickNotFound(true)
+    }
+  }
 
   const stats = {
     // Grupos sem dupla contagem — soma = cadastrados
@@ -1023,9 +1061,27 @@ export default function WMDashboard() {
 
       <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-4 py-3">
-          <div className="flex items-center gap-3 shrink-0"><img src="/logo_lev.png" alt="Lev" className="h-7 w-auto object-contain" /><div className="w-px h-6 bg-gray-200" /><img src="/logo_wm.png" alt="White Martins" className="h-6 w-auto object-contain opacity-70" /></div>
+          <div className="flex items-center gap-3 shrink-0"><div className="flex flex-col items-center"><img src="/logo_lev.png" alt="Lev" className="h-8 w-auto object-contain" /><span className="text-[8px] font-black uppercase tracking-widest text-gray-400 leading-none mt-0.5">Lev</span></div><div className="w-px h-8 bg-gray-200" /><img src="/logo_wm.png" alt="White Martins" className="h-7 w-auto object-contain" /></div>
           <nav className="hidden sm:flex items-center gap-1 flex-1">{ABAS.map(a => { const Icon = a.icon; return (<button key={a.id} onClick={() => setAba(a.id)} className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${aba === a.id ? 'bg-blue-50 text-blue-600' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}><Icon size={13} />{a.label}</button>) })}</nav>
-          <div className="flex items-center gap-2 shrink-0"><button onClick={() => setShowVerificaEntrada(true)} className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition-all shadow-sm"><Plus size={14} /><span className="hidden sm:inline">Novo </span>Cadastro</button><button onClick={logout} title="Sair" className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-all"><LogOut size={15} /></button></div>
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="relative hidden sm:block">
+              <Scan size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                value={quickSearch} onChange={e => setQuickSearch(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleQuickSearch()}
+                placeholder="Patrimônio..."
+                className="pl-9 pr-4 py-2.5 w-44 rounded-xl border border-gray-200 text-sm font-black text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 outline-none transition-all"
+              />
+              {quickSearch && quickNotFound && (
+                <div className="absolute top-full mt-1 right-0 bg-white border border-gray-200 rounded-2xl shadow-lg p-3 w-56 z-50">
+                  <p className="text-xs text-gray-500 mb-2">Ativo <span className="font-black text-gray-900">{quickSearch}</span> não cadastrado.</p>
+                  <button onClick={() => { setNovoAtivo(quickSearch); setQuickSearch(''); setQuickNotFound(false); setShowEntrada(true) }} className="w-full py-2 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700">+ Cadastrar este ativo</button>
+                </div>
+              )}
+            </div>
+            <button onClick={() => setShowVerificaEntrada(true)} className="sm:hidden flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition-all shadow-sm"><Plus size={14} />Cadastro</button>
+            <button onClick={logout} title="Sair" className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-all"><LogOut size={15} /></button>
+          </div>
         </div>
         <div className="sm:hidden flex border-t border-gray-100 overflow-x-auto scrollbar-hide px-2">{ABAS.map(a => { const Icon = a.icon; return (<button key={a.id} onClick={() => setAba(a.id)} className={`flex items-center gap-1.5 px-4 py-3 text-xs font-bold border-b-2 transition-all whitespace-nowrap shrink-0 ${aba === a.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400'}`}><Icon size={12} />{a.label}</button>) })}</div>
       </header>
