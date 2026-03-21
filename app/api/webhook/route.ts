@@ -20,7 +20,7 @@ import {
 } from '@/lib/microsoft';
 import { getGoogleContext, createGoogleEvent, updateGoogleEvent, deleteGoogleEvent } from '@/lib/google'; 
 import { checkProximidade } from '@/lib/geo';
-import { verificarAlertasDeProximidade } from '@/lib/geo-alerts'; 
+import { verificarAlertasDeProximidade } from '@/lib/geo-alerts';
 import {
   classifyTemporalHorizon,
   truncateByWeight
