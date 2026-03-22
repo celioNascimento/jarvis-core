@@ -121,29 +121,84 @@ async function* streamOpenRouter(
 // ── POST handler ──────────────────────────────────────────────────────────────
 export async function POST(req: Request) {
   try {
-    const { message, userId, sessionId: clientSessionId } = await req.json();
+    const { message, userId, sessionId: clientSessionId, userEmail } = await req.json();
 
     if (!message || !userId) {
       return new Response(JSON.stringify({ error: 'message e userId obrigatórios' }), { status: 400 });
     }
 
-    // Valida usuário no banco
-    const { data: userProfile } = await supabase
-      .from('users')
-      .select('nickname, current_context, pending_question, assistant_name, timezone')
-      .eq('id', userId)
-      .single();
+    // Busca usuário — tenta pelo telegram_chat_id primeiro, depois pelo email
+    // userId do app é o UUID do Supabase Auth, não o telegram_chat_id
+    let userProfile: any = null;
+    let resolvedUserId: string = userId;
+
+    // Tenta encontrar por email (mais confiável para usuários do app)
+    if (userEmail) {
+      const { data: byEmail } = await supabase
+        .from('users')
+        .select('id, nickname, current_context, pending_question, assistant_name, timezone')
+        .eq('telegram_chat_id', userId)
+        .maybeSingle();
+
+      if (byEmail) {
+        userProfile = byEmail;
+        resolvedUserId = String(byEmail.id);
+      } else {
+        // Usuário novo do app — busca na tabela auth do Supabase pelo email
+        // e tenta achar o registro correspondente na jarvis.users
+        const { data: byTelegramNull } = await supabase
+          .from('users')
+          .select('id, nickname, current_context, pending_question, assistant_name, timezone')
+          .is('telegram_chat_id', null)
+          .limit(1)
+          .maybeSingle();
+
+        // Se não achou, cria entrada mínima para o usuário do app
+        if (!byTelegramNull) {
+          // Extrai nome do email
+          const nameFromEmail = userEmail.split('@')[0].replace(/[._]/g, ' ');
+          const { data: newUser } = await supabase
+            .from('users')
+            .insert({
+              id: Date.now(), // id bigint único baseado em timestamp
+              name: nameFromEmail,
+              nickname: nameFromEmail,
+              telegram_chat_id: userId, // guarda o auth UUID aqui para lookup futuro
+            })
+            .select('id, nickname, current_context, pending_question, assistant_name, timezone')
+            .single();
+          userProfile = newUser;
+          resolvedUserId = String(newUser?.id);
+        }
+      }
+    }
+
+    // Fallback: tenta direto pelo id como string no telegram_chat_id
+    if (!userProfile) {
+      const { data: byTelegramId } = await supabase
+        .from('users')
+        .select('id, nickname, current_context, pending_question, assistant_name, timezone')
+        .eq('telegram_chat_id', userId)
+        .maybeSingle();
+
+      if (byTelegramId) {
+        userProfile = byTelegramId;
+        resolvedUserId = String(byTelegramId.id);
+      }
+    }
 
     if (!userProfile) {
-      return new Response(JSON.stringify({ error: 'Usuário não encontrado' }), { status: 404 });
+      return new Response(JSON.stringify({ error: 'Usuário não encontrado. Configure sua conta pelo Telegram primeiro.' }), { status: 404 });
     }
+
+    const userId_ = resolvedUserId;
 
     const authorName    = userProfile.nickname || 'você';
     const assistantName = userProfile.assistant_name || 'Lev';
     const userTimezone  = userProfile.timezone || 'America/Sao_Paulo';
 
     // Sessão
-    const sessionId = clientSessionId || (await getOrCreateSession(userId));
+    const sessionId = clientSessionId || (await getOrCreateSession(userId_));
 
     // Classificação de contexto
     const contexts    = classifyContext(message);
@@ -165,17 +220,17 @@ export async function POST(req: Request) {
     ] = await Promise.all([
       needsCalendar ? getGoogleContext().catch(() => null)            : Promise.resolve(null),
       needsCalendar ? getMicrosoftCalendarContext().catch(() => null) : Promise.resolve(null),
-      needsTopics   ? buildTopicBlock(userId, message)                : Promise.resolve(''),
-      needsDiary    ? buildDiaryGoalsBlock(userId)                    : Promise.resolve(''),
-      buildGapsBlock(userId, message),
+      needsTopics   ? buildTopicBlock(userId_, message)               : Promise.resolve(''),
+      needsDiary    ? buildDiaryGoalsBlock(userId_)                   : Promise.resolve(''),
+      buildGapsBlock(userId_, message),
     ]);
 
-    const recsBlock = needsRecs ? await buildRecommendationsBlock(userId, message) : '';
+    const recsBlock = needsRecs ? await buildRecommendationsBlock(userId_, message) : '';
 
     // RAM
     const { data: history } = await supabase
       .from('brain').select('content, metadata')
-      .eq('user_id', userId).eq('session_id', sessionId)
+      .eq('user_id', userId_).eq('session_id', sessionId)
       .neq('category', 'archived')
       .order('created_at', { ascending: false }).limit(8);
 
@@ -269,7 +324,7 @@ REGRAS:
           // Processa gatilhos de evento
           const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(recurring_annual|deadline|one_time)\]/gi;
           for (const m of Array.from(cleanReply.matchAll(eventRegex)) as any[]) {
-            await upsertEvent(userId, {
+            await upsertEvent(userId_, {
               title: m[1].trim(), event_date: m[2], priority: m[3],
               is_recurring: m[4] === 'true', decay_type: m[5],
               category: 'personal', emotional_weight: m[3] === 'alta' ? 0.9 : 0.5,
@@ -280,7 +335,7 @@ REGRAS:
           // Processa atualização de meta
           const goalMatch = cleanReply.match(/\[ATUALIZAR_META:\s*([^|]+)\|\s*(\d+)(?:\|\s*([^\]]+))?\]/i);
           if (goalMatch) {
-            await updateGoalProgress(userId, goalMatch[1].trim(), parseInt(goalMatch[2]), goalMatch[3]?.trim()).catch(() => {});
+            await updateGoalProgress(userId_, goalMatch[1].trim(), parseInt(goalMatch[2]), goalMatch[3]?.trim()).catch(() => {});
             cleanReply = cleanReply.replace(goalMatch[0], '').trim();
           }
 
@@ -291,7 +346,7 @@ REGRAS:
           // Background: persiste + extratores
           Promise.all([
             supabase.from('brain').insert([{
-              content: message, category, user_id: userId, session_id: sessionId,
+              content: message, category, user_id: userId_, session_id: sessionId,
               embedding,
               metadata: {
                 ai_reply: cleanReply, user: authorName,
@@ -299,9 +354,9 @@ REGRAS:
               },
             }]),
             ...hdIds.map(id => reinforceMemory(id)),
-            extractRecomendacao(userId, message, cleanReply).catch(() => {}),
-            extractDiary(userId, message, 'anytime').catch(() => {}),
-            extractGoal(userId, message).catch(() => {}),
+            extractRecomendacao(userId_, message, cleanReply).catch(() => {}),
+            extractDiary(userId_, message, 'anytime').catch(() => {}),
+            extractGoal(userId_, message).catch(() => {}),
           ]).catch(e => console.error('[chat/background] Erro:', e));
         }
       },
