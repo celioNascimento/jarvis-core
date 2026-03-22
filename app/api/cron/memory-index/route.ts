@@ -16,7 +16,6 @@ export async function GET(req: Request) {
   }
 
   try {
-    // 1. Busca todos os usuários ativos
     const { data: users, error: usersError } = await supabase
       .from('users')
       .select('id');
@@ -47,8 +46,6 @@ export async function GET(req: Request) {
 }
 
 async function indexUserMemories(userId: string): Promise<void> {
-  // Busca o last_indexed mais antigo entre os tópicos do usuário
-  // Se não há tópicos ainda, processa tudo
   const { data: lastTopic } = await supabase
     .from('topic_index')
     .select('last_indexed')
@@ -59,16 +56,15 @@ async function indexUserMemories(userId: string): Promise<void> {
 
   const since = lastTopic?.last_indexed
     ? new Date(lastTopic.last_indexed).toISOString()
-    : new Date(0).toISOString(); // processa tudo se for primeira vez
+    : new Date(0).toISOString();
 
-  // Busca memórias novas desde o último índice
   const { data: memories, error } = await supabase
     .from('memories')
     .select('id, summary, context_tag, module_tag, project_tag, relevance_score')
     .eq('user_id', userId)
     .gt('created_at', since)
     .order('created_at', { ascending: true })
-    .limit(200); // teto por rodada para não estourar tokens
+    .limit(200);
 
   if (error || !memories?.length) {
     console.log(`[memory-index] user ${userId} — sem memórias novas desde ${since}`);
@@ -77,25 +73,20 @@ async function indexUserMemories(userId: string): Promise<void> {
 
   console.log(`[memory-index] user ${userId} — ${memories.length} memórias para indexar`);
 
-  // Agrupa por topic key: prioridade project_tag > module_tag > context_tag > 'geral'
   const groups = new Map<string, { memoryIds: string[]; summaries: string[] }>();
 
   for (const mem of memories) {
     const topicKey = mem.project_tag || mem.module_tag || mem.context_tag || 'geral';
-    if (!groups.has(topicKey)) {
-      groups.set(topicKey, { memoryIds: [], summaries: [] });
-    }
+    if (!groups.has(topicKey)) groups.set(topicKey, { memoryIds: [], summaries: [] });
     const g = groups.get(topicKey)!;
     g.memoryIds.push(mem.id);
     if (mem.summary) g.summaries.push(mem.summary);
   }
 
-  // Processa cada grupo
   for (const [topicKey, group] of groups.entries()) {
     if (group.summaries.length === 0) continue;
 
     try {
-      // Busca tópico existente para acumular
       const { data: existing } = await supabase
         .from('topic_index')
         .select('id, memory_ids, entry_count, summary')
@@ -103,16 +94,14 @@ async function indexUserMemories(userId: string): Promise<void> {
         .eq('topic', topicKey)
         .maybeSingle();
 
-      // IA gera label legível e summary consolidado
       const { label, summary } = await generateTopicMeta(
         topicKey,
         group.summaries,
         existing?.summary ?? null
       );
 
-      // Acumula memory_ids sem duplicar
       const existingIds: string[] = existing?.memory_ids || [];
-      const newIds = group.memoryIds.filter(id => !existingIds.includes(id));
+      const newIds    = group.memoryIds.filter(id => !existingIds.includes(id));
       const mergedIds = [...existingIds, ...newIds];
 
       const payload = {
@@ -127,18 +116,12 @@ async function indexUserMemories(userId: string): Promise<void> {
       };
 
       if (existing?.id) {
-        await supabase
-          .from('topic_index')
-          .update(payload)
-          .eq('id', existing.id);
+        await supabase.from('topic_index').update(payload).eq('id', existing.id);
       } else {
-        await supabase
-          .from('topic_index')
-          .insert({ ...payload, created_at: new Date().toISOString() });
+        await supabase.from('topic_index').insert({ ...payload, created_at: new Date().toISOString() });
       }
 
       console.log(`[memory-index] user ${userId} — tópico "${topicKey}" → ${newIds.length} novas memórias`);
-
     } catch (e) {
       console.error(`[memory-index] Erro no tópico "${topicKey}":`, e);
     }
@@ -150,7 +133,7 @@ async function generateTopicMeta(
   newSummaries: string[],
   existingSummary: string | null
 ): Promise<{ label: string; summary: string }> {
-  const summariesText = newSummaries.slice(0, 20).join('\n- '); // teto de 20 para não estourar
+  const summariesText  = newSummaries.slice(0, 20).join('\n- ');
   const contextoPrevio = existingSummary
     ? `\nContexto já indexado: "${existingSummary}"`
     : '';
@@ -171,14 +154,13 @@ REGRAS:
 - Nunca mencione datas, nomes específicos ou detalhes — só o padrão geral do tópico`;
 
   try {
-    const raw = await callAI(prompt, 150);
+    const raw  = await callAI(prompt, 150);
     const data = JSON.parse(raw.replace(/```json|```/g, '').trim());
     return {
       label:   data.label   || topicKey,
       summary: data.summary || '',
     };
   } catch {
-    // Fallback sem IA — label capitalizado da key
     return {
       label:   topicKey.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
       summary: existingSummary || '',
