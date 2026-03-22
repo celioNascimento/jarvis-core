@@ -44,6 +44,139 @@ import {
   updateGoalProgress,
 } from '@/lib/diary';
 
+// ============================================================
+// SPRINT 1 — #2 Roteamento de modelo
+// ============================================================
+
+type ContextType =
+  | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario' | 'meta'
+  | 'saude' | 'recomendacao' | 'evento' | 'rotina' | 'preferencia'
+  | 'alias' | 'email' | 'casual';
+
+/**
+ * Classifica o contexto da mensagem via regex — zero latência, sem LLM.
+ * Retorna array de contextos detectados (pode ter mais de um).
+ */
+function classifyContext(text: string): ContextType[] {
+  const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  const rules: Array<[RegExp, ContextType]> = [
+    // Diário / reflexão — antes de emocao para ter prioridade
+    [/diario|diário|hoje foi|hoje ta|hoje está|acordei|dormi|dormir|meu dia|como foi meu|reflexao|refletindo|gratid/i, 'diario'],
+    // Meta / objetivo
+    [/meta|objetivo|quero (conseguir|fazer|terminar|lancar|comecar)|prazo|progresso|etapa|concluir|finalizar/i, 'meta'],
+    // Agenda / compromisso com hora
+    [/reuniao|reunião|consulta|compromisso|agend|horario|horário|amanha as|amanhã às|segunda|terça|quarta|quinta|sexta|sabado|domingo|às \d|as \d{1,2}h/i, 'agenda'],
+    // Projeto / produto
+    [/projeto|app|aplicativo|sistema|api|deploy|feature|sprint|mvp|startup|produto|desenvolv/i, 'projeto'],
+    // Família
+    [/filho|filha|esposa|marido|mae|mãe|pai|irmao|irmão|família|familia|cônjuge|conjuge|casamento|nasceu|aniversario de casamento/i, 'familia'],
+    // Saúde
+    [/medic|médic|saude|saúde|exame|remedio|remédio|hospital|dor |doenca|doença|sintoma|consulta médica/i, 'saude'],
+    // Emoção
+    [/sinto|estou (triste|feliz|ansioso|cansado|animado|frustrado|preocupado|deprimido|sozinho)|me sinto|to mal|tô mal|to bem|tô bem|angustia|angústia|estressado/i, 'emocao'],
+    // Email
+    [/email|e-mail|inbox|caixa de entrada|mensagem do|mensagem da|enviou|recebeu/i, 'email'],
+    // Recomendação
+    [/indica|recomend|sugere|onde posso|tem algum|onde tem|restaurante|lugar|lugar bom|conhece algum/i, 'recomendacao'],
+    // Evento / data comemorativa (sem hora)
+    [/aniversario|aniversário|natal|pascoa|páscoa|ano novo|feriado|data importante|comemora/i, 'evento'],
+    // Rotina
+    [/acordo|desperto|academia|treino|trabalho as|trabalho às|entrada no trabalho|saida do trabalho|rotina|horario de/i, 'rotina'],
+    // Preferência
+    [/gosto de|nao gosto de|não gosto de|prefiro|adoro|odeio|minha comida|meu filme|minha musica|minha música/i, 'preferencia'],
+    // Alias
+    [/quando falo em|quando eu falar|pode chamar de|se eu disser|apelido|alias/i, 'alias'],
+  ];
+
+  const detected: ContextType[] = [];
+  for (const [rx, ctx] of rules) {
+    if (rx.test(t)) detected.push(ctx);
+  }
+
+  return detected.length > 0 ? detected : ['casual'];
+}
+
+// ============================================================
+// SPRINT 1 — #2 Roteamento de modelo
+// ============================================================
+
+interface ModelRoute {
+  model: string;
+  label: string;
+}
+
+/**
+ * Escolhe o modelo com base nos contextos detectados.
+ * - Contextos complexos → Sonnet (raciocínio, emoção, projetos)
+ * - Contextos simples   → Gemini Flash (custo 10× menor)
+ */
+function routeModel(contexts: ContextType[]): ModelRoute {
+  const complexContexts: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude'];
+  const isComplex = contexts.some(c => complexContexts.includes(c));
+
+  if (isComplex) {
+    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
+  }
+
+  return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
+}
+
+// ============================================================
+// SPRINT 1 — #4 Temperatura adaptativa
+// ============================================================
+
+/**
+ * Define a temperatura com base no contexto emocional/factual da mensagem.
+ * - Factual (agenda, evento, email) → 0.3 — respostas precisas
+ * - Neutro (rotina, alias, preferencia) → 0.5
+ * - Casual, projeto → 0.7
+ * - Emocional (emoção, diário, reflexão) → 0.9 — mais criativo e humano
+ */
+function getTemperature(contexts: ContextType[]): number {
+  if (contexts.some(c => ['emocao', 'diario'].includes(c))) return 0.9;
+  if (contexts.some(c => ['casual', 'projeto', 'familia', 'meta'].includes(c))) return 0.7;
+  if (contexts.some(c => ['rotina', 'alias', 'preferencia', 'recomendacao'].includes(c))) return 0.5;
+  if (contexts.some(c => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
+  return 0.7;
+}
+
+// ============================================================
+// SPRINT 1 — #3 Injeção contextual
+// ============================================================
+
+interface ContextualBlocks {
+  topicBlock: string;
+  diaryGoalsBlock: string;
+  recommendationsBlock: string;
+  needsCalendar: boolean;   // sinaliza para carregar Google + Outlook
+  needsEmail: boolean;      // sinaliza para carregar emails
+}
+
+/**
+ * Decide quais blocos extras carregar com base nos contextos.
+ * Blocos caros (calendário, email) só são buscados quando realmente necessários.
+ */
+function planContextualBlocks(contexts: ContextType[]): {
+  loadTopics: boolean;
+  loadDiary: boolean;
+  loadRecommendations: boolean;
+  loadCalendar: boolean;
+  loadEmail: boolean;
+} {
+  return {
+    loadTopics:          contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia'].includes(c)),
+    loadDiary:           contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c)),
+    loadRecommendations: contexts.some(c => ['recomendacao', 'casual'].includes(c)),
+    loadCalendar:        contexts.some(c => ['agenda', 'evento', 'familia'].includes(c)),
+    loadEmail:           contexts.some(c => ['email'].includes(c)),
+  };
+}
+
+// ============================================================
+// WEBHOOK PRINCIPAL
+// ============================================================
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -51,7 +184,7 @@ export async function POST(req: Request) {
     let messageText = message?.text || "";
 
     // ============================================================
-    // 🎤 WHISPER — com fallback de formatos
+    // WHISPER — transcrição de áudio
     // ============================================================
     if (message?.voice) {
       try {
@@ -117,10 +250,21 @@ export async function POST(req: Request) {
       }
     }
 
-    const chatId        = message?.chat?.id;
+    const chatId         = message?.chat?.id;
     const telegramUserId = message?.from?.id;
     const userFirstName  = message?.from?.first_name || "Usuário";
     const stringId       = String(telegramUserId);
+
+    // ============================================================
+    // SPRINT 1 — classifica contexto logo no início
+    // Todas as decisões de modelo, blocos e temperatura dependem disso.
+    // ============================================================
+    const detectedContexts = classifyContext(messageText);
+    const modelRoute       = routeModel(detectedContexts);
+    const temperature      = getTemperature(detectedContexts);
+    const blockPlan        = planContextualBlocks(detectedContexts);
+
+    console.log(`[Sprint1] contextos: ${detectedContexts.join(',')} | modelo: ${modelRoute.label} | temp: ${temperature}`);
 
     // ============================================================
     // LOCALIZAÇÃO
@@ -170,22 +314,13 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // BUSCA EM PARALELO
+    // SPRINT 1 — #3 Busca paralela CONTEXTUAL
+    // Blocos caros (calendário, email, recomendações, diary) só são
+    // buscados quando o contexto da mensagem realmente pede.
     // ============================================================
-    const [
-      userProfileResult,
-      sessionId,
-      eventsResult,
-      ashesResult,
-      onboardingResult,
-      gapsBlock,
-      principlesResult,
-      googleContextBlock,
-      microsoftContextBlock,
-      emailRadarBlock,
-      topicBlock,
-      diaryGoalsBlock,
-    ] = await Promise.all([
+
+    // Bloco base — sempre necessário
+    const basePromises = Promise.all([
       supabase
         .from('users')
         .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone, telegram_chat_id')
@@ -212,20 +347,47 @@ export async function POST(req: Request) {
       supabase
         .from('principles')
         .select('content, category').order('created_at', { ascending: true }),
-
-      getGoogleContext(),
-      getMicrosoftCalendarContext(),
-      getRecentEmails(undefined, 3, false),
-      buildTopicBlock(stringId, messageText),
-      buildDiaryGoalsBlock(stringId),
     ]);
+
+    // Blocos condicionais — só busca o que o contexto pede
+    const conditionalPromises = Promise.all([
+      blockPlan.loadCalendar ? getGoogleContext()              : Promise.resolve(null),
+      blockPlan.loadCalendar ? getMicrosoftCalendarContext()   : Promise.resolve(null),
+      blockPlan.loadEmail    ? getRecentEmails(undefined, 3, false) : Promise.resolve(null),
+      blockPlan.loadTopics   ? buildTopicBlock(stringId, messageText) : Promise.resolve(''),
+      blockPlan.loadDiary    ? buildDiaryGoalsBlock(stringId)  : Promise.resolve(''),
+    ]);
+
+    const [
+      [
+        userProfileResult,
+        sessionId,
+        eventsResult,
+        ashesResult,
+        onboardingResult,
+        gapsBlock,
+        principlesResult,
+      ],
+      [
+        googleContextBlock,
+        microsoftContextBlock,
+        emailRadarBlock,
+        topicBlock,
+        diaryGoalsBlock,
+      ]
+    ] = await Promise.all([basePromises, conditionalPromises]);
+
+    // Recomendações — também condicional, mas depende de messageText, então separado
+    const recommendationsBlock = blockPlan.loadRecommendations
+      ? await buildRecommendationsBlock(stringId, messageText)
+      : '';
 
     // ============================================================
     // DEBUG — APIs externas
     // ============================================================
     const isGoogleError    = typeof googleContextBlock    === 'string' && googleContextBlock.includes('Erro');
     const isMicrosoftError = typeof microsoftContextBlock === 'string' && microsoftContextBlock.includes('Erro');
-    const isEmailError     = typeof emailRadarBlock       === 'string' && emailRadarBlock.includes('Erro');
+    const isEmailError     = typeof emailRadarBlock       === 'string' && emailRadarBlock?.includes('Erro');
 
     if (isGoogleError)    console.warn('[Debug] Agenda Google com erro — bloqueada do prompt');
     if (isMicrosoftError) console.warn('[Debug] Agenda Microsoft com erro — bloqueada do prompt');
@@ -276,7 +438,7 @@ export async function POST(req: Request) {
         : null,
     ].filter(Boolean).join('\n\n') : "Nenhum evento cadastrado.";
 
-    const ashes     = ashesResult.data || [];
+    const ashes      = ashesResult.data || [];
     const ashesBlock = ashes.length > 0 ? ashes.map(a => a.ash_summary).join('\n') : null;
 
     // ============================================================
@@ -307,8 +469,6 @@ export async function POST(req: Request) {
       for (const n of pNotes)     lines.push(`${n.person_name} [${n.noted_at}]: ${n.note}`);
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
-
-    const recommendationsBlock = await buildRecommendationsBlock(stringId, messageText);
 
     // ============================================================
     // HD VETORIAL
@@ -370,7 +530,7 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // CLASSIFICADOR TEMPORAL
+    // CLASSIFICADOR TEMPORAL (existente — mantido)
     // ============================================================
     const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
     console.log(`[Router] ${weights.horizon} | ${weights.reason}`);
@@ -397,10 +557,10 @@ ${locationContext       ? `\n${locationContext}`                                
 
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${truncatedL3}` : ''}
 
-${personNotesBlock    ? personNotesBlock    : ''}
+${personNotesBlock     ? personNotesBlock     : ''}
 ${recommendationsBlock ? recommendationsBlock : ''}
-${topicBlock          ? topicBlock          : ''}
-${diaryGoalsBlock     ? diaryGoalsBlock     : ''}
+${topicBlock           ? topicBlock           : ''}
+${diaryGoalsBlock      ? diaryGoalsBlock      : ''}
 
 ${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]\n${truncatedHd}` : ''}
 
@@ -546,7 +706,10 @@ REGRAS:
       : `[INTERNO]\nVocê é o assistente — NUNCA diga "Anota aí" ou peça ao usuário para anotar algo.\nSe o usuário informar uma data ou fato, confirme brevemente ou responda naturalmente.`;
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
-    let aiReply = await callOpenRouter(conversationMessages);
+    // ============================================================
+    // SPRINT 1 — #2 chamada com modelo e temperatura roteados
+    // ============================================================
+    let aiReply = await callOpenRouter(conversationMessages, modelRoute.model, temperature);
 
     // ============================================================
     // INTERCEPTORES
@@ -758,12 +921,17 @@ REGRAS:
         ai_reply:         aiReply,
         user:             authorName,
         horizon:          weights.horizon,
-        pending_resolved: !!pendingQuestion
+        pending_resolved: !!pendingQuestion,
+        // Sprint 1 — registra modelo e temperatura usados para debugging/analytics
+        model_used:       modelRoute.model,
+        model_label:      modelRoute.label,
+        temperature_used: temperature,
+        contexts_detected: detectedContexts,
       }
     }]);
 
     if (insertError) console.error('BRAIN INSERT ERRO:', JSON.stringify(insertError));
-    else             console.log('BRAIN INSERT OK — user:', stringId, 'session:', sessionId);
+    else             console.log('BRAIN INSERT OK — user:', stringId, 'session:', sessionId, 'model:', modelRoute.label);
 
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 

@@ -333,4 +333,4 @@ export async function checkGoalReminders(
     console.error('[checkGoalReminders] Erro:', e);
     return null;
   }
-}
+} 
