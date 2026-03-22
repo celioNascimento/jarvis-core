@@ -675,8 +675,8 @@ export async function buildTopicBlock(
 
       const words = [...topicNorm.split('_'), ...labelNorm.split(' ')].filter(w => w.length > 3);
       const wordMatch    = words.some(w => msgLower.includes(w));
-      const summaryWords = summaryNorm.split(/\s+/).filter(w => w.length > 4);
-      const summaryMatch = summaryWords.some(w => msgLower.includes(w));
+      const summaryWords = summaryNorm.split(/\s+/).filter((w: string) => w.length > 4);
+      const summaryMatch = summaryWords.some((w: string) => msgLower.includes(w));
 
       return wordMatch || summaryMatch;
     });
