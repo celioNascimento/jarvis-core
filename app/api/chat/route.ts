@@ -374,4 +374,4 @@ REGRAS:
     console.error('[chat] Erro:', error.message);
     return new Response(JSON.stringify({ error: 'Erro interno' }), { status: 500 });
   }
-}
+} 
