@@ -491,21 +491,59 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // RAM RESILIENTE
+    // SPRINT 1 — #5 RAM COMPRIMIDA
+    // Detecta mudança de assunto e comprime bloco anterior.
+    // Limite absoluto: ~2000 tokens (~8000 chars).
     // ============================================================
+    const RAM_MAX_CHARS  = 8000;
+    const RAM_FULL_MSGS  = 10;   // mesmo assunto: mantém até 10 trocas brutas
+    const RAM_SHIFT_MSGS = 3;    // assunto mudou: mantém só as 3 últimas + resumo
+
+    function topicShifted(history: any[], currentCtxs: ContextType[]): boolean {
+      if (history.length < 3) return false;
+      const recentCtxs = history.slice(0, 3).flatMap(
+        (h: any) => (h.metadata?.contexts_detected as ContextType[] | undefined) || []
+      );
+      if (recentCtxs.length === 0) return false;
+      const overlap = currentCtxs.filter(c => recentCtxs.includes(c));
+      return overlap.length === 0 && !currentCtxs.includes('casual');
+    }
+
+    function compressToSummary(history: any[]): string {
+      const topics = history
+        .flatMap((h: any) => (h.metadata?.contexts_detected as string[] | undefined) || [])
+        .filter((v, i, a) => a.indexOf(v) === i)
+        .join(', ');
+      return topics
+        ? `[Resumo do assunto anterior: ${topics}]`
+        : '[Contexto anterior resumido]';
+    }
+
     let ramBlock = "";
 
     const { data: historySession } = await supabase
       .from('brain').select('content, metadata')
       .eq('user_id', stringId).eq('session_id', sessionId)
-      .neq('category', 'archived').order('created_at', { ascending: false }).limit(8);
+      .neq('category', 'archived').order('created_at', { ascending: false }).limit(RAM_FULL_MSGS);
 
     if (historySession && historySession.length >= 2) {
-      ramBlock = [...historySession].reverse().map((h: any) => {
-        const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
-        return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
-      }).join('\n\n');
-      console.log('[RAM] Nível 1 — sessão:', historySession.length, 'msgs');
+      const shifted = topicShifted(historySession, detectedContexts);
+
+      if (shifted) {
+        const summary   = compressToSummary(historySession.slice(RAM_SHIFT_MSGS));
+        const recentRaw = [...historySession].slice(0, RAM_SHIFT_MSGS).reverse().map((h: any) => {
+          const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
+          return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
+        }).join('\n\n');
+        ramBlock = `${summary}\n\n${recentRaw}`;
+        console.log(`[RAM] Nível 1 — assunto mudou (${detectedContexts.join(',')}) | comprimido: ${historySession.length - RAM_SHIFT_MSGS} msgs → resumo`);
+      } else {
+        ramBlock = [...historySession].reverse().map((h: any) => {
+          const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
+          return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
+        }).join('\n\n');
+        console.log('[RAM] Nível 1 — sessão:', historySession.length, 'msgs');
+      }
 
     } else {
       const { data: historyRecent } = await supabase
@@ -516,7 +554,7 @@ export async function POST(req: Request) {
       if (historyRecent && historyRecent.length > 0) {
         const sessionSet = new Set((historySession || []).map((h: any) => h.content));
         const extra      = historyRecent.filter((h: any) => !sessionSet.has(h.content));
-        const merged     = [...(historySession || []), ...extra].slice(0, 10);
+        const merged     = [...(historySession || []), ...extra].slice(0, RAM_FULL_MSGS);
         ramBlock = [...merged].reverse().map((h: any) => {
           const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
           return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
@@ -527,6 +565,12 @@ export async function POST(req: Request) {
         ramBlock = `[Contexto anterior consolidado]\n${hdBlock}`;
         console.log('[RAM] Nível 3 — HD como base');
       }
+    }
+
+    // Limite absoluto de tokens na RAM
+    if (ramBlock.length > RAM_MAX_CHARS) {
+      ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
+      console.log(`[RAM] Truncado para ${RAM_MAX_CHARS} chars (limite absoluto)`);
     }
 
     // ============================================================
@@ -959,16 +1003,20 @@ REGRAS:
       );
     }
 
-    await Promise.all([
-      sendTelegram(chatId, aiReply),
-      ...tasks
-    ]);
+    // SPRINT 1 — sendTelegram desacoplado dos extratores
+    // Resposta vai pro usuário imediatamente; extratores e compactação rodam em background.
+    await sendTelegram(chatId, aiReply);
 
-    const { count } = await supabase
-      .from('brain').select('*', { count: 'exact', head: true })
-      .eq('user_id', stringId).eq('category', 'info');
-
-    if (count && count >= 20) await compactMemory(stringId, authorName);
+    // Background: não bloqueia a resposta
+    Promise.all([
+      ...tasks,
+      supabase
+        .from('brain').select('*', { count: 'exact', head: true })
+        .eq('user_id', stringId).eq('category', 'info')
+        .then(({ count }) => {
+          if (count && count >= 20) return compactMemory(stringId, authorName);
+        }),
+    ]).catch(e => console.error('[Background] Erro:', e));
 
     return NextResponse.json({ ok: true });
 
