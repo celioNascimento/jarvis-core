@@ -1,24 +1,10 @@
 {
   "crons": [
-    {
-      "path": "/api/cron/check-events",
-      "schedule": "0 * * * *"
-    },
-    {
-      "path": "/api/cron/decay",
-      "schedule": "0 3 * * *"
-    },
-    {
-      "path": "/api/cron/credits",
-      "schedule": "0 0 1 * *"
-    },
-    {
-      "path": "/api/cron/briefing",
-      "schedule": "5 8 * * *"
-    },
-     {
-      "path": "/api/cron/memory-index",
-      "schedule": "0 2 * * 0"
-    }
+    { "path": "/api/cron/check-events",  "schedule": "0 * * * *"  },
+    { "path": "/api/cron/decay",         "schedule": "0 3 * * *"  },
+    { "path": "/api/cron/credits",       "schedule": "0 0 1 * *"  },
+    { "path": "/api/cron/briefing",      "schedule": "5 8 * * *"  },
+    { "path": "/api/cron/memory-index",  "schedule": "0 2 * * 0"  },
+    { "path": "/api/cron/evening",       "schedule": "0 21 * * *" }
   ]
 }

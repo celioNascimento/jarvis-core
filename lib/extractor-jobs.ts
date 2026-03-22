@@ -39,7 +39,6 @@ REGRAS:
     for (const proj of (data.projetos || [])) {
       if (!proj.nome || !proj.tag) continue;
 
-      // Busca projeto existente para nao sobrescrever com null
       const { data: existing } = await supabase.from('projects')
         .select('description, context_technical, status')
         .eq('user_id', userId).eq('tag', proj.tag).maybeSingle();
@@ -49,17 +48,14 @@ REGRAS:
         updated_at: new Date().toISOString(),
       };
 
-      // Descricao: aceita se nao tinha, ou se a nova for mais longa
       if (proj.descricao) {
         if (!existing?.description || proj.descricao.length > existing.description.length) {
           payload.description = proj.descricao;
         }
       }
-      // context_technical: aceita se nao tinha
       if (proj.contexto_tecnico && !existing?.context_technical) {
         payload.context_technical = proj.contexto_tecnico;
       }
-      // status: aceita sempre que vier preenchido
       if (proj.status) payload.status = proj.status;
 
       const { error } = await supabase.from('projects').upsert(payload, { onConflict: 'user_id,tag' });
@@ -252,7 +248,6 @@ Retorne preferencias: [] se nenhuma mencionada`;
       .select('career_notes').eq('user_id', userId).maybeSingle();
     const old     = prof?.career_notes || '';
     const newLine = prefs.map((p: any) => `[${p.tipo}] ${p.descricao}`).join(' | ');
-    // Evita duplicar preferências já registradas
     const alreadyExists = prefs.every((p: any) => old.includes(p.descricao));
     if (alreadyExists) return;
     const updated = old ? `${old} | ${newLine}` : newLine;
@@ -267,7 +262,6 @@ Retorne preferencias: [] se nenhuma mencionada`;
 
 // ============================================================
 // ATUALIZA L3 — users.current_context
-// Inclui todos os campos relevantes do perfil
 // ============================================================
 
 export async function updateL3(userId: string): Promise<void> {
@@ -289,7 +283,6 @@ export async function updateL3(userId: string): Promise<void> {
 
     const patches: Record<string, string> = {};
 
-    // Identidade
     if (p?.full_name) {
       patches['Nome'] = p.preferred_name
         ? `${p.full_name} (prefere: ${p.preferred_name})`
@@ -297,39 +290,26 @@ export async function updateL3(userId: string): Promise<void> {
     }
     if (p?.gender)        patches['Gênero']      = p.gender;
     if (p?.birth_date)    patches['Nascimento']  = p.birth_date;
-
-    // Localização
     if (p?.city)          patches['Mora em']     = `${p.city}${p.state ? `, ${p.state}` : ''}`;
     if (p?.birth_city)    patches['Nasceu em']   = `${p.birth_city}${p.birth_state ? `, ${p.birth_state}` : ''}`;
-
-    // Contato
     if (p?.phone)         patches['Telefone']    = p.phone;
     if (p?.whatsapp)      patches['WhatsApp']    = p.whatsapp;
-
-    // Família
     if (p?.spouse_name)   patches['Cônjuge']     = `${p.spouse_name}${p.spouse_birthday ? ` (aniv: ${p.spouse_birthday})` : ''}`;
     if (p?.father_name)   patches['Pai']         = p.father_name;
     if (p?.mother_name)   patches['Mãe']         = p.mother_name;
     if (p?.siblings_count !== null && p?.siblings_count !== undefined) {
       patches['Irmãos'] = String(p.siblings_count);
     }
-
-    // Carreira
     if (p?.profession)    patches['Formação']    = p.profession;
     if (p?.current_job)   patches['Cargo']       = [
       p.current_job,
-      p.company    ? `@ ${p.company}` : null,
+      p.company        ? `@ ${p.company}` : null,
       p.job_start_date ? `(início: ${p.job_start_date})` : null,
     ].filter(Boolean).join(' ');
-
-    // Educação
     if (p?.education_level) patches['Escolaridade'] = p.education_level;
     if (p?.schools?.length) patches['Escolas']      = p.schools.join(', ');
-
-    // Fé
     if (p?.faith_profile && p.faith_profile !== 'unknown') patches['Fé'] = p.faith_profile;
 
-    // Filhos
     if (kids.length > 0) {
       patches['Filhos'] = kids.map((k: any) => {
         const age = k.birth_date
@@ -339,23 +319,21 @@ export async function updateL3(userId: string): Promise<void> {
       }).join(', ');
     }
 
-    // Aplica patches no contexto — só substitui se o valor mudou
     const changed: string[] = [];
     for (const [key, val] of Object.entries(patches)) {
       const rx      = new RegExp(`- ${key}: (.*)`, 'i');
       const match   = ctx.match(rx);
       const current = match?.[1]?.trim() || '';
-      if (current === val) continue; // nada mudou — pula
+      if (current === val) continue;
       const line = `- ${key}: ${val}`;
       ctx = match ? ctx.replace(rx, line) : `${ctx}\n${line}`;
       changed.push(key);
     }
 
-    // Seção projetos — só atualiza se mudou
     if (proj.length > 0) {
-      const block      = proj.map((r: any) => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
-      const section    = `## PROJETOS\n${block}`;
-      const existProj  = /## PROJETOS[\s\S]*?(?=\n##|$)/i.exec(ctx)?.[0] || '';
+      const block     = proj.map((r: any) => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
+      const section   = `## PROJETOS\n${block}`;
+      const existProj = /## PROJETOS[\s\S]*?(?=\n##|$)/i.exec(ctx)?.[0] || '';
       if (existProj !== section) {
         ctx = existProj
           ? ctx.replace(/## PROJETOS[\s\S]*?(?=\n##|$)/i, section)
@@ -364,7 +342,6 @@ export async function updateL3(userId: string): Promise<void> {
       }
     }
 
-    // Seção datas importantes — só atualiza se mudou
     const highEvs = evs.filter((e: any) => (e.emotional_weight || 0) >= 0.7);
     if (highEvs.length > 0) {
       const block      = highEvs.map((e: any) => `- ${e.title}: ${e.event_date}`).join('\n');
@@ -378,7 +355,6 @@ export async function updateL3(userId: string): Promise<void> {
       }
     }
 
-    // Só faz update se algo realmente mudou
     if (changed.length === 0) {
       console.log('[Extrator/L3] Sem mudanças — update ignorado');
       return;
@@ -392,7 +368,7 @@ export async function updateL3(userId: string): Promise<void> {
 }
 
 // ============================================================
-// HELPERS COMPARTILHADOS — exportados para extractor.ts
+// HELPERS COMPARTILHADOS
 // ============================================================
 
 export async function callAI(prompt: string, maxTokens = 300): Promise<string> {
@@ -442,33 +418,23 @@ export async function upsertAlias(
   }, { onConflict: 'user_id,alias' });
 }
 
-// Normaliza título de evento para comparação e persistência
 function normalizeEventTitle(t: string): string {
   const s = t.trim();
-  // Títulos compostos com "de" — preserva inteiro: "Aniversário de Casamento"
   if (/^aniversári[oa]?\s+de\s+\w/i.test(s)) return s;
-  // Remove "da/do" após aniversário: "Aniversário da Giselle" → "Aniversário Giselle"
   const sem_da = s.replace(/^(aniversári[oa]?\s+)(d[ao]\s+)/gi, '$1');
-  // Mantém só o primeiro nome após "Aniversário": "Aniversário Celio Roberto" → "Aniversário Celio"
   return sem_da
     .replace(/^(aniversári[oa]?\s+)(\S+)(\s+\S+)+$/gi, (_, prefix, first) => `${prefix}${first}`)
     .trim();
 }
 
-// Normaliza título genérico para deduplicação fuzzy
-// "Início na White Martins", "Começo White Martins", "Início White Martins",
-// "Novo emprego White Martins" → mesmo cluster pela empresa/keyword principal
 function fuzzyTitleKey(t: string): string {
   return t.toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    // Normaliza prefixos de início de emprego
     .replace(/^(inicio|começo|comeco|novo emprego|start|entrada)\s+(na?|em|no|ao)?\s*/i, 'inicio ')
-    // Normaliza "Aniversário X Y" → "aniversario X" (já feito pelo normalizeEventTitle, mas reforça)
     .replace(/^(aniversari[oa]?)\s+(de\s+)?/i, 'aniversario ')
     .replace(/\s+/g, ' ').trim();
 }
 
-// Cache local em memória para evitar duplo insert na mesma sessão Node
 const recentInserts = new Map<string, number>();
 
 export async function upsertEvent(userId: string, ev: {
@@ -478,30 +444,25 @@ export async function upsertEvent(userId: string, ev: {
 }): Promise<void> {
   const title = normalizeEventTitle(ev.title);
 
-  // Rejeita títulos genéricos demais — sem contexto suficiente para deduplicar
   const titulosRejeitados = /^(aniversário|aniversario|evento|compromisso|data|lembrete)$/i;
   if (titulosRejeitados.test(title.trim())) {
     console.log('[upsertEvent] Rejeitado (título genérico):', title);
     return;
   }
 
-  // Normaliza para comparação local: sem acentos, lowercase
   const norm = (s: string) => s.toLowerCase().trim()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
 
-  // Chave de deduplicação: user + título fuzzy + mês/dia
-  const mmdd      = ev.event_date.slice(5); // MM-DD
-  const titleKey  = fuzzyTitleKey(title);
-  const dedupKey  = `${userId}:${titleKey}:${mmdd}`;
+  const mmdd     = ev.event_date.slice(5);
+  const titleKey = fuzzyTitleKey(title);
+  const dedupKey = `${userId}:${titleKey}:${mmdd}`;
 
-  // Verifica cache local — se inserimos nos últimos 10s, ignora
   const lastInsert = recentInserts.get(dedupKey) || 0;
   if (Date.now() - lastInsert < 10_000) {
     console.log('[upsertEvent] Ignorado (cache):', title);
     return;
   }
 
-  // Busca no banco por mês/dia (uma única query)
   const { data: candidates } = await supabase.from('events')
     .select('id, title, priority, emotional_weight, notes, decay_type, is_recurring')
     .eq('user_id', userId)
@@ -510,11 +471,8 @@ export async function upsertEvent(userId: string, ev: {
   const ex = (candidates || []).find((c: any) => {
     const cn = norm(normalizeEventTitle(c.title));
     const tn = norm(title);
-    // Match exato normalizado
     if (cn === tn) return true;
-    // Match fuzzy: mesmo cluster de título (ex: "início" vs "começo")
     if (fuzzyTitleKey(c.title) === titleKey) return true;
-    // Match por primeiro token após "aniversário" (ex: "Celio")
     const cf = cn.replace(/aniversari[oa]?\s+(de\s+)?/, '').split(' ')[0];
     const tf = tn.replace(/aniversari[oa]?\s+(de\s+)?/, '').split(' ')[0];
     return tf.length > 2 && cf === tf;
@@ -523,11 +481,10 @@ export async function upsertEvent(userId: string, ev: {
   recentInserts.set(dedupKey, Date.now());
 
   if (ex?.id) {
-    // Só atualiza se o novo dado for de maior qualidade
-    const betterPriority   = ev.priority === 'alta' && ex.priority !== 'alta';
-    const betterWeight     = ev.emotional_weight > (ex.emotional_weight || 0);
-    const hasNewNote       = ev.notes && !ex.notes;
-    const titleImproved    = norm(title) !== norm(ex.title); // normalização melhorou
+    const betterPriority = ev.priority === 'alta' && ex.priority !== 'alta';
+    const betterWeight   = ev.emotional_weight > (ex.emotional_weight || 0);
+    const hasNewNote     = ev.notes && !ex.notes;
+    const titleImproved  = norm(title) !== norm(ex.title);
 
     if (!betterPriority && !betterWeight && !hasNewNote && !titleImproved) {
       console.log('[upsertEvent] Ignorado (sem melhoria):', title);
@@ -535,9 +492,9 @@ export async function upsertEvent(userId: string, ev: {
     }
     await supabase.from('events').update({
       title,
-      ...(betterPriority  ? { priority: ev.priority }                  : {}),
-      ...(betterWeight    ? { emotional_weight: ev.emotional_weight }   : {}),
-      ...(hasNewNote      ? { notes: ev.notes }                         : {}),
+      ...(betterPriority ? { priority: ev.priority }                : {}),
+      ...(betterWeight   ? { emotional_weight: ev.emotional_weight } : {}),
+      ...(hasNewNote     ? { notes: ev.notes }                       : {}),
     }).eq('id', ex.id);
     console.log('[upsertEvent] Atualizado:', title);
   } else {
@@ -556,7 +513,6 @@ export async function upsertEvent(userId: string, ev: {
 
 // ============================================================
 // EXTRATOR: RECOMENDAÇÕES → recommendations
-// Captura: Jarvis sugere, usuário menciona indicação, usuário elogia lugar
 // ============================================================
 
 export async function extractRecomendacao(
@@ -591,8 +547,8 @@ REGRAS:
 - status="liked": usuário expressou que gostou ("adorei", "recomendo", "muito bom")
 - status="disliked": usuário expressou que não gostou
 - status="pending": sugestão ainda não visitada/testada
-- context: motivo ou contexto da recomendação (ex: "ótimo para almoço de negócios", "café tranquilo")
-- tags: array de palavras-chave relevantes (ex: ["tranquilo","família","fins-de-semana"])
+- context: motivo ou contexto da recomendação
+- tags: array de palavras-chave relevantes
 - nome: NUNCA retornar null — se não houver nome claro, retorne recomendacoes: []
 - Retorne recomendacoes: [] se nenhuma recomendação clara na conversa`;
 
@@ -604,7 +560,6 @@ REGRAS:
     for (const rec of (data.recomendacoes || [])) {
       if (!rec.nome || !rec.tipo) continue;
 
-      // Verifica se já existe (dedup por nome+tipo)
       const { data: existing } = await supabase
         .from('recommendations')
         .select('id, status, context')
@@ -614,7 +569,6 @@ REGRAS:
         .maybeSingle();
 
       if (existing) {
-        // Só atualiza se status melhorou (pending → liked/disliked) ou context novo
         const shouldUpdate =
           (rec.status !== 'pending' && existing.status === 'pending') ||
           (rec.context && !existing.context);
@@ -648,7 +602,6 @@ REGRAS:
 
 // ============================================================
 // LOADER: RECOMENDAÇÕES para o system prompt
-// Retorna bloco formatado com recomendações relevantes ao contexto
 // ============================================================
 
 export async function buildRecommendationsBlock(
@@ -668,14 +621,11 @@ export async function buildRecommendationsBlock(
 
     const msgLower = messageText.toLowerCase();
 
-    // Filtra recomendações relevantes ao contexto da mensagem
     const relevant = recs.filter((r: any) => {
-      // Sempre inclui se a mensagem menciona o nome ou tags
       const nameMatch = r.name.toLowerCase().split(' ')
         .some((w: string) => w.length > 3 && msgLower.includes(w));
       const tagMatch = (r.tags || [])
         .some((t: string) => msgLower.includes(t.toLowerCase()));
-      // Inclui por tipo se a mensagem pede recomendação
       const askingForRec = /indica|recomend|sugere|onde|qual.*bom|tem.*bom/i.test(msgLower);
       return nameMatch || tagMatch || askingForRec;
     });
@@ -685,7 +635,7 @@ export async function buildRecommendationsBlock(
     const lines = relevant.map((r: any) => {
       const sourceTxt = r.source === 'third_party' && r.source_person
         ? `indicado por ${r.source_person}`
-        : r.source === 'jarvis' ? 'sugerido pelo Jarvis' : 'mencionado por você';
+        : r.source === 'jarvis' ? 'sugerido pelo assistente' : 'mencionado por você';
       const statusTxt = r.status === 'liked' ? ' ✓ gostou' : '';
       const ctx = r.context ? ` — ${r.context}` : '';
       return `- [${r.type}] ${r.name}${ctx} (${sourceTxt}${statusTxt})`;
@@ -698,6 +648,57 @@ export async function buildRecommendationsBlock(
   }
 }
 
+// ============================================================
+// LOADER: TÓPICOS para o system prompt (L4)
+// ============================================================
+
+export async function buildTopicBlock(
+  userId: string,
+  messageText: string
+): Promise<string> {
+  try {
+    const { data: topics } = await supabase
+      .from('topic_index')
+      .select('topic, label, summary, entry_count, last_indexed')
+      .eq('user_id', userId)
+      .order('entry_count', { ascending: false })
+      .limit(40);
+
+    if (!topics || topics.length === 0) return '';
+
+    const msgLower = messageText.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    const relevant = topics.filter((t: any) => {
+      const topicNorm   = t.topic.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const labelNorm   = t.label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const summaryNorm = (t.summary || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+      const words = [...topicNorm.split('_'), ...labelNorm.split(' ')].filter(w => w.length > 3);
+      const wordMatch    = words.some(w => msgLower.includes(w));
+      const summaryWords = summaryNorm.split(/\s+/).filter(w => w.length > 4);
+      const summaryMatch = summaryWords.some(w => msgLower.includes(w));
+
+      return wordMatch || summaryMatch;
+    });
+
+    const toShow = relevant.length > 0 ? relevant.slice(0, 8) : topics.slice(0, 5);
+
+    const lines = toShow.map((t: any) => {
+      const summary = t.summary ? ` — ${t.summary}` : '';
+      return `- [${t.label}] ${t.topic}${summary}`;
+    });
+
+    return `[TÓPICOS RECORRENTES]\n${lines.join('\n')}`;
+  } catch (e) {
+    console.error('[buildTopicBlock] Erro:', e);
+    return '';
+  }
+}
+
+// ============================================================
+// UTILITÁRIOS
+// ============================================================
+
 export function normalizeDate(raw: string): string {
   if (!raw) return raw;
   const months: Record<string, string> = {
@@ -707,7 +708,6 @@ export function normalizeDate(raw: string): string {
   };
   const currentYear = new Date().getFullYear();
 
-  // "5 de agosto" ou "5 de agosto de 2020"
   const ptMatch = raw.match(/(\d{1,2})\s+de?\s+(\w+)(\s+de?\s+(\d{4}))?/i);
   if (ptMatch) {
     const mon  = months[ptMatch[2].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
@@ -719,15 +719,11 @@ export function normalizeDate(raw: string): string {
 
   if (parts.length === 3) {
     const [a, b, c] = parts;
-    // YYYY-MM-DD já correto
     if (a.length === 4) return `${a}-${b.padStart(2,'0')}-${c.padStart(2,'0')}`;
-    // DD/MM/YYYY → YYYY-MM-DD
     if (c.length === 4) return `${c}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`;
-    // DD/MM/YY → 20YY-MM-DD
     if (c.length === 2) return `20${c}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`;
   }
 
-  // DD/MM → ano corrente
   if (parts.length === 2) {
     return `${currentYear}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
   }
