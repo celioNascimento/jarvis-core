@@ -260,7 +260,7 @@ export async function POST(req: Request) {
 
     const systemPrompt = `
 Você é ${assistantName}, assistente pessoal de ${authorName}.
-Data/hora: ${fusoHorario}
+Data/hora: ${fusoHorario} 
 
 ${googleCtx  ? `[AGENDA GOOGLE]\n${googleCtx}`    : ''}
 ${msCtx      ? `[AGENDA OUTLOOK]\n${msCtx}`        : ''}
