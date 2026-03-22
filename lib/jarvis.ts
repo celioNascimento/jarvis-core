@@ -11,19 +11,19 @@ export const supabase = createClient(
 );
 
 // ============================================================
-// 2. MOTOR DE IA (OpenRouter - Gemini 2.0 Flash)
+// 2. MOTOR DE IA (OpenRouter)
 // ============================================================
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 export async function callOpenRouter(
   input: string | ChatMessage[],
-  model: string = "google/gemini-2.0-flash-001"
+  model: string = "google/gemini-2.0-flash-001",
+  temperature: number = 0.7   // SPRINT 1 — temperatura adaptativa
 ) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
 
-    // Aceita string simples ou array estruturado de messages
     const messages: ChatMessage[] = typeof input === 'string'
       ? [{ role: 'user', content: input }]
       : input;
@@ -38,7 +38,7 @@ export async function callOpenRouter(
       body: JSON.stringify({
         model,
         max_tokens: 800,
-        temperature: 0.7,
+        temperature,
         messages
       })
     });
@@ -103,12 +103,10 @@ export async function sendTelegram(chatId: string | number, text: string) {
 }
 
 // ============================================================
-// 5. GERENCIADOR DE SESSÃO (L3 — Contexto da Conversa Atual)
-// Resolve o problema de contexto perdido entre turnos
+// 5. GERENCIADOR DE SESSÃO
 // ============================================================
 export async function getOrCreateSession(userId: string): Promise<string> {
   try {
-    // Busca sessão ativa criada nas últimas 4 horas
     const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
 
     const { data: existing } = await supabase
@@ -122,7 +120,6 @@ export async function getOrCreateSession(userId: string): Promise<string> {
       .single();
 
     if (existing) {
-      // Atualiza timestamp da sessão ativa
       await supabase
         .from('sessions')
         .update({ last_active: new Date().toISOString() })
@@ -130,7 +127,6 @@ export async function getOrCreateSession(userId: string): Promise<string> {
       return existing.id;
     }
 
-    // Sem sessão ativa: encerra antigas e cria nova
     await supabase
       .from('sessions')
       .update({ is_active: false })
@@ -152,7 +148,6 @@ export async function getOrCreateSession(userId: string): Promise<string> {
 
 // ============================================================
 // 6. GERENCIADOR DE PERGUNTA PENDENTE
-// Resolve o "sim" perdido — a fila de intenções abertas
 // ============================================================
 export async function getPendingQuestion(userId: string): Promise<{ question: string | null; context: any }> {
   try {
@@ -190,10 +185,8 @@ export async function clearPendingQuestion(userId: string) {
 }
 
 // ============================================================
-// 7. MOTOR DE CONSOLIDAÇÃO (RAM → L3 → HD) — CORRIGIDO
-// Compacta a cada 5 mensagens (era 20 — muito lento)
+// 7. MOTOR DE CONSOLIDAÇÃO (RAM → L3 → HD)
 // ============================================================
-// Strings que indicam resposta quebrada/loop — nunca devem ser gravadas no HD
 const MEMORIA_INVALIDA = [
   'Framework de 4 Etapas',
   'Como posso te ajudar a ser mais produtivo',
@@ -203,11 +196,8 @@ const MEMORIA_INVALIDA = [
 ];
 
 function memoriaEhValida(texto: string): boolean {
-  // Rejeita se contém padrões de loop
   if (MEMORIA_INVALIDA.some(p => texto.includes(p))) return false;
-  // Rejeita se for menor que 100 chars (vazio / inútil)
   if (texto.trim().length < 100) return false;
-  // Rejeita se mais de 40% do texto for repetição de um mesmo parágrafo
   const linhas = texto.split('\n').filter(l => l.trim().length > 20);
   const unicas = new Set(linhas);
   if (linhas.length > 5 && unicas.size / linhas.length < 0.6) return false;
@@ -223,7 +213,6 @@ export async function compactMemory(userId: string, authorName: string) {
       .neq('category', 'noise')
       .order('created_at', { ascending: true });
 
-    // Threshold: 20 mensagens antes de compactar
     if (!rawBrain || rawBrain.length < 20) return;
 
     const { data: userProfile } = await supabase
@@ -234,7 +223,6 @@ export async function compactMemory(userId: string, authorName: string) {
 
     const oldContext = userProfile?.current_context || "Nenhum contexto prévio.";
 
-    // Padrões de saudação — sem valor semântico para memória
     const SAUDACOES = [
       /^(olá|oi|e aí|fala|qual a boa|tudo bem|tudo bom|bom dia|boa tarde|boa noite|hey|opa|salve)[!?,. ]*/i,
       /^(ok|certo|entendido|perfeito|ótimo|show|vlw|valeu|obrigad)[!?,. ]*/i,
@@ -243,7 +231,6 @@ export async function compactMemory(userId: string, authorName: string) {
     const ehSaudacao = (texto: string) =>
       SAUDACOES.some(r => r.test(texto.trim()));
 
-    // Filtra entradas com ai_reply válido (ignora saudações, loops e respostas curtas)
     const entradasValidas = rawBrain.filter(m => {
       const reply = m.metadata?.ai_reply || '';
       if (ehSaudacao(m.content)) return false;
@@ -277,9 +264,9 @@ TAREFA: Integre as novas informações ao Dossiê existente.
 - Retorne APENAS o Dossiê atualizado em português, sem comentários, sem markdown excessivo
     `.trim();
 
-    const newContext = await callOpenRouter(prompt);
+    // compactMemory usa modelo padrão e temperatura baixa (factual)
+    const newContext = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.3);
 
-    // Validação anti-lixo antes de gravar
     if (!memoriaEhValida(newContext)) {
       console.error('[Memory] Compactação rejeitada — resumo inválido detectado');
       return;
@@ -288,13 +275,11 @@ TAREFA: Integre as novas informações ao Dossiê existente.
     const embedding = await generateEmbedding(newContext);
 
     if (embedding) {
-      // Atualiza L3 (Dossiê no perfil)
       await supabase
         .from('users')
         .update({ current_context: newContext })
         .eq('id', userId);
 
-      // Alimenta HD
       await supabase.from('memories').insert([{
         summary: newContext,
         embedding,
@@ -306,7 +291,6 @@ TAREFA: Integre as novas informações ao Dossiê existente.
         metadata: { type: 'auto_consolidation', count: entradasValidas.length }
       }]);
 
-      // Limpa apenas as entradas já processadas (não deleta tudo)
       const lastProcessedDate = entradasValidas[entradasValidas.length - 1].created_at;
       await supabase
         .from('brain')
@@ -323,7 +307,7 @@ TAREFA: Integre as novas informações ao Dossiê existente.
 }
 
 // ============================================================
-// 8. BUSCA EVENTOS PROATIVOS (Radares)
+// 8. BUSCA EVENTOS PROATIVOS
 // ============================================================
 export async function getProactiveEvents(userId: string) {
   const hoje = new Date();
@@ -347,7 +331,7 @@ export async function getProactiveEvents(userId: string) {
 }
 
 // ============================================================
-// 9. CHECAGEM DE INTERRUPTORES (Feriados/Comodidade)
+// 9. CHECAGEM DE INTERRUPTORES
 // ============================================================
 export async function checkSystemInterrupts(userId: string) {
   try {
@@ -364,8 +348,7 @@ export async function checkSystemInterrupts(userId: string) {
 }
 
 // ============================================================
-// 10. REFORÇO DE MEMÓRIA (Aumenta relevância ao acessar)
-// Chamado toda vez que uma memória HD é usada
+// 10. REFORÇO DE MEMÓRIA
 // ============================================================
 export async function reinforceMemory(memoryId: string) {
   try {
