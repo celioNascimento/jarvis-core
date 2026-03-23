@@ -7,13 +7,12 @@ import {
   generateEmbedding,
   reinforceMemory,
   getOrCreateSession,
-  setPendingQuestion,
-  clearPendingQuestion,
 } from '@/lib/jarvis';
 import {
   buildRecommendationsBlock,
   buildTopicBlock,
   extractRecomendacao,
+  upsertEvent,
 } from '@/lib/extractor-jobs';
 import {
   extractDiary,
@@ -24,11 +23,9 @@ import {
 import { buildGapsBlock } from '@/lib/extractor';
 import { getMicrosoftCalendarContext } from '@/lib/microsoft';
 import { getGoogleContext } from '@/lib/google';
-import { upsertEvent } from '@/lib/extractor-jobs';
 
-export const maxDuration = 10; // Vercel Hobby limit
+export const maxDuration = 10;
 
-// ── Tipos ────────────────────────────────────────────────────────────────────
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 type ContextType =
@@ -36,7 +33,6 @@ type ContextType =
   | 'saude' | 'recomendacao' | 'evento' | 'rotina' | 'preferencia'
   | 'alias' | 'email' | 'casual';
 
-// ── Helpers reutilizados do webhook ──────────────────────────────────────────
 function classifyContext(text: string): ContextType[] {
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const rules: Array<[RegExp, ContextType]> = [
@@ -75,7 +71,6 @@ function getTemperature(contexts: ContextType[]): number {
   return 0.3;
 }
 
-// ── Stream SSE helper ─────────────────────────────────────────────────────────
 async function* streamOpenRouter(
   messages: ChatMessage[],
   model: string,
@@ -118,89 +113,47 @@ async function* streamOpenRouter(
   }
 }
 
-// ── POST handler ──────────────────────────────────────────────────────────────
 export async function POST(req: Request) {
   try {
-    const { message, userId, sessionId: clientSessionId, userEmail } = await req.json();
+    const { message, sessionId: clientSessionId, userEmail } = await req.json();
 
-    if (!message || !userId) {
-      return new Response(JSON.stringify({ error: 'message e userId obrigatórios' }), { status: 400 });
+    // ── Validação básica ──────────────────────────────────────────────────
+    if (!message) {
+      return new Response(JSON.stringify({ error: 'message obrigatório' }), { status: 400 });
+    }
+    if (!userEmail) {
+      return new Response(JSON.stringify({ error: 'userEmail obrigatório' }), { status: 400 });
     }
 
-    // Busca usuário — tenta pelo telegram_chat_id primeiro, depois pelo email
-    // userId do app é o UUID do Supabase Auth, não o telegram_chat_id
-    let userProfile: any = null;
-    let resolvedUserId: string = userId;
+    // ── Resolve usuário por email ─────────────────────────────────────────
+    // FIX: busca SEMPRE pelo campo email — não pelo telegram_chat_id
+    const { data: userProfile, error: userError } = await supabase
+      .from('users')
+      .select('id, nickname, current_context, pending_question, assistant_name, timezone')
+      .eq('email', userEmail)
+      .maybeSingle();
 
-    // Tenta encontrar por email (mais confiável para usuários do app)
-    if (userEmail) {
-      const { data: byEmail } = await supabase
-        .from('users')
-        .select('id, nickname, current_context, pending_question, assistant_name, timezone')
-        .eq('telegram_chat_id', userId)
-        .maybeSingle();
-
-      if (byEmail) {
-        userProfile = byEmail;
-        resolvedUserId = String(byEmail.id);
-      } else {
-        // Usuário novo do app — busca na tabela auth do Supabase pelo email
-        // e tenta achar o registro correspondente na jarvis.users
-        const { data: byTelegramNull } = await supabase
-          .from('users')
-          .select('id, nickname, current_context, pending_question, assistant_name, timezone')
-          .is('telegram_chat_id', null)
-          .limit(1)
-          .maybeSingle();
-
-        // Se não achou, cria entrada mínima para o usuário do app
-        if (!byTelegramNull) {
-          // Extrai nome do email
-          const nameFromEmail = userEmail.split('@')[0].replace(/[._]/g, ' ');
-          const { data: newUser } = await supabase
-            .from('users')
-            .insert({
-              id: Date.now(), // id bigint único baseado em timestamp
-              name: nameFromEmail,
-              nickname: nameFromEmail,
-              telegram_chat_id: userId, // guarda o auth UUID aqui para lookup futuro
-            })
-            .select('id, nickname, current_context, pending_question, assistant_name, timezone')
-            .single();
-          userProfile = newUser;
-          resolvedUserId = String(newUser?.id);
-        }
-      }
-    }
-
-    // Fallback: tenta direto pelo id como string no telegram_chat_id
-    if (!userProfile) {
-      const { data: byTelegramId } = await supabase
-        .from('users')
-        .select('id, nickname, current_context, pending_question, assistant_name, timezone')
-        .eq('telegram_chat_id', userId)
-        .maybeSingle();
-
-      if (byTelegramId) {
-        userProfile = byTelegramId;
-        resolvedUserId = String(byTelegramId.id);
-      }
+    if (userError) {
+      console.error('[chat] Erro ao buscar usuário:', userError.message);
+      return new Response(JSON.stringify({ error: 'Erro ao buscar usuário' }), { status: 500 });
     }
 
     if (!userProfile) {
-      return new Response(JSON.stringify({ error: 'Usuário não encontrado. Configure sua conta pelo Telegram primeiro.' }), { status: 404 });
+      return new Response(
+        JSON.stringify({ error: 'Usuário não encontrado. Cadastre seu email no Jarvis primeiro.' }),
+        { status: 404 }
+      );
     }
 
-    const userId_ = resolvedUserId;
-
+    const userId        = String(userProfile.id);
     const authorName    = userProfile.nickname || 'você';
     const assistantName = userProfile.assistant_name || 'Lev';
     const userTimezone  = userProfile.timezone || 'America/Sao_Paulo';
 
-    // Sessão
-    const sessionId = clientSessionId || (await getOrCreateSession(userId_));
+    // ── Sessão ────────────────────────────────────────────────────────────
+    const sessionId = clientSessionId || (await getOrCreateSession(userId));
 
-    // Classificação de contexto
+    // ── Classificação de contexto ─────────────────────────────────────────
     const contexts    = classifyContext(message);
     const model       = routeModel(contexts);
     const temperature = getTemperature(contexts);
@@ -210,38 +163,35 @@ export async function POST(req: Request) {
     const needsDiary    = contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c));
     const needsRecs     = contexts.some(c => ['recomendacao', 'casual'].includes(c));
 
-    // Cargas paralelas condicionais
-    const [
-      googleCtx,
-      msCtx,
-      topicBlock,
-      diaryBlock,
-      gapsBlock,
-    ] = await Promise.all([
+    // ── Cargas paralelas condicionais ─────────────────────────────────────
+    const [googleCtx, msCtx, topicBlock, diaryBlock, gapsBlock] = await Promise.all([
       needsCalendar ? getGoogleContext().catch(() => null)            : Promise.resolve(null),
       needsCalendar ? getMicrosoftCalendarContext().catch(() => null) : Promise.resolve(null),
-      needsTopics   ? buildTopicBlock(userId_, message)               : Promise.resolve(''),
-      needsDiary    ? buildDiaryGoalsBlock(userId_)                   : Promise.resolve(''),
-      buildGapsBlock(userId_, message),
+      needsTopics   ? buildTopicBlock(userId, message)               : Promise.resolve(''),
+      needsDiary    ? buildDiaryGoalsBlock(userId)                   : Promise.resolve(''),
+      buildGapsBlock(userId, message),
     ]);
 
-    const recsBlock = needsRecs ? await buildRecommendationsBlock(userId_, message) : '';
+    const recsBlock = needsRecs ? await buildRecommendationsBlock(userId, message) : '';
 
-    // RAM
+    // ── RAM ───────────────────────────────────────────────────────────────
     const { data: history } = await supabase
-      .from('brain').select('content, metadata')
-      .eq('user_id', userId_).eq('session_id', sessionId)
+      .from('brain')
+      .select('content, metadata')
+      .eq('user_id', userId)
+      .eq('session_id', sessionId)
       .neq('category', 'archived')
-      .order('created_at', { ascending: false }).limit(8);
+      .order('created_at', { ascending: false })
+      .limit(8);
 
-    const ramBlock = history && history.length >= 2
+    const ramBlock = history?.length
       ? [...history].reverse().map((h: any) => {
           const ai = (h.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim();
           return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
         }).join('\n\n')
       : '';
 
-    // HD vetorial
+    // ── HD vetorial ───────────────────────────────────────────────────────
     const embedding = await generateEmbedding(message);
     let hdBlock = '';
     let hdIds: string[] = [];
@@ -255,16 +205,16 @@ export async function POST(req: Request) {
       }
     }
 
-    const currentContextL3 = userProfile.current_context || '';
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
+    // ── System prompt ─────────────────────────────────────────────────────
     const systemPrompt = `
 Você é ${assistantName}, assistente pessoal de ${authorName}.
-Data/hora: ${fusoHorario} 
+Data/hora: ${fusoHorario}
 
 ${googleCtx  ? `[AGENDA GOOGLE]\n${googleCtx}`    : ''}
 ${msCtx      ? `[AGENDA OUTLOOK]\n${msCtx}`        : ''}
-${currentContextL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${currentContextL3}` : ''}
+${userProfile.current_context ? `[QUEM É ${authorName.toUpperCase()}]\n${userProfile.current_context}` : ''}
 ${recsBlock  ? recsBlock  : ''}
 ${topicBlock ? topicBlock : ''}
 ${diaryBlock ? diaryBlock : ''}
@@ -292,10 +242,9 @@ REGRAS:
       { role: 'user', content: message },
     ];
 
-    // ── Streaming response ───────────────────────────────────────────────────
+    // ── Streaming ─────────────────────────────────────────────────────────
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), 9000);
-
     const encoder = new TextEncoder();
     let fullReply = '';
 
@@ -306,7 +255,6 @@ REGRAS:
             conversationMessages, model, temperature, abortController.signal
           )) {
             fullReply += chunk;
-            // Envia chunk como SSE
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ chunk })}\n\n`));
           }
         } catch (e: any) {
@@ -316,15 +264,15 @@ REGRAS:
         } finally {
           clearTimeout(timeoutId);
 
-          // Remove gatilhos e extrai classe antes de enviar [DONE]
+          // Limpa gatilhos
           const categoryMatch = fullReply.match(/\[CLASSE:\s*(\w+)\]/i);
           const category      = categoryMatch?.[1]?.toLowerCase() || 'info';
           let cleanReply      = fullReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
 
-          // Processa gatilhos de evento
+          // Processa eventos
           const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(recurring_annual|deadline|one_time)\]/gi;
           for (const m of Array.from(cleanReply.matchAll(eventRegex)) as any[]) {
-            await upsertEvent(userId_, {
+            await upsertEvent(userId, {
               title: m[1].trim(), event_date: m[2], priority: m[3],
               is_recurring: m[4] === 'true', decay_type: m[5],
               category: 'personal', emotional_weight: m[3] === 'alta' ? 0.9 : 0.5,
@@ -332,21 +280,21 @@ REGRAS:
             cleanReply = cleanReply.replace(m[0], '').trim();
           }
 
-          // Processa atualização de meta
+          // Processa metas
           const goalMatch = cleanReply.match(/\[ATUALIZAR_META:\s*([^|]+)\|\s*(\d+)(?:\|\s*([^\]]+))?\]/i);
           if (goalMatch) {
-            await updateGoalProgress(userId_, goalMatch[1].trim(), parseInt(goalMatch[2]), goalMatch[3]?.trim()).catch(() => {});
+            await updateGoalProgress(userId, goalMatch[1].trim(), parseInt(goalMatch[2]), goalMatch[3]?.trim()).catch(() => {});
             cleanReply = cleanReply.replace(goalMatch[0], '').trim();
           }
 
-          // Sinaliza fim com resposta final limpa
+          // Envia done com resposta limpa
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true, reply: cleanReply })}\n\n`));
           controller.close();
 
-          // Background: persiste + extratores
+          // Background
           Promise.all([
             supabase.from('brain').insert([{
-              content: message, category, user_id: userId_, session_id: sessionId,
+              content: message, category, user_id: userId, session_id: sessionId,
               embedding,
               metadata: {
                 ai_reply: cleanReply, user: authorName,
@@ -354,9 +302,9 @@ REGRAS:
               },
             }]),
             ...hdIds.map(id => reinforceMemory(id)),
-            extractRecomendacao(userId_, message, cleanReply).catch(() => {}),
-            extractDiary(userId_, message, 'anytime').catch(() => {}),
-            extractGoal(userId_, message).catch(() => {}),
+            extractRecomendacao(userId, message, cleanReply).catch(() => {}),
+            extractDiary(userId, message, 'anytime').catch(() => {}),
+            extractGoal(userId, message).catch(() => {}),
           ]).catch(e => console.error('[chat/background] Erro:', e));
         }
       },
@@ -374,4 +322,4 @@ REGRAS:
     console.error('[chat] Erro:', error.message);
     return new Response(JSON.stringify({ error: 'Erro interno' }), { status: 500 });
   }
-} 
+  }
