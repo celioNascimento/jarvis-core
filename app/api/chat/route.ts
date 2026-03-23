@@ -1,14 +1,12 @@
 // app/api/chat/route.ts
-// Canal web/app para o motor Lev — substitui o webhook Telegram para o lev-app
-// Suporta streaming SSE (Server-Sent Events)
+// Canal web/app para o motor Lev
+// Resposta JSON única (sem SSE) — compatível com React Native
 
 import {
   supabase,
   generateEmbedding,
   reinforceMemory,
   getOrCreateSession,
-  setPendingQuestion,
-  clearPendingQuestion,
 } from '@/lib/jarvis';
 import {
   buildRecommendationsBlock,
@@ -26,9 +24,8 @@ import { getMicrosoftCalendarContext } from '@/lib/microsoft';
 import { getGoogleContext } from '@/lib/google';
 import { upsertEvent } from '@/lib/extractor-jobs';
 
-export const maxDuration = 10; // Vercel Hobby limit
+export const maxDuration = 10;
 
-// ── Tipos ────────────────────────────────────────────────────────────────────
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 type ContextType =
@@ -36,7 +33,6 @@ type ContextType =
   | 'saude' | 'recomendacao' | 'evento' | 'rotina' | 'preferencia'
   | 'alias' | 'email' | 'casual';
 
-// ── Helpers reutilizados do webhook ──────────────────────────────────────────
 function classifyContext(text: string): ContextType[] {
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const rules: Array<[RegExp, ContextType]> = [
@@ -75,156 +71,111 @@ function getTemperature(contexts: ContextType[]): number {
   return 0.3;
 }
 
-// ── Stream SSE helper ─────────────────────────────────────────────────────────
-async function* streamOpenRouter(
+async function callOpenRouterSync(
   messages: ChatMessage[],
   model: string,
-  temperature: number,
-  signal: AbortSignal
-): AsyncGenerator<string> {
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    signal,
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ model, max_tokens: 800, temperature, stream: true, messages }),
-  });
+  temperature: number
+): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 9000);
 
-  if (!res.ok || !res.body) throw new Error(`OpenRouter ${res.status}`);
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model, max_tokens: 800, temperature, stream: false, messages }),
+    });
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const lines = buf.split('\n');
-    buf = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const data = trimmed.slice(5).trim();
-      if (data === '[DONE]') return;
-      try {
-        const json = JSON.parse(data);
-        const delta = json.choices?.[0]?.delta?.content;
-        if (delta) yield delta;
-      } catch {}
-    }
+    clearTimeout(timeout);
+    if (!res.ok) throw new Error(`OpenRouter ${res.status}`);
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || '';
+  } catch (e: any) {
+    clearTimeout(timeout);
+    if (e.name === 'AbortError') throw new Error('Timeout OpenRouter');
+    throw e;
   }
 }
 
-// ── POST handler ──────────────────────────────────────────────────────────────
 export async function POST(req: Request) {
   try {
-    // ── 1. Parse body ────────────────────────────────────────────────────────
     console.log('[chat] 1. parse body');
     const { message, userId, sessionId: clientSessionId, userEmail } = await req.json();
     console.log('[chat] 2. message:', message?.slice(0, 30), '| email:', userEmail, '| userId:', userId);
 
     if (!message) {
-      return new Response(
-        JSON.stringify({ error: 'message obrigatório' }),
-        { status: 400 }
-      );
+      return Response.json({ error: 'message obrigatório' }, { status: 400 });
     }
 
-    // Se o app não enviou email (bug do OAuth no Expo), busca via admin pelo auth UUID
+    // Resolve email — fallback para admin lookup se app não enviou
     let resolvedEmail = userEmail;
     if (!resolvedEmail && userId) {
-      console.log('[chat] userEmail undefined — tentando admin lookup pelo userId');
+      console.log('[chat] admin lookup pelo userId');
       const { data: authData } = await supabase.auth.admin.getUserById(userId);
       resolvedEmail = authData?.user?.email || '';
       console.log('[chat] email via admin lookup:', resolvedEmail);
     }
 
     if (!resolvedEmail) {
-      return new Response(
-        JSON.stringify({ error: 'Não foi possível identificar o usuário' }),
-        { status: 400 }
-      );
+      return Response.json({ error: 'Não foi possível identificar o usuário' }, { status: 400 });
     }
 
-    // ── 2. Busca usuário por email ───────────────────────────────────────────
-    // CORREÇÃO: a tabela jarvis.users tem campo `email`, não telegram_chat_id
-    console.log('[chat] 3. buscando usuário por email:', resolvedEmail);
+    // Busca usuário por email
+    console.log('[chat] 3. buscando usuário:', resolvedEmail);
     const { data: userProfile, error: userError } = await supabase
       .from('users')
       .select('id, nickname, current_context, assistant_name, timezone')
       .eq('email', resolvedEmail)
       .maybeSingle();
 
-    console.log('[chat] 4. userProfile id:', userProfile?.id, '| erro:', userError?.message);
+    console.log('[chat] 4. userProfile:', userProfile?.id, '| erro:', userError?.message);
 
-    if (userError) {
-      console.error('[chat] Erro ao buscar usuário:', userError);
-      return new Response(JSON.stringify({ error: 'Erro ao buscar usuário' }), { status: 500 });
-    }
+    if (userError) return Response.json({ error: 'Erro ao buscar usuário' }, { status: 500 });
+    if (!userProfile) return Response.json({ error: 'Usuário não encontrado' }, { status: 404 });
 
-    if (!userProfile) {
-      return new Response(
-        JSON.stringify({ error: 'Usuário não encontrado. Conta não vinculada.' }),
-        { status: 404 }
-      );
-    }
-
-    const userId_ = String(userProfile.id); // bigint → string para todas as queries
-    console.log('[chat] 5. userId_:', userId_);
-
-    const authorName    = userProfile.nickname    || 'você';
+    const userId_       = String(userProfile.id);
+    const authorName    = userProfile.nickname       || 'você';
     const assistantName = userProfile.assistant_name || 'Lev';
-    const userTimezone  = userProfile.timezone    || 'America/Sao_Paulo';
+    const userTimezone  = userProfile.timezone       || 'America/Sao_Paulo';
 
-    // ── 3. Sessão ────────────────────────────────────────────────────────────
-    console.log('[chat] 6. getOrCreateSession');
+    // Sessão
     const sessionId = clientSessionId || (await getOrCreateSession(userId_));
-    console.log('[chat] 7. sessionId:', sessionId);
+    console.log('[chat] 5. sessionId:', sessionId);
 
-    // ── 4. Classificação de contexto ─────────────────────────────────────────
-    console.log('[chat] 8. classifyContext');
+    // Classificação
     const contexts    = classifyContext(message);
     const model       = routeModel(contexts);
     const temperature = getTemperature(contexts);
-    console.log('[chat] 9. contexts:', contexts, '| model:', model);
+    console.log('[chat] 6. contexts:', contexts, '| model:', model);
 
     const needsCalendar = contexts.some(c => ['agenda', 'evento', 'familia'].includes(c));
     const needsTopics   = contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina'].includes(c));
     const needsDiary    = contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c));
     const needsRecs     = contexts.some(c => ['recomendacao', 'casual'].includes(c));
 
-    // ── 5. Cargas paralelas ──────────────────────────────────────────────────
-    console.log('[chat] 10. iniciando Promise.all blocos contextuais');
-    const [
-      googleCtx,
-      msCtx,
-      topicBlock,
-      diaryBlock,
-      gapsBlock,
-    ] = await Promise.all([
-      needsCalendar ? getGoogleContext().catch((e) => { console.error('[chat] googleCtx erro:', e.message); return null; })            : Promise.resolve(null),
-      needsCalendar ? getMicrosoftCalendarContext().catch((e) => { console.error('[chat] msCtx erro:', e.message); return null; })     : Promise.resolve(null),
-      needsTopics   ? buildTopicBlock(userId_, message).catch((e) => { console.error('[chat] topicBlock erro:', e.message); return ''; })  : Promise.resolve(''),
-      needsDiary    ? buildDiaryGoalsBlock(userId_).catch((e) => { console.error('[chat] diaryBlock erro:', e.message); return ''; })   : Promise.resolve(''),
-      buildGapsBlock(userId_, message).catch((e) => { console.error('[chat] gapsBlock erro:', e.message); return ''; }),
+    // Cargas paralelas
+    const [googleCtx, msCtx, topicBlock, diaryBlock, gapsBlock] = await Promise.all([
+      needsCalendar ? getGoogleContext().catch(() => null)              : Promise.resolve(null),
+      needsCalendar ? getMicrosoftCalendarContext().catch(() => null)   : Promise.resolve(null),
+      needsTopics   ? buildTopicBlock(userId_, message).catch(() => '') : Promise.resolve(''),
+      needsDiary    ? buildDiaryGoalsBlock(userId_).catch(() => '')     : Promise.resolve(''),
+      buildGapsBlock(userId_, message).catch(() => ''),
     ]);
-    console.log('[chat] 11. Promise.all concluído');
 
     const recsBlock = needsRecs
-      ? await buildRecommendationsBlock(userId_, message).catch((e) => { console.error('[chat] recsBlock erro:', e.message); return ''; })
+      ? await buildRecommendationsBlock(userId_, message).catch(() => '')
       : '';
 
-    // ── 6. RAM (histórico recente da sessão) ─────────────────────────────────
-    console.log('[chat] 12. buscando RAM (brain)');
+    // RAM
     const { data: history } = await supabase
       .from('brain').select('content, metadata')
       .eq('user_id', userId_).eq('session_id', sessionId)
       .neq('category', 'archived')
       .order('created_at', { ascending: false }).limit(8);
-    console.log('[chat] 13. history length:', history?.length ?? 0);
 
     const ramBlock = history && history.length >= 2
       ? [...history].reverse().map((h: any) => {
@@ -233,43 +184,35 @@ export async function POST(req: Request) {
         }).join('\n\n')
       : '';
 
-    // ── 7. HD vetorial ───────────────────────────────────────────────────────
-    console.log('[chat] 14. generateEmbedding');
+    // HD vetorial
     const embedding = await generateEmbedding(message);
-    console.log('[chat] 15. embedding:', embedding ? `[${embedding.length} dims]` : 'null');
-
     let hdBlock = '';
     let hdIds: string[] = [];
     if (embedding) {
-      console.log('[chat] 16. match_memories rpc');
       const { data: search } = await supabase.rpc('match_memories', {
         query_embedding: embedding, match_threshold: 0.4, match_count: 3,
       }) as { data: any[] | null };
-      console.log('[chat] 17. memories encontradas:', search?.length ?? 0);
       if (search?.length) {
         hdBlock = search.filter(r => !r.summary.startsWith('[CINZA]')).map(r => r.summary).join('\n---\n');
         hdIds   = search.map(r => r.id);
       }
     }
 
-    // ── 8. Monta system prompt ───────────────────────────────────────────────
-    console.log('[chat] 18. montando system prompt');
-    const currentContextL3 = userProfile.current_context || '';
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     const systemPrompt = `
 Você é ${assistantName}, assistente pessoal de ${authorName}.
-Data/hora: ${fusoHorario} 
+Data/hora: ${fusoHorario}
 
-${googleCtx  ? `[AGENDA GOOGLE]\n${googleCtx}`    : ''}
-${msCtx      ? `[AGENDA OUTLOOK]\n${msCtx}`        : ''}
-${currentContextL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${currentContextL3}` : ''}
-${recsBlock  ? recsBlock  : ''}
-${topicBlock ? topicBlock : ''}
-${diaryBlock ? diaryBlock : ''}
-${hdBlock    ? `[MEMÓRIAS]\n${hdBlock}` : ''}
-${ramBlock   ? `[CONVERSA RECENTE]\n${ramBlock}` : ''}
-${gapsBlock  ? gapsBlock  : ''}
+${googleCtx  ? `[AGENDA GOOGLE]\n${googleCtx}`                                                      : ''}
+${msCtx      ? `[AGENDA OUTLOOK]\n${msCtx}`                                                         : ''}
+${userProfile.current_context ? `[QUEM É ${authorName.toUpperCase()}]\n${userProfile.current_context}` : ''}
+${recsBlock  ? recsBlock                                                                             : ''}
+${topicBlock ? topicBlock                                                                             : ''}
+${diaryBlock ? diaryBlock                                                                             : ''}
+${hdBlock    ? `[MEMÓRIAS]\n${hdBlock}`                                                              : ''}
+${ramBlock   ? `[CONVERSA RECENTE]\n${ramBlock}`                                                     : ''}
+${gapsBlock  ? gapsBlock                                                                             : ''}
 
 REGRAS:
 1. Responda O QUE FOI PERGUNTADO. Nunca mude de assunto sem motivo.
@@ -291,86 +234,54 @@ REGRAS:
       { role: 'user', content: message },
     ];
 
-    // ── 9. Streaming response ────────────────────────────────────────────────
-    console.log('[chat] 19. iniciando stream OpenRouter com model:', model);
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), 9000);
+    console.log('[chat] 7. chamando OpenRouter');
+    const fullReply = await callOpenRouterSync(conversationMessages, model, temperature);
+    console.log('[chat] 8. resposta length:', fullReply.length);
 
-    const encoder = new TextEncoder();
-    let fullReply = '';
+    // Processa gatilhos e limpa resposta
+    const categoryMatch = fullReply.match(/\[CLASSE:\s*(\w+)\]/i);
+    const category      = categoryMatch?.[1]?.toLowerCase() || 'info';
+    let cleanReply      = fullReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
 
-    const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const chunk of streamOpenRouter(
-            conversationMessages, model, temperature, abortController.signal
-          )) {
-            fullReply += chunk;
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ chunk })}\n\n`));
-          }
-        } catch (e: any) {
-          if (e.name !== 'AbortError') {
-            console.error('[chat/stream] Erro no stream:', e.message);
-          }
-        } finally {
-          clearTimeout(timeoutId);
-          console.log('[chat] 20. stream concluído, fullReply length:', fullReply.length);
+    const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(recurring_annual|deadline|one_time)\]/gi;
+    for (const m of Array.from(cleanReply.matchAll(eventRegex)) as any[]) {
+      await upsertEvent(userId_, {
+        title: m[1].trim(), event_date: m[2], priority: m[3],
+        is_recurring: m[4] === 'true', decay_type: m[5],
+        category: 'personal', emotional_weight: m[3] === 'alta' ? 0.9 : 0.5,
+      }).catch(() => {});
+      cleanReply = cleanReply.replace(m[0], '').trim();
+    }
 
-          const categoryMatch = fullReply.match(/\[CLASSE:\s*(\w+)\]/i);
-          const category      = categoryMatch?.[1]?.toLowerCase() || 'info';
-          let cleanReply      = fullReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
+    const goalMatch = cleanReply.match(/\[ATUALIZAR_META:\s*([^|]+)\|\s*(\d+)(?:\|\s*([^\]]+))?\]/i);
+    if (goalMatch) {
+      await updateGoalProgress(userId_, goalMatch[1].trim(), parseInt(goalMatch[2]), goalMatch[3]?.trim()).catch(() => {});
+      cleanReply = cleanReply.replace(goalMatch[0], '').trim();
+    }
 
-          // Processa gatilho de evento
-          const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(recurring_annual|deadline|one_time)\]/gi;
-          for (const m of Array.from(cleanReply.matchAll(eventRegex)) as any[]) {
-            await upsertEvent(userId_, {
-              title: m[1].trim(), event_date: m[2], priority: m[3],
-              is_recurring: m[4] === 'true', decay_type: m[5],
-              category: 'personal', emotional_weight: m[3] === 'alta' ? 0.9 : 0.5,
-            }).catch(() => {});
-            cleanReply = cleanReply.replace(m[0], '').trim();
-          }
+    console.log('[chat] 9. enviando resposta');
 
-          // Processa atualização de meta
-          const goalMatch = cleanReply.match(/\[ATUALIZAR_META:\s*([^|]+)\|\s*(\d+)(?:\|\s*([^\]]+))?\]/i);
-          if (goalMatch) {
-            await updateGoalProgress(userId_, goalMatch[1].trim(), parseInt(goalMatch[2]), goalMatch[3]?.trim()).catch(() => {});
-            cleanReply = cleanReply.replace(goalMatch[0], '').trim();
-          }
+    // Background: persiste + extratores (não bloqueia a resposta)
+    Promise.all([
+      supabase.from('brain').insert([{
+        content: message, category, user_id: userId_, session_id: sessionId,
+        embedding,
+        metadata: {
+          ai_reply: cleanReply, user: authorName,
+          model_used: model, contexts_detected: contexts,
+        },
+      }]),
+      ...hdIds.map(id => reinforceMemory(id)),
+      extractRecomendacao(userId_, message, cleanReply).catch(() => {}),
+      extractDiary(userId_, message, 'anytime').catch(() => {}),
+      extractGoal(userId_, message).catch(() => {}),
+    ]).catch(e => console.error('[chat/background] Erro:', e));
 
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true, reply: cleanReply })}\n\n`));
-          controller.close();
-
-          // Background: persiste + extratores
-          Promise.all([
-            supabase.from('brain').insert([{
-              content: message, category, user_id: userId_, session_id: sessionId,
-              embedding,
-              metadata: {
-                ai_reply: cleanReply, user: authorName,
-                model_used: model, contexts_detected: contexts,
-              },
-            }]),
-            ...hdIds.map(id => reinforceMemory(id)),
-            extractRecomendacao(userId_, message, cleanReply).catch(() => {}),
-            extractDiary(userId_, message, 'anytime').catch(() => {}),
-            extractGoal(userId_, message).catch(() => {}),
-          ]).catch(e => console.error('[chat/background] Erro:', e));
-        }
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        'Content-Type':  'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection':    'keep-alive',
-      },
-    });
+    return Response.json({ reply: cleanReply, sessionId });
 
   } catch (error: any) {
-    console.error('[chat] ERRO DETALHADO:', error.message);
-    console.error('[chat] STACK:', error.stack?.slice(0, 800));
-    return new Response(JSON.stringify({ error: 'Erro interno' }), { status: 500 });
+    console.error('[chat] ERRO:', error.message);
+    console.error('[chat] STACK:', error.stack?.slice(0, 500));
+    return Response.json({ error: 'Erro interno' }, { status: 500 });
   }
 }
