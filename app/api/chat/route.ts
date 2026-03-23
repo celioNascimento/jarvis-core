@@ -126,20 +126,36 @@ export async function POST(req: Request) {
     const { message, userId, sessionId: clientSessionId, userEmail } = await req.json();
     console.log('[chat] 2. message:', message?.slice(0, 30), '| email:', userEmail, '| userId:', userId);
 
-    if (!message || !userEmail) {
+    if (!message) {
       return new Response(
-        JSON.stringify({ error: 'message e userEmail obrigatórios' }),
+        JSON.stringify({ error: 'message obrigatório' }),
+        { status: 400 }
+      );
+    }
+
+    // Se o app não enviou email (bug do OAuth no Expo), busca via admin pelo auth UUID
+    let resolvedEmail = userEmail;
+    if (!resolvedEmail && userId) {
+      console.log('[chat] userEmail undefined — tentando admin lookup pelo userId');
+      const { data: authData } = await supabase.auth.admin.getUserById(userId);
+      resolvedEmail = authData?.user?.email || '';
+      console.log('[chat] email via admin lookup:', resolvedEmail);
+    }
+
+    if (!resolvedEmail) {
+      return new Response(
+        JSON.stringify({ error: 'Não foi possível identificar o usuário' }),
         { status: 400 }
       );
     }
 
     // ── 2. Busca usuário por email ───────────────────────────────────────────
     // CORREÇÃO: a tabela jarvis.users tem campo `email`, não telegram_chat_id
-    console.log('[chat] 3. buscando usuário por email:', userEmail);
+    console.log('[chat] 3. buscando usuário por email:', resolvedEmail);
     const { data: userProfile, error: userError } = await supabase
       .from('users')
       .select('id, nickname, current_context, assistant_name, timezone')
-      .eq('email', userEmail)
+      .eq('email', resolvedEmail)
       .maybeSingle();
 
     console.log('[chat] 4. userProfile id:', userProfile?.id, '| erro:', userError?.message);
