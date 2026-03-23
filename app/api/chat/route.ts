@@ -121,96 +121,67 @@ async function* streamOpenRouter(
 // ── POST handler ──────────────────────────────────────────────────────────────
 export async function POST(req: Request) {
   try {
+    // ── 1. Parse body ────────────────────────────────────────────────────────
+    console.log('[chat] 1. parse body');
     const { message, userId, sessionId: clientSessionId, userEmail } = await req.json();
+    console.log('[chat] 2. message:', message?.slice(0, 30), '| email:', userEmail, '| userId:', userId);
 
-    if (!message || !userId) {
-      return new Response(JSON.stringify({ error: 'message e userId obrigatórios' }), { status: 400 });
+    if (!message || !userEmail) {
+      return new Response(
+        JSON.stringify({ error: 'message e userEmail obrigatórios' }),
+        { status: 400 }
+      );
     }
 
-    // Busca usuário — tenta pelo telegram_chat_id primeiro, depois pelo email
-    // userId do app é o UUID do Supabase Auth, não o telegram_chat_id
-    let userProfile: any = null;
-    let resolvedUserId: string = userId;
+    // ── 2. Busca usuário por email ───────────────────────────────────────────
+    // CORREÇÃO: a tabela jarvis.users tem campo `email`, não telegram_chat_id
+    console.log('[chat] 3. buscando usuário por email:', userEmail);
+    const { data: userProfile, error: userError } = await supabase
+      .from('users')
+      .select('id, nickname, current_context, assistant_name, timezone')
+      .eq('email', userEmail)
+      .maybeSingle();
 
-    // Tenta encontrar por email (mais confiável para usuários do app)
-    if (userEmail) {
-      const { data: byEmail } = await supabase
-        .from('users')
-        .select('id, nickname, current_context, pending_question, assistant_name, timezone')
-        .eq('telegram_chat_id', userId)
-        .maybeSingle();
+    console.log('[chat] 4. userProfile id:', userProfile?.id, '| erro:', userError?.message);
 
-      if (byEmail) {
-        userProfile = byEmail;
-        resolvedUserId = String(byEmail.id);
-      } else {
-        // Usuário novo do app — busca na tabela auth do Supabase pelo email
-        // e tenta achar o registro correspondente na jarvis.users
-        const { data: byTelegramNull } = await supabase
-          .from('users')
-          .select('id, nickname, current_context, pending_question, assistant_name, timezone')
-          .is('telegram_chat_id', null)
-          .limit(1)
-          .maybeSingle();
-
-        // Se não achou, cria entrada mínima para o usuário do app
-        if (!byTelegramNull) {
-          // Extrai nome do email
-          const nameFromEmail = userEmail.split('@')[0].replace(/[._]/g, ' ');
-          const { data: newUser } = await supabase
-            .from('users')
-            .insert({
-              id: Date.now(), // id bigint único baseado em timestamp
-              name: nameFromEmail,
-              nickname: nameFromEmail,
-              telegram_chat_id: userId, // guarda o auth UUID aqui para lookup futuro
-            })
-            .select('id, nickname, current_context, pending_question, assistant_name, timezone')
-            .single();
-          userProfile = newUser;
-          resolvedUserId = String(newUser?.id);
-        }
-      }
-    }
-
-    // Fallback: tenta direto pelo id como string no telegram_chat_id
-    if (!userProfile) {
-      const { data: byTelegramId } = await supabase
-        .from('users')
-        .select('id, nickname, current_context, pending_question, assistant_name, timezone')
-        .eq('telegram_chat_id', userId)
-        .maybeSingle();
-
-      if (byTelegramId) {
-        userProfile = byTelegramId;
-        resolvedUserId = String(byTelegramId.id);
-      }
+    if (userError) {
+      console.error('[chat] Erro ao buscar usuário:', userError);
+      return new Response(JSON.stringify({ error: 'Erro ao buscar usuário' }), { status: 500 });
     }
 
     if (!userProfile) {
-      return new Response(JSON.stringify({ error: 'Usuário não encontrado. Configure sua conta pelo Telegram primeiro.' }), { status: 404 });
+      return new Response(
+        JSON.stringify({ error: 'Usuário não encontrado. Conta não vinculada.' }),
+        { status: 404 }
+      );
     }
 
-    const userId_ = resolvedUserId;
+    const userId_ = String(userProfile.id); // bigint → string para todas as queries
+    console.log('[chat] 5. userId_:', userId_);
 
-    const authorName    = userProfile.nickname || 'você';
+    const authorName    = userProfile.nickname    || 'você';
     const assistantName = userProfile.assistant_name || 'Lev';
-    const userTimezone  = userProfile.timezone || 'America/Sao_Paulo';
+    const userTimezone  = userProfile.timezone    || 'America/Sao_Paulo';
 
-    // Sessão
+    // ── 3. Sessão ────────────────────────────────────────────────────────────
+    console.log('[chat] 6. getOrCreateSession');
     const sessionId = clientSessionId || (await getOrCreateSession(userId_));
+    console.log('[chat] 7. sessionId:', sessionId);
 
-    // Classificação de contexto
+    // ── 4. Classificação de contexto ─────────────────────────────────────────
+    console.log('[chat] 8. classifyContext');
     const contexts    = classifyContext(message);
     const model       = routeModel(contexts);
     const temperature = getTemperature(contexts);
+    console.log('[chat] 9. contexts:', contexts, '| model:', model);
 
     const needsCalendar = contexts.some(c => ['agenda', 'evento', 'familia'].includes(c));
     const needsTopics   = contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina'].includes(c));
     const needsDiary    = contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c));
     const needsRecs     = contexts.some(c => ['recomendacao', 'casual'].includes(c));
 
-    // Cargas paralelas condicionais
+    // ── 5. Cargas paralelas ──────────────────────────────────────────────────
+    console.log('[chat] 10. iniciando Promise.all blocos contextuais');
     const [
       googleCtx,
       msCtx,
@@ -218,21 +189,26 @@ export async function POST(req: Request) {
       diaryBlock,
       gapsBlock,
     ] = await Promise.all([
-      needsCalendar ? getGoogleContext().catch(() => null)            : Promise.resolve(null),
-      needsCalendar ? getMicrosoftCalendarContext().catch(() => null) : Promise.resolve(null),
-      needsTopics   ? buildTopicBlock(userId_, message)               : Promise.resolve(''),
-      needsDiary    ? buildDiaryGoalsBlock(userId_)                   : Promise.resolve(''),
-      buildGapsBlock(userId_, message),
+      needsCalendar ? getGoogleContext().catch((e) => { console.error('[chat] googleCtx erro:', e.message); return null; })            : Promise.resolve(null),
+      needsCalendar ? getMicrosoftCalendarContext().catch((e) => { console.error('[chat] msCtx erro:', e.message); return null; })     : Promise.resolve(null),
+      needsTopics   ? buildTopicBlock(userId_, message).catch((e) => { console.error('[chat] topicBlock erro:', e.message); return ''; })  : Promise.resolve(''),
+      needsDiary    ? buildDiaryGoalsBlock(userId_).catch((e) => { console.error('[chat] diaryBlock erro:', e.message); return ''; })   : Promise.resolve(''),
+      buildGapsBlock(userId_, message).catch((e) => { console.error('[chat] gapsBlock erro:', e.message); return ''; }),
     ]);
+    console.log('[chat] 11. Promise.all concluído');
 
-    const recsBlock = needsRecs ? await buildRecommendationsBlock(userId_, message) : '';
+    const recsBlock = needsRecs
+      ? await buildRecommendationsBlock(userId_, message).catch((e) => { console.error('[chat] recsBlock erro:', e.message); return ''; })
+      : '';
 
-    // RAM
+    // ── 6. RAM (histórico recente da sessão) ─────────────────────────────────
+    console.log('[chat] 12. buscando RAM (brain)');
     const { data: history } = await supabase
       .from('brain').select('content, metadata')
       .eq('user_id', userId_).eq('session_id', sessionId)
       .neq('category', 'archived')
       .order('created_at', { ascending: false }).limit(8);
+    console.log('[chat] 13. history length:', history?.length ?? 0);
 
     const ramBlock = history && history.length >= 2
       ? [...history].reverse().map((h: any) => {
@@ -241,20 +217,27 @@ export async function POST(req: Request) {
         }).join('\n\n')
       : '';
 
-    // HD vetorial
+    // ── 7. HD vetorial ───────────────────────────────────────────────────────
+    console.log('[chat] 14. generateEmbedding');
     const embedding = await generateEmbedding(message);
+    console.log('[chat] 15. embedding:', embedding ? `[${embedding.length} dims]` : 'null');
+
     let hdBlock = '';
     let hdIds: string[] = [];
     if (embedding) {
+      console.log('[chat] 16. match_memories rpc');
       const { data: search } = await supabase.rpc('match_memories', {
         query_embedding: embedding, match_threshold: 0.4, match_count: 3,
       }) as { data: any[] | null };
+      console.log('[chat] 17. memories encontradas:', search?.length ?? 0);
       if (search?.length) {
         hdBlock = search.filter(r => !r.summary.startsWith('[CINZA]')).map(r => r.summary).join('\n---\n');
         hdIds   = search.map(r => r.id);
       }
     }
 
+    // ── 8. Monta system prompt ───────────────────────────────────────────────
+    console.log('[chat] 18. montando system prompt');
     const currentContextL3 = userProfile.current_context || '';
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
@@ -292,7 +275,8 @@ REGRAS:
       { role: 'user', content: message },
     ];
 
-    // ── Streaming response ───────────────────────────────────────────────────
+    // ── 9. Streaming response ────────────────────────────────────────────────
+    console.log('[chat] 19. iniciando stream OpenRouter com model:', model);
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), 9000);
 
@@ -306,22 +290,21 @@ REGRAS:
             conversationMessages, model, temperature, abortController.signal
           )) {
             fullReply += chunk;
-            // Envia chunk como SSE
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ chunk })}\n\n`));
           }
         } catch (e: any) {
           if (e.name !== 'AbortError') {
-            console.error('[chat/stream] Erro:', e.message);
+            console.error('[chat/stream] Erro no stream:', e.message);
           }
         } finally {
           clearTimeout(timeoutId);
+          console.log('[chat] 20. stream concluído, fullReply length:', fullReply.length);
 
-          // Remove gatilhos e extrai classe antes de enviar [DONE]
           const categoryMatch = fullReply.match(/\[CLASSE:\s*(\w+)\]/i);
           const category      = categoryMatch?.[1]?.toLowerCase() || 'info';
           let cleanReply      = fullReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
 
-          // Processa gatilhos de evento
+          // Processa gatilho de evento
           const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(recurring_annual|deadline|one_time)\]/gi;
           for (const m of Array.from(cleanReply.matchAll(eventRegex)) as any[]) {
             await upsertEvent(userId_, {
@@ -339,7 +322,6 @@ REGRAS:
             cleanReply = cleanReply.replace(goalMatch[0], '').trim();
           }
 
-          // Sinaliza fim com resposta final limpa
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true, reply: cleanReply })}\n\n`));
           controller.close();
 
@@ -371,7 +353,8 @@ REGRAS:
     });
 
   } catch (error: any) {
-    console.error('[chat] Erro:', error.message);
+    console.error('[chat] ERRO DETALHADO:', error.message);
+    console.error('[chat] STACK:', error.stack?.slice(0, 800));
     return new Response(JSON.stringify({ error: 'Erro interno' }), { status: 500 });
   }
-} 
+}
