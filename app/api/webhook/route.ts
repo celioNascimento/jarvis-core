@@ -150,7 +150,7 @@ async function ensureMemoryHealth(userId: string) {
 
     if (count && count > 1000) {
       console.log(`[Health] Compactando memórias L3 para ${userId}`);
-      await compactMemory(userId);
+      await compactMemory(userId, ''); // authorName não disponível neste contexto
     }
 
     // [FIX] Atualiza relevância de eventos a cada requisição
