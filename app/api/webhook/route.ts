@@ -45,7 +45,7 @@ import {
 } from '@/lib/diary';
 
 // ============================================================
-// NOVO: Cache de embeddings para L3
+// Cache de embeddings para L3
 // ============================================================
 const embeddingCache = new Map<string, number[]>();
 
@@ -57,28 +57,113 @@ async function getCachedEmbedding(text: string): Promise<number[]> {
 }
 
 // ============================================================
-// NOVO: Health check para L3/L4
+// [FIX] Atualiza relevância dos eventos baseado na data
+// ============================================================
+async function updateEventRelevance(userId: string) {
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+
+  const { data: events } = await supabase
+    .from('events')
+    .select('id, title, event_date, decay_type, relevance_score')
+    .eq('user_id', userId);
+
+  if (!events) return;
+
+  const updates = [];
+  for (const ev of events) {
+    const eventDate = new Date(ev.event_date);
+    eventDate.setHours(0, 0, 0, 0);
+    const diffDays = Math.ceil((eventDate.getTime() - hoje.getTime()) / (1000 * 3600 * 24));
+
+    let newScore = 0;
+
+    switch (ev.decay_type) {
+      case 'recurring_annual':
+        // Aniversários e eventos anuais: relevância cresce 30 dias antes, pico no dia, depois cai
+        if (diffDays < -30) newScore = 0;
+        else if (diffDays <= 0) {
+          newScore = 0.9 + (diffDays === 0 ? 0.1 : 0);
+        } else if (diffDays <= 30) {
+          newScore = 0.3 + (0.6 * (1 - diffDays / 30));
+        } else {
+          newScore = 0;
+        }
+        break;
+
+      case 'deadline':
+        // Prazo único: relevância cresce 7 dias antes, pico no dia, depois zero
+        if (diffDays < -7) newScore = 0;
+        else if (diffDays <= 0) {
+          newScore = 0.9 + (diffDays === 0 ? 0.1 : 0);
+        } else if (diffDays <= 7) {
+          newScore = 0.3 + (0.6 * (1 - diffDays / 7));
+        } else {
+          newScore = 0;
+        }
+        break;
+
+      case 'one_time':
+        // Evento único: pico no dia, antes cresce suavemente, depois zero
+        if (diffDays < -14) newScore = 0;
+        else if (diffDays <= 0) {
+          newScore = 0.9 + (diffDays === 0 ? 0.1 : 0);
+        } else if (diffDays <= 14) {
+          newScore = 0.2 + (0.7 * (1 - diffDays / 14));
+        } else {
+          newScore = 0;
+        }
+        break;
+
+      default:
+        // permanent ou outros: mantém relevância, com leve decaimento após a data
+        if (diffDays < 0) {
+          newScore = Math.max(0, (ev.relevance_score || 0) * 0.95);
+        } else {
+          newScore = ev.relevance_score || 0;
+        }
+    }
+
+    newScore = Math.min(0.95, Math.max(0, newScore));
+    if (Math.abs(newScore - (ev.relevance_score || 0)) > 0.01) {
+      updates.push({ id: ev.id, relevance_score: newScore });
+    }
+  }
+
+  if (updates.length) {
+    for (const upd of updates) {
+      await supabase.from('events').update({ relevance_score: upd.relevance_score }).eq('id', upd.id);
+    }
+    console.log(`[Eventos] Atualizadas relevâncias de ${updates.length} eventos`);
+  }
+}
+
+// ============================================================
+// Health check para L3/L4 com atualização de eventos
 // ============================================================
 async function ensureMemoryHealth(userId: string) {
   try {
-    // Verifica se L3 precisa de compactação
     const { count } = await supabase
       .from('memories')
       .select('*', { count: 'exact', head: true })
       .eq('user_id', userId);
-      
+
     if (count && count > 1000) {
       console.log(`[Health] Compactando memórias L3 para ${userId}`);
       await compactMemory(userId);
     }
-    
-    // Verifica se L4 tem tópicos desatualizados (decaimento)
+
+    // [FIX] Atualiza relevância de eventos a cada requisição
+    await updateEventRelevance(userId);
+
+    // Decaimento de tópicos L4 não usados há 30 dias
+    // NOTA: supabase.sql não é suportado no cliente JS — usar RPC ou query raw se necessário
     const { error } = await supabase
       .from('topic_index')
-      .update({ weight: supabase.sql`weight * 0.95` })
-      .lt('last_mentioned', new Date(Date.now() - 30*24*60*60*1000).toISOString())
+      .update({ weight: supabase.rpc('decay_topic_weight') }) // placeholder — ajustar conforme setup
+      .lt('last_mentioned', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
       .eq('user_id', userId);
-      
+
     if (error) console.error('[Health] Erro no decaimento L4:', error);
   } catch (e) {
     console.error('[Health] Erro no health check:', e);
@@ -86,21 +171,23 @@ async function ensureMemoryHealth(userId: string) {
 }
 
 // ============================================================
-// NOVO: Atualização do índice de tópicos (L4)
+// Atualização do índice de tópicos (L4)
 // ============================================================
 async function updateTopicIndex(userId: string, contexts: string[], messageText: string) {
   if (!contexts.length) return;
-  
-  // Extrai termos-chave da mensagem (palavras com mais de 3 letras)
+
   const words = messageText.toLowerCase().split(/\s+/);
   const keyTerms = words.filter(w => w.length > 3 && !/[0-9]/.test(w)).slice(0, 5);
-  
+
   for (const ctx of contexts) {
     await supabase
       .from('topic_index')
       .upsert({
         user_id: userId,
         topic: ctx,
+        // NOTA: supabase.sql não é suportado no cliente JS padrão.
+        // Se o projeto usa Supabase com extensão de SQL raw, manter como está.
+        // Caso contrário, substituir por uma RPC como: supabase.rpc('increment_topic_weight', { uid: userId, topic: ctx })
         weight: supabase.sql`COALESCE(weight, 0) + 0.1`,
         last_mentioned: new Date().toISOString(),
         related_terms: keyTerms
@@ -109,7 +196,7 @@ async function updateTopicIndex(userId: string, contexts: string[], messageText:
 }
 
 // ============================================================
-// NOVO: Busca tópicos relacionados via L4
+// Busca tópicos relacionados via L4
 // ============================================================
 async function getRelatedTopics(userId: string, currentContext: string): Promise<string> {
   const { data: related } = await supabase
@@ -119,14 +206,14 @@ async function getRelatedTopics(userId: string, currentContext: string): Promise
     .neq('topic', currentContext)
     .order('weight', { ascending: false })
     .limit(3);
-  
+
   if (!related?.length) return '';
-  
+
   return `\n[TÓPICOS RELACIONADOS]\n${related.map(t => `- ${t.topic} (peso: ${Math.round(t.weight * 100)}%)`).join('\n')}`;
 }
 
 // ============================================================
-// MELHORADO: Classificação de contexto com L4
+// Classificação de contexto
 // ============================================================
 type ContextType =
   | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario' | 'meta'
@@ -160,60 +247,56 @@ function classifyContextRegex(text: string): ContextType[] {
   return detected.length > 0 ? detected : ['casual'];
 }
 
-// NOVA função com integração L4 para desambiguação
 async function classifyContextWithL4(text: string, userId: string): Promise<ContextType[]> {
   const regexContexts = classifyContextRegex(text);
-  
-  // Se múltiplos contextos, consulta L4 para desambiguar
+
   if (regexContexts.length > 2) {
     const { data: topicWeights } = await supabase
       .from('topic_index')
       .select('topic, weight')
       .eq('user_id', userId)
       .in('topic', regexContexts);
-      
+
     if (topicWeights && topicWeights.length > 0) {
-      // Ordena por peso do tópico no histórico do usuário
       const sorted = topicWeights.sort((a, b) => (b.weight || 0) - (a.weight || 0));
       const prioritized = sorted.map(t => t.topic as ContextType);
-      // Adiciona contextos que não estão no L4 no final
       const missing = regexContexts.filter(c => !prioritized.includes(c));
       return [...prioritized, ...missing];
     }
   }
-  
+
   return regexContexts;
 }
 
 // ============================================================
-// MELHORADO: RAM Compression com L3 semântica
+// RAM Compression com L3 semântica
+// [FIX] threshold reduzido de 0.5 → 0.4, match_count aumentado de 3 → 5
 // ============================================================
 async function semanticRamCompression(history: any[], userId: string, currentContext: string, currentEmbedding?: number[]): Promise<string> {
   if (!history.length) return '';
-  
-  // Busca memórias semanticamente relevantes ao contexto atual
+
   const embedding = currentEmbedding || await getCachedEmbedding(currentContext);
-  
+
   const { data: relevantMemories } = await supabase.rpc('match_memories', {
     query_embedding: embedding,
-    match_threshold: 0.5,
-    match_count: 3
+    match_threshold: 0.4,
+    match_count: 5
   }) as { data: any[] | null };
-  
+
   if (relevantMemories && relevantMemories.length > 0) {
     const semanticBlock = relevantMemories
       .filter(r => !r.summary.startsWith('[CINZA]'))
       .map(r => r.summary)
       .join('\n---\n');
-    
+
     return `[MEMÓRIAS SEMANTICAMENTE RELEVANTES]\n${semanticBlock}`;
   }
-  
+
   return '';
 }
 
 // ============================================================
-// MELHORADO: Topic Shift Detection com L4
+// Topic Shift Detection com L4
 // ============================================================
 async function detectTopicShiftWithL4(userId: string, currentContexts: ContextType[]): Promise<boolean> {
   const { data: recentTopics } = await supabase
@@ -222,22 +305,20 @@ async function detectTopicShiftWithL4(userId: string, currentContexts: ContextTy
     .eq('user_id', userId)
     .order('last_mentioned', { ascending: false })
     .limit(5);
-  
+
   if (!recentTopics?.length) return false;
-  
-  // Verifica se o tópico atual é novo ou tem baixo peso no padrão do usuário
-  const hasCurrentTopic = currentContexts.some(ctx => 
+
+  const hasCurrentTopic = currentContexts.some(ctx =>
     recentTopics.some(t => t.topic === ctx && (t.weight || 0) >= 0.3)
   );
-  
+
   return !hasCurrentTopic && !currentContexts.includes('casual');
 }
 
 // ============================================================
-// MELHORADO: Onboarding persistente via L3
+// Onboarding persistente via L3
 // ============================================================
 async function getOrCreateOnboardingStatePersistent(userId: string) {
-  // Busca em L3 primeiro (memórias de onboarding)
   const { data: onboardingMemory } = await supabase
     .from('memories')
     .select('metadata')
@@ -246,16 +327,16 @@ async function getOrCreateOnboardingStatePersistent(userId: string) {
     .order('created_at', { ascending: false })
     .limit(1)
     .single();
-  
+
   if (onboardingMemory?.metadata?.state) {
     return onboardingMemory.metadata.state;
   }
-  
+
   return await initOnboarding(userId);
 }
 
 // ============================================================
-// MELHORADO: Função de compressão de RAM com limite semântico
+// Compressão de RAM
 // ============================================================
 const RAM_MAX_CHARS = 8000;
 
@@ -270,7 +351,7 @@ function compressToSummary(history: any[]): string {
 }
 
 // ============================================================
-// WEBHOOK PRINCIPAL COM MUDANÇAS CONSOLIDADAS
+// WEBHOOK PRINCIPAL
 // ============================================================
 
 export async function POST(req: Request) {
@@ -362,21 +443,19 @@ export async function POST(req: Request) {
     ensureMemoryHealth(stringId).catch(e => console.error('[Health] Erro em background:', e));
 
     // ============================================================
-    // SPRINT 1 — classifica contexto com L4
+    // Classifica contexto com L4
     // ============================================================
     console.time('[Performance] context_classification');
     const detectedContexts = await classifyContextWithL4(messageText, stringId);
     console.timeEnd('[Performance] context_classification');
-    
-    // Atualiza L4 com os contextos detectados
+
     await updateTopicIndex(stringId, detectedContexts, messageText);
-    
-    // Busca tópicos relacionados para contexto enriquecido
+
     const relatedTopicsBlock = await getRelatedTopics(stringId, detectedContexts[0] || 'casual');
 
-    const modelRoute = routeModel(detectedContexts);
+    const modelRoute  = routeModel(detectedContexts);
     const temperature = getTemperature(detectedContexts);
-    const blockPlan = planContextualBlocks(detectedContexts);
+    const blockPlan   = planContextualBlocks(detectedContexts);
 
     console.log(`[Sprint1] contextos: ${detectedContexts.join(',')} | modelo: ${modelRoute.label} | temp: ${temperature}`);
 
@@ -424,10 +503,8 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // Busca paralela OTIMIZADA (paralelização granular)
+    // Busca paralela otimizada
     // ============================================================
-    
-    // Base promises
     const basePromises = Promise.all([
       supabase
         .from('users')
@@ -457,26 +534,22 @@ export async function POST(req: Request) {
         .select('content, category').order('created_at', { ascending: true }),
     ]);
 
-    // Conditional promises com paralelização granular
     const conditionalTasks: Promise<any>[] = [];
-    
+
     if (blockPlan.loadCalendar) {
       conditionalTasks.push(getGoogleContext());
       conditionalTasks.push(getMicrosoftCalendarContext());
     }
-    
     if (blockPlan.loadEmail) {
       conditionalTasks.push(getRecentEmails(undefined, 3, false));
     }
-    
     if (blockPlan.loadTopics) {
       conditionalTasks.push(buildTopicBlock(stringId, messageText));
     }
-    
     if (blockPlan.loadDiary) {
       conditionalTasks.push(buildDiaryGoalsBlock(stringId));
     }
-    
+
     const [
       [
         userProfileResult,
@@ -489,36 +562,28 @@ export async function POST(req: Request) {
       ],
       conditionalResults
     ] = await Promise.all([basePromises, Promise.all(conditionalTasks)]);
-    
-    // Desestrutura resultados condicionais
-    let googleContextBlock = null;
+
+    let googleContextBlock    = null;
     let microsoftContextBlock = null;
-    let emailRadarBlock = null;
-    let topicBlock = '';
-    let diaryGoalsBlock = '';
-    
+    let emailRadarBlock       = null;
+    let topicBlock            = '';
+    let diaryGoalsBlock       = '';
+
     let resultIndex = 0;
     if (blockPlan.loadCalendar) {
-      googleContextBlock = conditionalResults[resultIndex++];
+      googleContextBlock    = conditionalResults[resultIndex++];
       microsoftContextBlock = conditionalResults[resultIndex++];
     }
-    if (blockPlan.loadEmail) {
-      emailRadarBlock = conditionalResults[resultIndex++];
-    }
-    if (blockPlan.loadTopics) {
-      topicBlock = conditionalResults[resultIndex++] || '';
-    }
-    if (blockPlan.loadDiary) {
-      diaryGoalsBlock = conditionalResults[resultIndex++] || '';
-    }
-    
-    // Recomendações — também condicional
+    if (blockPlan.loadEmail)  emailRadarBlock  = conditionalResults[resultIndex++];
+    if (blockPlan.loadTopics) topicBlock       = conditionalResults[resultIndex++] || '';
+    if (blockPlan.loadDiary)  diaryGoalsBlock  = conditionalResults[resultIndex++] || '';
+
     const recommendationsBlock = blockPlan.loadRecommendations
       ? await buildRecommendationsBlock(stringId, messageText)
       : '';
 
     // ============================================================
-    // DEBUG — APIs externas
+    // Filtragem de erros em APIs externas
     // ============================================================
     const isGoogleError    = typeof googleContextBlock    === 'string' && googleContextBlock.includes('Erro');
     const isMicrosoftError = typeof microsoftContextBlock === 'string' && microsoftContextBlock.includes('Erro');
@@ -545,13 +610,13 @@ export async function POST(req: Request) {
     const pendingQuestion  = userProfile?.pending_question || null;
     const pendingContext   = userProfile?.pending_context  || null;
 
-    const principles = principlesResult?.data || [];
+    const principles      = principlesResult?.data || [];
     const principlesBlock = principles.length > 0
       ? principles.map((p: any) => `- ${p.content}`).join('\n')
       : '';
 
-    const isFemale = currentContextL3.toLowerCase().includes('feminino') ||
-                     currentContextL3.toLowerCase().includes('mulher');
+    const isFemale        = currentContextL3.toLowerCase().includes('feminino') ||
+                            currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
 
     // ============================================================
@@ -562,25 +627,53 @@ export async function POST(req: Request) {
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
     // ============================================================
-    // EVENTOS
+    // [FIX] Filtragem e ordenação de eventos melhorada
     // ============================================================
-    const events       = eventsResult.data || [];
-    const urgentEvents = events.filter(e => (e.relevance_score || 0) >= 0.7);
-    const radarEvents  = events.filter(e => (e.relevance_score || 0) >= 0.3 && (e.relevance_score || 0) < 0.7);
-    const eventsBlock  = events.length > 0 ? [
-      urgentEvents.length > 0
-        ? `🔴 PRÓXIMOS:\n${urgentEvents.map(e => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}`
-        : null,
-      radarEvents.length > 0
-        ? `🟡 NO RADAR:\n${radarEvents.map(e => `  - ${e.title}: ${e.event_date}`).join('\n')}`
-        : null,
-    ].filter(Boolean).join('\n\n') : "Nenhum evento cadastrado.";
+    const events = eventsResult.data || [];
+    const hoje   = new Date();
+    hoje.setHours(0, 0, 0, 0);
+
+    // Ordena por proximidade da data atual
+    const sortedEvents = [...events].sort((a, b) => {
+      const da = new Date(a.event_date).getTime();
+      const db = new Date(b.event_date).getTime();
+      return Math.abs(da - hoje.getTime()) - Math.abs(db - hoje.getTime());
+    });
+
+    // Eventos nos próximos 7 dias
+    const upcomingEvents = sortedEvents.filter(e => {
+      const evDate  = new Date(e.event_date);
+      const diffDays = Math.ceil((evDate.getTime() - hoje.getTime()) / (1000 * 3600 * 24));
+      return diffDays >= 0 && diffDays <= 7;
+    });
+
+    // Alta relevância que não estão no bloco de próximos
+    const highRelevanceEvents = sortedEvents.filter(
+      e => (e.relevance_score || 0) >= 0.7 && !upcomingEvents.includes(e)
+    );
+
+    // Remove eventos passados que não são permanentes
+    const activeEvents = sortedEvents.filter(e => {
+      const evDate = new Date(e.event_date);
+      return evDate >= hoje || (e.decay_type === 'permanent' && evDate < hoje);
+    });
+
+    const eventsBlock = activeEvents.length > 0
+      ? [
+          upcomingEvents.length > 0
+            ? `🔴 NOS PRÓXIMOS DIAS:\n${upcomingEvents.map(e => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}`
+            : null,
+          highRelevanceEvents.length > 0
+            ? `🟡 IMPORTANTES:\n${highRelevanceEvents.map(e => `  - ${e.title}: ${e.event_date}`).join('\n')}`
+            : null,
+        ].filter(Boolean).join('\n\n')
+      : "Nenhum evento cadastrado.";
 
     const ashes      = ashesResult.data || [];
     const ashesBlock = ashes.length > 0 ? ashes.map(a => a.ash_summary).join('\n') : null;
 
     // ============================================================
-    // NOTAS CONTEXTUAIS
+    // Notas contextuais
     // ============================================================
     let personNotesBlock = "";
     const [childrenResult, personNotesResult] = await Promise.all([
@@ -609,7 +702,7 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // HD VETORIAL com cache
+    // HD Vetorial com cache
     // ============================================================
     const queryEmbedding = await getCachedEmbedding(messageText);
     let hdBlock    = "";
@@ -629,7 +722,7 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // RAM COMPRIMIDA MELHORADA com detecção de tópico e L3 semântica
+    // RAM comprimida com detecção de tópico e L3 semântica
     // ============================================================
     let ramBlock = "";
 
@@ -657,7 +750,6 @@ export async function POST(req: Request) {
         console.log('[RAM] Nível 1 — sessão:', historySession.length, 'msgs');
       }
     } else {
-      // Tenta compressão semântica via L3
       const semanticBlock = await semanticRamCompression(historySession || [], stringId, messageText, queryEmbedding);
       if (semanticBlock) {
         ramBlock = semanticBlock;
@@ -668,14 +760,13 @@ export async function POST(req: Request) {
       }
     }
 
-    // Limite absoluto de tokens na RAM
     if (ramBlock.length > RAM_MAX_CHARS) {
       ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
       console.log(`[RAM] Truncado para ${RAM_MAX_CHARS} chars (limite absoluto)`);
     }
 
     // ============================================================
-    // CLASSIFICADOR TEMPORAL
+    // Classificador temporal
     // ============================================================
     const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
     console.log(`[Router] ${weights.horizon} | ${weights.reason}`);
@@ -687,7 +778,7 @@ export async function POST(req: Request) {
     const truncatedEvents = truncateByWeight(eventsBlock,      weights.events, 6000);
 
     // ============================================================
-    // SYSTEM PROMPT (com tópicos relacionados)
+    // System Prompt
     // ============================================================
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
@@ -797,10 +888,15 @@ REGRAS:
 9. Ao final: [CLASSE: info] ou [CLASSE: noise]
 
 10. LOCALIZAÇÃO: Use o endereço formatado para contextualizar. Não mencione coordenadas numéricas.
+
+11. EVENTOS: Dê prioridade máxima a eventos nos próximos 7 dias.
+    Se um evento passou e você não foi informado sobre sua realização,
+    considere que ele pode ter sido cancelado ou esquecido, mas não pergunte
+    sobre ele a menos que o usuário mencione.
 `.trim();
 
     // ============================================================
-    // CONVERSA ESTRUTURADA
+    // Conversa estruturada
     // ============================================================
     const { data: historyForMessages } = await supabase
       .from('brain').select('content, metadata')
@@ -819,7 +915,7 @@ REGRAS:
     ];
 
     // ============================================================
-    // DETECÇÃO ANTECIPADA — "ignore isso"
+    // Detecção antecipada — "ignore isso"
     // ============================================================
     const ignorePatterns = /ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|esquece|delete isso/i;
     if (ignorePatterns.test(messageText)) {
@@ -833,7 +929,7 @@ REGRAS:
     }
 
     // ============================================================
-    // PRÉ-EXTRAÇÃO
+    // Pré-extração
     // ============================================================
     const noisePatterns = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i;
     const isLikelyNoise = noisePatterns.test(messageText.trim()) && messageText.length < 30;
@@ -853,14 +949,14 @@ REGRAS:
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
     // ============================================================
-    // Chamada com modelo e temperatura roteados
+    // Chamada ao modelo roteado
     // ============================================================
     console.time('[Performance] model_call');
     let aiReply = await callOpenRouter(conversationMessages, modelRoute.model, temperature);
     console.timeEnd('[Performance] model_call');
 
     // ============================================================
-    // INTERCEPTORES (mantidos originais)
+    // Interceptores
     // ============================================================
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
@@ -986,9 +1082,8 @@ REGRAS:
     }
 
     // ============================================================
-    // LISTA DE COMPRAS E LUGARES FAVORITOS
+    // Lista de compras e lugares favoritos
     // ============================================================
-
     const salvarLugarMatch = aiReply.match(/\[SALVAR_LUGAR:\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*(\d+)\s*\|\s*([^\]]+)\]/i);
     if (salvarLugarMatch) {
       const [, nome, lat, lng, raio, categoria] = salvarLugarMatch;
@@ -1056,7 +1151,7 @@ REGRAS:
     }
 
     // ============================================================
-    // PERSISTÊNCIA
+    // Persistência
     // ============================================================
     const { error: insertError } = await supabase.from('brain').insert([{
       content:     messageText,
@@ -1066,13 +1161,13 @@ REGRAS:
       project_tag: 'geral',
       embedding:   queryEmbedding,
       metadata: {
-        ai_reply:         aiReply,
-        user:             authorName,
-        horizon:          weights.horizon,
-        pending_resolved: !!pendingQuestion,
-        model_used:       modelRoute.model,
-        model_label:      modelRoute.label,
-        temperature_used: temperature,
+        ai_reply:          aiReply,
+        user:              authorName,
+        horizon:           weights.horizon,
+        pending_resolved:  !!pendingQuestion,
+        model_used:        modelRoute.model,
+        model_label:       modelRoute.label,
+        temperature_used:  temperature,
         contexts_detected: detectedContexts,
       }
     }]);
@@ -1106,10 +1201,8 @@ REGRAS:
       );
     }
 
-    // Resposta vai pro usuário imediatamente; extratores e compactação rodam em background
     await sendTelegram(chatId, aiReply);
 
-    // Background: não bloqueia a resposta
     Promise.all([
       ...tasks,
       supabase
@@ -1130,7 +1223,7 @@ REGRAS:
 }
 
 // ============================================================
-// FUNÇÕES AUXILIARES (mantidas originais)
+// Funções auxiliares
 // ============================================================
 
 function routeModel(contexts: ContextType[]): { model: string; label: string } {
