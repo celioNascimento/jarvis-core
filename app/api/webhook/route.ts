@@ -45,47 +45,110 @@ import {
 } from '@/lib/diary';
 
 // ============================================================
-// SPRINT 1 — #2 Roteamento de modelo
+// NOVO: Cache de embeddings para L3
 // ============================================================
+const embeddingCache = new Map<string, number[]>();
 
+async function getCachedEmbedding(text: string): Promise<number[]> {
+  if (embeddingCache.has(text)) return embeddingCache.get(text)!;
+  const embedding = await generateEmbedding(text);
+  embeddingCache.set(text, embedding);
+  return embedding;
+}
+
+// ============================================================
+// NOVO: Health check para L3/L4
+// ============================================================
+async function ensureMemoryHealth(userId: string) {
+  try {
+    // Verifica se L3 precisa de compactação
+    const { count } = await supabase
+      .from('memories')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId);
+      
+    if (count && count > 1000) {
+      console.log(`[Health] Compactando memórias L3 para ${userId}`);
+      await compactMemory(userId);
+    }
+    
+    // Verifica se L4 tem tópicos desatualizados (decaimento)
+    const { error } = await supabase
+      .from('topic_index')
+      .update({ weight: supabase.sql`weight * 0.95` })
+      .lt('last_mentioned', new Date(Date.now() - 30*24*60*60*1000).toISOString())
+      .eq('user_id', userId);
+      
+    if (error) console.error('[Health] Erro no decaimento L4:', error);
+  } catch (e) {
+    console.error('[Health] Erro no health check:', e);
+  }
+}
+
+// ============================================================
+// NOVO: Atualização do índice de tópicos (L4)
+// ============================================================
+async function updateTopicIndex(userId: string, contexts: string[], messageText: string) {
+  if (!contexts.length) return;
+  
+  // Extrai termos-chave da mensagem (palavras com mais de 3 letras)
+  const words = messageText.toLowerCase().split(/\s+/);
+  const keyTerms = words.filter(w => w.length > 3 && !/[0-9]/.test(w)).slice(0, 5);
+  
+  for (const ctx of contexts) {
+    await supabase
+      .from('topic_index')
+      .upsert({
+        user_id: userId,
+        topic: ctx,
+        weight: supabase.sql`COALESCE(weight, 0) + 0.1`,
+        last_mentioned: new Date().toISOString(),
+        related_terms: keyTerms
+      }, { onConflict: 'user_id,topic' });
+  }
+}
+
+// ============================================================
+// NOVO: Busca tópicos relacionados via L4
+// ============================================================
+async function getRelatedTopics(userId: string, currentContext: string): Promise<string> {
+  const { data: related } = await supabase
+    .from('topic_index')
+    .select('topic, weight')
+    .eq('user_id', userId)
+    .neq('topic', currentContext)
+    .order('weight', { ascending: false })
+    .limit(3);
+  
+  if (!related?.length) return '';
+  
+  return `\n[TÓPICOS RELACIONADOS]\n${related.map(t => `- ${t.topic} (peso: ${Math.round(t.weight * 100)}%)`).join('\n')}`;
+}
+
+// ============================================================
+// MELHORADO: Classificação de contexto com L4
+// ============================================================
 type ContextType =
   | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario' | 'meta'
   | 'saude' | 'recomendacao' | 'evento' | 'rotina' | 'preferencia'
   | 'alias' | 'email' | 'casual';
 
-/**
- * Classifica o contexto da mensagem via regex — zero latência, sem LLM.
- * Retorna array de contextos detectados (pode ter mais de um).
- */
-function classifyContext(text: string): ContextType[] {
+function classifyContextRegex(text: string): ContextType[] {
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
   const rules: Array<[RegExp, ContextType]> = [
-    // Diário / reflexão — antes de emocao para ter prioridade
     [/diario|diário|hoje foi|hoje ta|hoje está|acordei|dormi|dormir|meu dia|como foi meu|reflexao|refletindo|gratid/i, 'diario'],
-    // Meta / objetivo
     [/meta|objetivo|quero (conseguir|fazer|terminar|lancar|comecar)|prazo|progresso|etapa|concluir|finalizar/i, 'meta'],
-    // Agenda / compromisso com hora
     [/reuniao|reunião|consulta|compromisso|agend|horario|horário|amanha as|amanhã às|segunda|terça|quarta|quinta|sexta|sabado|domingo|às \d|as \d{1,2}h/i, 'agenda'],
-    // Projeto / produto
     [/projeto|app|aplicativo|sistema|api|deploy|feature|sprint|mvp|startup|produto|desenvolv/i, 'projeto'],
-    // Família
     [/filho|filha|esposa|marido|mae|mãe|pai|irmao|irmão|família|familia|cônjuge|conjuge|casamento|nasceu|aniversario de casamento/i, 'familia'],
-    // Saúde
     [/medic|médic|saude|saúde|exame|remedio|remédio|hospital|dor |doenca|doença|sintoma|consulta médica/i, 'saude'],
-    // Emoção
     [/sinto|estou (triste|feliz|ansioso|cansado|animado|frustrado|preocupado|deprimido|sozinho)|me sinto|to mal|tô mal|to bem|tô bem|angustia|angústia|estressado/i, 'emocao'],
-    // Email
     [/email|e-mail|inbox|caixa de entrada|mensagem do|mensagem da|enviou|recebeu/i, 'email'],
-    // Recomendação
     [/indica|recomend|sugere|onde posso|tem algum|onde tem|restaurante|lugar|lugar bom|conhece algum/i, 'recomendacao'],
-    // Evento / data comemorativa (sem hora)
     [/aniversario|aniversário|natal|pascoa|páscoa|ano novo|feriado|data importante|comemora/i, 'evento'],
-    // Rotina
     [/acordo|desperto|academia|treino|trabalho as|trabalho às|entrada no trabalho|saida do trabalho|rotina|horario de/i, 'rotina'],
-    // Preferência
     [/gosto de|nao gosto de|não gosto de|prefiro|adoro|odeio|minha comida|meu filme|minha musica|minha música/i, 'preferencia'],
-    // Alias
     [/quando falo em|quando eu falar|pode chamar de|se eu disser|apelido|alias/i, 'alias'],
   ];
 
@@ -97,88 +160,122 @@ function classifyContext(text: string): ContextType[] {
   return detected.length > 0 ? detected : ['casual'];
 }
 
-// ============================================================
-// SPRINT 1 — #2 Roteamento de modelo
-// ============================================================
-
-interface ModelRoute {
-  model: string;
-  label: string;
-}
-
-/**
- * Escolhe o modelo com base nos contextos detectados.
- * - Contextos complexos → Sonnet (raciocínio, emoção, projetos)
- * - Contextos simples   → Gemini Flash (custo 10× menor)
- */
-function routeModel(contexts: ContextType[]): ModelRoute {
-  const complexContexts: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude'];
-  const isComplex = contexts.some(c => complexContexts.includes(c));
-
-  if (isComplex) {
-    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
+// NOVA função com integração L4 para desambiguação
+async function classifyContextWithL4(text: string, userId: string): Promise<ContextType[]> {
+  const regexContexts = classifyContextRegex(text);
+  
+  // Se múltiplos contextos, consulta L4 para desambiguar
+  if (regexContexts.length > 2) {
+    const { data: topicWeights } = await supabase
+      .from('topic_index')
+      .select('topic, weight')
+      .eq('user_id', userId)
+      .in('topic', regexContexts);
+      
+    if (topicWeights && topicWeights.length > 0) {
+      // Ordena por peso do tópico no histórico do usuário
+      const sorted = topicWeights.sort((a, b) => (b.weight || 0) - (a.weight || 0));
+      const prioritized = sorted.map(t => t.topic as ContextType);
+      // Adiciona contextos que não estão no L4 no final
+      const missing = regexContexts.filter(c => !prioritized.includes(c));
+      return [...prioritized, ...missing];
+    }
   }
-
-  return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
+  
+  return regexContexts;
 }
 
 // ============================================================
-// SPRINT 1 — #4 Temperatura adaptativa
+// MELHORADO: RAM Compression com L3 semântica
 // ============================================================
-
-/**
- * Define a temperatura com base no contexto emocional/factual da mensagem.
- * - Factual (agenda, evento, email) → 0.3 — respostas precisas
- * - Neutro (rotina, alias, preferencia) → 0.5
- * - Casual, projeto → 0.7
- * - Emocional (emoção, diário, reflexão) → 0.9 — mais criativo e humano
- */
-function getTemperature(contexts: ContextType[]): number {
-  if (contexts.some(c => ['emocao', 'diario'].includes(c))) return 0.9;
-  if (contexts.some(c => ['casual', 'projeto', 'familia', 'meta'].includes(c))) return 0.7;
-  if (contexts.some(c => ['rotina', 'alias', 'preferencia', 'recomendacao'].includes(c))) return 0.5;
-  if (contexts.some(c => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
-  return 0.7;
+async function semanticRamCompression(history: any[], userId: string, currentContext: string, currentEmbedding?: number[]): Promise<string> {
+  if (!history.length) return '';
+  
+  // Busca memórias semanticamente relevantes ao contexto atual
+  const embedding = currentEmbedding || await getCachedEmbedding(currentContext);
+  
+  const { data: relevantMemories } = await supabase.rpc('match_memories', {
+    query_embedding: embedding,
+    match_threshold: 0.5,
+    match_count: 3
+  }) as { data: any[] | null };
+  
+  if (relevantMemories && relevantMemories.length > 0) {
+    const semanticBlock = relevantMemories
+      .filter(r => !r.summary.startsWith('[CINZA]'))
+      .map(r => r.summary)
+      .join('\n---\n');
+    
+    return `[MEMÓRIAS SEMANTICAMENTE RELEVANTES]\n${semanticBlock}`;
+  }
+  
+  return '';
 }
 
 // ============================================================
-// SPRINT 1 — #3 Injeção contextual
+// MELHORADO: Topic Shift Detection com L4
 // ============================================================
-
-interface ContextualBlocks {
-  topicBlock: string;
-  diaryGoalsBlock: string;
-  recommendationsBlock: string;
-  needsCalendar: boolean;   // sinaliza para carregar Google + Outlook
-  needsEmail: boolean;      // sinaliza para carregar emails
-}
-
-/**
- * Decide quais blocos extras carregar com base nos contextos.
- * Blocos caros (calendário, email) só são buscados quando realmente necessários.
- */
-function planContextualBlocks(contexts: ContextType[]): {
-  loadTopics: boolean;
-  loadDiary: boolean;
-  loadRecommendations: boolean;
-  loadCalendar: boolean;
-  loadEmail: boolean;
-} {
-  return {
-    loadTopics:          contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia'].includes(c)),
-    loadDiary:           contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c)),
-    loadRecommendations: contexts.some(c => ['recomendacao', 'casual'].includes(c)),
-    loadCalendar:        contexts.some(c => ['agenda', 'evento', 'familia'].includes(c)),
-    loadEmail:           contexts.some(c => ['email'].includes(c)),
-  };
+async function detectTopicShiftWithL4(userId: string, currentContexts: ContextType[]): Promise<boolean> {
+  const { data: recentTopics } = await supabase
+    .from('topic_index')
+    .select('topic, weight')
+    .eq('user_id', userId)
+    .order('last_mentioned', { ascending: false })
+    .limit(5);
+  
+  if (!recentTopics?.length) return false;
+  
+  // Verifica se o tópico atual é novo ou tem baixo peso no padrão do usuário
+  const hasCurrentTopic = currentContexts.some(ctx => 
+    recentTopics.some(t => t.topic === ctx && (t.weight || 0) >= 0.3)
+  );
+  
+  return !hasCurrentTopic && !currentContexts.includes('casual');
 }
 
 // ============================================================
-// WEBHOOK PRINCIPAL
+// MELHORADO: Onboarding persistente via L3
+// ============================================================
+async function getOrCreateOnboardingStatePersistent(userId: string) {
+  // Busca em L3 primeiro (memórias de onboarding)
+  const { data: onboardingMemory } = await supabase
+    .from('memories')
+    .select('metadata')
+    .eq('user_id', userId)
+    .eq('category', 'onboarding')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single();
+  
+  if (onboardingMemory?.metadata?.state) {
+    return onboardingMemory.metadata.state;
+  }
+  
+  return await initOnboarding(userId);
+}
+
+// ============================================================
+// MELHORADO: Função de compressão de RAM com limite semântico
+// ============================================================
+const RAM_MAX_CHARS = 8000;
+
+function compressToSummary(history: any[]): string {
+  const topics = history
+    .flatMap((h: any) => (h.metadata?.contexts_detected as string[] | undefined) || [])
+    .filter((v, i, a) => a.indexOf(v) === i)
+    .join(', ');
+  return topics
+    ? `[Resumo do assunto anterior: ${topics}]`
+    : '[Contexto anterior resumido]';
+}
+
+// ============================================================
+// WEBHOOK PRINCIPAL COM MUDANÇAS CONSOLIDADAS
 // ============================================================
 
 export async function POST(req: Request) {
   try {
+    console.time('[Performance] total');
     const body = await req.json();
     const message = body.message;
     let messageText = message?.text || "";
@@ -255,14 +352,31 @@ export async function POST(req: Request) {
     const userFirstName  = message?.from?.first_name || "Usuário";
     const stringId       = String(telegramUserId);
 
+    if (!messageText || chatId == null || telegramUserId == null) {
+      return NextResponse.json({ ok: true });
+    }
+
     // ============================================================
-    // SPRINT 1 — classifica contexto logo no início
-    // Todas as decisões de modelo, blocos e temperatura dependem disso.
+    // Health check L3/L4 (background, não bloqueia)
     // ============================================================
-    const detectedContexts = classifyContext(messageText);
-    const modelRoute       = routeModel(detectedContexts);
-    const temperature      = getTemperature(detectedContexts);
-    const blockPlan        = planContextualBlocks(detectedContexts);
+    ensureMemoryHealth(stringId).catch(e => console.error('[Health] Erro em background:', e));
+
+    // ============================================================
+    // SPRINT 1 — classifica contexto com L4
+    // ============================================================
+    console.time('[Performance] context_classification');
+    const detectedContexts = await classifyContextWithL4(messageText, stringId);
+    console.timeEnd('[Performance] context_classification');
+    
+    // Atualiza L4 com os contextos detectados
+    await updateTopicIndex(stringId, detectedContexts, messageText);
+    
+    // Busca tópicos relacionados para contexto enriquecido
+    const relatedTopicsBlock = await getRelatedTopics(stringId, detectedContexts[0] || 'casual');
+
+    const modelRoute = routeModel(detectedContexts);
+    const temperature = getTemperature(detectedContexts);
+    const blockPlan = planContextualBlocks(detectedContexts);
 
     console.log(`[Sprint1] contextos: ${detectedContexts.join(',')} | modelo: ${modelRoute.label} | temp: ${temperature}`);
 
@@ -309,17 +423,11 @@ export async function POST(req: Request) {
       }
     }
 
-    if (!messageText || chatId == null || telegramUserId == null) {
-      return NextResponse.json({ ok: true });
-    }
-
     // ============================================================
-    // SPRINT 1 — #3 Busca paralela CONTEXTUAL
-    // Blocos caros (calendário, email, recomendações, diary) só são
-    // buscados quando o contexto da mensagem realmente pede.
+    // Busca paralela OTIMIZADA (paralelização granular)
     // ============================================================
-
-    // Bloco base — sempre necessário
+    
+    // Base promises
     const basePromises = Promise.all([
       supabase
         .from('users')
@@ -349,15 +457,26 @@ export async function POST(req: Request) {
         .select('content, category').order('created_at', { ascending: true }),
     ]);
 
-    // Blocos condicionais — só busca o que o contexto pede
-    const conditionalPromises = Promise.all([
-      blockPlan.loadCalendar ? getGoogleContext()              : Promise.resolve(null),
-      blockPlan.loadCalendar ? getMicrosoftCalendarContext()   : Promise.resolve(null),
-      blockPlan.loadEmail    ? getRecentEmails(undefined, 3, false) : Promise.resolve(null),
-      blockPlan.loadTopics   ? buildTopicBlock(stringId, messageText) : Promise.resolve(''),
-      blockPlan.loadDiary    ? buildDiaryGoalsBlock(stringId)  : Promise.resolve(''),
-    ]);
-
+    // Conditional promises com paralelização granular
+    const conditionalTasks: Promise<any>[] = [];
+    
+    if (blockPlan.loadCalendar) {
+      conditionalTasks.push(getGoogleContext());
+      conditionalTasks.push(getMicrosoftCalendarContext());
+    }
+    
+    if (blockPlan.loadEmail) {
+      conditionalTasks.push(getRecentEmails(undefined, 3, false));
+    }
+    
+    if (blockPlan.loadTopics) {
+      conditionalTasks.push(buildTopicBlock(stringId, messageText));
+    }
+    
+    if (blockPlan.loadDiary) {
+      conditionalTasks.push(buildDiaryGoalsBlock(stringId));
+    }
+    
     const [
       [
         userProfileResult,
@@ -368,16 +487,32 @@ export async function POST(req: Request) {
         gapsBlock,
         principlesResult,
       ],
-      [
-        googleContextBlock,
-        microsoftContextBlock,
-        emailRadarBlock,
-        topicBlock,
-        diaryGoalsBlock,
-      ]
-    ] = await Promise.all([basePromises, conditionalPromises]);
-
-    // Recomendações — também condicional, mas depende de messageText, então separado
+      conditionalResults
+    ] = await Promise.all([basePromises, Promise.all(conditionalTasks)]);
+    
+    // Desestrutura resultados condicionais
+    let googleContextBlock = null;
+    let microsoftContextBlock = null;
+    let emailRadarBlock = null;
+    let topicBlock = '';
+    let diaryGoalsBlock = '';
+    
+    let resultIndex = 0;
+    if (blockPlan.loadCalendar) {
+      googleContextBlock = conditionalResults[resultIndex++];
+      microsoftContextBlock = conditionalResults[resultIndex++];
+    }
+    if (blockPlan.loadEmail) {
+      emailRadarBlock = conditionalResults[resultIndex++];
+    }
+    if (blockPlan.loadTopics) {
+      topicBlock = conditionalResults[resultIndex++] || '';
+    }
+    if (blockPlan.loadDiary) {
+      diaryGoalsBlock = conditionalResults[resultIndex++] || '';
+    }
+    
+    // Recomendações — também condicional
     const recommendationsBlock = blockPlan.loadRecommendations
       ? await buildRecommendationsBlock(stringId, messageText)
       : '';
@@ -419,8 +554,11 @@ export async function POST(req: Request) {
                      currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
 
+    // ============================================================
+    // Onboarding persistente via L3
+    // ============================================================
     let onboardingState = onboardingResult?.data || null;
-    if (!onboardingState) onboardingState = await initOnboarding(stringId);
+    if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(stringId);
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
     // ============================================================
@@ -471,9 +609,9 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // HD VETORIAL
+    // HD VETORIAL com cache
     // ============================================================
-    const queryEmbedding = await generateEmbedding(messageText);
+    const queryEmbedding = await getCachedEmbedding(messageText);
     let hdBlock    = "";
     let hdMemoryIds: string[] = [];
 
@@ -491,52 +629,26 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // SPRINT 1 — #5 RAM COMPRIMIDA
-    // Detecta mudança de assunto e comprime bloco anterior.
-    // Limite absoluto: ~2000 tokens (~8000 chars).
+    // RAM COMPRIMIDA MELHORADA com detecção de tópico e L3 semântica
     // ============================================================
-    const RAM_MAX_CHARS  = 8000;
-    const RAM_FULL_MSGS  = 10;   // mesmo assunto: mantém até 10 trocas brutas
-    const RAM_SHIFT_MSGS = 3;    // assunto mudou: mantém só as 3 últimas + resumo
-
-    function topicShifted(history: any[], currentCtxs: ContextType[]): boolean {
-      if (history.length < 3) return false;
-      const recentCtxs = history.slice(0, 3).flatMap(
-        (h: any) => (h.metadata?.contexts_detected as ContextType[] | undefined) || []
-      );
-      if (recentCtxs.length === 0) return false;
-      const overlap = currentCtxs.filter(c => recentCtxs.includes(c));
-      return overlap.length === 0 && !currentCtxs.includes('casual');
-    }
-
-    function compressToSummary(history: any[]): string {
-      const topics = history
-        .flatMap((h: any) => (h.metadata?.contexts_detected as string[] | undefined) || [])
-        .filter((v, i, a) => a.indexOf(v) === i)
-        .join(', ');
-      return topics
-        ? `[Resumo do assunto anterior: ${topics}]`
-        : '[Contexto anterior resumido]';
-    }
-
     let ramBlock = "";
 
     const { data: historySession } = await supabase
       .from('brain').select('content, metadata')
       .eq('user_id', stringId).eq('session_id', sessionId)
-      .neq('category', 'archived').order('created_at', { ascending: false }).limit(RAM_FULL_MSGS);
+      .neq('category', 'archived').order('created_at', { ascending: false }).limit(10);
+
+    const topicShifted = await detectTopicShiftWithL4(stringId, detectedContexts);
 
     if (historySession && historySession.length >= 2) {
-      const shifted = topicShifted(historySession, detectedContexts);
-
-      if (shifted) {
-        const summary   = compressToSummary(historySession.slice(RAM_SHIFT_MSGS));
-        const recentRaw = [...historySession].slice(0, RAM_SHIFT_MSGS).reverse().map((h: any) => {
+      if (topicShifted) {
+        const summary   = compressToSummary(historySession.slice(3));
+        const recentRaw = [...historySession].slice(0, 3).reverse().map((h: any) => {
           const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
           return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
         }).join('\n\n');
         ramBlock = `${summary}\n\n${recentRaw}`;
-        console.log(`[RAM] Nível 1 — assunto mudou (${detectedContexts.join(',')}) | comprimido: ${historySession.length - RAM_SHIFT_MSGS} msgs → resumo`);
+        console.log(`[RAM] Nível 1 — assunto mudou (${detectedContexts.join(',')}) | comprimido via L4`);
       } else {
         ramBlock = [...historySession].reverse().map((h: any) => {
           const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
@@ -544,23 +656,12 @@ export async function POST(req: Request) {
         }).join('\n\n');
         console.log('[RAM] Nível 1 — sessão:', historySession.length, 'msgs');
       }
-
     } else {
-      const { data: historyRecent } = await supabase
-        .from('brain').select('content, metadata')
-        .eq('user_id', stringId).neq('category', 'archived')
-        .order('created_at', { ascending: false }).limit(12);
-
-      if (historyRecent && historyRecent.length > 0) {
-        const sessionSet = new Set((historySession || []).map((h: any) => h.content));
-        const extra      = historyRecent.filter((h: any) => !sessionSet.has(h.content));
-        const merged     = [...(historySession || []), ...extra].slice(0, RAM_FULL_MSGS);
-        ramBlock = [...merged].reverse().map((h: any) => {
-          const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
-          return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
-        }).join('\n\n');
-        console.log('[RAM] Nível 2 — recente:', merged.length, 'msgs');
-
+      // Tenta compressão semântica via L3
+      const semanticBlock = await semanticRamCompression(historySession || [], stringId, messageText, queryEmbedding);
+      if (semanticBlock) {
+        ramBlock = semanticBlock;
+        console.log('[RAM] Nível 2 — compressão semântica via L3');
       } else if (hdBlock) {
         ramBlock = `[Contexto anterior consolidado]\n${hdBlock}`;
         console.log('[RAM] Nível 3 — HD como base');
@@ -574,7 +675,7 @@ export async function POST(req: Request) {
     }
 
     // ============================================================
-    // CLASSIFICADOR TEMPORAL (existente — mantido)
+    // CLASSIFICADOR TEMPORAL
     // ============================================================
     const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
     console.log(`[Router] ${weights.horizon} | ${weights.reason}`);
@@ -586,7 +687,7 @@ export async function POST(req: Request) {
     const truncatedEvents = truncateByWeight(eventsBlock,      weights.events, 6000);
 
     // ============================================================
-    // SYSTEM PROMPT
+    // SYSTEM PROMPT (com tópicos relacionados)
     // ============================================================
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
@@ -598,6 +699,7 @@ ${cleanGoogleContext    ? `[AGENDA GOOGLE ATUALIZADA]\n${cleanGoogleContext}`   
 ${cleanMicrosoftContext ? `[AGENDA OUTLOOK ATUALIZADA]\n${cleanMicrosoftContext}`  : ''}
 ${cleanEmailRadarBlock  ? `[RADAR DE EMAILS RELEVANTES]\n${cleanEmailRadarBlock}`  : ''}
 ${locationContext       ? `\n${locationContext}`                                    : ''}
+${relatedTopicsBlock    ? relatedTopicsBlock                                        : ''}
 
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${truncatedL3}` : ''}
 
@@ -751,12 +853,14 @@ REGRAS:
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
     // ============================================================
-    // SPRINT 1 — #2 chamada com modelo e temperatura roteados
+    // Chamada com modelo e temperatura roteados
     // ============================================================
+    console.time('[Performance] model_call');
     let aiReply = await callOpenRouter(conversationMessages, modelRoute.model, temperature);
+    console.timeEnd('[Performance] model_call');
 
     // ============================================================
-    // INTERCEPTORES
+    // INTERCEPTORES (mantidos originais)
     // ============================================================
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
@@ -966,7 +1070,6 @@ REGRAS:
         user:             authorName,
         horizon:          weights.horizon,
         pending_resolved: !!pendingQuestion,
-        // Sprint 1 — registra modelo e temperatura usados para debugging/analytics
         model_used:       modelRoute.model,
         model_label:      modelRoute.label,
         temperature_used: temperature,
@@ -1003,8 +1106,7 @@ REGRAS:
       );
     }
 
-    // SPRINT 1 — sendTelegram desacoplado dos extratores
-    // Resposta vai pro usuário imediatamente; extratores e compactação rodam em background.
+    // Resposta vai pro usuário imediatamente; extratores e compactação rodam em background
     await sendTelegram(chatId, aiReply);
 
     // Background: não bloqueia a resposta
@@ -1018,10 +1120,50 @@ REGRAS:
         }),
     ]).catch(e => console.error('[Background] Erro:', e));
 
+    console.timeEnd('[Performance] total');
     return NextResponse.json({ ok: true });
 
   } catch (error: any) {
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true });
   }
+}
+
+// ============================================================
+// FUNÇÕES AUXILIARES (mantidas originais)
+// ============================================================
+
+function routeModel(contexts: ContextType[]): { model: string; label: string } {
+  const complexContexts: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude'];
+  const isComplex = contexts.some(c => complexContexts.includes(c));
+
+  if (isComplex) {
+    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
+  }
+
+  return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
+}
+
+function getTemperature(contexts: ContextType[]): number {
+  if (contexts.some(c => ['emocao', 'diario'].includes(c))) return 0.9;
+  if (contexts.some(c => ['casual', 'projeto', 'familia', 'meta'].includes(c))) return 0.7;
+  if (contexts.some(c => ['rotina', 'alias', 'preferencia', 'recomendacao'].includes(c))) return 0.5;
+  if (contexts.some(c => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
+  return 0.7;
+}
+
+function planContextualBlocks(contexts: ContextType[]): {
+  loadTopics: boolean;
+  loadDiary: boolean;
+  loadRecommendations: boolean;
+  loadCalendar: boolean;
+  loadEmail: boolean;
+} {
+  return {
+    loadTopics:          contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia'].includes(c)),
+    loadDiary:           contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c)),
+    loadRecommendations: contexts.some(c => ['recomendacao', 'casual'].includes(c)),
+    loadCalendar:        contexts.some(c => ['agenda', 'evento', 'familia'].includes(c)),
+    loadEmail:           contexts.some(c => ['email'].includes(c)),
+  };
 }
