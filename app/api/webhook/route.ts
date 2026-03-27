@@ -45,47 +45,195 @@ import {
 } from '@/lib/diary';
 
 // ============================================================
-// SPRINT 1 — #2 Roteamento de modelo
+// Cache de embeddings para L3
 // ============================================================
+const embeddingCache = new Map<string, number[]>();
 
+async function getCachedEmbedding(text: string): Promise<number[]> {
+  if (embeddingCache.has(text)) return embeddingCache.get(text)!;
+  const embedding = await generateEmbedding(text);
+  embeddingCache.set(text, embedding);
+  return embedding;
+}
+
+// ============================================================
+// Atualiza relevância dos eventos baseado na data
+// ============================================================
+async function updateEventRelevance(userId: string) {
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  
+  const { data: events } = await supabase
+    .from('events')
+    .select('id, title, event_date, decay_type, relevance_score')
+    .eq('user_id', userId);
+  
+  if (!events) return;
+  
+  const updates = [];
+  for (const ev of events) {
+    const eventDate = new Date(ev.event_date);
+    eventDate.setHours(0, 0, 0, 0);
+    const diffDays = Math.ceil((eventDate.getTime() - hoje.getTime()) / (1000 * 3600 * 24));
+    
+    let newScore = 0;
+    
+    switch (ev.decay_type) {
+      case 'recurring_annual':
+        if (diffDays < -30) newScore = 0;
+        else if (diffDays <= 0) {
+          newScore = 0.9 + (diffDays === 0 ? 0.1 : 0);
+        } else if (diffDays <= 30) {
+          newScore = 0.3 + (0.6 * (1 - diffDays / 30));
+        } else {
+          newScore = 0;
+        }
+        break;
+        
+      case 'deadline':
+        if (diffDays < -7) newScore = 0;
+        else if (diffDays <= 0) {
+          newScore = 0.9 + (diffDays === 0 ? 0.1 : 0);
+        } else if (diffDays <= 7) {
+          newScore = 0.3 + (0.6 * (1 - diffDays / 7));
+        } else {
+          newScore = 0;
+        }
+        break;
+        
+      case 'one_time':
+        if (diffDays < -14) newScore = 0;
+        else if (diffDays <= 0) {
+          newScore = 0.9 + (diffDays === 0 ? 0.1 : 0);
+        } else if (diffDays <= 14) {
+          newScore = 0.2 + (0.7 * (1 - diffDays / 14));
+        } else {
+          newScore = 0;
+        }
+        break;
+        
+      default:
+        if (diffDays < 0) {
+          newScore = Math.max(0, (ev.relevance_score || 0) * 0.95);
+        } else {
+          newScore = ev.relevance_score || 0;
+        }
+    }
+    
+    newScore = Math.min(0.95, Math.max(0, newScore));
+    if (Math.abs(newScore - (ev.relevance_score || 0)) > 0.01) {
+      updates.push({ id: ev.id, relevance_score: newScore });
+    }
+  }
+  
+  if (updates.length) {
+    for (const upd of updates) {
+      await supabase.from('events').update({ relevance_score: upd.relevance_score }).eq('id', upd.id);
+    }
+    console.log(`[Eventos] Atualizadas relevâncias de ${updates.length} eventos`);
+  }
+}
+
+// ============================================================
+// Health check para L3/L4 com atualização de eventos
+// ============================================================
+async function ensureMemoryHealth(userId: string) {
+  try {
+    await updateEventRelevance(userId);
+    
+    const { data: topics } = await supabase
+      .from('topic_index')
+      .select('id, weight')
+      .eq('user_id', userId)
+      .lt('last_mentioned', new Date(Date.now() - 30*24*60*60*1000).toISOString());
+    
+    if (topics && topics.length) {
+      for (const topic of topics) {
+        const newWeight = (topic.weight || 0) * 0.95;
+        await supabase
+          .from('topic_index')
+          .update({ weight: newWeight })
+          .eq('id', topic.id);
+      }
+      console.log(`[Health] Decaimento L4: ${topics.length} tópicos atualizados`);
+    }
+  } catch (e) {
+    console.error('[Health] Erro no health check:', e);
+  }
+}
+
+// ============================================================
+// Atualização do índice de tópicos (L4) - corrigido
+// ============================================================
+async function updateTopicIndex(userId: string, contexts: string[], messageText: string) {
+  if (!contexts.length) return;
+  
+  const words = messageText.toLowerCase().split(/\s+/);
+  const keyTerms = words.filter(w => w.length > 3 && !/[0-9]/.test(w)).slice(0, 5);
+  
+  for (const ctx of contexts) {
+    const { data: existing } = await supabase
+      .from('topic_index')
+      .select('weight')
+      .eq('user_id', userId)
+      .eq('topic', ctx)
+      .maybeSingle();
+    
+    const newWeight = (existing?.weight || 0) + 0.1;
+    
+    await supabase
+      .from('topic_index')
+      .upsert({
+        user_id: userId,
+        topic: ctx,
+        weight: newWeight,
+        last_mentioned: new Date().toISOString(),
+        related_terms: keyTerms
+      }, { onConflict: 'user_id,topic' });
+  }
+}
+
+// ============================================================
+// Busca tópicos relacionados via L4
+// ============================================================
+async function getRelatedTopics(userId: string, currentContext: string): Promise<string> {
+  const { data: related } = await supabase
+    .from('topic_index')
+    .select('topic, weight')
+    .eq('user_id', userId)
+    .neq('topic', currentContext)
+    .order('weight', { ascending: false })
+    .limit(3);
+  
+  if (!related?.length) return '';
+  
+  return `\n[TÓPICOS RELACIONADOS]\n${related.map(t => `- ${t.topic} (peso: ${Math.round(t.weight * 100)}%)`).join('\n')}`;
+}
+
+// ============================================================
+// Classificação de contexto com L4
+// ============================================================
 type ContextType =
   | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario' | 'meta'
   | 'saude' | 'recomendacao' | 'evento' | 'rotina' | 'preferencia'
   | 'alias' | 'email' | 'casual';
 
-/**
- * Classifica o contexto da mensagem via regex — zero latência, sem LLM.
- * Retorna array de contextos detectados (pode ter mais de um).
- */
-function classifyContext(text: string): ContextType[] {
+function classifyContextRegex(text: string): ContextType[] {
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
   const rules: Array<[RegExp, ContextType]> = [
-    // Diário / reflexão — antes de emocao para ter prioridade
     [/diario|diário|hoje foi|hoje ta|hoje está|acordei|dormi|dormir|meu dia|como foi meu|reflexao|refletindo|gratid/i, 'diario'],
-    // Meta / objetivo
     [/meta|objetivo|quero (conseguir|fazer|terminar|lancar|comecar)|prazo|progresso|etapa|concluir|finalizar/i, 'meta'],
-    // Agenda / compromisso com hora
     [/reuniao|reunião|consulta|compromisso|agend|horario|horário|amanha as|amanhã às|segunda|terça|quarta|quinta|sexta|sabado|domingo|às \d|as \d{1,2}h/i, 'agenda'],
-    // Projeto / produto
     [/projeto|app|aplicativo|sistema|api|deploy|feature|sprint|mvp|startup|produto|desenvolv/i, 'projeto'],
-    // Família
     [/filho|filha|esposa|marido|mae|mãe|pai|irmao|irmão|família|familia|cônjuge|conjuge|casamento|nasceu|aniversario de casamento/i, 'familia'],
-    // Saúde
     [/medic|médic|saude|saúde|exame|remedio|remédio|hospital|dor |doenca|doença|sintoma|consulta médica/i, 'saude'],
-    // Emoção
     [/sinto|estou (triste|feliz|ansioso|cansado|animado|frustrado|preocupado|deprimido|sozinho)|me sinto|to mal|tô mal|to bem|tô bem|angustia|angústia|estressado/i, 'emocao'],
-    // Email
     [/email|e-mail|inbox|caixa de entrada|mensagem do|mensagem da|enviou|recebeu/i, 'email'],
-    // Recomendação
     [/indica|recomend|sugere|onde posso|tem algum|onde tem|restaurante|lugar|lugar bom|conhece algum/i, 'recomendacao'],
-    // Evento / data comemorativa (sem hora)
     [/aniversario|aniversário|natal|pascoa|páscoa|ano novo|feriado|data importante|comemora/i, 'evento'],
-    // Rotina
     [/acordo|desperto|academia|treino|trabalho as|trabalho às|entrada no trabalho|saida do trabalho|rotina|horario de/i, 'rotina'],
-    // Preferência
     [/gosto de|nao gosto de|não gosto de|prefiro|adoro|odeio|minha comida|meu filme|minha musica|minha música/i, 'preferencia'],
-    // Alias
     [/quando falo em|quando eu falar|pode chamar de|se eu disser|apelido|alias/i, 'alias'],
   ];
 
@@ -97,80 +245,159 @@ function classifyContext(text: string): ContextType[] {
   return detected.length > 0 ? detected : ['casual'];
 }
 
-// ============================================================
-// SPRINT 1 — #2 Roteamento de modelo
-// ============================================================
-
-interface ModelRoute {
-  model: string;
-  label: string;
-}
-
-/**
- * Escolhe o modelo com base nos contextos detectados.
- * - Contextos complexos → Sonnet (raciocínio, emoção, projetos)
- * - Contextos simples   → Gemini Flash (custo 10× menor)
- */
-function routeModel(contexts: ContextType[]): ModelRoute {
-  const complexContexts: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude'];
-  const isComplex = contexts.some(c => complexContexts.includes(c));
-
-  if (isComplex) {
-    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
+async function classifyContextWithL4(text: string, userId: string): Promise<ContextType[]> {
+  const regexContexts = classifyContextRegex(text);
+  
+  if (regexContexts.length > 2) {
+    const { data: topicWeights } = await supabase
+      .from('topic_index')
+      .select('topic, weight')
+      .eq('user_id', userId)
+      .in('topic', regexContexts);
+      
+    if (topicWeights && topicWeights.length > 0) {
+      const sorted = topicWeights.sort((a, b) => (b.weight || 0) - (a.weight || 0));
+      const prioritized = sorted.map(t => t.topic as ContextType);
+      const missing = regexContexts.filter(c => !prioritized.includes(c));
+      return [...prioritized, ...missing];
+    }
   }
-
-  return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
+  
+  return regexContexts;
 }
 
 // ============================================================
-// SPRINT 1 — #4 Temperatura adaptativa
+// RAM Compression com L3 semântica (threshold e count ajustados)
 // ============================================================
-
-/**
- * Define a temperatura com base no contexto emocional/factual da mensagem.
- * - Factual (agenda, evento, email) → 0.3 — respostas precisas
- * - Neutro (rotina, alias, preferencia) → 0.5
- * - Casual, projeto → 0.7
- * - Emocional (emoção, diário, reflexão) → 0.9 — mais criativo e humano
- */
-function getTemperature(contexts: ContextType[]): number {
-  if (contexts.some(c => ['emocao', 'diario'].includes(c))) return 0.9;
-  if (contexts.some(c => ['casual', 'projeto', 'familia', 'meta'].includes(c))) return 0.7;
-  if (contexts.some(c => ['rotina', 'alias', 'preferencia', 'recomendacao'].includes(c))) return 0.5;
-  if (contexts.some(c => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
-  return 0.7;
+async function semanticRamCompression(history: any[], userId: string, currentContext: string, currentEmbedding?: number[]): Promise<string> {
+  if (!history.length) return '';
+  
+  const embedding = currentEmbedding || await getCachedEmbedding(currentContext);
+  
+  const { data: relevantMemories } = await supabase.rpc('match_memories', {
+    query_embedding: embedding,
+    match_threshold: 0.4,
+    match_count: 5
+  }) as { data: any[] | null };
+  
+  if (relevantMemories && relevantMemories.length > 0) {
+    const semanticBlock = relevantMemories
+      .filter(r => !r.summary.startsWith('[CINZA]'))
+      .map(r => r.summary)
+      .join('\n---\n');
+    
+    return `[MEMÓRIAS SEMANTICAMENTE RELEVANTES]\n${semanticBlock}`;
+  }
+  
+  return '';
 }
 
 // ============================================================
-// SPRINT 1 — #3 Injeção contextual
+// Topic Shift Detection com L4
 // ============================================================
-
-interface ContextualBlocks {
-  topicBlock: string;
-  diaryGoalsBlock: string;
-  recommendationsBlock: string;
-  needsCalendar: boolean;   // sinaliza para carregar Google + Outlook
-  needsEmail: boolean;      // sinaliza para carregar emails
+async function detectTopicShiftWithL4(userId: string, currentContexts: ContextType[]): Promise<boolean> {
+  const { data: recentTopics } = await supabase
+    .from('topic_index')
+    .select('topic, weight')
+    .eq('user_id', userId)
+    .order('last_mentioned', { ascending: false })
+    .limit(5);
+  
+  if (!recentTopics?.length) return false;
+  
+  const hasCurrentTopic = currentContexts.some(ctx => 
+    recentTopics.some(t => t.topic === ctx && (t.weight || 0) >= 0.3)
+  );
+  
+  return !hasCurrentTopic && !currentContexts.includes('casual');
 }
 
-/**
- * Decide quais blocos extras carregar com base nos contextos.
- * Blocos caros (calendário, email) só são buscados quando realmente necessários.
- */
-function planContextualBlocks(contexts: ContextType[]): {
-  loadTopics: boolean;
-  loadDiary: boolean;
-  loadRecommendations: boolean;
-  loadCalendar: boolean;
-  loadEmail: boolean;
-} {
-  return {
-    loadTopics:          contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia'].includes(c)),
-    loadDiary:           contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c)),
-    loadRecommendations: contexts.some(c => ['recomendacao', 'casual'].includes(c)),
-    loadCalendar:        contexts.some(c => ['agenda', 'evento', 'familia'].includes(c)),
-    loadEmail:           contexts.some(c => ['email'].includes(c)),
-  };
+// ============================================================
+// Onboarding persistente via L3
+// ============================================================
+async function getOrCreateOnboardingStatePersistent(userId: string) {
+  const { data: onboardingMemory } = await supabase
+    .from('memories')
+    .select('metadata')
+    .eq('user_id', userId)
+    .eq('category', 'onboarding')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single();
+  
+  if (onboardingMemory?.metadata?.state) {
+    return onboardingMemory.metadata.state;
+  }
+  
+  return await initOnboarding(userId);
+}
+
+// ============================================================
+// Compressão de RAM com limite semântico
+// ============================================================
+const RAM_MAX_CHARS = 8000;
+
+function compressToSummary(history: any[]): string {
+  const topics = history
+    .flatMap((h: any) => (h.metadata?.contexts_detected as string[] | undefined) || [])
+    .filter((v, i, a) => a.indexOf(v) === i)
+    .join(', ');
+  return topics
+    ? `[Resumo do assunto anterior: ${topics}]`
+    : '[Contexto anterior resumido]';
+}
+
+// ============================================================
+// Validação de bloco de diário (evita alucinações)
+// ============================================================
+function isMeaningfulDiaryBlock(block: string): boolean {
+  if (!block) return false;
+  const lower = block.toLowerCase();
+  if (lower.includes('nenhum') || lower.includes('não encontrado') || lower.includes('sem registro')) {
+    return false;
+  }
+  return true;
+}
+
+// ============================================================
+// Função helper: chamada OpenRouter com timeout
+// ============================================================
+async function callOpenRouterWithTimeout(
+  messages: any[],
+  model: string,
+  temperature: number,
+  timeoutMs = 9000
+): Promise<string> {
+  return Promise.race([
+    callOpenRouter(messages, model, temperature),
+    new Promise<string>((_, reject) =>
+      setTimeout(() => reject(new Error(`OpenRouter timeout after ${timeoutMs}ms`)), timeoutMs)
+    ),
+  ]);
+}
+
+// ============================================================
+// Função helper: executa tarefa com retry
+// ============================================================
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 2,
+  delayMs = 1000
+): Promise<T | null> {
+  let lastError: unknown;
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastError = e;
+      if (i < maxRetries) {
+        console.warn(`Retry ${i+1}/${maxRetries} após erro:`, e);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  console.error('Falha após retries:', lastError);
+  return null;
 }
 
 // ============================================================
@@ -179,13 +406,12 @@ function planContextualBlocks(contexts: ContextType[]): {
 
 export async function POST(req: Request) {
   try {
+    console.time('[Performance] total');
     const body = await req.json();
     const message = body.message;
     let messageText = message?.text || "";
 
-    // ============================================================
     // WHISPER — transcrição de áudio
-    // ============================================================
     if (message?.voice) {
       try {
         const fileId = message.voice.file_id;
@@ -255,47 +481,48 @@ export async function POST(req: Request) {
     const userFirstName  = message?.from?.first_name || "Usuário";
     const stringId       = String(telegramUserId);
 
-    // ============================================================
-    // SPRINT 1 — classifica contexto logo no início
-    // Todas as decisões de modelo, blocos e temperatura dependem disso.
-    // ============================================================
-    const detectedContexts = classifyContext(messageText);
-    const modelRoute       = routeModel(detectedContexts);
-    const temperature      = getTemperature(detectedContexts);
-    const blockPlan        = planContextualBlocks(detectedContexts);
+    if (!messageText || chatId == null || telegramUserId == null) {
+      return NextResponse.json({ ok: true });
+    }
+
+    // Health check L3/L4 (background)
+    ensureMemoryHealth(stringId).catch(e => console.error('[Health] Erro em background:', e));
+
+    // Classifica contexto com L4
+    console.time('[Performance] context_classification');
+    const detectedContexts = await classifyContextWithL4(messageText, stringId);
+    console.timeEnd('[Performance] context_classification');
+    
+    await updateTopicIndex(stringId, detectedContexts, messageText);
+    const relatedTopicsBlock = await getRelatedTopics(stringId, detectedContexts[0] || 'casual');
+
+    const modelRoute = routeModel(detectedContexts);
+    const temperature = getTemperature(detectedContexts);
+    const blockPlan = planContextualBlocks(detectedContexts);
 
     console.log(`[Sprint1] contextos: ${detectedContexts.join(',')} | modelo: ${modelRoute.label} | temp: ${temperature}`);
 
-    // ============================================================
     // LOCALIZAÇÃO
-    // ============================================================
     let locationContext = "";
 
     if (message?.location) {
       const { latitude, longitude } = message.location;
-      console.log('[Geo] Coordenadas recebidas:', { latitude, longitude });
       const endereco = await checkProximidade(latitude, longitude);
-      console.log('[Geo] Resultado de checkProximidade:', endereco || '(string vazia)');
       locationContext = `${endereco}\nCoordenadas exatas: ${latitude}, ${longitude}`;
-
       await supabase.from('config').upsert(
         { key: `last_location_${stringId}`, value: JSON.stringify({ latitude, longitude, endereco, ts: Date.now() }) },
         { onConflict: 'key' }
       );
-
       const alertaGeo = await verificarAlertasDeProximidade(stringId, latitude, longitude);
       if (alertaGeo.temAlerta) {
         await sendTelegram(chatId ?? message.chat.id, alertaGeo.mensagem);
         return NextResponse.json({ ok: true });
       }
-
       if (!messageText) messageText = "[Enviou Localização]";
-
     } else {
       const { data: lastLoc } = await supabase
         .from('config').select('value')
         .eq('key', `last_location_${stringId}`).single();
-
       if (lastLoc?.value) {
         try {
           const loc = JSON.parse(lastLoc.value);
@@ -303,61 +530,51 @@ export async function POST(req: Request) {
           if (idadeMinutos <= 60) {
             locationContext = `${loc.endereco}\nCoordenadas exatas: ${loc.latitude}, ${loc.longitude} (compartilhada há ${Math.round(idadeMinutos)} min)`;
           }
-        } catch {
-          console.warn('[Geo] Erro ao parsear localização persistida');
-        }
+        } catch { /* ignore */ }
       }
     }
 
-    if (!messageText || chatId == null || telegramUserId == null) {
-      return NextResponse.json({ ok: true });
-    }
-
-    // ============================================================
-    // SPRINT 1 — #3 Busca paralela CONTEXTUAL
-    // Blocos caros (calendário, email, recomendações, diary) só são
-    // buscados quando o contexto da mensagem realmente pede.
-    // ============================================================
-
-    // Bloco base — sempre necessário
+    // Base promises
     const basePromises = Promise.all([
       supabase
         .from('users')
         .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone, telegram_chat_id')
         .eq('id', stringId).single(),
-
       getOrCreateSession(stringId),
-
       supabase
         .from('events')
         .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
         .eq('user_id', stringId).order('relevance_score', { ascending: false }),
-
       supabase
         .from('memory_ashes')
         .select('ash_summary, period_start, period_end')
         .eq('user_id', stringId).order('period_end', { ascending: false }).limit(5),
-
       supabase
         .from('onboarding_progress')
         .select('*').eq('user_id', stringId).single(),
-
       buildGapsBlock(stringId, messageText),
-
       supabase
         .from('principles')
         .select('content, category').order('created_at', { ascending: true }),
     ]);
 
-    // Blocos condicionais — só busca o que o contexto pede
-    const conditionalPromises = Promise.all([
-      blockPlan.loadCalendar ? getGoogleContext()              : Promise.resolve(null),
-      blockPlan.loadCalendar ? getMicrosoftCalendarContext()   : Promise.resolve(null),
-      blockPlan.loadEmail    ? getRecentEmails(undefined, 3, false) : Promise.resolve(null),
-      blockPlan.loadTopics   ? buildTopicBlock(stringId, messageText) : Promise.resolve(''),
-      blockPlan.loadDiary    ? buildDiaryGoalsBlock(stringId)  : Promise.resolve(''),
-    ]);
-
+    // Conditional promises com paralelização granular
+    const conditionalTasks: Promise<any>[] = [];
+    
+    if (blockPlan.loadCalendar) {
+      conditionalTasks.push(getGoogleContext());
+      conditionalTasks.push(getMicrosoftCalendarContext());
+    }
+    if (blockPlan.loadEmail) {
+      conditionalTasks.push(getRecentEmails(undefined, 3, false));
+    }
+    if (blockPlan.loadTopics) {
+      conditionalTasks.push(buildTopicBlock(stringId, messageText));
+    }
+    if (blockPlan.loadDiary) {
+      conditionalTasks.push(buildDiaryGoalsBlock(stringId));
+    }
+    
     const [
       [
         userProfileResult,
@@ -368,31 +585,37 @@ export async function POST(req: Request) {
         gapsBlock,
         principlesResult,
       ],
-      [
-        googleContextBlock,
-        microsoftContextBlock,
-        emailRadarBlock,
-        topicBlock,
-        diaryGoalsBlock,
-      ]
-    ] = await Promise.all([basePromises, conditionalPromises]);
-
-    // Recomendações — também condicional, mas depende de messageText, então separado
+      conditionalResults
+    ] = await Promise.all([basePromises, Promise.all(conditionalTasks)]);
+    
+    let googleContextBlock = null;
+    let microsoftContextBlock = null;
+    let emailRadarBlock = null;
+    let topicBlock = '';
+    let diaryGoalsBlock = '';
+    let resultIndex = 0;
+    if (blockPlan.loadCalendar) {
+      googleContextBlock = conditionalResults[resultIndex++];
+      microsoftContextBlock = conditionalResults[resultIndex++];
+    }
+    if (blockPlan.loadEmail) {
+      emailRadarBlock = conditionalResults[resultIndex++];
+    }
+    if (blockPlan.loadTopics) {
+      topicBlock = conditionalResults[resultIndex++] || '';
+    }
+    if (blockPlan.loadDiary) {
+      diaryGoalsBlock = conditionalResults[resultIndex++] || '';
+    }
+    
     const recommendationsBlock = blockPlan.loadRecommendations
       ? await buildRecommendationsBlock(stringId, messageText)
       : '';
 
-    // ============================================================
-    // DEBUG — APIs externas
-    // ============================================================
+    // Debug APIs
     const isGoogleError    = typeof googleContextBlock    === 'string' && googleContextBlock.includes('Erro');
     const isMicrosoftError = typeof microsoftContextBlock === 'string' && microsoftContextBlock.includes('Erro');
     const isEmailError     = typeof emailRadarBlock       === 'string' && emailRadarBlock?.includes('Erro');
-
-    if (isGoogleError)    console.warn('[Debug] Agenda Google com erro — bloqueada do prompt');
-    if (isMicrosoftError) console.warn('[Debug] Agenda Microsoft com erro — bloqueada do prompt');
-    if (isEmailError)     console.warn('[Debug] Email radar com erro — bloqueado do prompt');
-
     const cleanGoogleContext    = isGoogleError    ? null : googleContextBlock;
     const cleanMicrosoftContext = isMicrosoftError ? null : microsoftContextBlock;
     const cleanEmailRadarBlock  = isEmailError     ? null : emailRadarBlock;
@@ -419,31 +642,48 @@ export async function POST(req: Request) {
                      currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
 
+    // Onboarding persistente
     let onboardingState = onboardingResult?.data || null;
-    if (!onboardingState) onboardingState = await initOnboarding(stringId);
+    if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(stringId);
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
-    // ============================================================
-    // EVENTOS
-    // ============================================================
-    const events       = eventsResult.data || [];
-    const urgentEvents = events.filter(e => (e.relevance_score || 0) >= 0.7);
-    const radarEvents  = events.filter(e => (e.relevance_score || 0) >= 0.3 && (e.relevance_score || 0) < 0.7);
-    const eventsBlock  = events.length > 0 ? [
-      urgentEvents.length > 0
-        ? `🔴 PRÓXIMOS:\n${urgentEvents.map(e => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}`
+    // EVENTOS MELHORADOS (filtro por data)
+    const events = eventsResult.data || [];
+    const hoje = new Date();
+    hoje.setHours(0,0,0,0);
+    
+    const sortedEvents = [...events].sort((a,b) => {
+      const da = new Date(a.event_date).getTime();
+      const db = new Date(b.event_date).getTime();
+      return Math.abs(da - hoje.getTime()) - Math.abs(db - hoje.getTime());
+    });
+    
+    const upcomingEvents = sortedEvents.filter(e => {
+      const evDate = new Date(e.event_date);
+      const diffDays = Math.ceil((evDate.getTime() - hoje.getTime()) / (1000*3600*24));
+      return diffDays >= 0 && diffDays <= 7;
+    });
+    
+    const highRelevanceEvents = sortedEvents.filter(e => (e.relevance_score || 0) >= 0.7 && !upcomingEvents.includes(e));
+    
+    const activeEvents = sortedEvents.filter(e => {
+      const evDate = new Date(e.event_date);
+      return evDate >= hoje || (e.decay_type === 'permanent' && evDate < hoje);
+    });
+    
+    const eventsBlock = activeEvents.length > 0 ? [
+      upcomingEvents.length > 0
+        ? `🔴 NOS PRÓXIMOS DIAS:\n${upcomingEvents.map(e => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}`
         : null,
-      radarEvents.length > 0
-        ? `🟡 NO RADAR:\n${radarEvents.map(e => `  - ${e.title}: ${e.event_date}`).join('\n')}`
+      highRelevanceEvents.length > 0
+        ? `🟡 IMPORTANTES:\n${highRelevanceEvents.map(e => `  - ${e.title}: ${e.event_date}`).join('\n')}`
         : null,
     ].filter(Boolean).join('\n\n') : "Nenhum evento cadastrado.";
 
     const ashes      = ashesResult.data || [];
     const ashesBlock = ashes.length > 0 ? ashes.map(a => a.ash_summary).join('\n') : null;
 
-    // ============================================================
     // NOTAS CONTEXTUAIS
-    // ============================================================
     let personNotesBlock = "";
     const [childrenResult, personNotesResult] = await Promise.all([
       supabase.from('children').select('name, nickname, lev_notes')
@@ -470,10 +710,8 @@ export async function POST(req: Request) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
-    // ============================================================
-    // HD VETORIAL
-    // ============================================================
-    const queryEmbedding = await generateEmbedding(messageText);
+    // HD vetorial com cache
+    const queryEmbedding = await getCachedEmbedding(messageText);
     let hdBlock    = "";
     let hdMemoryIds: string[] = [];
 
@@ -483,60 +721,31 @@ export async function POST(req: Request) {
         match_threshold: 0.4,
         match_count: 3
       }) as { data: any[] | null };
-
       if (search && search.length > 0) {
         hdBlock     = search.filter(r => !r.summary.startsWith('[CINZA]')).map(r => r.summary).join('\n---\n');
         hdMemoryIds = search.map(r => r.id);
       }
     }
 
-    // ============================================================
-    // SPRINT 1 — #5 RAM COMPRIMIDA
-    // Detecta mudança de assunto e comprime bloco anterior.
-    // Limite absoluto: ~2000 tokens (~8000 chars).
-    // ============================================================
-    const RAM_MAX_CHARS  = 8000;
-    const RAM_FULL_MSGS  = 10;   // mesmo assunto: mantém até 10 trocas brutas
-    const RAM_SHIFT_MSGS = 3;    // assunto mudou: mantém só as 3 últimas + resumo
-
-    function topicShifted(history: any[], currentCtxs: ContextType[]): boolean {
-      if (history.length < 3) return false;
-      const recentCtxs = history.slice(0, 3).flatMap(
-        (h: any) => (h.metadata?.contexts_detected as ContextType[] | undefined) || []
-      );
-      if (recentCtxs.length === 0) return false;
-      const overlap = currentCtxs.filter(c => recentCtxs.includes(c));
-      return overlap.length === 0 && !currentCtxs.includes('casual');
-    }
-
-    function compressToSummary(history: any[]): string {
-      const topics = history
-        .flatMap((h: any) => (h.metadata?.contexts_detected as string[] | undefined) || [])
-        .filter((v, i, a) => a.indexOf(v) === i)
-        .join(', ');
-      return topics
-        ? `[Resumo do assunto anterior: ${topics}]`
-        : '[Contexto anterior resumido]';
-    }
-
+    // RAM comprimida com L4 e L3 semântica
     let ramBlock = "";
 
     const { data: historySession } = await supabase
       .from('brain').select('content, metadata')
       .eq('user_id', stringId).eq('session_id', sessionId)
-      .neq('category', 'archived').order('created_at', { ascending: false }).limit(RAM_FULL_MSGS);
+      .neq('category', 'archived').order('created_at', { ascending: false }).limit(10);
+
+    const topicShifted = await detectTopicShiftWithL4(stringId, detectedContexts);
 
     if (historySession && historySession.length >= 2) {
-      const shifted = topicShifted(historySession, detectedContexts);
-
-      if (shifted) {
-        const summary   = compressToSummary(historySession.slice(RAM_SHIFT_MSGS));
-        const recentRaw = [...historySession].slice(0, RAM_SHIFT_MSGS).reverse().map((h: any) => {
+      if (topicShifted) {
+        const summary   = compressToSummary(historySession.slice(3));
+        const recentRaw = [...historySession].slice(0, 3).reverse().map((h: any) => {
           const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
           return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
         }).join('\n\n');
         ramBlock = `${summary}\n\n${recentRaw}`;
-        console.log(`[RAM] Nível 1 — assunto mudou (${detectedContexts.join(',')}) | comprimido: ${historySession.length - RAM_SHIFT_MSGS} msgs → resumo`);
+        console.log(`[RAM] Nível 1 — assunto mudou (${detectedContexts.join(',')}) | comprimido via L4`);
       } else {
         ramBlock = [...historySession].reverse().map((h: any) => {
           const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
@@ -544,50 +753,31 @@ export async function POST(req: Request) {
         }).join('\n\n');
         console.log('[RAM] Nível 1 — sessão:', historySession.length, 'msgs');
       }
-
     } else {
-      const { data: historyRecent } = await supabase
-        .from('brain').select('content, metadata')
-        .eq('user_id', stringId).neq('category', 'archived')
-        .order('created_at', { ascending: false }).limit(12);
-
-      if (historyRecent && historyRecent.length > 0) {
-        const sessionSet = new Set((historySession || []).map((h: any) => h.content));
-        const extra      = historyRecent.filter((h: any) => !sessionSet.has(h.content));
-        const merged     = [...(historySession || []), ...extra].slice(0, RAM_FULL_MSGS);
-        ramBlock = [...merged].reverse().map((h: any) => {
-          const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
-          return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
-        }).join('\n\n');
-        console.log('[RAM] Nível 2 — recente:', merged.length, 'msgs');
-
+      const semanticBlock = await semanticRamCompression(historySession || [], stringId, messageText, queryEmbedding);
+      if (semanticBlock) {
+        ramBlock = semanticBlock;
+        console.log('[RAM] Nível 2 — compressão semântica via L3');
       } else if (hdBlock) {
         ramBlock = `[Contexto anterior consolidado]\n${hdBlock}`;
         console.log('[RAM] Nível 3 — HD como base');
       }
     }
 
-    // Limite absoluto de tokens na RAM
     if (ramBlock.length > RAM_MAX_CHARS) {
       ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
-      console.log(`[RAM] Truncado para ${RAM_MAX_CHARS} chars (limite absoluto)`);
+      console.log(`[RAM] Truncado para ${RAM_MAX_CHARS} chars`);
     }
 
-    // ============================================================
-    // CLASSIFICADOR TEMPORAL (existente — mantido)
-    // ============================================================
+    // Classificador temporal
     const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
-    console.log(`[Router] ${weights.horizon} | ${weights.reason}`);
-
     const truncatedRam    = truncateByWeight(ramBlock,         weights.ram,    6000);
     const truncatedL3     = truncateByWeight(currentContextL3, weights.l3,     6000);
     const truncatedHd     = truncateByWeight(hdBlock,          weights.hd,     6000);
     const truncatedAshes  = ashesBlock ? truncateByWeight(ashesBlock, weights.ashes, 6000) : null;
     const truncatedEvents = truncateByWeight(eventsBlock,      weights.events, 6000);
 
-    // ============================================================
-    // SYSTEM PROMPT
-    // ============================================================
+    // System prompt (com validação de diário)
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     const systemPrompt = `
@@ -598,13 +788,14 @@ ${cleanGoogleContext    ? `[AGENDA GOOGLE ATUALIZADA]\n${cleanGoogleContext}`   
 ${cleanMicrosoftContext ? `[AGENDA OUTLOOK ATUALIZADA]\n${cleanMicrosoftContext}`  : ''}
 ${cleanEmailRadarBlock  ? `[RADAR DE EMAILS RELEVANTES]\n${cleanEmailRadarBlock}`  : ''}
 ${locationContext       ? `\n${locationContext}`                                    : ''}
+${relatedTopicsBlock    ? relatedTopicsBlock                                        : ''}
 
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${truncatedL3}` : ''}
 
 ${personNotesBlock     ? personNotesBlock     : ''}
 ${recommendationsBlock ? recommendationsBlock : ''}
 ${topicBlock           ? topicBlock           : ''}
-${diaryGoalsBlock      ? diaryGoalsBlock      : ''}
+${isMeaningfulDiaryBlock(diaryGoalsBlock) ? diaryGoalsBlock : ''}
 
 ${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]\n${truncatedHd}` : ''}
 
@@ -695,11 +886,14 @@ REGRAS:
 9. Ao final: [CLASSE: info] ou [CLASSE: noise]
 
 10. LOCALIZAÇÃO: Use o endereço formatado para contextualizar. Não mencione coordenadas numéricas.
+
+11. EVENTOS: Dê prioridade máxima a eventos nos próximos 7 dias.
+    Se um evento passou e você não foi informado sobre sua realização,
+    considere que ele pode ter sido cancelado ou esquecido, mas não pergunte
+    sobre ele a menos que o usuário mencione.
 `.trim();
 
-    // ============================================================
-    // CONVERSA ESTRUTURADA
-    // ============================================================
+    // Conversa estruturada
     const { data: historyForMessages } = await supabase
       .from('brain').select('content, metadata')
       .eq('user_id', stringId).neq('category', 'archived')
@@ -716,23 +910,18 @@ REGRAS:
       { role: 'user', content: messageText }
     ];
 
-    // ============================================================
-    // DETECÇÃO ANTECIPADA — "ignore isso"
-    // ============================================================
+    // Ignore patterns
     const ignorePatterns = /ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|esquece|delete isso/i;
     if (ignorePatterns.test(messageText)) {
       const { data: lastEntry } = await supabase
         .from('brain').select('id').eq('user_id', stringId)
         .order('created_at', { ascending: false }).limit(1).single();
-
       if (lastEntry) await supabase.from('brain').delete().eq('id', lastEntry.id);
       await sendTelegram(chatId, 'Feito — apaguei o que foi dito antes. 🗑️');
       return new Response('OK', { status: 200 });
     }
 
-    // ============================================================
-    // PRÉ-EXTRAÇÃO
-    // ============================================================
+    // Pré-extração
     const noisePatterns = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i;
     const isLikelyNoise = noisePatterns.test(messageText.trim()) && messageText.length < 30;
 
@@ -750,14 +939,23 @@ REGRAS:
       : `[INTERNO]\nVocê é o assistente — NUNCA diga "Anota aí" ou peça ao usuário para anotar algo.\nSe o usuário informar uma data ou fato, confirme brevemente ou responda naturalmente.`;
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
-    // ============================================================
-    // SPRINT 1 — #2 chamada com modelo e temperatura roteados
-    // ============================================================
-    let aiReply = await callOpenRouter(conversationMessages, modelRoute.model, temperature);
+    // Chamada LLM com timeout
+    console.time('[Performance] model_call');
+    let aiReply: string;
+    try {
+      aiReply = await callOpenRouterWithTimeout(
+        conversationMessages,
+        modelRoute.model,
+        temperature,
+        9000
+      );
+    } catch (err) {
+      console.error('[OpenRouter] Timeout ou erro:', err);
+      aiReply = 'Ops, demorei pra responder. Pode repetir?';
+    }
+    console.timeEnd('[Performance] model_call');
 
-    // ============================================================
-    // INTERCEPTORES
-    // ============================================================
+    // Interceptores (mantidos)
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
@@ -881,10 +1079,7 @@ REGRAS:
       console.log('[goals]', resultado);
     }
 
-    // ============================================================
-    // LISTA DE COMPRAS E LUGARES FAVORITOS
-    // ============================================================
-
+    // Lista de compras e lugares favoritos
     const salvarLugarMatch = aiReply.match(/\[SALVAR_LUGAR:\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*(\d+)\s*\|\s*([^\]]+)\]/i);
     if (salvarLugarMatch) {
       const [, nome, lat, lng, raio, categoria] = salvarLugarMatch;
@@ -951,9 +1146,7 @@ REGRAS:
       }
     }
 
-    // ============================================================
-    // PERSISTÊNCIA
-    // ============================================================
+    // Persistência
     const { error: insertError } = await supabase.from('brain').insert([{
       content:     messageText,
       category,
@@ -966,7 +1159,6 @@ REGRAS:
         user:             authorName,
         horizon:          weights.horizon,
         pending_resolved: !!pendingQuestion,
-        // Sprint 1 — registra modelo e temperatura usados para debugging/analytics
         model_used:       modelRoute.model,
         model_label:      modelRoute.label,
         temperature_used: temperature,
@@ -979,49 +1171,88 @@ REGRAS:
 
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 
-    const tasks: Promise<any>[] = [];
+    const backgroundTasks: Promise<any>[] = [];
 
     if (onboardingState?.status === 'in_progress') {
-      tasks.push(
-        processOnboardingFromMessage(stringId, messageText, aiReply, onboardingState)
-          .catch(e => console.error('[Onboarding] Erro:', e))
+      backgroundTasks.push(
+        withRetry(() => processOnboardingFromMessage(stringId, messageText, aiReply, onboardingState))
+          .catch(e => console.error('[Onboarding] Erro após retries:', e))
       );
     }
 
     if (!isLikelyNoise) {
-      tasks.push(
-        extractRecomendacao(stringId, messageText, aiReply)
-          .catch(e => console.error('[Extrator/recomendacao] Erro:', e))
+      backgroundTasks.push(
+        withRetry(() => extractRecomendacao(stringId, messageText, aiReply))
+          .catch(e => console.error('[Extrator/recomendacao] Erro após retries:', e))
       );
-      tasks.push(
-        extractDiary(stringId, messageText, 'anytime')
-          .catch(e => console.error('[diary] Erro:', e))
+      backgroundTasks.push(
+        withRetry(() => extractDiary(stringId, messageText, 'anytime'))
+          .catch(e => console.error('[diary] Erro após retries:', e))
       );
-      tasks.push(
-        extractGoal(stringId, messageText)
-          .catch(e => console.error('[goals] Erro:', e))
+      backgroundTasks.push(
+        withRetry(() => extractGoal(stringId, messageText))
+          .catch(e => console.error('[goals] Erro após retries:', e))
       );
     }
 
-    // SPRINT 1 — sendTelegram desacoplado dos extratores
-    // Resposta vai pro usuário imediatamente; extratores e compactação rodam em background.
+    // Resposta imediata
     await sendTelegram(chatId, aiReply);
 
-    // Background: não bloqueia a resposta
+    // Background sem bloqueio
     Promise.all([
-      ...tasks,
+      ...backgroundTasks,
       supabase
         .from('brain').select('*', { count: 'exact', head: true })
         .eq('user_id', stringId).eq('category', 'info')
         .then(({ count }) => {
           if (count && count >= 20) return compactMemory(stringId, authorName);
         }),
-    ]).catch(e => console.error('[Background] Erro:', e));
+    ]).catch(e => console.error('[Background] Erro geral:', e));
 
+    console.timeEnd('[Performance] total');
     return NextResponse.json({ ok: true });
 
   } catch (error: any) {
     console.error("Erro Jarvis:", error.message);
     return NextResponse.json({ ok: true });
   }
+}
+
+// ============================================================
+// FUNÇÕES AUXILIARES (mantidas originais)
+// ============================================================
+
+function routeModel(contexts: ContextType[]): { model: string; label: string } {
+  const complexContexts: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude'];
+  const isComplex = contexts.some(c => complexContexts.includes(c));
+
+  if (isComplex) {
+    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
+  }
+
+  return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
+}
+
+function getTemperature(contexts: ContextType[]): number {
+  if (contexts.some(c => ['emocao', 'diario'].includes(c))) return 0.9;
+  if (contexts.some(c => ['casual', 'projeto', 'familia', 'meta'].includes(c))) return 0.7;
+  if (contexts.some(c => ['rotina', 'alias', 'preferencia', 'recomendacao'].includes(c))) return 0.5;
+  if (contexts.some(c => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
+  return 0.7;
+}
+
+function planContextualBlocks(contexts: ContextType[]): {
+  loadTopics: boolean;
+  loadDiary: boolean;
+  loadRecommendations: boolean;
+  loadCalendar: boolean;
+  loadEmail: boolean;
+} {
+  return {
+    loadTopics:          contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia'].includes(c)),
+    loadDiary:           contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c)),
+    loadRecommendations: contexts.some(c => ['recomendacao', 'casual'].includes(c)),
+    loadCalendar:        contexts.some(c => ['agenda', 'evento', 'familia'].includes(c)),
+    loadEmail:           contexts.some(c => ['email'].includes(c)),
+  };
 }
