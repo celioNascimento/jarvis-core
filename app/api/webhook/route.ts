@@ -135,36 +135,40 @@ async function updateEventRelevance(userId: string) {
 }
 
 // ============================================================
-// NOVO: Health check para L3/L4 com atualização de eventos
+// NOVO: Health check para L3/L4 com atualização de eventos (sem compactMemory)
 // ============================================================
 async function ensureMemoryHealth(userId: string) {
   try {
-    const { count } = await supabase
-      .from('memories')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', userId);
-      
-    if (count && count > 1000) {
-      console.log(`[Health] Compactando memórias L3 para ${userId}`);
-      await compactMemory(userId);
-    }
+    // Compactação de memórias é feita no background ao final do webhook,
+    // então não chamamos compactMemory aqui.
     
+    // Atualiza relevância de eventos
     await updateEventRelevance(userId);
     
-    const { error } = await supabase
+    // Decaimento de tópicos L4: busca registros antigos e atualiza individualmente
+    const { data: topics } = await supabase
       .from('topic_index')
-      .update({ weight: supabase.sql`weight * 0.95` })
-      .lt('last_mentioned', new Date(Date.now() - 30*24*60*60*1000).toISOString())
-      .eq('user_id', userId);
-      
-    if (error) console.error('[Health] Erro no decaimento L4:', error);
+      .select('id, weight')
+      .eq('user_id', userId)
+      .lt('last_mentioned', new Date(Date.now() - 30*24*60*60*1000).toISOString());
+    
+    if (topics && topics.length) {
+      for (const topic of topics) {
+        const newWeight = (topic.weight || 0) * 0.95;
+        await supabase
+          .from('topic_index')
+          .update({ weight: newWeight })
+          .eq('id', topic.id);
+      }
+      console.log(`[Health] Decaimento L4: ${topics.length} tópicos atualizados`);
+    }
   } catch (e) {
     console.error('[Health] Erro no health check:', e);
   }
 }
 
 // ============================================================
-// Atualização do índice de tópicos (L4) - corrigido (sem supabase.sql)
+// Atualização do índice de tópicos (L4) - corrigido
 // ============================================================
 async function updateTopicIndex(userId: string, contexts: string[], messageText: string) {
   if (!contexts.length) return;
