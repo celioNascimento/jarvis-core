@@ -57,7 +57,7 @@ async function getCachedEmbedding(text: string): Promise<number[]> {
 }
 
 // ============================================================
-// NOVO: Atualiza relevância dos eventos baseado na data
+// Atualiza relevância dos eventos baseado na data
 // ============================================================
 async function updateEventRelevance(userId: string) {
   const hoje = new Date();
@@ -135,17 +135,12 @@ async function updateEventRelevance(userId: string) {
 }
 
 // ============================================================
-// NOVO: Health check para L3/L4 com atualização de eventos (sem compactMemory)
+// Health check para L3/L4 com atualização de eventos
 // ============================================================
 async function ensureMemoryHealth(userId: string) {
   try {
-    // Compactação de memórias é feita no background ao final do webhook,
-    // então não chamamos compactMemory aqui.
-    
-    // Atualiza relevância de eventos
     await updateEventRelevance(userId);
     
-    // Decaimento de tópicos L4: busca registros antigos e atualiza individualmente
     const { data: topics } = await supabase
       .from('topic_index')
       .select('id, weight')
@@ -168,7 +163,7 @@ async function ensureMemoryHealth(userId: string) {
 }
 
 // ============================================================
-// Atualização do índice de tópicos (L4) - corrigido
+// Atualização do índice de tópicos (L4)
 // ============================================================
 async function updateTopicIndex(userId: string, contexts: string[], messageText: string) {
   if (!contexts.length) return;
@@ -199,7 +194,7 @@ async function updateTopicIndex(userId: string, contexts: string[], messageText:
 }
 
 // ============================================================
-// NOVO: Busca tópicos relacionados via L4
+// Busca tópicos relacionados via L4
 // ============================================================
 async function getRelatedTopics(userId: string, currentContext: string): Promise<string> {
   const { data: related } = await supabase
@@ -272,7 +267,7 @@ async function classifyContextWithL4(text: string, userId: string): Promise<Cont
 }
 
 // ============================================================
-// RAM Compression com L3 semântica (threshold e count ajustados)
+// RAM Compression com L3 semântica
 // ============================================================
 async function semanticRamCompression(history: any[], userId: string, currentContext: string, currentEmbedding?: number[]): Promise<string> {
   if (!history.length) return '';
@@ -338,7 +333,7 @@ async function getOrCreateOnboardingStatePersistent(userId: string) {
 }
 
 // ============================================================
-// Função de compressão de RAM com limite semântico
+// Compressão de RAM com limite semântico
 // ============================================================
 const RAM_MAX_CHARS = 8000;
 
@@ -350,6 +345,47 @@ function compressToSummary(history: any[]): string {
   return topics
     ? `[Resumo do assunto anterior: ${topics}]`
     : '[Contexto anterior resumido]';
+}
+
+// ============================================================
+// Função helper: chamada OpenRouter com timeout
+// ============================================================
+async function callOpenRouterWithTimeout(
+  messages: any[],
+  model: string,
+  temperature: number,
+  timeoutMs = 9000
+): Promise<string> {
+  return Promise.race([
+    callOpenRouter(messages, model, temperature),
+    new Promise<string>((_, reject) =>
+      setTimeout(() => reject(new Error(`OpenRouter timeout after ${timeoutMs}ms`)), timeoutMs)
+    ),
+  ]);
+}
+
+// ============================================================
+// Função helper: executa tarefa com retry
+// ============================================================
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 2,
+  delayMs = 1000
+): Promise<T | null> {
+  let lastError: unknown;
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastError = e;
+      if (i < maxRetries) {
+        console.warn(`Retry ${i+1}/${maxRetries} após erro:`, e);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  console.error('Falha após retries:', lastError);
+  return null;
 }
 
 // ============================================================
@@ -889,9 +925,20 @@ REGRAS:
       : `[INTERNO]\nVocê é o assistente — NUNCA diga "Anota aí" ou peça ao usuário para anotar algo.\nSe o usuário informar uma data ou fato, confirme brevemente ou responda naturalmente.`;
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
-    // Chamada LLM
+    // Chamada LLM com timeout
     console.time('[Performance] model_call');
-    let aiReply = await callOpenRouter(conversationMessages, modelRoute.model, temperature);
+    let aiReply: string;
+    try {
+      aiReply = await callOpenRouterWithTimeout(
+        conversationMessages,
+        modelRoute.model,
+        temperature,
+        9000
+      );
+    } catch (err) {
+      console.error('[OpenRouter] Timeout ou erro:', err);
+      aiReply = 'Ops, demorei pra responder. Pode repetir?';
+    }
     console.timeEnd('[Performance] model_call');
 
     // Interceptores (mantidos)
@@ -1106,40 +1153,44 @@ REGRAS:
 
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 
-    const tasks: Promise<any>[] = [];
+    // Background tasks com retry
+    const backgroundTasks: Promise<any>[] = [];
+
     if (onboardingState?.status === 'in_progress') {
-      tasks.push(
-        processOnboardingFromMessage(stringId, messageText, aiReply, onboardingState)
-          .catch(e => console.error('[Onboarding] Erro:', e))
+      backgroundTasks.push(
+        withRetry(() => processOnboardingFromMessage(stringId, messageText, aiReply, onboardingState))
+          .catch(e => console.error('[Onboarding] Erro após retries:', e))
       );
     }
 
     if (!isLikelyNoise) {
-      tasks.push(
-        extractRecomendacao(stringId, messageText, aiReply)
-          .catch(e => console.error('[Extrator/recomendacao] Erro:', e))
+      backgroundTasks.push(
+        withRetry(() => extractRecomendacao(stringId, messageText, aiReply))
+          .catch(e => console.error('[Extrator/recomendacao] Erro após retries:', e))
       );
-      tasks.push(
-        extractDiary(stringId, messageText, 'anytime')
-          .catch(e => console.error('[diary] Erro:', e))
+      backgroundTasks.push(
+        withRetry(() => extractDiary(stringId, messageText, 'anytime'))
+          .catch(e => console.error('[diary] Erro após retries:', e))
       );
-      tasks.push(
-        extractGoal(stringId, messageText)
-          .catch(e => console.error('[goals] Erro:', e))
+      backgroundTasks.push(
+        withRetry(() => extractGoal(stringId, messageText))
+          .catch(e => console.error('[goals] Erro após retries:', e))
       );
     }
 
+    // Resposta imediata
     await sendTelegram(chatId, aiReply);
 
+    // Dispara background sem bloquear
     Promise.all([
-      ...tasks,
+      ...backgroundTasks,
       supabase
         .from('brain').select('*', { count: 'exact', head: true })
         .eq('user_id', stringId).eq('category', 'info')
         .then(({ count }) => {
           if (count && count >= 20) return compactMemory(stringId, authorName);
         }),
-    ]).catch(e => console.error('[Background] Erro:', e));
+    ]).catch(e => console.error('[Background] Erro geral:', e));
 
     console.timeEnd('[Performance] total');
     return NextResponse.json({ ok: true });
