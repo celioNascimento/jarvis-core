@@ -163,7 +163,11 @@ async function ensureMemoryHealth(userId: string) {
 }
 
 // ============================================================
+<<<<<<< HEAD
 // Atualização do índice de tópicos (L4) - corrigido
+=======
+// Atualização do índice de tópicos (L4)
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
 // ============================================================
 async function updateTopicIndex(userId: string, contexts: string[], messageText: string) {
   if (!contexts.length) return;
@@ -267,7 +271,11 @@ async function classifyContextWithL4(text: string, userId: string): Promise<Cont
 }
 
 // ============================================================
+<<<<<<< HEAD
 // RAM Compression com L3 semântica (threshold e count ajustados)
+=======
+// RAM Compression com L3 semântica
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
 // ============================================================
 async function semanticRamCompression(history: any[], userId: string, currentContext: string, currentEmbedding?: number[]): Promise<string> {
   if (!history.length) return '';
@@ -348,6 +356,7 @@ function compressToSummary(history: any[]): string {
 }
 
 // ============================================================
+<<<<<<< HEAD
 // Validação de bloco de diário (evita alucinações)
 // ============================================================
 function isMeaningfulDiaryBlock(block: string): boolean {
@@ -360,6 +369,8 @@ function isMeaningfulDiaryBlock(block: string): boolean {
 }
 
 // ============================================================
+=======
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
 // Função helper: chamada OpenRouter com timeout
 // ============================================================
 async function callOpenRouterWithTimeout(
@@ -411,7 +422,11 @@ export async function POST(req: Request) {
     const message = body.message;
     let messageText = message?.text || "";
 
+<<<<<<< HEAD
     // WHISPER — transcrição de áudio
+=======
+    // WHISPER — transcrição de áudio (mantido)
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
     if (message?.voice) {
       try {
         const fileId = message.voice.file_id;
@@ -502,7 +517,11 @@ export async function POST(req: Request) {
 
     console.log(`[Sprint1] contextos: ${detectedContexts.join(',')} | modelo: ${modelRoute.label} | temp: ${temperature}`);
 
+<<<<<<< HEAD
     // LOCALIZAÇÃO
+=======
+    // LOCALIZAÇÃO (mantido)
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
     let locationContext = "";
 
     if (message?.location) {
@@ -558,9 +577,14 @@ export async function POST(req: Request) {
         .select('content, category').order('created_at', { ascending: true }),
     ]);
 
+<<<<<<< HEAD
     // Conditional promises com paralelização granular
     const conditionalTasks: Promise<any>[] = [];
     
+=======
+    // Conditional promises
+    const conditionalTasks: Promise<any>[] = [];
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
     if (blockPlan.loadCalendar) {
       conditionalTasks.push(getGoogleContext());
       conditionalTasks.push(getMicrosoftCalendarContext());
@@ -647,7 +671,11 @@ export async function POST(req: Request) {
     if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(stringId);
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
+<<<<<<< HEAD
     // EVENTOS MELHORADOS (filtro por data)
+=======
+    // EVENTOS MELHORADOS
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
     const events = eventsResult.data || [];
     const hoje = new Date();
     hoje.setHours(0,0,0,0);
@@ -710,7 +738,11 @@ export async function POST(req: Request) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
+<<<<<<< HEAD
     // HD vetorial com cache
+=======
+    // HD vetorial
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
     const queryEmbedding = await getCachedEmbedding(messageText);
     let hdBlock    = "";
     let hdMemoryIds: string[] = [];
@@ -727,9 +759,12 @@ export async function POST(req: Request) {
       }
     }
 
+<<<<<<< HEAD
     // RAM comprimida com L4 e L3 semântica
+=======
+    // RAM comprimida
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
     let ramBlock = "";
-
     const { data: historySession } = await supabase
       .from('brain').select('content, metadata')
       .eq('user_id', stringId).eq('session_id', sessionId)
@@ -777,7 +812,11 @@ export async function POST(req: Request) {
     const truncatedAshes  = ashesBlock ? truncateByWeight(ashesBlock, weights.ashes, 6000) : null;
     const truncatedEvents = truncateByWeight(eventsBlock,      weights.events, 6000);
 
+<<<<<<< HEAD
     // System prompt (com validação de diário)
+=======
+    // System prompt
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     const systemPrompt = `
@@ -986,7 +1025,7 @@ REGRAS:
       aiReply = aiReply.replace(/\[IGNORAR_ULTIMO\]/gi, '').trim();
     }
 
-    // Salvar evento
+    // Salvar evento (interceptor)
     const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(permanent|recurring_annual|deadline|one_time)\]/gi;
     for (const m of Array.from(aiReply.matchAll(eventRegex)) as any[]) {
       const evTitle = m[1].trim();
@@ -1010,7 +1049,7 @@ REGRAS:
       aiReply = aiReply.replace(m[0], '').trim();
     }
 
-    // Outlook Calendar
+    // Outlook, Google, Emails, Listas (mantidos)
     const sMatch = aiReply.match(/\[?AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
     if (sMatch) {
       const res = await createOutlookEvent(sMatch[1].trim(), sMatch[2].trim(), parseInt(sMatch[3]));
@@ -1023,7 +1062,6 @@ REGRAS:
       aiReply = aiReply.replace(uMatch[0], '').trim() + `\n\n🗓️ *Atualizado (Outlook):* ${res}`;
     }
 
-    // Google Calendar
     const gMatch = aiReply.match(/\[?AGENDAR_GOOGLE:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
     if (gMatch) {
       const res = await createGoogleEvent(gMatch[1].trim(), gMatch[2].trim(), parseInt(gMatch[3]));
@@ -1042,7 +1080,6 @@ REGRAS:
       aiReply = aiReply.replace(gdMatch[0], '').trim() + `\n\n🗑️ *Removido (Google):* ${res}`;
     }
 
-    // Emails
     const emailMatch = aiReply.match(/\[LER_EMAILS(?::\s*([^\]]+))?\]/i);
     if (emailMatch) {
       const filtro    = emailMatch[1]?.trim() || undefined;
@@ -1066,7 +1103,6 @@ REGRAS:
       aiReply = aiReply ? `${aiReply}\n\n${resultado}` : resultado;
     }
 
-    // Atualizar meta
     const goalProgressMatch = aiReply.match(/\[ATUALIZAR_META:\s*([^|]+)\|\s*(\d+)(?:\|\s*([^\]]+))?\]/i);
     if (goalProgressMatch) {
       const resultado = await updateGoalProgress(
@@ -1079,7 +1115,10 @@ REGRAS:
       console.log('[goals]', resultado);
     }
 
+<<<<<<< HEAD
     // Lista de compras e lugares favoritos
+=======
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
     const salvarLugarMatch = aiReply.match(/\[SALVAR_LUGAR:\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*(\d+)\s*\|\s*([^\]]+)\]/i);
     if (salvarLugarMatch) {
       const [, nome, lat, lng, raio, categoria] = salvarLugarMatch;
@@ -1171,6 +1210,10 @@ REGRAS:
 
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 
+<<<<<<< HEAD
+=======
+    // Background tasks com retry
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
     const backgroundTasks: Promise<any>[] = [];
 
     if (onboardingState?.status === 'in_progress') {
@@ -1198,7 +1241,11 @@ REGRAS:
     // Resposta imediata
     await sendTelegram(chatId, aiReply);
 
+<<<<<<< HEAD
     // Background sem bloqueio
+=======
+    // Dispara background sem bloquear
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
     Promise.all([
       ...backgroundTasks,
       supabase
@@ -1255,4 +1302,8 @@ function planContextualBlocks(contexts: ContextType[]): {
     loadCalendar:        contexts.some(c => ['agenda', 'evento', 'familia'].includes(c)),
     loadEmail:           contexts.some(c => ['email'].includes(c)),
   };
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 031d41b44ce01ac2ef77c7d5f115db64b0089027
