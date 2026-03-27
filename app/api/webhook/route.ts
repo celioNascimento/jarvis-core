@@ -57,30 +57,29 @@ async function getCachedEmbedding(text: string): Promise<number[]> {
 }
 
 // ============================================================
-// [FIX] Atualiza relevância dos eventos baseado na data
+// NOVO: Atualiza relevância dos eventos baseado na data
 // ============================================================
 async function updateEventRelevance(userId: string) {
   const hoje = new Date();
   hoje.setHours(0, 0, 0, 0);
-
+  
   const { data: events } = await supabase
     .from('events')
     .select('id, title, event_date, decay_type, relevance_score')
     .eq('user_id', userId);
-
+  
   if (!events) return;
-
+  
   const updates = [];
   for (const ev of events) {
     const eventDate = new Date(ev.event_date);
     eventDate.setHours(0, 0, 0, 0);
     const diffDays = Math.ceil((eventDate.getTime() - hoje.getTime()) / (1000 * 3600 * 24));
-
+    
     let newScore = 0;
-
+    
     switch (ev.decay_type) {
       case 'recurring_annual':
-        // Aniversários e eventos anuais: relevância cresce 30 dias antes, pico no dia, depois cai
         if (diffDays < -30) newScore = 0;
         else if (diffDays <= 0) {
           newScore = 0.9 + (diffDays === 0 ? 0.1 : 0);
@@ -90,9 +89,8 @@ async function updateEventRelevance(userId: string) {
           newScore = 0;
         }
         break;
-
+        
       case 'deadline':
-        // Prazo único: relevância cresce 7 dias antes, pico no dia, depois zero
         if (diffDays < -7) newScore = 0;
         else if (diffDays <= 0) {
           newScore = 0.9 + (diffDays === 0 ? 0.1 : 0);
@@ -102,9 +100,8 @@ async function updateEventRelevance(userId: string) {
           newScore = 0;
         }
         break;
-
+        
       case 'one_time':
-        // Evento único: pico no dia, antes cresce suavemente, depois zero
         if (diffDays < -14) newScore = 0;
         else if (diffDays <= 0) {
           newScore = 0.9 + (diffDays === 0 ? 0.1 : 0);
@@ -114,22 +111,21 @@ async function updateEventRelevance(userId: string) {
           newScore = 0;
         }
         break;
-
+        
       default:
-        // permanent ou outros: mantém relevância, com leve decaimento após a data
         if (diffDays < 0) {
           newScore = Math.max(0, (ev.relevance_score || 0) * 0.95);
         } else {
           newScore = ev.relevance_score || 0;
         }
     }
-
+    
     newScore = Math.min(0.95, Math.max(0, newScore));
     if (Math.abs(newScore - (ev.relevance_score || 0)) > 0.01) {
       updates.push({ id: ev.id, relevance_score: newScore });
     }
   }
-
+  
   if (updates.length) {
     for (const upd of updates) {
       await supabase.from('events').update({ relevance_score: upd.relevance_score }).eq('id', upd.id);
@@ -139,7 +135,7 @@ async function updateEventRelevance(userId: string) {
 }
 
 // ============================================================
-// Health check para L3/L4 com atualização de eventos
+// NOVO: Health check para L3/L4 com atualização de eventos
 // ============================================================
 async function ensureMemoryHealth(userId: string) {
   try {
@@ -147,23 +143,20 @@ async function ensureMemoryHealth(userId: string) {
       .from('memories')
       .select('*', { count: 'exact', head: true })
       .eq('user_id', userId);
-
+      
     if (count && count > 1000) {
       console.log(`[Health] Compactando memórias L3 para ${userId}`);
-      await compactMemory(userId, ''); // authorName não disponível neste contexto
+      await compactMemory(userId);
     }
-
-    // [FIX] Atualiza relevância de eventos a cada requisição
+    
     await updateEventRelevance(userId);
-
-    // Decaimento de tópicos L4 não usados há 30 dias
-    // NOTA: supabase.sql não é suportado no cliente JS — usar RPC ou query raw se necessário
+    
     const { error } = await supabase
       .from('topic_index')
-      .update({ weight: supabase.rpc('decay_topic_weight') }) // placeholder — ajustar conforme setup
-      .lt('last_mentioned', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+      .update({ weight: supabase.sql`weight * 0.95` })
+      .lt('last_mentioned', new Date(Date.now() - 30*24*60*60*1000).toISOString())
       .eq('user_id', userId);
-
+      
     if (error) console.error('[Health] Erro no decaimento L4:', error);
   } catch (e) {
     console.error('[Health] Erro no health check:', e);
@@ -171,24 +164,30 @@ async function ensureMemoryHealth(userId: string) {
 }
 
 // ============================================================
-// Atualização do índice de tópicos (L4)
+// Atualização do índice de tópicos (L4) - corrigido (sem supabase.sql)
 // ============================================================
 async function updateTopicIndex(userId: string, contexts: string[], messageText: string) {
   if (!contexts.length) return;
-
+  
   const words = messageText.toLowerCase().split(/\s+/);
   const keyTerms = words.filter(w => w.length > 3 && !/[0-9]/.test(w)).slice(0, 5);
-
+  
   for (const ctx of contexts) {
+    const { data: existing } = await supabase
+      .from('topic_index')
+      .select('weight')
+      .eq('user_id', userId)
+      .eq('topic', ctx)
+      .maybeSingle();
+    
+    const newWeight = (existing?.weight || 0) + 0.1;
+    
     await supabase
       .from('topic_index')
       .upsert({
         user_id: userId,
         topic: ctx,
-        // NOTA: supabase.sql não é suportado no cliente JS padrão.
-        // Se o projeto usa Supabase com extensão de SQL raw, manter como está.
-        // Caso contrário, substituir por uma RPC como: supabase.rpc('increment_topic_weight', { uid: userId, topic: ctx })
-        weight: supabase.sql`COALESCE(weight, 0) + 0.1`,
+        weight: newWeight,
         last_mentioned: new Date().toISOString(),
         related_terms: keyTerms
       }, { onConflict: 'user_id,topic' });
@@ -196,7 +195,7 @@ async function updateTopicIndex(userId: string, contexts: string[], messageText:
 }
 
 // ============================================================
-// Busca tópicos relacionados via L4
+// NOVO: Busca tópicos relacionados via L4
 // ============================================================
 async function getRelatedTopics(userId: string, currentContext: string): Promise<string> {
   const { data: related } = await supabase
@@ -206,14 +205,14 @@ async function getRelatedTopics(userId: string, currentContext: string): Promise
     .neq('topic', currentContext)
     .order('weight', { ascending: false })
     .limit(3);
-
+  
   if (!related?.length) return '';
-
+  
   return `\n[TÓPICOS RELACIONADOS]\n${related.map(t => `- ${t.topic} (peso: ${Math.round(t.weight * 100)}%)`).join('\n')}`;
 }
 
 // ============================================================
-// Classificação de contexto
+// Classificação de contexto com L4
 // ============================================================
 type ContextType =
   | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario' | 'meta'
@@ -249,14 +248,14 @@ function classifyContextRegex(text: string): ContextType[] {
 
 async function classifyContextWithL4(text: string, userId: string): Promise<ContextType[]> {
   const regexContexts = classifyContextRegex(text);
-
+  
   if (regexContexts.length > 2) {
     const { data: topicWeights } = await supabase
       .from('topic_index')
       .select('topic, weight')
       .eq('user_id', userId)
       .in('topic', regexContexts);
-
+      
     if (topicWeights && topicWeights.length > 0) {
       const sorted = topicWeights.sort((a, b) => (b.weight || 0) - (a.weight || 0));
       const prioritized = sorted.map(t => t.topic as ContextType);
@@ -264,34 +263,33 @@ async function classifyContextWithL4(text: string, userId: string): Promise<Cont
       return [...prioritized, ...missing];
     }
   }
-
+  
   return regexContexts;
 }
 
 // ============================================================
-// RAM Compression com L3 semântica
-// [FIX] threshold reduzido de 0.5 → 0.4, match_count aumentado de 3 → 5
+// RAM Compression com L3 semântica (threshold e count ajustados)
 // ============================================================
 async function semanticRamCompression(history: any[], userId: string, currentContext: string, currentEmbedding?: number[]): Promise<string> {
   if (!history.length) return '';
-
+  
   const embedding = currentEmbedding || await getCachedEmbedding(currentContext);
-
+  
   const { data: relevantMemories } = await supabase.rpc('match_memories', {
     query_embedding: embedding,
     match_threshold: 0.4,
     match_count: 5
   }) as { data: any[] | null };
-
+  
   if (relevantMemories && relevantMemories.length > 0) {
     const semanticBlock = relevantMemories
       .filter(r => !r.summary.startsWith('[CINZA]'))
       .map(r => r.summary)
       .join('\n---\n');
-
+    
     return `[MEMÓRIAS SEMANTICAMENTE RELEVANTES]\n${semanticBlock}`;
   }
-
+  
   return '';
 }
 
@@ -305,13 +303,13 @@ async function detectTopicShiftWithL4(userId: string, currentContexts: ContextTy
     .eq('user_id', userId)
     .order('last_mentioned', { ascending: false })
     .limit(5);
-
+  
   if (!recentTopics?.length) return false;
-
-  const hasCurrentTopic = currentContexts.some(ctx =>
+  
+  const hasCurrentTopic = currentContexts.some(ctx => 
     recentTopics.some(t => t.topic === ctx && (t.weight || 0) >= 0.3)
   );
-
+  
   return !hasCurrentTopic && !currentContexts.includes('casual');
 }
 
@@ -327,16 +325,16 @@ async function getOrCreateOnboardingStatePersistent(userId: string) {
     .order('created_at', { ascending: false })
     .limit(1)
     .single();
-
+  
   if (onboardingMemory?.metadata?.state) {
     return onboardingMemory.metadata.state;
   }
-
+  
   return await initOnboarding(userId);
 }
 
 // ============================================================
-// Compressão de RAM
+// Função de compressão de RAM com limite semântico
 // ============================================================
 const RAM_MAX_CHARS = 8000;
 
@@ -361,9 +359,7 @@ export async function POST(req: Request) {
     const message = body.message;
     let messageText = message?.text || "";
 
-    // ============================================================
-    // WHISPER — transcrição de áudio
-    // ============================================================
+    // WHISPER — transcrição de áudio (mantido)
     if (message?.voice) {
       try {
         const fileId = message.voice.file_id;
@@ -437,58 +433,44 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true });
     }
 
-    // ============================================================
-    // Health check L3/L4 (background, não bloqueia)
-    // ============================================================
+    // Health check L3/L4 (background)
     ensureMemoryHealth(stringId).catch(e => console.error('[Health] Erro em background:', e));
 
-    // ============================================================
     // Classifica contexto com L4
-    // ============================================================
     console.time('[Performance] context_classification');
     const detectedContexts = await classifyContextWithL4(messageText, stringId);
     console.timeEnd('[Performance] context_classification');
-
+    
     await updateTopicIndex(stringId, detectedContexts, messageText);
-
     const relatedTopicsBlock = await getRelatedTopics(stringId, detectedContexts[0] || 'casual');
 
-    const modelRoute  = routeModel(detectedContexts);
+    const modelRoute = routeModel(detectedContexts);
     const temperature = getTemperature(detectedContexts);
-    const blockPlan   = planContextualBlocks(detectedContexts);
+    const blockPlan = planContextualBlocks(detectedContexts);
 
     console.log(`[Sprint1] contextos: ${detectedContexts.join(',')} | modelo: ${modelRoute.label} | temp: ${temperature}`);
 
-    // ============================================================
-    // LOCALIZAÇÃO
-    // ============================================================
+    // LOCALIZAÇÃO (mantido)
     let locationContext = "";
 
     if (message?.location) {
       const { latitude, longitude } = message.location;
-      console.log('[Geo] Coordenadas recebidas:', { latitude, longitude });
       const endereco = await checkProximidade(latitude, longitude);
-      console.log('[Geo] Resultado de checkProximidade:', endereco || '(string vazia)');
       locationContext = `${endereco}\nCoordenadas exatas: ${latitude}, ${longitude}`;
-
       await supabase.from('config').upsert(
         { key: `last_location_${stringId}`, value: JSON.stringify({ latitude, longitude, endereco, ts: Date.now() }) },
         { onConflict: 'key' }
       );
-
       const alertaGeo = await verificarAlertasDeProximidade(stringId, latitude, longitude);
       if (alertaGeo.temAlerta) {
         await sendTelegram(chatId ?? message.chat.id, alertaGeo.mensagem);
         return NextResponse.json({ ok: true });
       }
-
       if (!messageText) messageText = "[Enviou Localização]";
-
     } else {
       const { data: lastLoc } = await supabase
         .from('config').select('value')
         .eq('key', `last_location_${stringId}`).single();
-
       if (lastLoc?.value) {
         try {
           const loc = JSON.parse(lastLoc.value);
@@ -496,46 +478,36 @@ export async function POST(req: Request) {
           if (idadeMinutos <= 60) {
             locationContext = `${loc.endereco}\nCoordenadas exatas: ${loc.latitude}, ${loc.longitude} (compartilhada há ${Math.round(idadeMinutos)} min)`;
           }
-        } catch {
-          console.warn('[Geo] Erro ao parsear localização persistida');
-        }
+        } catch { /* ignore */ }
       }
     }
 
-    // ============================================================
-    // Busca paralela otimizada
-    // ============================================================
+    // Base promises
     const basePromises = Promise.all([
       supabase
         .from('users')
         .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone, telegram_chat_id')
         .eq('id', stringId).single(),
-
       getOrCreateSession(stringId),
-
       supabase
         .from('events')
         .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
         .eq('user_id', stringId).order('relevance_score', { ascending: false }),
-
       supabase
         .from('memory_ashes')
         .select('ash_summary, period_start, period_end')
         .eq('user_id', stringId).order('period_end', { ascending: false }).limit(5),
-
       supabase
         .from('onboarding_progress')
         .select('*').eq('user_id', stringId).single(),
-
       buildGapsBlock(stringId, messageText),
-
       supabase
         .from('principles')
         .select('content, category').order('created_at', { ascending: true }),
     ]);
 
+    // Conditional promises
     const conditionalTasks: Promise<any>[] = [];
-
     if (blockPlan.loadCalendar) {
       conditionalTasks.push(getGoogleContext());
       conditionalTasks.push(getMicrosoftCalendarContext());
@@ -549,7 +521,7 @@ export async function POST(req: Request) {
     if (blockPlan.loadDiary) {
       conditionalTasks.push(buildDiaryGoalsBlock(stringId));
     }
-
+    
     const [
       [
         userProfileResult,
@@ -562,37 +534,35 @@ export async function POST(req: Request) {
       ],
       conditionalResults
     ] = await Promise.all([basePromises, Promise.all(conditionalTasks)]);
-
-    let googleContextBlock    = null;
+    
+    let googleContextBlock = null;
     let microsoftContextBlock = null;
-    let emailRadarBlock       = null;
-    let topicBlock            = '';
-    let diaryGoalsBlock       = '';
-
+    let emailRadarBlock = null;
+    let topicBlock = '';
+    let diaryGoalsBlock = '';
     let resultIndex = 0;
     if (blockPlan.loadCalendar) {
-      googleContextBlock    = conditionalResults[resultIndex++];
+      googleContextBlock = conditionalResults[resultIndex++];
       microsoftContextBlock = conditionalResults[resultIndex++];
     }
-    if (blockPlan.loadEmail)  emailRadarBlock  = conditionalResults[resultIndex++];
-    if (blockPlan.loadTopics) topicBlock       = conditionalResults[resultIndex++] || '';
-    if (blockPlan.loadDiary)  diaryGoalsBlock  = conditionalResults[resultIndex++] || '';
-
+    if (blockPlan.loadEmail) {
+      emailRadarBlock = conditionalResults[resultIndex++];
+    }
+    if (blockPlan.loadTopics) {
+      topicBlock = conditionalResults[resultIndex++] || '';
+    }
+    if (blockPlan.loadDiary) {
+      diaryGoalsBlock = conditionalResults[resultIndex++] || '';
+    }
+    
     const recommendationsBlock = blockPlan.loadRecommendations
       ? await buildRecommendationsBlock(stringId, messageText)
       : '';
 
-    // ============================================================
-    // Filtragem de erros em APIs externas
-    // ============================================================
+    // Debug APIs
     const isGoogleError    = typeof googleContextBlock    === 'string' && googleContextBlock.includes('Erro');
     const isMicrosoftError = typeof microsoftContextBlock === 'string' && microsoftContextBlock.includes('Erro');
     const isEmailError     = typeof emailRadarBlock       === 'string' && emailRadarBlock?.includes('Erro');
-
-    if (isGoogleError)    console.warn('[Debug] Agenda Google com erro — bloqueada do prompt');
-    if (isMicrosoftError) console.warn('[Debug] Agenda Microsoft com erro — bloqueada do prompt');
-    if (isEmailError)     console.warn('[Debug] Email radar com erro — bloqueado do prompt');
-
     const cleanGoogleContext    = isGoogleError    ? null : googleContextBlock;
     const cleanMicrosoftContext = isMicrosoftError ? null : microsoftContextBlock;
     const cleanEmailRadarBlock  = isEmailError     ? null : emailRadarBlock;
@@ -610,71 +580,57 @@ export async function POST(req: Request) {
     const pendingQuestion  = userProfile?.pending_question || null;
     const pendingContext   = userProfile?.pending_context  || null;
 
-    const principles      = principlesResult?.data || [];
+    const principles = principlesResult?.data || [];
     const principlesBlock = principles.length > 0
       ? principles.map((p: any) => `- ${p.content}`).join('\n')
       : '';
 
-    const isFemale        = currentContextL3.toLowerCase().includes('feminino') ||
-                            currentContextL3.toLowerCase().includes('mulher');
+    const isFemale = currentContextL3.toLowerCase().includes('feminino') ||
+                     currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
 
-    // ============================================================
-    // Onboarding persistente via L3
-    // ============================================================
+    // Onboarding persistente
     let onboardingState = onboardingResult?.data || null;
     if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(stringId);
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
-    // ============================================================
-    // [FIX] Filtragem e ordenação de eventos melhorada
-    // ============================================================
+    // EVENTOS MELHORADOS
     const events = eventsResult.data || [];
-    const hoje   = new Date();
-    hoje.setHours(0, 0, 0, 0);
-
-    // Ordena por proximidade da data atual
-    const sortedEvents = [...events].sort((a, b) => {
+    const hoje = new Date();
+    hoje.setHours(0,0,0,0);
+    
+    const sortedEvents = [...events].sort((a,b) => {
       const da = new Date(a.event_date).getTime();
       const db = new Date(b.event_date).getTime();
       return Math.abs(da - hoje.getTime()) - Math.abs(db - hoje.getTime());
     });
-
-    // Eventos nos próximos 7 dias
+    
     const upcomingEvents = sortedEvents.filter(e => {
-      const evDate  = new Date(e.event_date);
-      const diffDays = Math.ceil((evDate.getTime() - hoje.getTime()) / (1000 * 3600 * 24));
+      const evDate = new Date(e.event_date);
+      const diffDays = Math.ceil((evDate.getTime() - hoje.getTime()) / (1000*3600*24));
       return diffDays >= 0 && diffDays <= 7;
     });
-
-    // Alta relevância que não estão no bloco de próximos
-    const highRelevanceEvents = sortedEvents.filter(
-      e => (e.relevance_score || 0) >= 0.7 && !upcomingEvents.includes(e)
-    );
-
-    // Remove eventos passados que não são permanentes
+    
+    const highRelevanceEvents = sortedEvents.filter(e => (e.relevance_score || 0) >= 0.7 && !upcomingEvents.includes(e));
+    
     const activeEvents = sortedEvents.filter(e => {
       const evDate = new Date(e.event_date);
       return evDate >= hoje || (e.decay_type === 'permanent' && evDate < hoje);
     });
-
-    const eventsBlock = activeEvents.length > 0
-      ? [
-          upcomingEvents.length > 0
-            ? `🔴 NOS PRÓXIMOS DIAS:\n${upcomingEvents.map(e => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}`
-            : null,
-          highRelevanceEvents.length > 0
-            ? `🟡 IMPORTANTES:\n${highRelevanceEvents.map(e => `  - ${e.title}: ${e.event_date}`).join('\n')}`
-            : null,
-        ].filter(Boolean).join('\n\n')
-      : "Nenhum evento cadastrado.";
+    
+    const eventsBlock = activeEvents.length > 0 ? [
+      upcomingEvents.length > 0
+        ? `🔴 NOS PRÓXIMOS DIAS:\n${upcomingEvents.map(e => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}`
+        : null,
+      highRelevanceEvents.length > 0
+        ? `🟡 IMPORTANTES:\n${highRelevanceEvents.map(e => `  - ${e.title}: ${e.event_date}`).join('\n')}`
+        : null,
+    ].filter(Boolean).join('\n\n') : "Nenhum evento cadastrado.";
 
     const ashes      = ashesResult.data || [];
     const ashesBlock = ashes.length > 0 ? ashes.map(a => a.ash_summary).join('\n') : null;
 
-    // ============================================================
-    // Notas contextuais
-    // ============================================================
+    // NOTAS CONTEXTUAIS
     let personNotesBlock = "";
     const [childrenResult, personNotesResult] = await Promise.all([
       supabase.from('children').select('name, nickname, lev_notes')
@@ -701,9 +657,7 @@ export async function POST(req: Request) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
-    // ============================================================
-    // HD Vetorial com cache
-    // ============================================================
+    // HD vetorial
     const queryEmbedding = await getCachedEmbedding(messageText);
     let hdBlock    = "";
     let hdMemoryIds: string[] = [];
@@ -714,18 +668,14 @@ export async function POST(req: Request) {
         match_threshold: 0.4,
         match_count: 3
       }) as { data: any[] | null };
-
       if (search && search.length > 0) {
         hdBlock     = search.filter(r => !r.summary.startsWith('[CINZA]')).map(r => r.summary).join('\n---\n');
         hdMemoryIds = search.map(r => r.id);
       }
     }
 
-    // ============================================================
-    // RAM comprimida com detecção de tópico e L3 semântica
-    // ============================================================
+    // RAM comprimida
     let ramBlock = "";
-
     const { data: historySession } = await supabase
       .from('brain').select('content, metadata')
       .eq('user_id', stringId).eq('session_id', sessionId)
@@ -762,24 +712,18 @@ export async function POST(req: Request) {
 
     if (ramBlock.length > RAM_MAX_CHARS) {
       ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
-      console.log(`[RAM] Truncado para ${RAM_MAX_CHARS} chars (limite absoluto)`);
+      console.log(`[RAM] Truncado para ${RAM_MAX_CHARS} chars`);
     }
 
-    // ============================================================
     // Classificador temporal
-    // ============================================================
     const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
-    console.log(`[Router] ${weights.horizon} | ${weights.reason}`);
-
     const truncatedRam    = truncateByWeight(ramBlock,         weights.ram,    6000);
     const truncatedL3     = truncateByWeight(currentContextL3, weights.l3,     6000);
     const truncatedHd     = truncateByWeight(hdBlock,          weights.hd,     6000);
     const truncatedAshes  = ashesBlock ? truncateByWeight(ashesBlock, weights.ashes, 6000) : null;
     const truncatedEvents = truncateByWeight(eventsBlock,      weights.events, 6000);
 
-    // ============================================================
-    // System Prompt
-    // ============================================================
+    // System prompt
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     const systemPrompt = `
@@ -895,9 +839,7 @@ REGRAS:
     sobre ele a menos que o usuário mencione.
 `.trim();
 
-    // ============================================================
     // Conversa estruturada
-    // ============================================================
     const { data: historyForMessages } = await supabase
       .from('brain').select('content, metadata')
       .eq('user_id', stringId).neq('category', 'archived')
@@ -914,23 +856,18 @@ REGRAS:
       { role: 'user', content: messageText }
     ];
 
-    // ============================================================
-    // Detecção antecipada — "ignore isso"
-    // ============================================================
+    // Ignore patterns
     const ignorePatterns = /ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|esquece|delete isso/i;
     if (ignorePatterns.test(messageText)) {
       const { data: lastEntry } = await supabase
         .from('brain').select('id').eq('user_id', stringId)
         .order('created_at', { ascending: false }).limit(1).single();
-
       if (lastEntry) await supabase.from('brain').delete().eq('id', lastEntry.id);
       await sendTelegram(chatId, 'Feito — apaguei o que foi dito antes. 🗑️');
       return new Response('OK', { status: 200 });
     }
 
-    // ============================================================
     // Pré-extração
-    // ============================================================
     const noisePatterns = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i;
     const isLikelyNoise = noisePatterns.test(messageText.trim()) && messageText.length < 30;
 
@@ -948,16 +885,12 @@ REGRAS:
       : `[INTERNO]\nVocê é o assistente — NUNCA diga "Anota aí" ou peça ao usuário para anotar algo.\nSe o usuário informar uma data ou fato, confirme brevemente ou responda naturalmente.`;
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
-    // ============================================================
-    // Chamada ao modelo roteado
-    // ============================================================
+    // Chamada LLM
     console.time('[Performance] model_call');
     let aiReply = await callOpenRouter(conversationMessages, modelRoute.model, temperature);
     console.timeEnd('[Performance] model_call');
 
-    // ============================================================
-    // Interceptores
-    // ============================================================
+    // Interceptores (mantidos)
     const categoryMatch = aiReply.match(/\[CLASSE:\s*(\w+)\]/i);
     const category = categoryMatch ? categoryMatch[1].toLowerCase() : 'info';
     aiReply = aiReply.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
@@ -988,7 +921,7 @@ REGRAS:
       aiReply = aiReply.replace(/\[IGNORAR_ULTIMO\]/gi, '').trim();
     }
 
-    // Salvar evento
+    // Salvar evento (interceptor)
     const eventRegex = /\[SALVAR_EVENTO:\s*(.*?)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(alta|media|baixa)\s*\|\s*(true|false)\s*\|\s*(permanent|recurring_annual|deadline|one_time)\]/gi;
     for (const m of Array.from(aiReply.matchAll(eventRegex)) as any[]) {
       const evTitle = m[1].trim();
@@ -1012,7 +945,7 @@ REGRAS:
       aiReply = aiReply.replace(m[0], '').trim();
     }
 
-    // Outlook Calendar
+    // Outlook, Google, Emails, Listas (mantidos)
     const sMatch = aiReply.match(/\[?AGENDAR:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
     if (sMatch) {
       const res = await createOutlookEvent(sMatch[1].trim(), sMatch[2].trim(), parseInt(sMatch[3]));
@@ -1025,7 +958,6 @@ REGRAS:
       aiReply = aiReply.replace(uMatch[0], '').trim() + `\n\n🗓️ *Atualizado (Outlook):* ${res}`;
     }
 
-    // Google Calendar
     const gMatch = aiReply.match(/\[?AGENDAR_GOOGLE:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\]?/i);
     if (gMatch) {
       const res = await createGoogleEvent(gMatch[1].trim(), gMatch[2].trim(), parseInt(gMatch[3]));
@@ -1044,7 +976,6 @@ REGRAS:
       aiReply = aiReply.replace(gdMatch[0], '').trim() + `\n\n🗑️ *Removido (Google):* ${res}`;
     }
 
-    // Emails
     const emailMatch = aiReply.match(/\[LER_EMAILS(?::\s*([^\]]+))?\]/i);
     if (emailMatch) {
       const filtro    = emailMatch[1]?.trim() || undefined;
@@ -1068,7 +999,6 @@ REGRAS:
       aiReply = aiReply ? `${aiReply}\n\n${resultado}` : resultado;
     }
 
-    // Atualizar meta
     const goalProgressMatch = aiReply.match(/\[ATUALIZAR_META:\s*([^|]+)\|\s*(\d+)(?:\|\s*([^\]]+))?\]/i);
     if (goalProgressMatch) {
       const resultado = await updateGoalProgress(
@@ -1081,9 +1011,6 @@ REGRAS:
       console.log('[goals]', resultado);
     }
 
-    // ============================================================
-    // Lista de compras e lugares favoritos
-    // ============================================================
     const salvarLugarMatch = aiReply.match(/\[SALVAR_LUGAR:\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*(\d+)\s*\|\s*([^\]]+)\]/i);
     if (salvarLugarMatch) {
       const [, nome, lat, lng, raio, categoria] = salvarLugarMatch;
@@ -1150,9 +1077,7 @@ REGRAS:
       }
     }
 
-    // ============================================================
     // Persistência
-    // ============================================================
     const { error: insertError } = await supabase.from('brain').insert([{
       content:     messageText,
       category,
@@ -1161,13 +1086,13 @@ REGRAS:
       project_tag: 'geral',
       embedding:   queryEmbedding,
       metadata: {
-        ai_reply:          aiReply,
-        user:              authorName,
-        horizon:           weights.horizon,
-        pending_resolved:  !!pendingQuestion,
-        model_used:        modelRoute.model,
-        model_label:       modelRoute.label,
-        temperature_used:  temperature,
+        ai_reply:         aiReply,
+        user:             authorName,
+        horizon:          weights.horizon,
+        pending_resolved: !!pendingQuestion,
+        model_used:       modelRoute.model,
+        model_label:      modelRoute.label,
+        temperature_used: temperature,
         contexts_detected: detectedContexts,
       }
     }]);
@@ -1178,7 +1103,6 @@ REGRAS:
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 
     const tasks: Promise<any>[] = [];
-
     if (onboardingState?.status === 'in_progress') {
       tasks.push(
         processOnboardingFromMessage(stringId, messageText, aiReply, onboardingState)
@@ -1223,7 +1147,7 @@ REGRAS:
 }
 
 // ============================================================
-// Funções auxiliares
+// FUNÇÕES AUXILIARES (mantidas originais)
 // ============================================================
 
 function routeModel(contexts: ContextType[]): { model: string; label: string } {
