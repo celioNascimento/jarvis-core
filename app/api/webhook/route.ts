@@ -174,12 +174,12 @@ async function getRelatedTopics(userId: string, currentContext: string): Promise
 }
 
 // ============================================================
-// Classificação de contexto (regex + L4)
+// Classificação de contexto (regex + L4) – ADICIONADO SISTEMA DE ESPORTES
 // ============================================================
 type ContextType =
   | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario' | 'meta'
   | 'saude' | 'recomendacao' | 'evento' | 'rotina' | 'preferencia'
-  | 'alias' | 'email' | 'casual';
+  | 'alias' | 'email' | 'casual' | 'esporte';
 
 function classifyContextRegex(text: string): ContextType[] {
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -197,6 +197,8 @@ function classifyContextRegex(text: string): ContextType[] {
     [/acordo|desperto|academia|treino|trabalho as|trabalho às|entrada no trabalho|saida do trabalho|rotina|horario de/i, 'rotina'],
     [/gosto de|nao gosto de|não gosto de|prefiro|adoro|odeio|minha comida|meu filme|minha musica|minha música/i, 'preferencia'],
     [/quando falo em|quando eu falar|pode chamar de|se eu disser|apelido|alias/i, 'alias'],
+    // NOVAS REGRAS PARA ESPORTES E EVENTOS FUTUROS
+    [/jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo/i, 'esporte'],
   ];
   const detected: ContextType[] = [];
   for (const [rx, ctx] of rules) {
@@ -730,7 +732,7 @@ async function callOpenRouterWithTools(
 // FUNÇÕES AUXILIARES (roteamento, temperatura, plano de blocos)
 // ============================================================
 function routeModel(contexts: ContextType[]): { model: string; label: string } {
-  const complexContexts: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude'];
+  const complexContexts: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude', 'esporte'];
   const isComplex = contexts.some(c => complexContexts.includes(c));
   if (isComplex) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
   return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
@@ -738,7 +740,7 @@ function routeModel(contexts: ContextType[]): { model: string; label: string } {
 
 function getTemperature(contexts: ContextType[]): number {
   if (contexts.some(c => ['emocao', 'diario'].includes(c))) return 0.9;
-  if (contexts.some(c => ['casual', 'projeto', 'familia', 'meta'].includes(c))) return 0.7;
+  if (contexts.some(c => ['casual', 'projeto', 'familia', 'meta', 'esporte'].includes(c))) return 0.7;
   if (contexts.some(c => ['rotina', 'alias', 'preferencia', 'recomendacao'].includes(c))) return 0.5;
   if (contexts.some(c => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
   return 0.7;
@@ -752,7 +754,7 @@ function planContextualBlocks(contexts: ContextType[]): {
   loadEmail: boolean;
 } {
   return {
-    loadTopics:          contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia'].includes(c)),
+    loadTopics:          contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia', 'esporte'].includes(c)),
     loadDiary:           contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c)),
     loadRecommendations: contexts.some(c => ['recomendacao', 'casual'].includes(c)),
     loadCalendar:        contexts.some(c => ['agenda', 'evento', 'familia'].includes(c)),
@@ -1100,11 +1102,27 @@ export async function POST(req: NextRequest) {
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     // ----------------------------------------------------------
-    // 6. System prompt (mantido, mas sem os antigos gatilhos regex)
+    // 6. System prompt – VERSÃO REFORÇADA (pesquisa obrigatória em destaque)
     // ----------------------------------------------------------
     const systemPrompt = `
 Você é ${assistantName}, assistente pessoal de ${authorName}.
 Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
+
+🚨 **REGRRA ABSOLUTA – PESQUISE SEMPRE!** 🚨
+
+Para QUALQUER pergunta sobre:
+- Jogos, partidas, resultados esportivos (futebol, basquete, F1, etc.)
+- Datas e horários de eventos futuros
+- Notícias recentes, cotações, clima em outras cidades
+- Qualquer informação que possa ter mudado desde ontem
+
+**VOCÊ DEVE** chamar a ferramenta \`pesquisar_internet\` ANTES de responder.
+
+Exemplo:
+Usuário: "Quando é o próximo jogo do São Paulo?"
+Você: [chama pesquisar_internet("próximo jogo São Paulo FC 2026")] → responde com base no resultado real.
+
+Se a pesquisa não retornar resultado, diga claramente que não encontrou – nunca invente.
 
 ${cleanGoogleContext    ? `[AGENDA GOOGLE ATUALIZADA]\n${cleanGoogleContext}`      : ''}
 ${cleanMicrosoftContext ? `[AGENDA OUTLOOK ATUALIZADA]\n${cleanMicrosoftContext}`  : ''}
@@ -1128,30 +1146,29 @@ ${gapsBlock}
 
 ${principlesBlock ? `[BÚSSOLA — seu jeito de ser no mundo, não regras a citar]\n${principlesBlock}` : ''}
 
-Você é um "Agente Executivo" proativo. Você TEM FERRAMENTAS nativas (tools) para buscar memórias, acessar agenda, ler emails, salvar eventos, registrar no diário, atualizar metas, pesquisar na web, gerenciar lugares favoritos e listas de compras.
-Regra de Ouro: USE AS FERRAMENTAS SEMPRE QUE NECESSÁRIO. Nunca peça para o usuário anotar algo, execute a ação você mesmo usando a ferramenta adequada.
+Você tem ferramentas nativas: \`buscar_memoria_longa\`, \`consultar_agenda\`, \`listar_emails_recentes\`, \`salvar_evento\`, \`atualizar_meta\`, \`registrar_no_diario\`, \`pesquisar_internet\`, e as de lugares/listas.
 
 REGRAS COMPORTAMENTAIS:
 1. FOCO: Responda O QUE FOI PERGUNTADO. Nunca mude de assunto.
-   - Pronomes ("esse filme", "isso", "ele") sempre se referem ao ÚLTIMO assunto da conversa.
-   - NUNCA repita uma sugestão que já foi rejeitada na mesma conversa.
+   - Pronomes ("esse filme", "isso", "ele") sempre se referem ao ÚLTIMO assunto.
+   - NUNCA repita sugestão rejeitada.
 
-2. TOM: Amigo de longa data — inteligente, direto, humano.
-   - Use "${informalAddress}" com moderação — no máximo 1x por conversa.
-   - NUNCA comece com "Considerando que", "Levando em conta o seu perfil".
-   - PROIBIDO: "Anotado!", "Registrado!", "Guardei aqui!". Se você usou uma ferramenta para salvar algo, responda naturalmente com algo como "Feito.", "Pode deixar." ou "Tá na agenda."
+2. TOM: Amigo inteligente, direto, humano.
+   - Use "${informalAddress}" no máximo 1x por conversa.
+   - NUNCA comece com "Considerando que" / "Levando em conta seu perfil".
+   - PROIBIDO: "Anotado!", "Registrado!", "Guardei aqui!". Se salvou algo via ferramenta, diga naturalmente: "Feito.", "Tá na agenda."
 
-3. PRESENÇA EMOCIONAL: Quando ${authorName} compartilhar algo difícil, seja empático, não aja como um sistema de registros.
+3. PRESENÇA EMOCIONAL: Quando ${authorName} compartilhar algo difícil, seja empático – não aja como sistema de registros.
 
-4. MEMÓRIA: Use as notas contextuais e memórias distantes naturalmente. Nunca diga "Eu tenho uma nota aqui que diz...".
+4. MEMÓRIA: Use notas e memórias naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
 
-5. FAMÍLIA: Nunca assuma que a mãe/pai de um filho é o cônjuge atual.
+5. FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 
-6. LOCALIZAÇÃO: Se a tag [LOCALIZAÇÃO ATUAL] estiver disponível, use-a para contextualizar respostas, mas não cite coordenadas.
+6. LOCALIZAÇÃO: Se disponível, use para contextualizar – não cite coordenadas.
 
-7. EVENTOS: Dê prioridade máxima a eventos nos próximos 7 dias.
+7. EVENTOS: Prioridade máxima a eventos nos próximos 7 dias.
 
-8. CLASSIFICAÇÃO: Ao final da sua resposta, inclua obrigatoriamente a tag [CLASSE: info] ou [CLASSE: noise].
+8. CLASSIFICAÇÃO: Ao final da sua resposta, inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].
 `.trim();
 
     // ----------------------------------------------------------
