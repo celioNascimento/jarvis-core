@@ -1,3 +1,6 @@
+Segue o código consolidado com a adição das novas ferramentas searchWeb e getWeatherForecast, importadas de @/lib/google. As alterações estão comentadas no próprio código para fácil identificação.
+
+```typescript
 // app/api/chat/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -18,7 +21,14 @@ import {
   removeEmailKeyword,
   getMicrosoftCalendarContext
 } from '@/lib/microsoft';
-import { getGoogleContext, createGoogleEvent, updateGoogleEvent, deleteGoogleEvent } from '@/lib/google';
+import {
+  getGoogleContext,
+  createGoogleEvent,
+  updateGoogleEvent,
+  deleteGoogleEvent,
+  searchWeb,               // <-- NOVO
+  getWeatherForecast       // <-- NOVO
+} from '@/lib/google';
 import { checkProximidade } from '@/lib/geo';
 import { verificarAlertasDeProximidade } from '@/lib/geo-alerts';
 import {
@@ -352,7 +362,7 @@ Query reescrita (somente texto, sem explicação):`;
 }
 
 // ============================================================
-// FERRAMENTAS (TOOLS)
+// FERRAMENTAS (TOOLS) – ATUALIZADO COM searchWeb e getWeatherForecast
 // ============================================================
 const tools = [
   {
@@ -447,6 +457,34 @@ const tools = [
         type: 'object',
         properties: { query: { type: 'string', description: 'O termo exato para buscar' } },
         required: ['query']
+      }
+    }
+  },
+  // ========== FERRAMENTAS NOVAS ==========
+  {
+    type: 'function',
+    function: {
+      name: 'searchWeb',
+      description: 'Pesquisa na internet em tempo real. Use para notícias, resultados de jogos, fatos de 2026 e informações que não estão na sua memória.',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'O termo de busca preciso' } },
+        required: ['query']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'getWeatherForecast',
+      description: 'Obtém clima preciso para 5 dias. Use coordenadas de Londrina (-23.27, -51.20) para o Vista Bela se o usuário não der outras.',
+      parameters: {
+        type: 'object',
+        properties: {
+          lat: { type: 'number' },
+          lng: { type: 'number' }
+        },
+        required: ['lat', 'lng']
       }
     }
   },
@@ -620,6 +658,25 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
         console.error('[Pesquisar] Erro:', error);
         const errorMessage = error instanceof Error ? error.message : 'erro desconhecido';
         return `Erro ao realizar a pesquisa: ${errorMessage}`;
+      }
+
+    // ========== NOVAS FERRAMENTAS ==========
+    case 'searchWeb':
+      try {
+        const result = await searchWeb(parsedArgs.query);
+        return result;
+      } catch (error) {
+        console.error('[searchWeb] Erro:', error);
+        return `Erro na busca: ${error instanceof Error ? error.message : 'desconhecido'}`;
+      }
+
+    case 'getWeatherForecast':
+      try {
+        const result = await getWeatherForecast(parsedArgs.lat, parsedArgs.lng);
+        return result;
+      } catch (error) {
+        console.error('[getWeatherForecast] Erro:', error);
+        return `Erro ao obter previsão: ${error instanceof Error ? error.message : 'desconhecido'}`;
       }
 
     // ========== AÇÕES DE LUGARES ==========
@@ -1232,7 +1289,7 @@ ${gapsBlock}
 
 ${principlesBlock ? `[BÚSSOLA — seu jeito de ser no mundo, não regras a citar]\n${principlesBlock}` : ''}
 
-Você tem ferramentas nativas: \`buscar_memoria_longa\`, \`consultar_agenda\`, \`listar_emails_recentes\`, \`salvar_evento\`, \`atualizar_meta\`, \`registrar_no_diario\`, \`pesquisar_internet\`, e as de lugares/listas.
+Você tem ferramentas nativas: \`buscar_memoria_longa\`, \`consultar_agenda\`, \`listar_emails_recentes\`, \`salvar_evento\`, \`atualizar_meta\`, \`registrar_no_diario\`, \`pesquisar_internet\`, \`searchWeb\`, \`getWeatherForecast\`, e as de lugares/listas.
 
 REGRAS COMPORTAMENTAIS:
 1. FOCO: Responda O QUE FOI PERGUNTADO. Nunca mude de assunto.
@@ -1439,3 +1496,18 @@ REGRAS COMPORTAMENTAIS:
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
+```
+
+Principais alterações realizadas:
+
+1. Importações
+   · Adicionadas searchWeb e getWeatherForecast ao import de @/lib/google.
+2. Array tools
+   · Incluídos os objetos de definição das novas ferramentas searchWeb e getWeatherForecast, seguindo o formato de função do OpenRouter.
+3. Executor executeTool
+   · Adicionados os casos searchWeb e getWeatherForecast no switch.
+   · Ambos chamam as funções importadas e tratam erros, retornando uma string adequada.
+4. System Prompt
+   · Atualizada a lista de ferramentas disponíveis no final do prompt para incluir \searchWeb\` e \`getWeatherForecast\``.
+
+O restante do código permanece inalterado, garantindo que a lógica existente de classificação de contexto, roteamento de modelo e recuperação de memória continue funcionando normalmente. As novas ferramentas estão prontas para serem usadas pelo modelo sempre que ele detectar necessidade de informações atualizadas ou previsão do tempo.
