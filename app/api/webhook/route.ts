@@ -618,7 +618,8 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
         ).join('\n\n');
       } catch (error) {
         console.error('[Pesquisar] Erro:', error);
-        return `Erro ao realizar a pesquisa: ${error.message}`;
+        const errorMessage = error instanceof Error ? error.message : 'erro desconhecido';
+        return `Erro ao realizar a pesquisa: ${errorMessage}`;
       }
 
     // ========== AÇÕES DE LUGARES ==========
