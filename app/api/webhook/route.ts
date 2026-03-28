@@ -1,4 +1,4 @@
-// app/api/chat/route.ts (ou webhook)
+// app/api/chat/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import {
   supabase,
@@ -766,66 +766,68 @@ function planContextualBlocks(contexts: ContextType[]): {
 export async function POST(req: NextRequest) {
   try {
     console.time('[Performance] total');
-// ----------------------------------------------------------
-// 1. Parse da requisição (JSON ou FormData com áudio)
-// ----------------------------------------------------------
-let messageText: string;
-let userId: string;
-let userFirstName = "Usuário";
-let location: { latitude: number; longitude: number } | null = null;
+    // ----------------------------------------------------------
+    // 1. Parse da requisição (JSON ou FormData com áudio)
+    // ----------------------------------------------------------
+    let messageText: string;
+    let userId: string;
+    let userFirstName = "Usuário";
+    let location: { latitude: number; longitude: number } | null = null;
 
-const contentType = req.headers.get('content-type') || '';
-if (contentType.includes('multipart/form-data')) {
-  const formData = await req.formData();
-  const audioFile = formData.get('audio') as File | null;
-  const userIdField = formData.get('userId') as string | null;
-  const userFirstNameField = formData.get('userFirstName') as string | null;
+    const contentType = req.headers.get('content-type') || '';
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await req.formData();
+      const audioFile = formData.get('audio') as File | null;
+      const userIdField = formData.get('userId') as string | null;
+      const userFirstNameField = formData.get('userFirstName') as string | null;
 
-  // Captura latitude/longitude enviadas como strings
-  const latField = formData.get('latitude') as string | null;
-  const lngField = formData.get('longitude') as string | null;
-  if (latField && lngField) {
-    location = { latitude: parseFloat(latField), longitude: parseFloat(lngField) };
-  }
+      const latField = formData.get('latitude') as string | null;
+      const lngField = formData.get('longitude') as string | null;
+      if (latField && lngField) {
+        location = { latitude: parseFloat(latField), longitude: parseFloat(lngField) };
+      }
 
-  if (!audioFile || !userIdField) {
-    return NextResponse.json({ error: 'Campos obrigatórios: audio, userId' }, { status: 400 });
-  }
+      if (!audioFile || !userIdField) {
+        return NextResponse.json({ error: 'Campos obrigatórios: audio, userId' }, { status: 400 });
+      }
 
-  userId = userIdField;
-  if (userFirstNameField) userFirstName = userFirstNameField;
+      userId = userIdField;
+      if (userFirstNameField) userFirstName = userFirstNameField;
 
-  // Transcrição com Whisper (mantida igual)
-  const buffer = Buffer.from(await audioFile.arrayBuffer());
-  const whisperFormData = new FormData();
-  whisperFormData.append('file', new Blob([buffer]), 'audio.ogg');
-  whisperFormData.append('model', 'whisper-1');
-  whisperFormData.append('language', 'pt');
+      const buffer = Buffer.from(await audioFile.arrayBuffer());
+      const whisperFormData = new FormData();
+      whisperFormData.append('file', new Blob([buffer]), 'audio.ogg');
+      whisperFormData.append('model', 'whisper-1');
+      whisperFormData.append('language', 'pt');
 
-  const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: whisperFormData
-  });
+      const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
+        body: whisperFormData
+      });
 
-  if (!whisperRes.ok) {
-    return NextResponse.json({ error: 'Falha na transcrição' }, { status: 500 });
-  }
+      if (!whisperRes.ok) {
+        return NextResponse.json({ error: 'Falha na transcrição' }, { status: 500 });
+      }
 
-  const whisperData = await whisperRes.json();
-  messageText = whisperData.text?.trim() || '';
-  if (!messageText) {
-    return NextResponse.json({ error: 'Áudio vazio ou ininteligível' }, { status: 400 });
-  }
-} else {
-  const body = await req.json();
-  messageText = body.message || body.text || '';
-  userId = body.userId || body.user_id;
-  userFirstName = body.userFirstName || body.user_first_name || 'Usuário';
-  if (body.location && typeof body.location.latitude === 'number' && typeof body.location.longitude === 'number') {
-    location = { latitude: body.location.latitude, longitude: body.location.longitude };
-  }
-}
+      const whisperData = await whisperRes.json();
+      messageText = whisperData.text?.trim() || '';
+      if (!messageText) {
+        return NextResponse.json({ error: 'Áudio vazio ou ininteligível' }, { status: 400 });
+      }
+    } else {
+      const body = await req.json();
+      messageText = body.message || body.text || '';
+      userId = body.userId || body.user_id;
+      userFirstName = body.userFirstName || body.user_first_name || 'Usuário';
+      if (body.location && typeof body.location.latitude === 'number' && typeof body.location.longitude === 'number') {
+        location = { latitude: body.location.latitude, longitude: body.location.longitude };
+      }
+    }
+
+    if (!messageText || !userId) {
+      return NextResponse.json({ error: 'Mensagem ou userId ausente' }, { status: 400 });
+    }
 
     // ----------------------------------------------------------
     // 2. Dados essenciais do usuário
