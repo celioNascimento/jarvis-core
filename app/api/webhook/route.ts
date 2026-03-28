@@ -1,5 +1,7 @@
 // app/api/chat/route.ts
 import { NextRequest, NextResponse } from 'next/server';
+// app/api/chat/route.ts
+import { NextRequest, NextResponse } from 'next/server';
 import {
   supabase,
   callOpenRouter,
@@ -10,6 +12,7 @@ import {
   clearPendingQuestion,
   reinforceMemory
 } from '@/lib/jarvis';
+// ... resto do código (sem texto em português)
 import {
   createOutlookEvent,
   updateOutlookEvent,
