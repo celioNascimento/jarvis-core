@@ -1,6 +1,3 @@
-Segue o código consolidado com a adição das novas ferramentas searchWeb e getWeatherForecast, importadas de @/lib/google. As alterações estão comentadas no próprio código para fácil identificação.
-
-```typescript
 // app/api/chat/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import {
