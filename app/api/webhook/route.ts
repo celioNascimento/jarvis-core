@@ -174,12 +174,12 @@ async function getRelatedTopics(userId: string, currentContext: string): Promise
 }
 
 // ============================================================
-// Classificação de contexto (regex + L4) – ADICIONADO SISTEMA DE ESPORTES
+// Classificação de contexto (regex + L4) – ADICIONADO SISTEMA DE ESPORTES, NOTÍCIAS, CLIMA
 // ============================================================
 type ContextType =
   | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario' | 'meta'
   | 'saude' | 'recomendacao' | 'evento' | 'rotina' | 'preferencia'
-  | 'alias' | 'email' | 'casual' | 'esporte';
+  | 'alias' | 'email' | 'casual' | 'esporte' | 'noticias' | 'clima';
 
 function classifyContextRegex(text: string): ContextType[] {
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -197,8 +197,9 @@ function classifyContextRegex(text: string): ContextType[] {
     [/acordo|desperto|academia|treino|trabalho as|trabalho às|entrada no trabalho|saida do trabalho|rotina|horario de/i, 'rotina'],
     [/gosto de|nao gosto de|não gosto de|prefiro|adoro|odeio|minha comida|meu filme|minha musica|minha música/i, 'preferencia'],
     [/quando falo em|quando eu falar|pode chamar de|se eu disser|apelido|alias/i, 'alias'],
-    // NOVAS REGRAS PARA ESPORTES E EVENTOS FUTUROS
-    [/jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo/i, 'esporte'],
+    [/jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo|escalação/i, 'esporte'],
+    [/noticia|notícias|últimas|recente|aconteceu|hoje no|manchete|jornal|portal|g1|globo|folha|estadão/i, 'noticias'],
+    [/clima|tempo|temperatura|chuva|frio|calor|previsão|amanhecer|entardecer|umidade|vento/i, 'clima'],
   ];
   const detected: ContextType[] = [];
   for (const [rx, ctx] of rules) {
@@ -449,7 +450,7 @@ const tools = [
       }
     }
   },
-  // ========== NOVAS FERRAMENTAS: LUGARES E LISTAS ==========
+  // ========== FERRAMENTAS: LUGARES E LISTAS ==========
   {
     type: 'function',
     function: {
@@ -540,7 +541,7 @@ const tools = [
 ];
 
 // ============================================================
-// EXECUTOR DAS FERRAMENTAS
+// EXECUTOR DAS FERRAMENTAS (com melhorias na pesquisa)
 // ============================================================
 async function executeTool(toolCall: any, userId: string, context: any): Promise<string> {
   const { name, arguments: args } = toolCall.function;
@@ -601,17 +602,26 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
 
     case 'pesquisar_internet':
       try {
-        const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${process.env.GOOGLE_API_KEY}&cx=${process.env.GOOGLE_CX}&q=${encodeURIComponent(parsedArgs.query)}`;
-        const searchRes = await fetch(searchUrl);
-        const data = await searchRes.json();
-        if (!data.items) return 'Nenhum resultado encontrado.';
-        return data.items.slice(0, 3).map((item: any) => `${item.title}\n${item.snippet}`).join('\n\n');
+        const url = `https://www.googleapis.com/customsearch/v1?key=${process.env.GOOGLE_API_KEY}&cx=${process.env.GOOGLE_CX}&q=${encodeURIComponent(parsedArgs.query)}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!response.ok) {
+          console.error("[Pesquisar] Erro API:", data);
+          return `Falha na pesquisa: ${data.error?.message || "erro desconhecido"}`;
+        }
+        if (!data.items || data.items.length === 0) {
+          return `Nenhum resultado encontrado para "${parsedArgs.query}".`;
+        }
+        // Retorna título, snippet e link dos 3 primeiros resultados
+        return data.items.slice(0, 3).map((item: any) => 
+          `${item.title}\n${item.snippet}\nFonte: ${item.link}`
+        ).join('\n\n');
       } catch (error) {
         console.error('[Pesquisar] Erro:', error);
-        return 'Falha ao realizar a pesquisa.';
+        return `Erro ao realizar a pesquisa: ${error.message}`;
       }
 
-    // ========== NOVAS AÇÕES ==========
+    // ========== AÇÕES DE LUGARES ==========
     case 'salvar_lugar':
       const { error: placeErr } = await supabase.from('favorite_places').upsert(
         {
@@ -732,7 +742,7 @@ async function callOpenRouterWithTools(
 // FUNÇÕES AUXILIARES (roteamento, temperatura, plano de blocos)
 // ============================================================
 function routeModel(contexts: ContextType[]): { model: string; label: string } {
-  const complexContexts: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude', 'esporte'];
+  const complexContexts: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude', 'esporte', 'noticias', 'clima'];
   const isComplex = contexts.some(c => complexContexts.includes(c));
   if (isComplex) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
   return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
@@ -741,7 +751,7 @@ function routeModel(contexts: ContextType[]): { model: string; label: string } {
 function getTemperature(contexts: ContextType[]): number {
   if (contexts.some(c => ['emocao', 'diario'].includes(c))) return 0.9;
   if (contexts.some(c => ['casual', 'projeto', 'familia', 'meta', 'esporte'].includes(c))) return 0.7;
-  if (contexts.some(c => ['rotina', 'alias', 'preferencia', 'recomendacao'].includes(c))) return 0.5;
+  if (contexts.some(c => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima'].includes(c))) return 0.5;
   if (contexts.some(c => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
   return 0.7;
 }
@@ -754,12 +764,66 @@ function planContextualBlocks(contexts: ContextType[]): {
   loadEmail: boolean;
 } {
   return {
-    loadTopics:          contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia', 'esporte'].includes(c)),
+    loadTopics:          contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia', 'esporte', 'noticias', 'clima'].includes(c)),
     loadDiary:           contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c)),
     loadRecommendations: contexts.some(c => ['recomendacao', 'casual'].includes(c)),
     loadCalendar:        contexts.some(c => ['agenda', 'evento', 'familia'].includes(c)),
     loadEmail:           contexts.some(c => ['email'].includes(c)),
   };
+}
+
+// ============================================================
+// NOVA FUNÇÃO: DETECTA SE A PERGUNTA EXIGE PESQUISA FORÇADA
+// ============================================================
+function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
+  const lower = message.toLowerCase();
+  // Palavras que indicam necessidade de informação atualizada
+  const keywords = /jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificação|tabela|artilheiro|resultado|placar|hoje tem|quando é|próximo|escalação|expo|feira|evento|começa|início|data de|horário de|edição|notícia|últimas|recente|aconteceu|clima|tempo|temperatura|previsão|cotação|preço do|valor do|dólar|euro|bitcoin|ibovespa/i;
+  
+  if (!keywords.test(lower)) return false;
+  
+  // Se já há contexto de esporte, notícias ou clima, força pesquisa
+  if (contexts.includes('esporte') || contexts.includes('noticias') || contexts.includes('clima')) return true;
+  
+  // Se a pergunta contém "quando", "qual", "qual é", "como está", provavelmente precisa de dados atuais
+  if (/(quando|qual|qual é|como está|como fica|o que aconteceu|o que rolou)/i.test(lower)) return true;
+  
+  return false;
+}
+
+// ============================================================
+// REFINA A QUERY DE BUSCA COM BASE NA MENSAGEM
+// ============================================================
+function refineSearchQuery(message: string, contexts: ContextType[]): string {
+  let query = message;
+  // Se for esporte e tiver menção a time, adiciona "2026" para forçar atualidade
+  if (contexts.includes('esporte')) {
+    const teamMatch = message.match(/(?:do|da|de|contra|entre) (.*?)(?:\?|$)/i);
+    if (teamMatch && teamMatch[1].trim().length < 30) {
+      query = `${teamMatch[1].trim()} ${message.includes('escalação') ? 'escalação' : 'próximo jogo'} 2026`;
+    } else {
+      query = `${message} 2026`;
+    }
+  }
+  // Se for evento futuro (expo, feira, etc.), adiciona ano atual
+  if (contexts.includes('evento') && /expo|feira|evento|começa|início/i.test(message)) {
+    const currentYear = new Date().getFullYear();
+    query = `${message} ${currentYear}`;
+  }
+  // Se for clima, adiciona "previsão" e local se houver
+  if (contexts.includes('clima')) {
+    const locationMatch = message.match(/(em|no|na) (.*?)(?:\?|$)/i);
+    if (locationMatch && locationMatch[2].trim().length < 30) {
+      query = `clima ${locationMatch[2].trim()}`;
+    } else {
+      query = `clima ${message}`;
+    }
+  }
+  // Se for notícia, mantém a mensagem original, mas adiciona "últimas notícias" se não tiver
+  if (contexts.includes('noticias') && !/(notícia|notícias)/i.test(query)) {
+    query = `últimas notícias ${query}`;
+  }
+  return query.trim();
 }
 
 // ============================================================
@@ -899,7 +963,29 @@ export async function POST(req: NextRequest) {
     console.log(`[Sprint1] contextos: ${detectedContexts.join(',')} | modelo: ${modelRoute.label} | temp: ${temperature}`);
 
     // ----------------------------------------------------------
-    // 5. Busca de dados de contexto (mantido integralmente)
+    // 5. PESQUISA FORÇADA (se necessário)
+    // ----------------------------------------------------------
+    let forcedSearchResult = "";
+    if (shouldForceSearch(messageText, detectedContexts)) {
+      const searchQuery = refineSearchQuery(messageText, detectedContexts);
+      console.log(`[ForcedSearch] Executando pesquisa para: ${searchQuery}`);
+      try {
+        const toolCall = {
+          function: {
+            name: 'pesquisar_internet',
+            arguments: JSON.stringify({ query: searchQuery })
+          }
+        };
+        const result = await executeTool(toolCall, userId, {});
+        forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA]\nConsulta: "${searchQuery}"\nResultado:\n${result}`;
+      } catch (e) {
+        console.error("[ForcedSearch] Falha:", e);
+        forcedSearchResult = "\n[ERRO NA PESQUISA] Não foi possível obter informações atualizadas.";
+      }
+    }
+
+    // ----------------------------------------------------------
+    // 6. Busca de dados de contexto (mantido integralmente)
     // ----------------------------------------------------------
     const basePromises = Promise.all([
       supabase
@@ -1102,7 +1188,7 @@ export async function POST(req: NextRequest) {
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     // ----------------------------------------------------------
-    // 6. System prompt – VERSÃO REFORÇADA (pesquisa obrigatória em destaque)
+    // 7. System prompt – VERSÃO REFORÇADA (com pesquisa automática)
     // ----------------------------------------------------------
     const systemPrompt = `
 Você é ${assistantName}, assistente pessoal de ${authorName}.
@@ -1112,17 +1198,16 @@ Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
 
 Para QUALQUER pergunta sobre:
 - Jogos, partidas, resultados esportivos (futebol, basquete, F1, etc.)
-- Datas e horários de eventos futuros
+- Datas e horários de eventos futuros (exposições, shows, estreias)
 - Notícias recentes, cotações, clima em outras cidades
+- Escalações de times, tabelas de campeonatos
 - Qualquer informação que possa ter mudado desde ontem
 
 **VOCÊ DEVE** chamar a ferramenta \`pesquisar_internet\` ANTES de responder.
 
-Exemplo:
-Usuário: "Quando é o próximo jogo do São Paulo?"
-Você: [chama pesquisar_internet("próximo jogo São Paulo FC 2026")] → responde com base no resultado real.
+**ATENÇÃO:** Se o bloco "[PESQUISA AUTOMÁTICA REALIZADA]" estiver presente no contexto, você DEVE usá-lo como fonte principal e NÃO inventar informações. Se o bloco indicar erro, diga que não foi possível obter dados atualizados.
 
-Se a pesquisa não retornar resultado, diga claramente que não encontrou – nunca invente.
+${forcedSearchResult}
 
 ${cleanGoogleContext    ? `[AGENDA GOOGLE ATUALIZADA]\n${cleanGoogleContext}`      : ''}
 ${cleanMicrosoftContext ? `[AGENDA OUTLOOK ATUALIZADA]\n${cleanMicrosoftContext}`  : ''}
@@ -1172,7 +1257,7 @@ REGRAS COMPORTAMENTAIS:
 `.trim();
 
     // ----------------------------------------------------------
-    // 7. Montagem das mensagens (histórico intercalado)
+    // 8. Montagem das mensagens (histórico intercalado)
     // ----------------------------------------------------------
     const { data: historyForMessages } = await supabase
       .from('brain').select('content, metadata')
@@ -1189,7 +1274,7 @@ REGRAS COMPORTAMENTAIS:
     ];
 
     // ----------------------------------------------------------
-    // 8. Comandos especiais (ignorar, apagar)
+    // 9. Comandos especiais (ignorar, apagar)
     // ----------------------------------------------------------
     const ignorePatterns = /ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|esquece|delete isso/i;
     if (ignorePatterns.test(messageText)) {
@@ -1201,7 +1286,7 @@ REGRAS COMPORTAMENTAIS:
     }
 
     // ----------------------------------------------------------
-    // 9. Pré‑extração e feedback interno
+    // 10. Pré‑extração e feedback interno
     // ----------------------------------------------------------
     const noisePatterns = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i;
     const isLikelyNoise = noisePatterns.test(messageText.trim()) && messageText.length < 30;
@@ -1221,7 +1306,7 @@ REGRAS COMPORTAMENTAIS:
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
     // ----------------------------------------------------------
-    // 10. Loop ReAct com ferramentas (substitui a chamada única)
+    // 11. Loop ReAct com ferramentas
     // ----------------------------------------------------------
     let finalResponse = '';
     let attempts = 0;
@@ -1265,7 +1350,7 @@ REGRAS COMPORTAMENTAIS:
     }
 
     // ----------------------------------------------------------
-    // 11. Pós‑processamento (categoria, remoção de tags)
+    // 12. Pós‑processamento (categoria, remoção de tags)
     // ----------------------------------------------------------
     let category = 'info';
     const categoryMatch = finalResponse.match(/\[CLASSE:\s*(\w+)\]/i);
@@ -1278,7 +1363,7 @@ REGRAS COMPORTAMENTAIS:
     }
 
     // ----------------------------------------------------------
-    // 12. Persistência no banco
+    // 13. Persistência no banco
     // ----------------------------------------------------------
     const { error: insertError } = await supabase.from('brain').insert([{
       content: messageText,
@@ -1296,6 +1381,7 @@ REGRAS COMPORTAMENTAIS:
         model_label: modelRoute.label,
         temperature_used: temperature,
         contexts_detected: detectedContexts,
+        forced_search_used: forcedSearchResult ? true : false,
       }
     }]);
 
@@ -1305,7 +1391,7 @@ REGRAS COMPORTAMENTAIS:
     for (const memId of hdMemoryIds) await reinforceMemory(memId);
 
     // ----------------------------------------------------------
-    // 13. Tarefas em background (extração, compactação)
+    // 14. Tarefas em background (extração, compactação)
     // ----------------------------------------------------------
     const backgroundTasks: Promise<any>[] = [];
 
@@ -1343,7 +1429,7 @@ REGRAS COMPORTAMENTAIS:
 
     console.timeEnd('[Performance] total');
     // ----------------------------------------------------------
-    // 14. Retorno para o app
+    // 15. Retorno para o app
     // ----------------------------------------------------------
     return NextResponse.json({ reply: finalResponse, ok: true });
 
