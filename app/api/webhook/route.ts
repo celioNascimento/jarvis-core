@@ -1,7 +1,5 @@
 // app/api/chat/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-// app/api/chat/route.ts
-import { NextRequest, NextResponse } from 'next/server';
 import {
   supabase,
   callOpenRouter,
@@ -12,7 +10,6 @@ import {
   clearPendingQuestion,
   reinforceMemory
 } from '@/lib/jarvis';
-// ... resto do código (sem texto em português)
 import {
   createOutlookEvent,
   updateOutlookEvent,
@@ -26,8 +23,8 @@ import {
   createGoogleEvent,
   updateGoogleEvent,
   deleteGoogleEvent,
-  searchWeb,               // <-- NOVO
-  getWeatherForecast       // <-- NOVO
+  searchWeb,               // mantido
+  getWeatherForecast       // mantido
 } from '@/lib/google';
 import { checkProximidade } from '@/lib/geo';
 import { verificarAlertasDeProximidade } from '@/lib/geo-alerts';
@@ -55,12 +52,17 @@ import {
 } from '@/lib/diary';
 
 // ============================================================
-// Cache de embeddings
+// Cache de embeddings (com limite simples)
 // ============================================================
 const embeddingCache = new Map<string, number[]>();
 async function getCachedEmbedding(text: string): Promise<number[]> {
   if (embeddingCache.has(text)) return embeddingCache.get(text)!;
   const embedding = await generateEmbedding(text);
+  // Limitar cache a 1000 entradas
+  if (embeddingCache.size > 1000) {
+    const firstKey = embeddingCache.keys().next().value;
+    embeddingCache.delete(firstKey);
+  }
   embeddingCache.set(text, embedding);
   return embedding;
 }
@@ -184,7 +186,7 @@ async function getRelatedTopics(userId: string, currentContext: string): Promise
 }
 
 // ============================================================
-// Classificação de contexto (regex + L4) – ADICIONADO SISTEMA DE ESPORTES, NOTÍCIAS, CLIMA
+// Classificação de contexto (regex + L4) – mantido
 // ============================================================
 type ContextType =
   | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario' | 'meta'
@@ -362,7 +364,7 @@ Query reescrita (somente texto, sem explicação):`;
 }
 
 // ============================================================
-// FERRAMENTAS (TOOLS) – ATUALIZADO COM searchWeb e getWeatherForecast
+// FERRAMENTAS (TOOLS) – UNIFICADAS (removida pesquisar_internet duplicada)
 // ============================================================
 const tools = [
   {
@@ -451,19 +453,6 @@ const tools = [
   {
     type: 'function',
     function: {
-      name: 'pesquisar_internet',
-      description: 'Pesquisa fatos atuais na internet, como notícias, clima, esportes ou informações em tempo real.',
-      parameters: {
-        type: 'object',
-        properties: { query: { type: 'string', description: 'O termo exato para buscar' } },
-        required: ['query']
-      }
-    }
-  },
-  // ========== FERRAMENTAS NOVAS ==========
-  {
-    type: 'function',
-    function: {
       name: 'searchWeb',
       description: 'Pesquisa na internet em tempo real. Use para notícias, resultados de jogos, fatos de 2026 e informações que não estão na sua memória.',
       parameters: {
@@ -477,14 +466,13 @@ const tools = [
     type: 'function',
     function: {
       name: 'getWeatherForecast',
-      description: 'Obtém clima preciso para 5 dias. Use coordenadas de Londrina (-23.27, -51.20) para o Vista Bela se o usuário não der outras.',
+      description: 'Obtém clima preciso para 5 dias. Se não houver coordenadas, use lat=-23.27, lng=-51.20 (Londrina, Vista Bela).',
       parameters: {
         type: 'object',
         properties: {
-          lat: { type: 'number' },
-          lng: { type: 'number' }
-        },
-        required: ['lat', 'lng']
+          lat: { type: 'number', description: 'Latitude (opcional, padrão -23.27 se não informada)' },
+          lng: { type: 'number', description: 'Longitude (opcional, padrão -51.20 se não informada)' }
+        }
       }
     }
   },
@@ -579,7 +567,7 @@ const tools = [
 ];
 
 // ============================================================
-// EXECUTOR DAS FERRAMENTAS (com melhorias na pesquisa)
+// EXECUTOR DAS FERRAMENTAS (com fallback de coordenadas para clima)
 // ============================================================
 async function executeTool(toolCall: any, userId: string, context: any): Promise<string> {
   const { name, arguments: args } = toolCall.function;
@@ -597,7 +585,7 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
       .select('id')
       .eq('user_id', userId)
       .ilike('name', nomeLugar.trim())
-      .single();
+      .maybeSingle(); // evita erro se não existir
     return data?.id ?? null;
   }
 
@@ -638,29 +626,6 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
       await extractDiary(userId, parsedArgs.texto, parsedArgs.categoria || 'anytime');
       return `Entrada registrada no diário.`;
 
-    case 'pesquisar_internet':
-      try {
-        const url = `https://www.googleapis.com/customsearch/v1?key=${process.env.GOOGLE_API_KEY}&cx=${process.env.GOOGLE_CX}&q=${encodeURIComponent(parsedArgs.query)}`;
-        const response = await fetch(url);
-        const data = await response.json();
-        if (!response.ok) {
-          console.error("[Pesquisar] Erro API:", data);
-          return `Falha na pesquisa: ${data.error?.message || "erro desconhecido"}`;
-        }
-        if (!data.items || data.items.length === 0) {
-          return `Nenhum resultado encontrado para "${parsedArgs.query}".`;
-        }
-        // Retorna título, snippet e link dos 3 primeiros resultados
-        return data.items.slice(0, 3).map((item: any) => 
-          `${item.title}\n${item.snippet}\nFonte: ${item.link}`
-        ).join('\n\n');
-      } catch (error) {
-        console.error('[Pesquisar] Erro:', error);
-        const errorMessage = error instanceof Error ? error.message : 'erro desconhecido';
-        return `Erro ao realizar a pesquisa: ${errorMessage}`;
-      }
-
-    // ========== NOVAS FERRAMENTAS ==========
     case 'searchWeb':
       try {
         const result = await searchWeb(parsedArgs.query);
@@ -672,7 +637,10 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
 
     case 'getWeatherForecast':
       try {
-        const result = await getWeatherForecast(parsedArgs.lat, parsedArgs.lng);
+        // Fallback para coordenadas de Londrina se não informadas
+        const lat = parsedArgs.lat ?? -23.27;
+        const lng = parsedArgs.lng ?? -51.20;
+        const result = await getWeatherForecast(lat, lng);
         return result;
       } catch (error) {
         console.error('[getWeatherForecast] Erro:', error);
@@ -750,7 +718,7 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
 }
 
 // ============================================================
-// Chamada OpenRouter com tools
+// Chamada OpenRouter com tools (com timeout e tratamento)
 // ============================================================
 interface ToolCall {
   id: string;
@@ -769,8 +737,10 @@ async function callOpenRouterWithTools(
   temperature: number,
   timeoutMs = 10000
 ): Promise<ToolResponse> {
-  const response = await Promise.race([
-    fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
@@ -785,15 +755,24 @@ async function callOpenRouterWithTools(
         tool_choice: 'auto',
         temperature,
         max_tokens: 2000
-      })
-    }),
-    new Promise<Response>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeoutMs))
-  ]);
-
-  if (!response.ok) throw new Error(`OpenRouter error: ${response.status}`);
-  const data = await response.json();
-  const choice = data.choices?.[0];
-  return { content: choice?.message?.content || '', toolCalls: choice?.message?.tool_calls || null };
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenRouter error ${response.status}: ${errorText}`);
+    }
+    const data = await response.json();
+    const choice = data.choices?.[0];
+    return { content: choice?.message?.content || '', toolCalls: choice?.message?.tool_calls || null };
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`OpenRouter timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
 }
 
 // ============================================================
@@ -831,21 +810,14 @@ function planContextualBlocks(contexts: ContextType[]): {
 }
 
 // ============================================================
-// NOVA FUNÇÃO: DETECTA SE A PERGUNTA EXIGE PESQUISA FORÇADA
+// NOVA FUNÇÃO: DETECTA SE A PERGUNTA EXIGE PESQUISA FORÇADA (usando searchWeb)
 // ============================================================
 function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
   const lower = message.toLowerCase();
-  // Palavras que indicam necessidade de informação atualizada
   const keywords = /jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificação|tabela|artilheiro|resultado|placar|hoje tem|quando é|próximo|escalação|expo|feira|evento|começa|início|data de|horário de|edição|notícia|últimas|recente|aconteceu|clima|tempo|temperatura|previsão|cotação|preço do|valor do|dólar|euro|bitcoin|ibovespa/i;
-  
   if (!keywords.test(lower)) return false;
-  
-  // Se já há contexto de esporte, notícias ou clima, força pesquisa
   if (contexts.includes('esporte') || contexts.includes('noticias') || contexts.includes('clima')) return true;
-  
-  // Se a pergunta contém "quando", "qual", "qual é", "como está", provavelmente precisa de dados atuais
   if (/(quando|qual|qual é|como está|como fica|o que aconteceu|o que rolou)/i.test(lower)) return true;
-  
   return false;
 }
 
@@ -854,7 +826,6 @@ function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
 // ============================================================
 function refineSearchQuery(message: string, contexts: ContextType[]): string {
   let query = message;
-  // Se for esporte e tiver menção a time, adiciona "2026" para forçar atualidade
   if (contexts.includes('esporte')) {
     const teamMatch = message.match(/(?:do|da|de|contra|entre) (.*?)(?:\?|$)/i);
     if (teamMatch && teamMatch[1].trim().length < 30) {
@@ -863,12 +834,10 @@ function refineSearchQuery(message: string, contexts: ContextType[]): string {
       query = `${message} 2026`;
     }
   }
-  // Se for evento futuro (expo, feira, etc.), adiciona ano atual
   if (contexts.includes('evento') && /expo|feira|evento|começa|início/i.test(message)) {
     const currentYear = new Date().getFullYear();
     query = `${message} ${currentYear}`;
   }
-  // Se for clima, adiciona "previsão" e local se houver
   if (contexts.includes('clima')) {
     const locationMatch = message.match(/(em|no|na) (.*?)(?:\?|$)/i);
     if (locationMatch && locationMatch[2].trim().length < 30) {
@@ -877,7 +846,6 @@ function refineSearchQuery(message: string, contexts: ContextType[]): string {
       query = `clima ${message}`;
     }
   }
-  // Se for notícia, mantém a mensagem original, mas adiciona "últimas notícias" se não tiver
   if (contexts.includes('noticias') && !/(notícia|notícias)/i.test(query)) {
     query = `últimas notícias ${query}`;
   }
@@ -1021,7 +989,7 @@ export async function POST(req: NextRequest) {
     console.log(`[Sprint1] contextos: ${detectedContexts.join(',')} | modelo: ${modelRoute.label} | temp: ${temperature}`);
 
     // ----------------------------------------------------------
-    // 5. PESQUISA FORÇADA (se necessário)
+    // 5. PESQUISA FORÇADA (se necessário) usando searchWeb
     // ----------------------------------------------------------
     let forcedSearchResult = "";
     if (shouldForceSearch(messageText, detectedContexts)) {
@@ -1030,7 +998,7 @@ export async function POST(req: NextRequest) {
       try {
         const toolCall = {
           function: {
-            name: 'pesquisar_internet',
+            name: 'searchWeb',
             arguments: JSON.stringify({ query: searchQuery })
           }
         };
@@ -1043,7 +1011,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ----------------------------------------------------------
-    // 6. Busca de dados de contexto (mantido integralmente)
+    // 6. Busca de dados de contexto (com objetos nomeados)
     // ----------------------------------------------------------
     const basePromises = Promise.all([
       supabase
@@ -1068,19 +1036,27 @@ export async function POST(req: NextRequest) {
         .select('content, category').order('created_at', { ascending: true }),
     ]);
 
-    const conditionalTasks: Promise<any>[] = [];
+    // Condicionais: usando objetos para evitar fragilidade
+    let googleContextBlock: any = null;
+    let microsoftContextBlock: any = null;
+    let emailRadarBlock: any = null;
+    let topicBlock = '';
+    let diaryGoalsBlock = '';
+
     if (blockPlan.loadCalendar) {
-      conditionalTasks.push(getGoogleContext());
-      conditionalTasks.push(getMicrosoftCalendarContext());
+      [googleContextBlock, microsoftContextBlock] = await Promise.all([
+        getGoogleContext(),
+        getMicrosoftCalendarContext()
+      ]);
     }
     if (blockPlan.loadEmail) {
-      conditionalTasks.push(getRecentEmails(undefined, 3, false));
+      emailRadarBlock = await getRecentEmails(undefined, 3, false);
     }
     if (blockPlan.loadTopics) {
-      conditionalTasks.push(buildTopicBlock(userId, messageText));
+      topicBlock = await buildTopicBlock(userId, messageText);
     }
     if (blockPlan.loadDiary) {
-      conditionalTasks.push(buildDiaryGoalsBlock(userId));
+      diaryGoalsBlock = await buildDiaryGoalsBlock(userId);
     }
     
     const [
@@ -1092,26 +1068,8 @@ export async function POST(req: NextRequest) {
         onboardingResult,
         gapsBlock,
         principlesResult,
-      ],
-      conditionalResults
-    ] = await Promise.all([basePromises, Promise.all(conditionalTasks)]);
-    
-    let googleContextBlock = null, microsoftContextBlock = null, emailRadarBlock = null;
-    let topicBlock = '', diaryGoalsBlock = '';
-    let resultIndex = 0;
-    if (blockPlan.loadCalendar) {
-      googleContextBlock = conditionalResults[resultIndex++];
-      microsoftContextBlock = conditionalResults[resultIndex++];
-    }
-    if (blockPlan.loadEmail) {
-      emailRadarBlock = conditionalResults[resultIndex++];
-    }
-    if (blockPlan.loadTopics) {
-      topicBlock = conditionalResults[resultIndex++] || '';
-    }
-    if (blockPlan.loadDiary) {
-      diaryGoalsBlock = conditionalResults[resultIndex++] || '';
-    }
+      ]
+    ] = await Promise.all([basePromises]);
     
     const recommendationsBlock = blockPlan.loadRecommendations
       ? await buildRecommendationsBlock(userId, messageText)
@@ -1246,8 +1204,13 @@ export async function POST(req: NextRequest) {
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     // ----------------------------------------------------------
-    // 7. System prompt – VERSÃO REFORÇADA (com pesquisa automática)
+    // 7. System prompt – VERSÃO REFORÇADA (com pesquisa automática e pergunta pendente)
     // ----------------------------------------------------------
+    let pendingBlock = "";
+    if (pendingQuestion) {
+      pendingBlock = `\n[PERGUNTA PENDENTE] Você perguntou anteriormente: "${pendingQuestion}". O usuário respondeu com: "${messageText}". Use isso para fechar o ciclo.`;
+    }
+
     const systemPrompt = `
 Você é ${assistantName}, assistente pessoal de ${authorName}.
 Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
@@ -1261,11 +1224,12 @@ Para QUALQUER pergunta sobre:
 - Escalações de times, tabelas de campeonatos
 - Qualquer informação que possa ter mudado desde ontem
 
-**VOCÊ DEVE** chamar a ferramenta \`pesquisar_internet\` ANTES de responder.
+**VOCÊ DEVE** chamar a ferramenta \`searchWeb\` ANTES de responder.
 
 **ATENÇÃO:** Se o bloco "[PESQUISA AUTOMÁTICA REALIZADA]" estiver presente no contexto, você DEVE usá-lo como fonte principal e NÃO inventar informações. Se o bloco indicar erro, diga que não foi possível obter dados atualizados.
 
 ${forcedSearchResult}
+${pendingBlock}
 
 ${cleanGoogleContext    ? `[AGENDA GOOGLE ATUALIZADA]\n${cleanGoogleContext}`      : ''}
 ${cleanMicrosoftContext ? `[AGENDA OUTLOOK ATUALIZADA]\n${cleanMicrosoftContext}`  : ''}
@@ -1289,7 +1253,7 @@ ${gapsBlock}
 
 ${principlesBlock ? `[BÚSSOLA — seu jeito de ser no mundo, não regras a citar]\n${principlesBlock}` : ''}
 
-Você tem ferramentas nativas: \`buscar_memoria_longa\`, \`consultar_agenda\`, \`listar_emails_recentes\`, \`salvar_evento\`, \`atualizar_meta\`, \`registrar_no_diario\`, \`pesquisar_internet\`, \`searchWeb\`, \`getWeatherForecast\`, e as de lugares/listas.
+Você tem ferramentas nativas: \`buscar_memoria_longa\`, \`consultar_agenda\`, \`listar_emails_recentes\`, \`salvar_evento\`, \`atualizar_meta\`, \`registrar_no_diario\`, \`searchWeb\`, \`getWeatherForecast\`, e as de lugares/listas.
 
 REGRAS COMPORTAMENTAIS:
 1. FOCO: Responda O QUE FOI PERGUNTADO. Nunca mude de assunto.
@@ -1364,20 +1328,26 @@ REGRAS COMPORTAMENTAIS:
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
     // ----------------------------------------------------------
-    // 11. Loop ReAct com ferramentas
+    // 11. Loop ReAct com ferramentas (com retry na chamada)
     // ----------------------------------------------------------
     let finalResponse = '';
     let attempts = 0;
     const maxAttempts = 5;
 
     while (attempts < maxAttempts) {
-      const response = await callOpenRouterWithTools(
+      const response = await withRetry(() => callOpenRouterWithTools(
         conversationMessages,
         tools,
         modelRoute.model,
         temperature,
         12000
-      );
+      ), 1, 2000); // tenta uma vez em caso de falha de rede
+
+      if (!response) {
+        finalResponse = "Desculpe, tive um problema técnico ao processar sua solicitação. Pode tentar novamente?";
+        break;
+      }
+
       const { content, toolCalls } = response;
 
       if (!toolCalls || toolCalls.length === 0) {
@@ -1496,18 +1466,3 @@ REGRAS COMPORTAMENTAIS:
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
-```
-
-Principais alterações realizadas:
-
-1. Importações
-   · Adicionadas searchWeb e getWeatherForecast ao import de @/lib/google.
-2. Array tools
-   · Incluídos os objetos de definição das novas ferramentas searchWeb e getWeatherForecast, seguindo o formato de função do OpenRouter.
-3. Executor executeTool
-   · Adicionados os casos searchWeb e getWeatherForecast no switch.
-   · Ambos chamam as funções importadas e tratam erros, retornando uma string adequada.
-4. System Prompt
-   · Atualizada a lista de ferramentas disponíveis no final do prompt para incluir \searchWeb\` e \`getWeatherForecast\``.
-
-O restante do código permanece inalterado, garantindo que a lógica existente de classificação de contexto, roteamento de modelo e recuperação de memória continue funcionando normalmente. As novas ferramentas estão prontas para serem usadas pelo modelo sempre que ele detectar necessidade de informações atualizadas ou previsão do tempo.
