@@ -33,10 +33,25 @@ interface Classification {
 }
 
 // ============================================================
+// GUARD — valida que userId é bigint numérico
+// Bloqueia UUID do Auth em qualquer ponto de entrada público
+// ============================================================
+
+function assertNumericUserId(userId: string, caller: string): void {
+  if (!/^\d+$/.test(userId)) {
+    throw new Error(
+      `[${caller}] FATAL: userId não é bigint numérico — recebeu: "${userId}". ` +
+      `Verifique se numericUserIdStr está sendo passado corretamente pelo chamador.`
+    );
+  }
+}
+
+// ============================================================
 // BLOCO DE GAPS PARA O PROMPT DO WEBHOOK
 // ============================================================
 
 export async function buildGapsBlock(userId: string, currentMessage?: string): Promise<string> {
+  assertNumericUserId(userId, 'buildGapsBlock');
   try {
     const { data } = await supabase
       .from('users').select('pending_gaps').eq('id', userId).single();
@@ -44,7 +59,6 @@ export async function buildGapsBlock(userId: string, currentMessage?: string): P
     if (gaps.length === 0) return '';
 
     // Detecta se a mensagem atual tem contexto incompatível com os gaps pendentes
-    // Ex: gap sobre projeto não deve ser perguntado numa conversa sobre família
     const msgLower = (currentMessage || '').toLowerCase();
     const isEmotional   = /dific|barra|trist|saudade|relação|família|filho|esposa|mãe|pai|deus|fé|oração/.test(msgLower);
     const isAboutDate   = /aniversário|data|nascimento|casamento|páscoa|natal/.test(msgLower);
@@ -56,19 +70,11 @@ export async function buildGapsBlock(userId: string, currentMessage?: string): P
       .map(g => `- [${(g.urgencia || 'media').toUpperCase()}] ${g.context}\n  → ${g.hint}`)
       .join('\n');
 
-    const restricao = isEmotional
-      ? 'AGORA NÃO: conversa tem tom emocional — não pergunte gaps nessa mensagem.'
-      : isAboutDate
-      ? 'AGORA NÃO: conversa é sobre datas — só pergunte gap se for sobre o mesmo assunto.'
-      : blockProjectGap
-      ? 'AGORA NÃO: não pergunte sobre projetos quando o assunto for outro.'
-      : 'REGRA: Pergunte UMA lacuna por vez, de forma leve. Nunca interrompa o assunto principal.';
+    const isEmotionalStrict = isEmotional;
+    const temAberturaReal = !isEmotionalStrict && !isAboutDate && !blockProjectGap;
 
-    // Gaps são memória silenciosa — o Jarvis guarda e espera o momento certo
-    // Só aparece no prompt quando o contexto da conversa for compatível
-    const temAberturaReal = !isEmotional && !isAboutDate && !blockProjectGap;
-
-    if (!temAberturaReal) return ''; // silêncio total — não injeta no prompt
+    // Silêncio total — não injeta no prompt se contexto for incompatível
+    if (!temAberturaReal) return '';
 
     return [
       '[LEMBRETE INTERNO — pergunte apenas se cair naturalmente na conversa]',
@@ -88,6 +94,9 @@ export async function extractAndSummarize(
   userMessage: string,
   aiReply: string = ''
 ): Promise<string> {
+  // ── GUARD: bloqueia UUID do Auth aqui — ponto de entrada principal ──
+  assertNumericUserId(userId, 'extractAndSummarize');
+
   try {
     const { data: userData } = await supabase
       .from('users').select('pending_gaps').eq('id', userId).single();
@@ -110,7 +119,6 @@ export async function extractAndSummarize(
     console.log('[Extrator/classify] contextos:', classification.contexts);
     const msg = userMessage.toLowerCase();
 
-    // Guarda de contexto — evita rodar extractors desnecessários
     const temPerfil   = classification.contexts.includes('perfil');
     const temFamilia  = classification.contexts.includes('familia');
     const temEvento   = classification.contexts.includes('evento');
@@ -279,7 +287,6 @@ async function detectGaps(
 ): Promise<DetectedGap[]> {
   if (contexts.length === 0) return [];
 
-  // Busca perfil COMPLETO para evitar perguntar o que já sabemos
   const [profileRes, childrenRes] = await Promise.all([
     supabase.from('user_profiles')
       .select(`full_name, preferred_name, spouse_name, city, current_job,
@@ -292,10 +299,6 @@ async function detectGaps(
 
   const p          = profileRes.data;
   const childNames = (childrenRes.data || []).map((c: any) => c.name);
-
-  // Cruza campos relacionados — evita gap para dado que já existe com outro nome
-  const spouseBirthKnown = !!(p as any)?.spouse_birthday ||
-    (profileRes as any)?.data?.spouse_birthday;
 
   const prompt = `Identifique lacunas de informação. Máximo 2 gaps relevantes.
 
@@ -340,7 +343,6 @@ Retorne {"gaps": []} se não há lacunas ou se já sabemos tudo.`;
   try {
     const data = JSON.parse(await callAI(prompt, 300));
     const validContexts = ['perfil', 'familia'];
-    // Só gera gaps se o contexto for perfil ou família
     if (!contexts.some(c => validContexts.includes(c))) return [];
     return (data.gaps || []).filter((g: DetectedGap) => g.urgencia !== 'baixa');
   } catch { return []; }
@@ -348,11 +350,9 @@ Retorne {"gaps": []} se não há lacunas ou se já sabemos tudo.`;
 
 // ============================================================
 // EXTRATOR: PERFIL COMPLETO
-// 1 query inicial para buscar estado atual, evita múltiplas queries
 // ============================================================
 
 async function extractPerfil(userId: string, userMessage: string): Promise<void> {
-  // Busca perfil atual UMA VEZ para usar em todas as verificações
   const { data: current } = await supabase
     .from('user_profiles')
     .select('full_name, preferred_name, gender, schools, birth_date, birth_city, birth_state, phone, whatsapp, father_name, mother_name, faith_profile, profession, company')
@@ -399,7 +399,6 @@ REGRAS:
     const data = JSON.parse(await callAI(prompt, 400));
     const patch: Record<string, any> = {};
 
-    // Escudo universal: só atualiza campo se melhorar o que já existe
     function set(field: string, newVal: any, type: 'name'|'once'|'array'|'number' = 'once') {
       if (newVal === null || newVal === undefined || newVal === '') return;
       const cur = (current as any)?.[field];
@@ -421,7 +420,6 @@ REGRAS:
     }
 
     set('full_name',      data.nome_completo,      'name');
-    // preferred_name: atualiza sempre que usuário afirmar explicitamente
     if (data.nome_preferido) patch.preferred_name = data.nome_preferido;
     set('nickname',       data.apelido,             'once');
     set('city',           data.cidade,              'once');
@@ -452,7 +450,6 @@ REGRAS:
       set('education_level', data.escolaridade, 'once');
     }
 
-    // genero: só grava se vazio (campo sensível — não inferir depois de definido)
     if (data.genero && !current?.gender) {
       const g = data.genero.toLowerCase();
       patch.gender = g.includes('masc') || g === 'm' ? 'masculino'
@@ -471,7 +468,6 @@ REGRAS:
 
 // ============================================================
 // EXTRATOR: FAMÍLIA
-// Verifica o que já existe antes de sobrescrever
 // ============================================================
 
 async function extractFamilia(
@@ -482,7 +478,6 @@ async function extractFamilia(
   const hasEsposaGap = gaps.some(g => g.field === 'nome_esposa' || g.field === 'nome_marido');
   const hasFilhoGap  = gaps.some(g => g.field === 'nome_filho');
 
-  // Busca o que já existe para não sobrescrever com dados piores
   const { data: current } = await supabase
     .from('user_profiles')
     .select('spouse_name, spouse_birthday, father_name, mother_name')
@@ -538,7 +533,6 @@ REGRAS:
   null se nenhum fato ou dinâmica mencionada`;
 
   try {
-    // Tokens dinâmicos: base 300 + 100 por filho existente (evita truncamento)
     const { data: existingKids } = await supabase.from('children')
       .select('id').eq('parent_id', userId);
     const kidCount = Math.max((existingKids || []).length, 1);
@@ -552,7 +546,6 @@ REGRAS:
     const conjuge = data.esposa?.nome ? data.esposa : data.marido?.nome ? data.marido : null;
     if (conjuge?.nome) {
       const patch: Record<string, any> = { user_id: userId, updated_at: new Date().toISOString() };
-      // Só atualiza nome se ainda não tinha ou se vier nome mais completo
       if (!current?.spouse_name || conjuge.nome.split(' ').length > current.spouse_name.split(' ').length) {
         patch.spouse_name = conjuge.nome;
       }
@@ -571,7 +564,6 @@ REGRAS:
           priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.95,
         });
       }
-      // Registra cônjuge em persons
       await upsertPerson(userId, conjuge.nome, 'spouse', {
         noteText: conjuge.nota ?? undefined,
       });
@@ -584,7 +576,6 @@ REGRAS:
 
       const firstName = filho.nome.split(' ')[0].toLowerCase();
 
-      // Match por primeiro nome (case-insensitive) — evita duplicação
       const { data: allChildren } = await supabase.from('children')
         .select('id, name, birth_date, nickname, child_user_id')
         .eq('parent_id', userId);
@@ -593,7 +584,6 @@ REGRAS:
         c.name.split(' ')[0].toLowerCase() === firstName
       ) || null;
 
-      // Nascimento: data exata tem precedência sobre idade
       let birth_date: string | null = null;
       if (filho.nascimento) {
         birth_date = normalizeDate(filho.nascimento);
@@ -601,19 +591,16 @@ REGRAS:
         birth_date = `${new Date().getFullYear() - filho.idade}-01-01`;
       }
 
-      // Idade real a partir da data de nascimento
       const ageReal = birth_date
         ? Math.floor((Date.now() - new Date(birth_date).getTime()) / (1000 * 60 * 60 * 24 * 365.25))
         : filho.idade;
       const life_phase = getLifePhase(ageReal);
 
-      // Nome: só atualiza se vier mais completo
       const existingName  = ex?.name || '';
       const existingWords = existingName.trim().split(/\s+/).length;
       const newWords      = filho.nome.trim().split(/\s+/).length;
       const nameToSave    = (!existingName || newWords > existingWords) ? filho.nome : existingName;
 
-      // Nickname: se filho tem conta no app, usa preferred_name da conta
       let nicknameToSave: string | null = ex?.nickname || null;
       if (ex?.child_user_id) {
         const { data: childUser } = await supabase
@@ -621,14 +608,12 @@ REGRAS:
           .eq('user_id', String(ex.child_user_id)).maybeSingle();
         nicknameToSave = childUser?.preferred_name || childUser?.full_name?.split(' ')[0] || null;
       } else {
-        // Sem conta: padrão = primeiro nome quando apelido não informado
         const apelido  = filho.apelido || nameToSave.split(' ')[0];
         const apWords  = apelido.trim().split(/\s+/).length;
         const curWords = (ex?.nickname || '').trim().split(/\s+/).length;
         if (!ex?.nickname || apWords > curWords) nicknameToSave = apelido;
       }
 
-      // Normaliza gênero para valores aceitos pelo CHECK constraint
       let generoNorm: string | null = null;
       if (filho.genero) {
         const g = filho.genero.toLowerCase();
@@ -642,7 +627,6 @@ REGRAS:
         name: nameToSave,
         updated_at: new Date().toISOString(),
       };
-      // Só inclui birth_date e life_phase se tiver valor — nunca sobrescreve com null
       if (birth_date)  childData.birth_date  = birth_date;
       if (life_phase && (!ex || birth_date)) childData.life_phase = life_phase;
       if (nicknameToSave)              childData.nickname          = nicknameToSave;
@@ -653,7 +637,6 @@ REGRAS:
       if (filho.necessidades_especiais) childData.special_needs     = filho.necessidades_especiais;
       if (filho.outro_pai)             childData.other_parent_name  = filho.outro_pai === 'desconhecido' ? null : filho.outro_pai;
 
-      // lev_notes: acumula fatos marcantes — nunca sobrescreve, só adiciona
       if (filho.nota) {
         const { data: childRec } = await supabase.from('children')
           .select('lev_notes').eq('id', ex?.id || '').maybeSingle();
@@ -664,21 +647,16 @@ REGRAS:
         }
       }
 
-      // autonomy_level: frase explícita tem precedência, senão infere por life_phase
       const autonomyByPhase: Record<string, number> = {
         baby: 1, child: 2, teen: 3, young_adult: 4, adult: 5,
       };
       if (filho.autonomia) {
         childData.autonomy_level = Math.min(5, Math.max(1, parseInt(String(filho.autonomia))));
       } else if (!ex) {
-        // Só infere na criação — não sobrescreve em updates sem dado explícito
         childData.autonomy_level = autonomyByPhase[life_phase] || 2;
       }
 
-      // nivel_escolar → só afeta life_phase para crianças pequenas sem data de nascimento
-      // NUNCA sobrescreve life_phase calculada pela data de nascimento real
       if (filho.nivel_escolar) {
-        // life_phase por nível: só aplica se não temos birth_date (sem dado real para calcular)
         if (!birth_date && !ex?.birth_date) {
           const nivelToPhase: Record<string, string> = {
             creche: 'baby', pre: 'child', fundamental: 'child',
@@ -686,21 +664,17 @@ REGRAS:
           };
           if (nivelToPhase[filho.nivel_escolar]) childData.life_phase = nivelToPhase[filho.nivel_escolar];
         }
-        // Grade padrão para creche/pre quando série não informada
         if (!filho.serie && ['creche','pre'].includes(filho.nivel_escolar)) {
           childData.school_grade = filho.nivel_escolar;
         }
-        // nao_estuda: limpa escola e grava nota com nível concluído
         if (filho.nivel_escolar === 'nao_estuda') {
           childData.school_name  = null;
           childData.school_grade = null;
-          // Registra em lev_notes o nível concluído
           const nivelLabel: Record<string, string> = {
             medio: 'Ensino médio concluído',
             superior: 'Ensino superior concluído',
             fundamental: 'Ensino fundamental concluído',
           };
-          // Tenta inferir o nível concluído da mensagem original
           const nivelConcluido = filho.serie
             ? `${filho.serie} concluído`
             : nivelLabel[filho.serie || ''] || 'Ensino médio concluído';
@@ -726,7 +700,6 @@ REGRAS:
         childId = inserted?.id;
       }
 
-      // Alias: só cria se apelido ≠ primeiro nome
       if (nicknameToSave && nicknameToSave.toLowerCase() !== firstName) {
         await upsertAlias(userId, nicknameToSave, 'child', childId || null, nameToSave);
       }
@@ -738,7 +711,6 @@ REGRAS:
           priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.90,
         });
       }
-      // Registra filho em persons
       await upsertPerson(userId, nameToSave, 'child', {
         nickname: nicknameToSave ?? undefined,
       });
@@ -771,11 +743,7 @@ REGRAS:
 }
 
 // ============================================================
-// EXTRATOR: RELAÇÕES / DINÂMICAS
-// ============================================================
-
-// ============================================================
-// UPSERT PERSON — cria ou atualiza identidade + peso emocional
+// UPSERT PERSON
 // ============================================================
 
 const INITIAL_WEIGHTS: Record<string, number> = {
@@ -798,7 +766,6 @@ async function upsertPerson(
   try {
     const baseWeight = INITIAL_WEIGHTS[type] ?? 0.1;
 
-    // Busca pessoa existente
     const { data: existing } = await supabase
       .from('persons')
       .select('id, emotional_weight, nickname')
@@ -810,8 +777,7 @@ async function upsertPerson(
     let personId: string;
 
     if (existing) {
-      // Atualiza peso e última menção
-      const delta = options?.weightDelta ?? 0.02; // menção = +0.02
+      const delta = options?.weightDelta ?? 0.02;
       const newWeight = Math.min(1.0, existing.emotional_weight + delta);
       await supabase.from('persons').update({
         emotional_weight: newWeight,
@@ -821,7 +787,6 @@ async function upsertPerson(
       }).eq('id', existing.id);
       personId = existing.id;
     } else {
-      // Cria nova pessoa
       const { data: created } = await supabase.from('persons').insert({
         user_id:          userId,
         name,
@@ -833,7 +798,6 @@ async function upsertPerson(
       personId = created?.id;
     }
 
-    // Salva nota se fornecida — upsert evita duplicatas
     if (options?.noteText && personId) {
       await supabase.from('person_notes').upsert({
         user_id:     userId,
@@ -853,8 +817,11 @@ async function upsertPerson(
   }
 }
 
+// ============================================================
+// EXTRATOR: RELAÇÕES / DINÂMICAS
+// ============================================================
+
 async function extractRelacao(userId: string, userMessage: string): Promise<void> {
-  // Busca pessoas conhecidas para dar contexto ao modelo
   const { data: prof } = await supabase
     .from('user_profiles').select('spouse_name, father_name, mother_name').eq('user_id', userId).maybeSingle();
   const { data: kids } = await supabase.from('children').select('name, nickname, other_parent_name').eq('parent_id', userId);
