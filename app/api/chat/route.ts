@@ -520,6 +520,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, delayMs = 1000
 // POST — Handler Principal (Híbrido)
 // ============================================================
 export async function POST(req: NextRequest) {
+  console.log('--- REQUISIÇÃO RECEBIDA NO V8 ---');
   console.log('[chat] 1. Iniciando parse HÍBRIDO (V8)');
   try {
     console.time('[Performance] total');
