@@ -565,7 +565,7 @@ export async function POST(req: NextRequest) {
     if (isForcedSearch) {
       const query = refineSearchQuery(messageText, detectedContexts);
       console.log(`[tool] searchWeb: "${query}"`);
-      const searchRes = await searchWeb({ query });
+      const searchRes = await searchWeb(query);
       if (searchRes) {
         searchBlock = `[BUSCA WEB RECENTE]\n${searchRes}\n`;
       }
