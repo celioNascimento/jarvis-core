@@ -1130,17 +1130,27 @@ export async function POST(req: NextRequest) {
     // Resolve authUserId via Auth Admin (fonte confiável)
     let authUserId: string = numericUserIdStr; // fallback final
 
-    if (userEmail) {
-      try {
-        const { data: authData } = await supabase.auth.admin.getUserByEmail(userEmail);
-        if (authData?.user?.id) {
-          authUserId = authData.user.id;
-          console.log('[chat] authUserId resolvido via email:', authUserId);
-        }
-      } catch (e) {
-        console.warn('[chat] Falha ao buscar authUserId via email, tentando fallbacks:', e);
+    // No arquivo ./app/api/chat/route.ts
+
+if (userEmail) {
+  try {
+    // Substitua getUserByEmail por listUsers com filtro
+    const { data: { users }, error: authError } = await supabase.auth.admin.listUsers({
+      filters: {
+        email: userEmail
       }
+    });
+
+    const authUser = users?.[0];
+
+    if (authUser?.id) {
+      authUserId = authUser.id;
+      console.log('[chat] authUserId resolvido via email:', authUserId);
     }
+  } catch (err) {
+    console.error('[chat] Erro ao buscar authUserId por email:', err);
+  }
+}
 
     // Fallback 1: tempUserId é UUID válido → usa diretamente
     if (authUserId === numericUserIdStr && tempUserId) {
