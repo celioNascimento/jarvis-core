@@ -219,6 +219,14 @@ function planContextualBlocks(contexts: ContextType[]) {
 // ============================================================
 function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
   const lower = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // NOVA REGRA: Se o usuário fala de si mesmo (eu, meu, minha), priorizamos o banco de dados.
+  const personalKeywords = /\b(eu|meu|minha|comecei|trabalhei|trabalho|nasci|moro|familia|esposa|filho)\b/i;
+  if (personalKeywords.test(lower)) {
+    console.log('[shouldForceSearch] Palavras pessoais detectadas, abortando busca web.');
+    return false;
+  }
+
   const keywords = /\b(jogo|partida|futebol|basquete|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificacao|tabela|artilheiro|resultado|placar|hoje tem|quando e|proximo|escalacao|expo|feira|evento|comeca|inicio|data de|horario de|edicao|noticia|ultimas|recente|aconteceu|clima|temperatura|chuva|chover|previsao|cotacao|preco do|valor do|dolar|euro|bitcoin|ibovespa)\b/i;
   
   if (keywords.test(lower)) {
@@ -864,7 +872,7 @@ REGRAS COMPORTAMENTAIS:
 
     let extractionSummary = '';
     if (!isLikelyNoise) {
-      try { extractionSummary = await extractAndSummarize(authUserId, authorName, messageText); } 
+      try { extractionSummary = await extractAndSummarize(numericUserIdStr, authorName, messageText); } 
       catch (e) { console.error('[Extrator/pre] Erro:', e); }
     }
 
