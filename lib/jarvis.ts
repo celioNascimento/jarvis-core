@@ -12,13 +12,14 @@ export const supabase = createClient(
 
 // ============================================================
 // 2. MOTOR DE IA (OpenRouter)
+// CORREÇÃO: era OPENAI_API_KEY — trocado para OPENROUTER_API_KEY
 // ============================================================
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 export async function callOpenRouter(
   input: string | ChatMessage[],
   model: string = "google/gemini-2.0-flash-001",
-  temperature: number = 0.7   // SPRINT 1 — temperatura adaptativa
+  temperature: number = 0.7
 ) {
   try {
     const controller = new AbortController();
@@ -32,7 +33,8 @@ export async function callOpenRouter(
       method: "POST",
       signal: controller.signal,
       headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        // CORREÇÃO: era OPENAI_API_KEY — OpenRouter exige sua própria chave
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -65,13 +67,16 @@ export async function callOpenRouter(
 
 // ============================================================
 // 3. MOTOR VETORIAL
+// CORREÇÃO: era OPENAI_API_KEY — trocado para OPENROUTER_API_KEY
+// (embeddings são roteados pelo OpenRouter via openai/text-embedding-3-small)
 // ============================================================
 export async function generateEmbedding(text: string) {
   try {
     const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        // CORREÇÃO: era OPENAI_API_KEY
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -104,6 +109,7 @@ export async function sendTelegram(chatId: string | number, text: string) {
 
 // ============================================================
 // 5. GERENCIADOR DE SESSÃO
+// sessions.user_id é bigint — recebe numericUserIdStr (correto)
 // ============================================================
 export async function getOrCreateSession(userId: string): Promise<string> {
   try {
@@ -148,6 +154,7 @@ export async function getOrCreateSession(userId: string): Promise<string> {
 
 // ============================================================
 // 6. GERENCIADOR DE PERGUNTA PENDENTE
+// users.id é bigint — recebe numericUserIdStr (correto)
 // ============================================================
 export async function getPendingQuestion(userId: string): Promise<{ question: string | null; context: any }> {
   try {
@@ -264,7 +271,6 @@ TAREFA: Integre as novas informações ao Dossiê existente.
 - Retorne APENAS o Dossiê atualizado em português, sem comentários, sem markdown excessivo
     `.trim();
 
-    // compactMemory usa modelo padrão e temperatura baixa (factual)
     const newContext = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.3);
 
     if (!memoriaEhValida(newContext)) {
