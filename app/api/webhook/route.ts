@@ -23,7 +23,7 @@ import {
   createGoogleEvent,
   updateGoogleEvent,
   deleteGoogleEvent,
-  searchWeb,               // <-- ÚNICA FERRAMENTA DE BUSCA
+  searchWeb,
   getWeatherForecast
 } from '@/lib/google';
 import { checkProximidade } from '@/lib/geo';
@@ -206,7 +206,7 @@ function classifyContextRegex(text: string): ContextType[] {
     [/quando falo em|quando eu falar|pode chamar de|se eu disser|apelido|alias/i, 'alias'],
     [/jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo|escalação/i, 'esporte'],
     [/noticia|notícias|últimas|recente|aconteceu|hoje no|manchete|jornal|portal|g1|globo|folha|estadão/i, 'noticias'],
-    [/clima|tempo|temperatura|chuva|frio|calor|previsão|amanhecer|entardecer|umidade|vento/i, 'clima'],
+    [/clima|tempo|temperatura|chuva|frio|calor|previsão|amanhecer|entardecer|umidade|vento|chover|chuvoso/i, 'clima'],
   ];
   const detected: ContextType[] = [];
   for (const [rx, ctx] of rules) {
@@ -627,10 +627,12 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
     case 'pesquisar_internet':
     case 'searchWeb':
       try {
+        console.log(`[executeTool] Chamando searchWeb com query: "${parsedArgs.query}"`);
         const result = await searchWeb(parsedArgs.query);
+        console.log(`[executeTool] Resultado da busca: ${result.substring(0, 200)}...`);
         return result;
       } catch (error) {
-        console.error('[searchWeb] Erro:', error);
+        console.error('[executeTool] Erro em searchWeb:', error);
         return `Erro na busca: ${error instanceof Error ? error.message : 'desconhecido'}`;
       }
 
@@ -795,15 +797,21 @@ function planContextualBlocks(contexts: ContextType[]): {
 }
 
 // ============================================================
-// DETECTA SE A PERGUNTA EXIGE PESQUISA FORÇADA
+// DETECTA SE A PERGUNTA EXIGE PESQUISA FORÇADA (versão melhorada)
 // ============================================================
 function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
   const lower = message.toLowerCase();
-  const keywords = /jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificação|tabela|artilheiro|resultado|placar|hoje tem|quando é|próximo|escalação|expo|feira|evento|começa|início|data de|horário de|edição|notícia|últimas|recente|aconteceu|clima|tempo|temperatura|previsão|cotação|preço do|valor do|dólar|euro|bitcoin|ibovespa/i;
+  // Palavras que indicam necessidade de informação atualizada
+  const keywords = /jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificação|tabela|artilheiro|resultado|placar|hoje tem|quando é|próximo|escalação|expo|feira|evento|começa|início|data de|horário de|edição|notícia|últimas|recente|aconteceu|clima|tempo|temperatura|chuva|chover|previsão|cotação|preço do|valor do|dólar|euro|bitcoin|ibovespa/i;
   
   if (!keywords.test(lower)) return false;
+  
+  // Se já há contexto de esporte, notícias ou clima, força pesquisa
   if (contexts.includes('esporte') || contexts.includes('noticias') || contexts.includes('clima')) return true;
-  if (/(quando|qual|qual é|como está|como fica|o que aconteceu|o que rolou)/i.test(lower)) return true;
+  
+  // Se a pergunta contém "quando", "qual", "qual é", "como está", "vai", etc., provavelmente precisa de dados atuais
+  if (/(quando|qual|qual é|como está|como fica|o que aconteceu|o que rolou|vai chover|vai ter|como vai ser)/i.test(lower)) return true;
+  
   return false;
 }
 
@@ -978,7 +986,9 @@ export async function POST(req: NextRequest) {
     // 5. PESQUISA FORÇADA (se necessário) – agora usando searchWeb
     // ----------------------------------------------------------
     let forcedSearchResult = "";
-    if (shouldForceSearch(messageText, detectedContexts)) {
+    const shouldForce = shouldForceSearch(messageText, detectedContexts);
+    console.log(`[ForcedSearch] shouldForceSearch = ${shouldForce}`);
+    if (shouldForce) {
       const searchQuery = refineSearchQuery(messageText, detectedContexts);
       console.log(`[ForcedSearch] Executando pesquisa para: ${searchQuery}`);
       try {
@@ -991,6 +1001,7 @@ export async function POST(req: NextRequest) {
         };
         const result = await executeTool(toolCall, userId, {});
         forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA]\nConsulta: "${searchQuery}"\nResultado:\n${result}`;
+        console.log(`[ForcedSearch] Resultado obtido (primeiros 200 chars): ${result.substring(0, 200)}`);
       } catch (e) {
         console.error("[ForcedSearch] Falha:", e);
         forcedSearchResult = "\n[ERRO NA PESQUISA] Não foi possível obter informações atualizadas.";
