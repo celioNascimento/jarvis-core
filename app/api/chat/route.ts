@@ -215,18 +215,18 @@ function planContextualBlocks(contexts: ContextType[]) {
 }
 
 // ============================================================
-// Busca forçada (Refinada)
+// Busca forçada (Refinada com normalização)
 // ============================================================
 function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
-  const lower = message.toLowerCase();
-  const keywords = /\b(jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificação|tabela|artilheiro|resultado|placar|hoje tem|quando é|próximo|escalação|expo|feira|evento|começa|início|data de|horário de|edição|notícia|últimas|recente|aconteceu|clima|tempo|temperatura|chuva|chover|previsão|cotação|preço do|valor do|dólar|euro|bitcoin|ibovespa)\b/i;
+  const lower = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const keywords = /\b(jogo|partida|futebol|basquete|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificacao|tabela|artilheiro|resultado|placar|hoje tem|quando e|proximo|escalacao|expo|feira|evento|comeca|inicio|data de|horario de|edicao|noticia|ultimas|recente|aconteceu|clima|temperatura|chuva|chover|previsao|cotacao|preco do|valor do|dolar|euro|bitcoin|ibovespa)\b/i;
   
   if (keywords.test(lower)) {
     console.log('[shouldForceSearch] Palavra-chave detectada, forçando busca');
     return true;
   }
   
-  if (/(quando|qual|qual é|como está|como fica|o que aconteceu|o que rolou|vai chover|vai ter|como vai ser)/i.test(lower)) {
+  if (/(quando|qual e|como esta|como fica|o que aconteceu|o que rolou|vai chover|vai ter|como vai ser)/i.test(lower)) {
     console.log('[shouldForceSearch] Palavra temporal detectada, forçando busca');
     return true;
   }
@@ -239,13 +239,15 @@ function refineSearchQuery(message: string, contexts: ContextType[]): string {
   let query = message.trim();
   
   if (contexts.includes('esporte')) {
-    // Limpa a query para evitar duplicidade capturada anteriormente
+    // Remove palavras interrogativas iniciais
     const cleanMsg = message.replace(/^(quando é|quando e|qual o|qual e|quem joga|onde e|onde vai ser)\s+/i, '').trim();
     query = `${cleanMsg} 2026`.replace(/\?+/g, '');
     
-    // Adiciona "próximo jogo" apenas se a intenção for omissa
+    // Adiciona "próximo jogo" apenas se a intenção for omissa e não houver duplicidade
     if (!query.toLowerCase().includes('jogo') && !query.toLowerCase().includes('escalação')) {
-       query = `próximo jogo ${query}`;
+      if (!query.toLowerCase().includes('próximo') && !query.toLowerCase().includes('data') && !query.toLowerCase().includes('horário')) {
+        query = `próximo jogo ${query}`;
+      }
     }
   } else if (contexts.includes('evento') && /expo|feira|evento|começa|início/i.test(message)) {
     const currentYear = new Date().getFullYear();
@@ -463,7 +465,7 @@ async function executeTool(toolCall: any, userId: string): Promise<string> {
     }
     case 'ver_lista': {
       const pid = await getPlaceId(p.lugar);
-      if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
+      if (!pid) return `Lista de ${p.lugar} está vazia.`;
       const { data: itens } = await supabase.from('shopping_items').select('item, done').eq('user_id', userId).eq('place_id', pid).order('done');
       if (!itens?.length) return `Lista de ${p.lugar} está vazia.`;
       return `Lista de ${p.lugar}:\n${itens.map((i: any) => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
