@@ -799,8 +799,15 @@ function planContextualBlocks(contexts: ContextType[]): {
 // ============================================================
 // DETECTA SE A PERGUNTA EXIGE PESQUISA FORÇADA (versão melhorada)
 // ============================================================
+
 function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
+  console.log('[shouldForceSearch] Forçando true para teste');
+  return true; // SEMPRE fará a busca
+}
+
+/* function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
   const lower = message.toLowerCase();
+  
   // Palavras que indicam necessidade de informação atualizada
   const keywords = /jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificação|tabela|artilheiro|resultado|placar|hoje tem|quando é|próximo|escalação|expo|feira|evento|começa|início|data de|horário de|edição|notícia|últimas|recente|aconteceu|clima|tempo|temperatura|chuva|chover|previsão|cotação|preço do|valor do|dólar|euro|bitcoin|ibovespa/i;
   
@@ -814,6 +821,7 @@ function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
   
   return false;
 }
+ */
 
 // ============================================================
 // REFINA A QUERY DE BUSCA COM BASE NA MENSAGEM
