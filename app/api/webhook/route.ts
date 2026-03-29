@@ -1,4 +1,4 @@
-// app/api/chat/route.ts
+// app/webhook/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import {
   supabase,
@@ -854,7 +854,7 @@ function refineSearchQuery(message: string, contexts: ContextType[]): string {
 // WEBHOOK PRINCIPAL
 // ============================================================
 export async function POST(req: NextRequest) {
-  console.log('[DEPLOY] Versão com busca forçada - 2025-03-29');
+  console.log('[WEBHOOK] Versão com busca forçada ativa - 29/03/2025');
   try {
     console.time('[Performance] total');
     // ----------------------------------------------------------
@@ -1010,7 +1010,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ----------------------------------------------------------
-    // 6. Busca de dados de contexto (mantido igual)
+    // 6. Busca de dados de contexto
     // ----------------------------------------------------------
     const basePromises = Promise.all([
       supabase
@@ -1331,7 +1331,7 @@ REGRAS COMPORTAMENTAIS:
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
     // ----------------------------------------------------------
-    // 11. Loop ReAct com ferramentas (mantido)
+    // 11. Loop ReAct com ferramentas
     // ----------------------------------------------------------
     let finalResponse = '';
     let attempts = 0;
