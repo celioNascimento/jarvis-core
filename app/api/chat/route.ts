@@ -1,10 +1,12 @@
 // app/api/chat/route.ts
-// Motor V8 Unificado — Arquitetura Dual-ID: Separação cirúrgica entre Auth UUID (brain, lugares) e Numeric ID (events, goals)
-// CORREÇÕES APLICADAS:
-//   1. users lookup aceita userId OU email (fallback robusto, não quebra clientes antigos)
-//   2. pending_question restaurado (campo consultado direto da tabela users)
-//   3. API key corrigida: OPENROUTER_API_KEY para chamadas ao OpenRouter
-//   4. Imports restaurados: setPendingQuestion, clearPendingQuestion, getPendingQuestion
+// Motor V8 Unificado — Arquitetura Dual-ID
+//
+// CORREÇÕES v8.1:
+//   1. assertNumericUserId: valida que numericUserIdStr é bigint antes de qualquer uso
+//   2. Fallback de userId lookup: se email retorna registro mas id não é numérico, aborta cedo
+//   3. authUserId resolvido via supabase.auth.admin.getUserByEmail() — fonte confiável
+//   4. pending_question lido direto do userRecord
+//   5. Todos os background tasks e tool calls usam numericUserIdStr validado
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -55,6 +57,19 @@ import {
 export const maxDuration = 30;
 
 // ============================================================
+// GUARD — valida que userId é bigint numérico
+// Falha rápido, log claro, nunca deixa UUID vazar para tabelas jarvis
+// ============================================================
+function assertNumericUserId(userId: string, caller: string): void {
+  if (!/^\d+$/.test(userId)) {
+    throw new Error(
+      `[${caller}] FATAL: userId não é bigint numérico — recebeu: "${userId}". ` +
+      `Certifique-se de passar numericUserIdStr (String(userRecord.id)) e não o UUID do Auth.`
+    );
+  }
+}
+
+// ============================================================
 // Cache de embeddings
 // ============================================================
 const embeddingCache = new Map<string, number[]>();
@@ -69,6 +84,7 @@ async function getCachedEmbedding(text: string): Promise<number[]> {
 // Atualiza relevância dos eventos (decay)
 // ============================================================
 async function updateEventRelevance(userId: string) {
+  assertNumericUserId(userId, 'updateEventRelevance');
   const hoje = new Date();
   hoje.setHours(0, 0, 0, 0);
   const { data: events } = await supabase
@@ -128,6 +144,7 @@ async function updateEventRelevance(userId: string) {
 // Health check para L3/L4
 // ============================================================
 async function ensureMemoryHealth(userId: string) {
+  assertNumericUserId(userId, 'ensureMemoryHealth');
   try {
     await updateEventRelevance(userId);
     const { data: topics } = await supabase
@@ -154,7 +171,7 @@ async function ensureMemoryHealth(userId: string) {
 }
 
 // ============================================================
-// Classificação de contexto — com esporte, noticias, clima
+// Classificação de contexto
 // ============================================================
 type ContextType =
   | 'agenda'
@@ -281,16 +298,8 @@ async function classifyContextWithL4(
 // ============================================================
 function routeModel(contexts: ContextType[]): { model: string; label: string } {
   const complex: ContextType[] = [
-    'agenda',
-    'projeto',
-    'familia',
-    'emocao',
-    'diario',
-    'meta',
-    'saude',
-    'esporte',
-    'noticias',
-    'clima',
+    'agenda', 'projeto', 'familia', 'emocao', 'diario',
+    'meta', 'saude', 'esporte', 'noticias', 'clima',
   ];
   return contexts.some((c) => complex.includes(c))
     ? { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' }
@@ -299,46 +308,16 @@ function routeModel(contexts: ContextType[]): { model: string; label: string } {
 
 function getTemperature(contexts: ContextType[]): number {
   if (contexts.some((c) => ['emocao', 'diario'].includes(c))) return 0.9;
-  if (
-    contexts.some((c) =>
-      ['casual', 'projeto', 'familia', 'meta', 'esporte'].includes(c)
-    )
-  )
-    return 0.7;
-  if (
-    contexts.some((c) =>
-      [
-        'rotina',
-        'alias',
-        'preferencia',
-        'recomendacao',
-        'noticias',
-        'clima',
-      ].includes(c)
-    )
-  )
-    return 0.5;
-  if (
-    contexts.some((c) => ['agenda', 'evento', 'email', 'saude'].includes(c))
-  )
-    return 0.3;
+  if (contexts.some((c) => ['casual', 'projeto', 'familia', 'meta', 'esporte'].includes(c))) return 0.7;
+  if (contexts.some((c) => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima'].includes(c))) return 0.5;
+  if (contexts.some((c) => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
   return 0.7;
 }
 
 function planContextualBlocks(contexts: ContextType[]) {
   return {
     loadTopics: contexts.some((c) =>
-      [
-        'saude',
-        'projeto',
-        'familia',
-        'casual',
-        'rotina',
-        'preferencia',
-        'esporte',
-        'noticias',
-        'clima',
-      ].includes(c)
+      ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia', 'esporte', 'noticias', 'clima'].includes(c)
     ),
     loadDiary: contexts.some((c) =>
       ['diario', 'meta', 'emocao', 'casual'].includes(c)
@@ -354,30 +333,21 @@ function planContextualBlocks(contexts: ContextType[]) {
 }
 
 // ============================================================
-// Busca forçada (com normalização de acentos)
+// Busca forçada
 // ============================================================
-function shouldForceSearch(
-  message: string,
-  contexts: ContextType[]
-): boolean {
+function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
   const lower = message
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
 
-  // REGRA 1 (ALTA PRIORIDADE): Se a frase é sobre o próprio usuário,
-  // o banco de dados tem a resposta — nunca buscar na web.
-  // Inclui pronomes de 1ª pessoa E verbos conjugados na 1ª pessoa.
   const personalKeywords =
     /\b(eu|meu|minha|meus|minhas|comecei|trabalhei|trabalho|nasci|moro|morei|casei|tive|tenho|familia|esposa|marido|filho|filha|minha vida|meu trabalho|minha historia|quando comecei|quando fui|quando entrei)\b/i;
   if (personalKeywords.test(lower)) {
-    console.log(
-      '[shouldForceSearch] Frase pessoal detectada — usando banco de dados, sem busca web.'
-    );
+    console.log('[shouldForceSearch] Frase pessoal detectada — usando banco de dados, sem busca web.');
     return false;
   }
 
-  // REGRA 2: Palavras-chave de domínio externo (esporte, mercado, notícias, clima)
   const keywords =
     /\b(jogo|partida|futebol|basquete|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificacao|tabela|artilheiro|resultado|placar|hoje tem|proximo|escalacao|expo|feira|comeca|inicio|data de|horario de|edicao|noticia|ultimas|recente|aconteceu|clima|temperatura|chuva|chover|previsao|cotacao|preco do|valor do|dolar|euro|bitcoin|ibovespa)\b/i;
   if (keywords.test(lower)) {
@@ -385,16 +355,8 @@ function shouldForceSearch(
     return true;
   }
 
-  // REGRA 3: Palavras temporais — SÓ disparam se não houver contexto pessoal
-  // "quando" sozinho não é suficiente se não houver objeto externo claro
-  if (
-    /(qual e|como esta|como fica|o que aconteceu|o que rolou|vai chover|vai ter|como vai ser)/i.test(
-      lower
-    )
-  ) {
-    console.log(
-      '[shouldForceSearch] Palavra temporal de domínio externo detectada, forçando busca'
-    );
+  if (/(qual e|como esta|como fica|o que aconteceu|o que rolou|vai chover|vai ter|como vai ser)/i.test(lower)) {
+    console.log('[shouldForceSearch] Palavra temporal de domínio externo detectada, forçando busca');
     return true;
   }
 
@@ -402,18 +364,12 @@ function shouldForceSearch(
   return false;
 }
 
-function refineSearchQuery(
-  message: string,
-  contexts: ContextType[]
-): string {
+function refineSearchQuery(message: string, contexts: ContextType[]): string {
   let query = message.trim();
 
   if (contexts.includes('esporte')) {
     const cleanMsg = message
-      .replace(
-        /^(quando é|quando e|qual o|qual e|quem joga|onde e|onde vai ser)\s+/i,
-        ''
-      )
+      .replace(/^(quando é|quando e|qual o|qual e|quem joga|onde e|onde vai ser)\s+/i, '')
       .trim();
     query = `${cleanMsg} 2026`.replace(/\?+/g, '');
     if (
@@ -428,10 +384,7 @@ function refineSearchQuery(
         query = `próximo jogo ${query}`;
       }
     }
-  } else if (
-    contexts.includes('evento') &&
-    /expo|feira|evento|começa|início/i.test(message)
-  ) {
+  } else if (contexts.includes('evento') && /expo|feira|evento|começa|início/i.test(message)) {
     const currentYear = new Date().getFullYear();
     query = `${message} ${currentYear}`.replace(/\?+/g, '');
   } else if (contexts.includes('clima')) {
@@ -441,10 +394,7 @@ function refineSearchQuery(
     } else {
       query = `clima ${message}`.replace(/\?+/g, '');
     }
-  } else if (
-    contexts.includes('noticias') &&
-    !/(notícia|notícias)/i.test(query)
-  ) {
+  } else if (contexts.includes('noticias') && !/(notícia|notícias)/i.test(query)) {
     query = `últimas notícias ${query}`;
   }
 
@@ -454,11 +404,7 @@ function refineSearchQuery(
 // ============================================================
 // Topic Index (L4)
 // ============================================================
-async function updateTopicIndex(
-  userId: string,
-  contexts: string[],
-  messageText: string
-) {
+async function updateTopicIndex(userId: string, contexts: string[], messageText: string) {
   if (!contexts.length) return;
   const words = messageText.toLowerCase().split(/\s+/);
   const keyTerms = words
@@ -485,10 +431,7 @@ async function updateTopicIndex(
   }
 }
 
-async function getRelatedTopics(
-  userId: string,
-  currentContext: string
-): Promise<string> {
+async function getRelatedTopics(userId: string, currentContext: string): Promise<string> {
   const { data: related } = await supabase
     .from('topic_index')
     .select('topic, weight')
@@ -498,17 +441,11 @@ async function getRelatedTopics(
     .limit(3);
   if (!related?.length) return '';
   return `\n[TÓPICOS RELACIONADOS]\n${related
-    .map(
-      (t: any) =>
-        `- ${t.topic} (peso: ${Math.round((t.weight || 0) * 100)}%)`
-    )
+    .map((t: any) => `- ${t.topic} (peso: ${Math.round((t.weight || 0) * 100)}%)`)
     .join('\n')}`;
 }
 
-async function detectTopicShiftWithL4(
-  userId: string,
-  currentContexts: ContextType[]
-): Promise<boolean> {
+async function detectTopicShiftWithL4(userId: string, currentContexts: ContextType[]): Promise<boolean> {
   const { data: recentTopics } = await supabase
     .from('topic_index')
     .select('topic, weight')
@@ -517,9 +454,7 @@ async function detectTopicShiftWithL4(
     .limit(5);
   if (!recentTopics?.length) return false;
   const hasCurrentTopic = currentContexts.some((ctx) =>
-    recentTopics.some(
-      (t: any) => t.topic === ctx && (t.weight || 0) >= 0.3
-    )
+    recentTopics.some((t: any) => t.topic === ctx && (t.weight || 0) >= 0.3)
   );
   return !hasCurrentTopic && !currentContexts.includes('casual');
 }
@@ -531,15 +466,10 @@ const RAM_MAX_CHARS = 8000;
 
 function compressToSummary(history: any[]): string {
   const topics = history
-    .flatMap(
-      (h: any) =>
-        (h.metadata?.contexts_detected as string[] | undefined) || []
-    )
+    .flatMap((h: any) => (h.metadata?.contexts_detected as string[] | undefined) || [])
     .filter((v, i, a) => a.indexOf(v) === i)
     .join(', ');
-  return topics
-    ? `[Resumo do assunto anterior: ${topics}]`
-    : '[Contexto anterior resumido]';
+  return topics ? `[Resumo do assunto anterior: ${topics}]` : '[Contexto anterior resumido]';
 }
 
 async function semanticRamCompression(
@@ -549,8 +479,7 @@ async function semanticRamCompression(
   currentEmbedding?: number[]
 ): Promise<string> {
   if (!history.length) return '';
-  const embedding =
-    currentEmbedding || (await getCachedEmbedding(messageText));
+  const embedding = currentEmbedding || (await getCachedEmbedding(messageText));
   const { data: relevantMemories } = (await supabase.rpc('match_memories', {
     query_embedding: embedding,
     match_threshold: 0.4,
@@ -569,11 +498,7 @@ async function semanticRamCompression(
 function isMeaningfulDiaryBlock(block: string): boolean {
   if (!block) return false;
   const lower = block.toLowerCase();
-  if (
-    lower.includes('nenhum') ||
-    lower.includes('não encontrado') ||
-    lower.includes('sem registro')
-  )
+  if (lower.includes('nenhum') || lower.includes('não encontrado') || lower.includes('sem registro'))
     return false;
   return true;
 }
@@ -604,15 +529,11 @@ const tools = [
     type: 'function',
     function: {
       name: 'buscar_memoria_longa',
-      description:
-        'Busca memórias de longo prazo (L3 e HD) relevantes para o contexto atual',
+      description: 'Busca memórias de longo prazo (L3 e HD) relevantes para o contexto atual',
       parameters: {
         type: 'object',
         properties: {
-          query: {
-            type: 'string',
-            description: 'Termo ou pergunta para busca semântica',
-          },
+          query: { type: 'string', description: 'Termo ou pergunta para busca semântica' },
         },
         required: ['query'],
       },
@@ -622,15 +543,11 @@ const tools = [
     type: 'function',
     function: {
       name: 'consultar_agenda',
-      description:
-        'Obtém eventos do Google Calendar e Outlook para os próximos dias',
+      description: 'Obtém eventos do Google Calendar e Outlook para os próximos dias',
       parameters: {
         type: 'object',
         properties: {
-          dias: {
-            type: 'integer',
-            description: 'Número de dias para frente (padrão 7)',
-          },
+          dias: { type: 'integer', description: 'Número de dias para frente (padrão 7)' },
         },
       },
     },
@@ -643,10 +560,7 @@ const tools = [
       parameters: {
         type: 'object',
         properties: {
-          filtro: {
-            type: 'string',
-            description: 'Termo para filtrar emails (opcional)',
-          },
+          filtro: { type: 'string', description: 'Termo para filtrar emails (opcional)' },
         },
       },
     },
@@ -655,29 +569,15 @@ const tools = [
     type: 'function',
     function: {
       name: 'salvar_evento',
-      description:
-        'Registra um evento (compromisso, aniversário, etc.) no banco de dados',
+      description: 'Registra um evento (compromisso, aniversário, etc.) no banco de dados',
       parameters: {
         type: 'object',
         properties: {
           titulo: { type: 'string' },
-          data: {
-            type: 'string',
-            format: 'date',
-            description: 'YYYY-MM-DD',
-          },
-          prioridade: {
-            type: 'string',
-            enum: ['alta', 'media', 'baixa'],
-          },
-          recorrente: {
-            type: 'boolean',
-            description: 'true para aniversários e eventos anuais',
-          },
-          tipo: {
-            type: 'string',
-            enum: ['permanent', 'recurring_annual', 'deadline', 'one_time'],
-          },
+          data: { type: 'string', format: 'date', description: 'YYYY-MM-DD' },
+          prioridade: { type: 'string', enum: ['alta', 'media', 'baixa'] },
+          recorrente: { type: 'boolean', description: 'true para aniversários e eventos anuais' },
+          tipo: { type: 'string', enum: ['permanent', 'recurring_annual', 'deadline', 'one_time'] },
         },
         required: ['titulo', 'data', 'prioridade', 'recorrente', 'tipo'],
       },
@@ -691,15 +591,9 @@ const tools = [
       parameters: {
         type: 'object',
         properties: {
-          titulo_parcial: {
-            type: 'string',
-            description: 'Parte do título da meta',
-          },
+          titulo_parcial: { type: 'string', description: 'Parte do título da meta' },
           progresso: { type: 'integer', minimum: 0, maximum: 100 },
-          etapa_concluida: {
-            type: 'string',
-            description: 'Nome da etapa concluída (opcional)',
-          },
+          etapa_concluida: { type: 'string', description: 'Nome da etapa concluída (opcional)' },
         },
         required: ['titulo_parcial', 'progresso'],
       },
@@ -714,10 +608,7 @@ const tools = [
         type: 'object',
         properties: {
           texto: { type: 'string' },
-          categoria: {
-            type: 'string',
-            enum: ['reflexao', 'acontecimento', 'gratidao', 'qualquer'],
-          },
+          categoria: { type: 'string', enum: ['reflexao', 'acontecimento', 'gratidao', 'qualquer'] },
         },
         required: ['texto'],
       },
@@ -732,10 +623,7 @@ const tools = [
       parameters: {
         type: 'object',
         properties: {
-          query: {
-            type: 'string',
-            description: 'O termo de busca preciso',
-          },
+          query: { type: 'string', description: 'O termo de busca preciso' },
         },
         required: ['query'],
       },
@@ -761,22 +649,15 @@ const tools = [
     type: 'function',
     function: {
       name: 'salvar_lugar',
-      description:
-        'Salva um lugar favorito (mercado, farmácia, etc.) com coordenadas e raio de alerta',
+      description: 'Salva um lugar favorito (mercado, farmácia, etc.) com coordenadas e raio de alerta',
       parameters: {
         type: 'object',
         properties: {
           nome: { type: 'string', description: 'Nome do lugar' },
           lat: { type: 'number', description: 'Latitude' },
           lng: { type: 'number', description: 'Longitude' },
-          raio_metros: {
-            type: 'integer',
-            description: 'Raio em metros para alertas de proximidade',
-          },
-          categoria: {
-            type: 'string',
-            description: 'Categoria (ex: mercado, farmácia, restaurante)',
-          },
+          raio_metros: { type: 'integer', description: 'Raio em metros para alertas de proximidade' },
+          categoria: { type: 'string', description: 'Categoria (ex: mercado, farmácia, restaurante)' },
         },
         required: ['nome', 'lat', 'lng', 'raio_metros', 'categoria'],
       },
@@ -800,16 +681,12 @@ const tools = [
     type: 'function',
     function: {
       name: 'adicionar_item_lista',
-      description:
-        'Adiciona um item à lista de compras de um lugar específico',
+      description: 'Adiciona um item à lista de compras de um lugar específico',
       parameters: {
         type: 'object',
         properties: {
           item: { type: 'string', description: 'Nome do item' },
-          lugar: {
-            type: 'string',
-            description: 'Nome do lugar (deve existir)',
-          },
+          lugar: { type: 'string', description: 'Nome do lugar (deve existir)' },
         },
         required: ['item', 'lugar'],
       },
@@ -863,12 +740,17 @@ const tools = [
 
 // ============================================================
 // Executor de ferramentas — Dual-ID por tabela
+// authUserId  → favorite_places + shopping_items (TEXT/UUID do Auth)
+// numericUserIdStr → todas as demais tabelas do schema jarvis (bigint)
 // ============================================================
 async function executeTool(
   toolCall: any,
   authUserId: string,
   numericUserIdStr: string
 ): Promise<string> {
+  // Guard aqui também — nunca deixa UUID entrar em tabelas jarvis via tool
+  assertNumericUserId(numericUserIdStr, 'executeTool');
+
   const { name, arguments: args } = toolCall.function;
   let p: any;
   try {
@@ -877,7 +759,6 @@ async function executeTool(
     return `Erro ao parsear argumentos de ${name}.`;
   }
 
-  // Lugares e listas usam authUserId (schema: text/uuid)
   async function getPlaceId(nome: string): Promise<string | null> {
     const { data } = await supabase
       .from('favorite_places')
@@ -916,9 +797,7 @@ async function executeTool(
       return await getRecentEmails(p.filtro, 5, true);
 
     case 'salvar_evento': {
-      const cat = p.titulo.toLowerCase().includes('aniversario')
-        ? 'family'
-        : 'personal';
+      const cat = p.titulo.toLowerCase().includes('aniversario') ? 'family' : 'personal';
       await upsertEvent(numericUserIdStr, {
         title: p.titulo,
         event_date: p.data,
@@ -926,33 +805,18 @@ async function executeTool(
         is_recurring: p.recorrente,
         decay_type: p.tipo,
         category: cat,
-        emotional_weight:
-          p.prioridade === 'alta'
-            ? 0.9
-            : p.prioridade === 'media'
-            ? 0.6
-            : 0.3,
+        emotional_weight: p.prioridade === 'alta' ? 0.9 : p.prioridade === 'media' ? 0.6 : 0.3,
       });
       return `Evento "${p.titulo}" salvo.`;
     }
 
     case 'atualizar_meta':
-      return await updateGoalProgress(
-        numericUserIdStr,
-        p.titulo_parcial,
-        p.progresso,
-        p.etapa_concluida
-      );
+      return await updateGoalProgress(numericUserIdStr, p.titulo_parcial, p.progresso, p.etapa_concluida);
 
     case 'registrar_no_diario':
-      await extractDiary(
-        numericUserIdStr,
-        p.texto,
-        p.categoria || 'anytime'
-      );
+      await extractDiary(numericUserIdStr, p.texto, p.categoria || 'anytime');
       return 'Entrada registrada no diário.';
 
-    // Alias mantido para retrocompatibilidade
     case 'pesquisar_internet':
     case 'searchWeb': {
       console.log(`[tool] searchWeb: "${p.query}"`);
@@ -1048,7 +912,6 @@ async function executeTool(
 
 // ============================================================
 // callOpenRouterWithTools
-// CORREÇÃO: usa OPENROUTER_API_KEY (não OPENAI_API_KEY)
 // ============================================================
 interface ToolCall {
   id: string;
@@ -1071,11 +934,9 @@ async function callOpenRouterWithTools(
     fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
-        // CORREÇÃO 3: era OPENAI_API_KEY — trocado para OPENROUTER_API_KEY
         Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer':
-          process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
+        'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
         'X-Title': 'Lev',
       },
       body: JSON.stringify({
@@ -1125,7 +986,7 @@ async function withRetry<T>(
 // POST — Handler Principal
 // ============================================================
 export async function POST(req: NextRequest) {
-  console.log('[chat] 1. Iniciando parse HÍBRIDO (V8 + fixes)');
+  console.log('[chat] Iniciando — V8 Dual-ID corrigido');
   try {
     console.time('[Performance] total');
 
@@ -1153,26 +1014,15 @@ export async function POST(req: NextRequest) {
         (formData.get('user_id') as string) ||
         '';
       clientSessionId = formData.get('sessionId') as string | null;
-      userFirstName =
-        (formData.get('userFirstName') as string) || 'Usuário';
+      userFirstName = (formData.get('userFirstName') as string) || 'Usuário';
 
       const latField = formData.get('latitude') as string | null;
       const lngField = formData.get('longitude') as string | null;
       if (latField && lngField)
-        location = {
-          latitude: parseFloat(latField),
-          longitude: parseFloat(lngField),
-        };
+        location = { latitude: parseFloat(latField), longitude: parseFloat(lngField) };
 
-      if (
-        !audioFile &&
-        !formData.get('message') &&
-        !formData.get('text')
-      ) {
-        return NextResponse.json(
-          { error: 'Áudio ou texto obrigatório' },
-          { status: 400 }
-        );
+      if (!audioFile && !formData.get('message') && !formData.get('text')) {
+        return NextResponse.json({ error: 'Áudio ou texto obrigatório' }, { status: 400 });
       }
 
       if (audioFile) {
@@ -1182,23 +1032,14 @@ export async function POST(req: NextRequest) {
         whisperFormData.append('model', 'whisper-1');
         whisperFormData.append('language', 'pt');
 
-        // Whisper continua usando OPENAI_API_KEY (é a API da OpenAI mesmo)
-        const whisperRes = await fetch(
-          'https://api.openai.com/v1/audio/transcriptions',
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-            },
-            body: whisperFormData,
-          }
-        );
+        const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+          body: whisperFormData,
+        });
 
         if (!whisperRes.ok)
-          return NextResponse.json(
-            { error: 'Falha na transcrição' },
-            { status: 500 }
-          );
+          return NextResponse.json({ error: 'Falha na transcrição' }, { status: 500 });
         const whisperData = await whisperRes.json();
         messageText = whisperData.text?.trim() || '';
       } else {
@@ -1213,109 +1054,119 @@ export async function POST(req: NextRequest) {
       userEmail = body.userEmail || body.email || '';
       tempUserId = body.userId || body.user_id || '';
       clientSessionId = body.sessionId || null;
-      userFirstName =
-        body.userFirstName || body.user_first_name || 'Usuário';
+      userFirstName = body.userFirstName || body.user_first_name || 'Usuário';
 
       if (
         body.location &&
         typeof body.location.latitude === 'number' &&
         typeof body.location.longitude === 'number'
       ) {
-        location = {
-          latitude: body.location.latitude,
-          longitude: body.location.longitude,
-        };
+        location = { latitude: body.location.latitude, longitude: body.location.longitude };
       }
     }
 
-    console.log(
-      '[chat] 2. message:',
-      messageText?.slice(0, 30),
-      '| email:',
-      userEmail,
-      '| userId:',
-      tempUserId
-    );
-
     if (!messageText && !location)
-      return NextResponse.json(
-        { error: 'message obrigatório' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'message obrigatório' }, { status: 400 });
 
-    // ----------------------------------------------------------
-    // CORREÇÃO 1: Lookup do usuário — aceita email OU userId (fallback robusto)
-    // Garante retrocompatibilidade: clientes que enviam só userId continuam funcionando.
-    // ----------------------------------------------------------
     if (!userEmail && !tempUserId) {
-      return NextResponse.json(
-        { error: 'userEmail ou userId obrigatório' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'userEmail ou userId obrigatório' }, { status: 400 });
     }
 
+    // ----------------------------------------------------------
+    // Lookup do usuário — aceita email OU userId
+    // jarvis.users.id é BIGINT → numericUserIdStr
+    // ----------------------------------------------------------
     let userRecord: any = null;
 
-    // Tenta por email primeiro (forma canônica)
     if (userEmail) {
       const { data } = await supabase
         .from('users')
-        .select(
-          'id, nickname, current_context, assistant_name, timezone, pending_question, pending_context'
-        )
+        .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context')
         .eq('email', userEmail)
         .maybeSingle();
       userRecord = data;
     }
 
-    // Fallback por UUID direto (retrocompatibilidade com clientes antigos)
     if (!userRecord && tempUserId) {
-      const { data } = await supabase
-        .from('users')
-        .select(
-          'id, nickname, current_context, assistant_name, timezone, pending_question, pending_context'
-        )
-        .eq('id', tempUserId)
-        .maybeSingle();
-      userRecord = data;
+      // tempUserId pode ser UUID (do Auth) ou bigint — tenta bigint primeiro
+      const isNumeric = /^\d+$/.test(tempUserId);
+      if (isNumeric) {
+        const { data } = await supabase
+          .from('users')
+          .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context')
+          .eq('id', tempUserId)
+          .maybeSingle();
+        userRecord = data;
+      } else {
+        // tempUserId é UUID do Auth — busca via auth_user_id se a coluna existir,
+        // caso contrário registra warning e retorna 404 claro
+        console.warn('[chat] tempUserId é UUID do Auth, não bigint:', tempUserId);
+        const { data } = await supabase
+          .from('users')
+          .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context')
+          .eq('auth_user_id', tempUserId)
+          .maybeSingle();
+        userRecord = data;
+      }
     }
 
     if (!userRecord) {
-      return NextResponse.json(
-        { error: 'Usuário não encontrado' },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
     }
 
     // ----------------------------------------------------------
-    // ARQUITETURA DUAL-ID:
-    // numericUserIdStr → TODAS as tabelas do schema jarvis, incluindo brain
-    //                    (bigint): events, topic_index, goals, diary, children,
-    //                    person_notes, brain, sessions, memories, config
-    // authUserId       → favorite_places e shopping_items (text/uuid, schema público)
-    //                    Fallback: se tempUserId for UUID do Auth, usado só nessas duas tabelas
+    // ARQUITETURA DUAL-ID
+    //
+    // numericUserIdStr → todas as tabelas do schema jarvis com FK bigint
+    // authUserId       → favorite_places e shopping_items (user_id TEXT = UUID do Auth)
     // ----------------------------------------------------------
     const numericUserIdStr = String(userRecord.id);
-    // authUserId: para favorite_places/shopping_items que podem usar UUID do Auth
-    // Se tempUserId for um UUID válido (contém '-'), usa ele; caso contrário usa numérico
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(tempUserId);
-    const authUserId = isUUID ? tempUserId : numericUserIdStr;
+
+    // ── GUARD CENTRAL: valida bigint ANTES de qualquer uso ───
+    // Se vazar UUID aqui, todas as queries seguintes vão falhar com erro claro
+    // em vez de inserir silenciosamente dados com userId errado
+    assertNumericUserId(numericUserIdStr, 'POST /api/chat — numericUserIdStr');
+
+    // Resolve authUserId via Auth Admin (fonte confiável)
+    let authUserId: string = numericUserIdStr; // fallback final
+
+    if (userEmail) {
+      try {
+        const { data: authData } = await supabase.auth.admin.getUserByEmail(userEmail);
+        if (authData?.user?.id) {
+          authUserId = authData.user.id;
+          console.log('[chat] authUserId resolvido via email:', authUserId);
+        }
+      } catch (e) {
+        console.warn('[chat] Falha ao buscar authUserId via email, tentando fallbacks:', e);
+      }
+    }
+
+    // Fallback 1: tempUserId é UUID válido → usa diretamente
+    if (authUserId === numericUserIdStr && tempUserId) {
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
+      if (isUUID) {
+        authUserId = tempUserId;
+        console.log('[chat] authUserId resolvido via tempUserId UUID:', authUserId);
+      }
+    }
+
+    if (authUserId === numericUserIdStr) {
+      console.warn('[chat] authUserId não resolvido como UUID — listas/lugares podem não funcionar.');
+    }
 
     const authorName = userRecord.nickname || userFirstName;
     const assistantName = userRecord.assistant_name || 'Lev';
     const userTimezone = userRecord.timezone || 'America/Sao_Paulo';
-    const currentContextL3 =
-      userRecord.current_context || 'Sem dossiê ainda.';
-
-    // CORREÇÃO 2: pending_question restaurado — lido direto do userRecord
+    const currentContextL3 = userRecord.current_context || 'Sem dossiê ainda.';
     const pendingQuestion = userRecord.pending_question || null;
 
+    // Health check em background — nunca bloqueia a resposta
     ensureMemoryHealth(numericUserIdStr).catch((e) =>
       console.error('[Health] Erro em background:', e)
     );
 
-    const sessionId =
-      clientSessionId || (await getOrCreateSession(numericUserIdStr));
+    const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
 
     // ----------------------------------------------------------
     // Processamento de Localização
@@ -1328,30 +1179,17 @@ export async function POST(req: NextRequest) {
       await supabase.from('config').upsert(
         {
           key: `last_location_${numericUserIdStr}`,
-          value: JSON.stringify({
-            latitude,
-            longitude,
-            endereco,
-            ts: Date.now(),
-          }),
+          value: JSON.stringify({ latitude, longitude, endereco, ts: Date.now() }),
         },
         { onConflict: 'key' }
       );
-      const alertaGeo = await verificarAlertasDeProximidade(
-        authUserId,
-        latitude,
-        longitude
-      );
+      // verificarAlertasDeProximidade usa authUserId (favorite_places)
+      const alertaGeo = await verificarAlertasDeProximidade(authUserId, latitude, longitude);
       if (alertaGeo.temAlerta) {
-        return NextResponse.json({
-          reply: alertaGeo.mensagem,
-          sessionId,
-          ok: true,
-        });
+        return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
       }
       if (!messageText) messageText = '[Enviou Localização]';
     } else {
-      // Recupera última localização conhecida (até 60 min atrás)
       const { data: lastLoc } = await supabase
         .from('config')
         .select('value')
@@ -1364,9 +1202,7 @@ export async function POST(req: NextRequest) {
           if (idadeMinutos <= 60) {
             locationContext = `${loc.endereco}\nCoordenadas exatas: ${loc.latitude}, ${loc.longitude} (compartilhada há ${Math.round(idadeMinutos)} min)`;
           }
-        } catch {
-          /* ignore */
-        }
+        } catch { /* ignore */ }
       }
     }
 
@@ -1374,27 +1210,16 @@ export async function POST(req: NextRequest) {
     // Classificação de Contexto, Tópicos e Roteamento
     // ----------------------------------------------------------
     console.time('[Performance] context_classification');
-    const detectedContexts = await classifyContextWithL4(
-      messageText,
-      numericUserIdStr
-    );
+    const detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
     console.timeEnd('[Performance] context_classification');
 
     const modelRoute = routeModel(detectedContexts);
     const temperature = getTemperature(detectedContexts);
     const blockPlan = planContextualBlocks(detectedContexts);
-    console.log(
-      '[chat] contexts:',
-      detectedContexts,
-      '| model:',
-      modelRoute.label
-    );
+    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label);
 
     await updateTopicIndex(numericUserIdStr, detectedContexts, messageText);
-    const relatedTopicsBlock = await getRelatedTopics(
-      numericUserIdStr,
-      detectedContexts[0] || 'casual'
-    );
+    const relatedTopicsBlock = await getRelatedTopics(numericUserIdStr, detectedContexts[0] || 'casual');
 
     // ----------------------------------------------------------
     // Pesquisa forçada
@@ -1406,14 +1231,10 @@ export async function POST(req: NextRequest) {
       try {
         const result = await searchWeb(searchQuery);
         forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA]\nConsulta: "${searchQuery}"\nResultado:\n${result}`;
-        console.log(
-          '[chat] ForcedSearch ok (200):',
-          result.substring(0, 200)
-        );
+        console.log('[chat] ForcedSearch ok (200):', result.substring(0, 200));
       } catch (e) {
         console.error('[chat] ForcedSearch falhou:', e);
-        forcedSearchResult =
-          '\n[ERRO NA PESQUISA] Não foi possível obter informações atualizadas.';
+        forcedSearchResult = '\n[ERRO NA PESQUISA] Não foi possível obter informações atualizadas.';
       }
     }
 
@@ -1423,9 +1244,7 @@ export async function POST(req: NextRequest) {
     const basePromises = Promise.all([
       supabase
         .from('events')
-        .select(
-          'title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes'
-        )
+        .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
         .eq('user_id', numericUserIdStr)
         .order('relevance_score', { ascending: false }),
       supabase
@@ -1449,59 +1268,31 @@ export async function POST(req: NextRequest) {
     const conditionalTasks: Promise<any>[] = [];
     if (blockPlan.loadCalendar) {
       conditionalTasks.push(getGoogleContext().catch(() => null));
-      conditionalTasks.push(
-        getMicrosoftCalendarContext().catch(() => null)
-      );
+      conditionalTasks.push(getMicrosoftCalendarContext().catch(() => null));
     }
     if (blockPlan.loadEmail)
-      conditionalTasks.push(
-        getRecentEmails(undefined, 3, false).catch(() => null)
-      );
+      conditionalTasks.push(getRecentEmails(undefined, 3, false).catch(() => null));
     if (blockPlan.loadTopics)
-      conditionalTasks.push(
-        buildTopicBlock(numericUserIdStr, messageText).catch(() => '')
-      );
+      conditionalTasks.push(buildTopicBlock(numericUserIdStr, messageText).catch(() => ''));
     if (blockPlan.loadDiary)
-      conditionalTasks.push(
-        buildDiaryGoalsBlock(numericUserIdStr).catch(() => '')
-      );
+      conditionalTasks.push(buildDiaryGoalsBlock(numericUserIdStr).catch(() => ''));
 
     const [
-      [
-        eventsResult,
-        ashesResult,
-        onboardingResult,
-        gapsBlock,
-        principlesResult,
-      ],
+      [eventsResult, ashesResult, onboardingResult, gapsBlock, principlesResult],
       conditionalResults,
     ] = await Promise.all([basePromises, Promise.all(conditionalTasks)]);
 
     let ri = 0;
-    const googleCtx = blockPlan.loadCalendar
-      ? conditionalResults[ri++]
-      : null;
-    const msCtx = blockPlan.loadCalendar
-      ? conditionalResults[ri++]
-      : null;
-    const emailBlock = blockPlan.loadEmail
-      ? conditionalResults[ri++]
-      : null;
-    const topicBlock = blockPlan.loadTopics
-      ? conditionalResults[ri++] || ''
-      : '';
-    const diaryBlock = blockPlan.loadDiary
-      ? conditionalResults[ri++] || ''
-      : '';
+    const googleCtx = blockPlan.loadCalendar ? conditionalResults[ri++] : null;
+    const msCtx = blockPlan.loadCalendar ? conditionalResults[ri++] : null;
+    const emailBlock = blockPlan.loadEmail ? conditionalResults[ri++] : null;
+    const topicBlock = blockPlan.loadTopics ? conditionalResults[ri++] || '' : '';
+    const diaryBlock = blockPlan.loadDiary ? conditionalResults[ri++] || '' : '';
 
     const recsBlock = blockPlan.loadRecommendations
-      ? await buildRecommendationsBlock(
-          numericUserIdStr,
-          messageText
-        ).catch(() => '')
+      ? await buildRecommendationsBlock(numericUserIdStr, messageText).catch(() => '')
       : '';
 
-    // Princípios e Onboarding
     const principles = principlesResult?.data || [];
     const principlesBlock =
       principles.length > 0
@@ -1510,11 +1301,9 @@ export async function POST(req: NextRequest) {
 
     let onboardingState = onboardingResult?.data || null;
     if (!onboardingState)
-      onboardingState =
-        await getOrCreateOnboardingStatePersistent(numericUserIdStr);
+      onboardingState = await getOrCreateOnboardingStatePersistent(numericUserIdStr);
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
-    // Eventos
     const events = eventsResult.data || [];
     const hoje = new Date();
     hoje.setHours(0, 0, 0, 0);
@@ -1530,8 +1319,7 @@ export async function POST(req: NextRequest) {
       return diff >= 0 && diff <= 7;
     });
     const highRelevanceEvents = sortedEvents.filter(
-      (e) =>
-        (e.relevance_score || 0) >= 0.7 && !upcomingEvents.includes(e)
+      (e) => (e.relevance_score || 0) >= 0.7 && !upcomingEvents.includes(e)
     );
     const activeEvents = sortedEvents.filter(
       (e) =>
@@ -1543,12 +1331,7 @@ export async function POST(req: NextRequest) {
         ? [
             upcomingEvents.length > 0
               ? `🔴 NOS PRÓXIMOS DIAS:\n${upcomingEvents
-                  .map(
-                    (e) =>
-                      `  - ${e.title}: ${e.event_date}${
-                        e.notes ? ` (${e.notes})` : ''
-                      }`
-                  )
+                  .map((e) => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`)
                   .join('\n')}`
               : null,
             highRelevanceEvents.length > 0
@@ -1563,11 +1346,8 @@ export async function POST(req: NextRequest) {
 
     const ashes = ashesResult.data || [];
     const ashesBlock =
-      ashes.length > 0
-        ? ashes.map((a: any) => a.ash_summary).join('\n')
-        : null;
+      ashes.length > 0 ? ashes.map((a: any) => a.ash_summary).join('\n') : null;
 
-    // Notas de pessoas
     let personNotesBlock = '';
     const [childrenResult, personNotesResult] = await Promise.all([
       supabase
@@ -1592,24 +1372,18 @@ export async function POST(req: NextRequest) {
       n.person_name
         .toLowerCase()
         .split(' ')
-        .some(
-          (p: string) =>
-            p.length >= 3 && new RegExp(`\\b${p}\\b`).test(msgLower)
-        )
+        .some((p: string) => p.length >= 3 && new RegExp(`\\b${p}\\b`).test(msgLower))
     );
 
     if (childNotes.length > 0 || pNotes.length > 0) {
       const lines: string[] = [];
       for (const c of childNotes)
-        lines.push(
-          `${c.nickname || c.name.split(' ')[0]}: ${c.lev_notes}`
-        );
+        lines.push(`${c.nickname || c.name.split(' ')[0]}: ${c.lev_notes}`);
       for (const n of pNotes)
         lines.push(`${n.person_name} [${n.noted_at}]: ${n.note}`);
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
-    // HD Vetorial & RAM Compressão
     const queryEmbedding = await getCachedEmbedding(messageText);
     let hdBlock = '';
     let hdMemoryIds: string[] = [];
@@ -1638,10 +1412,7 @@ export async function POST(req: NextRequest) {
       .order('created_at', { ascending: false })
       .limit(10);
 
-    const topicShifted = await detectTopicShiftWithL4(
-      numericUserIdStr,
-      detectedContexts
-    );
+    const topicShifted = await detectTopicShiftWithL4(numericUserIdStr, detectedContexts);
 
     if (historySession && historySession.length >= 2) {
       if (topicShifted) {
@@ -1651,9 +1422,7 @@ export async function POST(req: NextRequest) {
           .reverse()
           .map(
             (h: any) =>
-              `${authorName}: ${h.content}\n${assistantName}: ${(
-                h.metadata?.ai_reply || ''
-              )
+              `${authorName}: ${h.content}\n${assistantName}: ${(h.metadata?.ai_reply || '')
                 .replace(/\[.*?\]/g, '')
                 .trim()}`
           )
@@ -1664,9 +1433,7 @@ export async function POST(req: NextRequest) {
           .reverse()
           .map(
             (h: any) =>
-              `${authorName}: ${h.content}\n${assistantName}: ${(
-                h.metadata?.ai_reply || ''
-              )
+              `${authorName}: ${h.content}\n${assistantName}: ${(h.metadata?.ai_reply || '')
                 .replace(/\[.*?\]/g, '')
                 .trim()}`
           )
@@ -1683,28 +1450,16 @@ export async function POST(req: NextRequest) {
         semanticBlock ||
         (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : '');
     }
-    if (ramBlock.length > RAM_MAX_CHARS)
-      ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
+    if (ramBlock.length > RAM_MAX_CHARS) ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
 
-    // Classificação Temporal
-    const weights = classifyTemporalHorizon(
-      messageText,
-      ramBlock,
-      pendingQuestion
-    );
+    const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
     const truncatedL3 = truncateByWeight(currentContextL3, weights.l3, 6000);
     const truncatedHd = truncateByWeight(hdBlock, weights.hd, 6000);
     const truncatedAshes = ashesBlock
       ? truncateByWeight(ashesBlock, weights.ashes, 6000)
       : null;
-    const truncatedEvents = truncateByWeight(
-      eventsBlock,
-      weights.events,
-      6000
-    );
-    const fusoHorario = new Date().toLocaleString('pt-BR', {
-      timeZone: userTimezone,
-    });
+    const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
+    const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     const isFemale =
       currentContextL3.toLowerCase().includes('feminino') ||
@@ -1782,9 +1537,7 @@ REGRAS COMPORTAMENTAIS:
         { role: 'user', content: h.content },
         {
           role: 'assistant',
-          content: (h.metadata?.ai_reply || '')
-            .replace(/\[.*?\]/g, '')
-            .trim(),
+          content: (h.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim(),
         },
       ]),
       { role: 'user', content: messageText },
@@ -1792,9 +1545,7 @@ REGRAS COMPORTAMENTAIS:
 
     // Comandos especiais
     if (
-      /ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|delete isso/i.test(
-        messageText
-      )
+      /ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|delete isso/i.test(messageText)
     ) {
       const { data: lastEntry } = await supabase
         .from('brain')
@@ -1819,6 +1570,7 @@ REGRAS COMPORTAMENTAIS:
     let extractionSummary = '';
     if (!isLikelyNoise) {
       try {
+        // Passa SEMPRE numericUserIdStr — guard interno no extractor.ts vai rejeitar UUID
         extractionSummary = await extractAndSummarize(
           numericUserIdStr,
           authorName,
@@ -1862,11 +1614,7 @@ REGRAS COMPORTAMENTAIS:
       });
 
       for (const toolCall of toolCalls) {
-        const result = await executeTool(
-          toolCall,
-          authUserId,
-          numericUserIdStr
-        );
+        const result = await executeTool(toolCall, authUserId, numericUserIdStr);
         conversationMessages.push({
           role: 'tool',
           tool_call_id: toolCall.id,
@@ -1877,8 +1625,7 @@ REGRAS COMPORTAMENTAIS:
       attempts++;
     }
 
-    if (!finalResponse)
-      finalResponse = 'Ops, não consegui processar. Pode repetir?';
+    if (!finalResponse) finalResponse = 'Ops, não consegui processar. Pode repetir?';
 
     let category = 'info';
     const categoryMatch = finalResponse.match(/\[CLASSE:\s*(\w+)\]/i);
@@ -1887,14 +1634,9 @@ REGRAS COMPORTAMENTAIS:
 
     if (!finalResponse && extractionSummary) {
       const feedbacks = ['Certo.', 'Ok.', 'Guardei.', 'Entendido.'];
-      finalResponse =
-        feedbacks[Math.floor(Math.random() * feedbacks.length)];
+      finalResponse = feedbacks[Math.floor(Math.random() * feedbacks.length)];
     }
 
-    // ----------------------------------------------------------
-    // Limpeza de pergunta pendente (se havia uma e foi respondida)
-    // CORREÇÃO 2: clearPendingQuestion restaurado
-    // ----------------------------------------------------------
     if (pendingQuestion) {
       clearPendingQuestion(numericUserIdStr).catch((e) =>
         console.error('[PendingQ] Erro ao limpar:', e)
@@ -1903,7 +1645,6 @@ REGRAS COMPORTAMENTAIS:
 
     // ----------------------------------------------------------
     // Persistência no banco
-    // brain.user_id é bigint → usa numericUserIdStr
     // ----------------------------------------------------------
     const { error: insertError } = await supabase.from('brain').insert([
       {
@@ -1938,10 +1679,7 @@ REGRAS COMPORTAMENTAIS:
         modelRoute.label
       );
 
-    // Background tasks
-    const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) =>
-      reinforceMemory(id)
-    );
+    const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
 
     if (onboardingState?.status === 'in_progress') {
       backgroundTasks.push(
@@ -1982,17 +1720,12 @@ REGRAS COMPORTAMENTAIS:
         .eq('user_id', numericUserIdStr)
         .eq('category', 'info')
         .then(({ count }) => {
-          if (count && count >= 20)
-            return compactMemory(numericUserIdStr, authorName);
+          if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
         }),
     ]).catch((e) => console.error('[Background] Erro:', e));
 
     console.timeEnd('[Performance] total');
-    return NextResponse.json({
-      reply: finalResponse,
-      sessionId,
-      ok: true,
-    });
+    return NextResponse.json({ reply: finalResponse, sessionId, ok: true });
   } catch (error: any) {
     console.error('[chat] ERRO:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
