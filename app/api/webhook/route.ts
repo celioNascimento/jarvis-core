@@ -23,8 +23,8 @@ import {
   createGoogleEvent,
   updateGoogleEvent,
   deleteGoogleEvent,
-  searchWeb,               // <-- Ferramenta Nova (Serper)
-  getWeatherForecast       // <-- Ferramenta Nova (Open-Meteo)
+  searchWeb,               // <-- ÚNICA FERRAMENTA DE BUSCA
+  getWeatherForecast
 } from '@/lib/google';
 import { checkProximidade } from '@/lib/geo';
 import { verificarAlertasDeProximidade } from '@/lib/geo-alerts';
@@ -181,7 +181,7 @@ async function getRelatedTopics(userId: string, currentContext: string): Promise
 }
 
 // ============================================================
-// Classificação de contexto (regex + L4)
+// Classificação de contexto (regex + L4) – com esportes, notícias, clima
 // ============================================================
 type ContextType =
   | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario' | 'meta'
@@ -359,7 +359,7 @@ Query reescrita (somente texto, sem explicação):`;
 }
 
 // ============================================================
-// FERRAMENTAS (TOOLS)
+// FERRAMENTAS (TOOLS) – AGORA UNIFICADAS (searchWeb é a única de busca)
 // ============================================================
 const tools = [
   {
@@ -448,19 +448,6 @@ const tools = [
   {
     type: 'function',
     function: {
-      name: 'pesquisar_internet',
-      description: 'Pesquisa fatos atuais na internet, como notícias, clima, esportes ou informações em tempo real (Versão Antiga)',
-      parameters: {
-        type: 'object',
-        properties: { query: { type: 'string', description: 'O termo exato para buscar' } },
-        required: ['query']
-      }
-    }
-  },
-  // ========== NOVAS FERRAMENTAS DE PRECISÃO ==========
-  {
-    type: 'function',
-    function: {
       name: 'searchWeb',
       description: 'Pesquisa na internet em tempo real. Use para notícias, resultados de jogos, fatos de 2026 e informações que não estão na sua memória.',
       parameters: {
@@ -470,6 +457,7 @@ const tools = [
       }
     }
   },
+  // ========== FERRAMENTAS DE CLIMA ==========
   {
     type: 'function',
     function: {
@@ -576,7 +564,7 @@ const tools = [
 ];
 
 // ============================================================
-// EXECUTOR DAS FERRAMENTAS
+// EXECUTOR DAS FERRAMENTAS (com unificação de busca)
 // ============================================================
 async function executeTool(toolCall: any, userId: string, context: any): Promise<string> {
   const { name, arguments: args } = toolCall.function;
@@ -601,49 +589,42 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
   switch (name) {
     case 'buscar_memoria_longa':
       const embedding = await getCachedEmbedding(parsedArgs.query);
-      const { data: memories } = await supabase.rpc('match_memories', { query_embedding: embedding, match_threshold: 0.4, match_count: 5 });
+      const { data: memories } = await supabase.rpc('match_memories', {
+        query_embedding: embedding,
+        match_threshold: 0.4,
+        match_count: 5
+      });
       return memories?.filter((m: any) => !m.summary.startsWith('[CINZA]')).map((m: any) => m.summary).join('\n---\n') || 'Nenhuma memória relevante encontrada.';
-    
+
     case 'consultar_agenda':
       const [google, outlook] = await Promise.all([getGoogleContext(), getMicrosoftCalendarContext()]);
       return `Google Calendar:\n${google}\n\nOutlook:\n${outlook}`;
-    
+
     case 'listar_emails_recentes':
       return await getRecentEmails(parsedArgs.filtro, 5, true);
-    
+
     case 'salvar_evento':
       const eventCategory = parsedArgs.titulo.toLowerCase().includes('aniversario') ? 'family' : 'personal';
-      await upsertEvent(userId, { 
-        title: parsedArgs.titulo, 
-        event_date: parsedArgs.data, 
-        priority: parsedArgs.prioridade, 
-        is_recurring: parsedArgs.recorrente, 
-        decay_type: parsedArgs.tipo, 
-        category: eventCategory, 
-        emotional_weight: parsedArgs.prioridade === 'alta' ? 0.9 : parsedArgs.prioridade === 'media' ? 0.6 : 0.3 
+      await upsertEvent(userId, {
+        title: parsedArgs.titulo,
+        event_date: parsedArgs.data,
+        priority: parsedArgs.prioridade,
+        is_recurring: parsedArgs.recorrente,
+        decay_type: parsedArgs.tipo,
+        category: eventCategory,
+        emotional_weight: parsedArgs.prioridade === 'alta' ? 0.9 : parsedArgs.prioridade === 'media' ? 0.6 : 0.3
       });
       return `Evento "${parsedArgs.titulo}" salvo com sucesso.`;
-    
+
     case 'atualizar_meta':
       return await updateGoalProgress(userId, parsedArgs.titulo_parcial, parsedArgs.progresso, parsedArgs.etapa_concluida);
-    
+
     case 'registrar_no_diario':
       await extractDiary(userId, parsedArgs.texto, parsedArgs.categoria || 'anytime');
       return `Entrada registrada no diário.`;
-    
-    case 'pesquisar_internet':
-      try {
-        const url = `https://www.googleapis.com/customsearch/v1?key=${process.env.GOOGLE_API_KEY}&cx=${process.env.GOOGLE_CX}&q=${encodeURIComponent(parsedArgs.query)}`;
-        const response = await fetch(url);
-        const data = await response.json();
-        if (!response.ok) return `Falha na pesquisa antiga: ${data.error?.message || "erro desconhecido"}`;
-        if (!data.items || data.items.length === 0) return `Nenhum resultado encontrado.`;
-        return data.items.slice(0, 3).map((item: any) => `${item.title}\n${item.snippet}\nFonte: ${item.link}`).join('\n\n');
-      } catch (error) {
-        return `Erro ao realizar a pesquisa: ${error instanceof Error ? error.message : 'desconhecido'}`;
-      }
 
-    // ========== NOVAS FERRAMENTAS ==========
+    // UNIFICAÇÃO: ambas as ferramentas de busca chamam a mesma implementação (Serper)
+    case 'pesquisar_internet':
     case 'searchWeb':
       try {
         const result = await searchWeb(parsedArgs.query);
@@ -652,53 +633,81 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
         console.error('[searchWeb] Erro:', error);
         return `Erro na busca: ${error instanceof Error ? error.message : 'desconhecido'}`;
       }
-      
+
     case 'getWeatherForecast':
       try {
         const result = await getWeatherForecast(parsedArgs.lat, parsedArgs.lng);
         return result;
       } catch (error) {
         console.error('[getWeatherForecast] Erro:', error);
-        return `Erro na previsão do tempo: ${error instanceof Error ? error.message : 'desconhecido'}`;
+        return `Erro ao obter previsão: ${error instanceof Error ? error.message : 'desconhecido'}`;
       }
-    
-    // ========== LUGARES E LISTAS ==========
+
+    // ========== AÇÕES DE LUGARES ==========
     case 'salvar_lugar':
-      await supabase.from('favorite_places').insert({ user_id: userId, name: parsedArgs.nome, latitude: parsedArgs.lat, longitude: parsedArgs.lng, radius_meters: parsedArgs.raio_metros, category: parsedArgs.categoria });
-      return `Lugar "${parsedArgs.nome}" salvo.`;
-    
+      const { error: placeErr } = await supabase.from('favorite_places').upsert(
+        {
+          user_id: userId,
+          name: parsedArgs.nome.trim(),
+          lat: parsedArgs.lat,
+          lng: parsedArgs.lng,
+          radius_meters: parsedArgs.raio_metros,
+          category: parsedArgs.categoria.trim()
+        },
+        { onConflict: 'user_id,name' }
+      );
+      if (placeErr) {
+        console.error('[salvar_lugar] Erro:', placeErr.message);
+        return `Erro ao salvar lugar: ${placeErr.message}`;
+      }
+      return `Lugar "${parsedArgs.nome}" salvo com sucesso.`;
+
     case 'remover_lugar':
-      const pIdDel = await getPlaceId(userId, parsedArgs.nome);
-      if (!pIdDel) return `Lugar "${parsedArgs.nome}" não encontrado.`;
-      await supabase.from('favorite_places').delete().eq('id', pIdDel);
+      await supabase.from('favorite_places').delete().eq('user_id', userId).ilike('name', parsedArgs.nome.trim());
       return `Lugar "${parsedArgs.nome}" removido.`;
-    
+
     case 'adicionar_item_lista':
       const placeIdAdd = await getPlaceId(userId, parsedArgs.lugar);
-      if (!placeIdAdd) return `Lugar "${parsedArgs.lugar}" não encontrado. Adicione o lugar primeiro.`;
-      await supabase.from('shopping_items').insert({ user_id: userId, place_id: placeIdAdd, item: parsedArgs.item });
-      return `"${parsedArgs.item}" adicionado à lista de ${parsedArgs.lugar}.`;
-    
+      if (!placeIdAdd) return `Lugar "${parsedArgs.lugar}" não encontrado.`;
+      await supabase.from('shopping_items').upsert(
+        { user_id: userId, item: parsedArgs.item.trim(), place_id: placeIdAdd, done: false },
+        { onConflict: 'user_id,item,place_id' }
+      );
+      return `Item "${parsedArgs.item}" adicionado à lista de ${parsedArgs.lugar}.`;
+
     case 'marcar_feito':
       const placeIdDone = await getPlaceId(userId, parsedArgs.lugar);
-      if (!placeIdDone) return `Lugar não encontrado.`;
-      await supabase.from('shopping_items').update({ done: true }).eq('user_id', userId).eq('place_id', placeIdDone).ilike('item', parsedArgs.item);
-      return `"${parsedArgs.item}" marcado como feito.`;
-    
+      if (!placeIdDone) return `Lugar "${parsedArgs.lugar}" não encontrado.`;
+      await supabase.from('shopping_items')
+        .update({ done: true })
+        .eq('user_id', userId)
+        .ilike('item', parsedArgs.item.trim())
+        .eq('place_id', placeIdDone);
+      return `Item "${parsedArgs.item}" marcado como comprado em ${parsedArgs.lugar}.`;
+
     case 'remover_item_lista':
-      const placeIdRem = await getPlaceId(userId, parsedArgs.lugar);
-      if (!placeIdRem) return `Lugar não encontrado.`;
-      await supabase.from('shopping_items').delete().eq('user_id', userId).eq('place_id', placeIdRem).ilike('item', parsedArgs.item);
-      return `"${parsedArgs.item}" removido da lista.`;
-    
+      const placeIdRemove = await getPlaceId(userId, parsedArgs.lugar);
+      if (!placeIdRemove) return `Lugar "${parsedArgs.lugar}" não encontrado.`;
+      await supabase.from('shopping_items')
+        .delete()
+        .eq('user_id', userId)
+        .ilike('item', parsedArgs.item.trim())
+        .eq('place_id', placeIdRemove);
+      return `Item "${parsedArgs.item}" removido da lista de ${parsedArgs.lugar}.`;
+
     case 'ver_lista':
       const placeIdList = await getPlaceId(userId, parsedArgs.lugar);
       if (!placeIdList) return `Lugar "${parsedArgs.lugar}" não encontrado.`;
-      const { data: itens } = await supabase.from('shopping_items').select('item, done').eq('user_id', userId).eq('place_id', placeIdList).order('done');
+      const { data: itens } = await supabase
+        .from('shopping_items')
+        .select('item, done')
+        .eq('user_id', userId)
+        .eq('place_id', placeIdList)
+        .order('done');
       if (!itens || itens.length === 0) return `Lista de ${parsedArgs.lugar} está vazia.`;
       const listaTexto = itens.map((i: any) => `${i.done ? '✅' : '•'} ${i.item}`).join('\n');
       return `Lista de ${parsedArgs.lugar}:\n${listaTexto}`;
-    
+
     default:
       return `Ferramenta ${name} não implementada.`;
   }
@@ -707,11 +716,22 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
 // ============================================================
 // Chamada OpenRouter com tools
 // ============================================================
-interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string }; }
-interface ToolResponse { content: string; toolCalls: ToolCall[] | null; }
+interface ToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+interface ToolResponse {
+  content: string;
+  toolCalls: ToolCall[] | null;
+}
 
 async function callOpenRouterWithTools(
-  messages: any[], tools: any[], model: string, temperature: number, timeoutMs = 10000
+  messages: any[],
+  tools: any[],
+  model: string,
+  temperature: number,
+  timeoutMs = 10000
 ): Promise<ToolResponse> {
   const response = await Promise.race([
     fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -722,88 +742,157 @@ async function callOpenRouterWithTools(
         'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
         'X-Title': 'Jarvis'
       },
-      body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', temperature, max_tokens: 2000 })
+      body: JSON.stringify({
+        model,
+        messages,
+        tools,
+        tool_choice: 'auto',
+        temperature,
+        max_tokens: 2000
+      })
     }),
     new Promise<Response>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeoutMs))
   ]);
-  if (!response.ok) {
-    const err = await response.text();
-    console.error('[OpenRouter Tools] Erro HTTP:', response.status, err);
-    throw new Error(`OpenRouter error: ${response.status}`);
-  }
+
+  if (!response.ok) throw new Error(`OpenRouter error: ${response.status}`);
   const data = await response.json();
-  const choice = data.choices[0];
+  const choice = data.choices?.[0];
+  return { content: choice?.message?.content || '', toolCalls: choice?.message?.tool_calls || null };
+}
+
+// ============================================================
+// FUNÇÕES AUXILIARES (roteamento, temperatura, plano de blocos)
+// ============================================================
+function routeModel(contexts: ContextType[]): { model: string; label: string } {
+  const complexContexts: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude', 'esporte', 'noticias', 'clima'];
+  const isComplex = contexts.some(c => complexContexts.includes(c));
+  if (isComplex) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
+  return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
+}
+
+function getTemperature(contexts: ContextType[]): number {
+  if (contexts.some(c => ['emocao', 'diario'].includes(c))) return 0.9;
+  if (contexts.some(c => ['casual', 'projeto', 'familia', 'meta', 'esporte'].includes(c))) return 0.7;
+  if (contexts.some(c => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima'].includes(c))) return 0.5;
+  if (contexts.some(c => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
+  return 0.7;
+}
+
+function planContextualBlocks(contexts: ContextType[]): {
+  loadTopics: boolean;
+  loadDiary: boolean;
+  loadRecommendations: boolean;
+  loadCalendar: boolean;
+  loadEmail: boolean;
+} {
   return {
-    content: choice.message.content || '',
-    toolCalls: choice.message.tool_calls || null
+    loadTopics:          contexts.some(c => ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia', 'esporte', 'noticias', 'clima'].includes(c)),
+    loadDiary:           contexts.some(c => ['diario', 'meta', 'emocao', 'casual'].includes(c)),
+    loadRecommendations: contexts.some(c => ['recomendacao', 'casual'].includes(c)),
+    loadCalendar:        contexts.some(c => ['agenda', 'evento', 'familia'].includes(c)),
+    loadEmail:           contexts.some(c => ['email'].includes(c)),
   };
 }
 
+// ============================================================
+// DETECTA SE A PERGUNTA EXIGE PESQUISA FORÇADA
+// ============================================================
 function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
   const lower = message.toLowerCase();
   const keywords = /jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificação|tabela|artilheiro|resultado|placar|hoje tem|quando é|próximo|escalação|expo|feira|evento|começa|início|data de|horário de|edição|notícia|últimas|recente|aconteceu|clima|tempo|temperatura|previsão|cotação|preço do|valor do|dólar|euro|bitcoin|ibovespa/i;
+  
   if (!keywords.test(lower)) return false;
   if (contexts.includes('esporte') || contexts.includes('noticias') || contexts.includes('clima')) return true;
   if (/(quando|qual|qual é|como está|como fica|o que aconteceu|o que rolou)/i.test(lower)) return true;
   return false;
 }
 
+// ============================================================
+// REFINA A QUERY DE BUSCA COM BASE NA MENSAGEM
+// ============================================================
 function refineSearchQuery(message: string, contexts: ContextType[]): string {
   let query = message;
   if (contexts.includes('esporte')) {
     const teamMatch = message.match(/(?:do|da|de|contra|entre) (.*?)(?:\?|$)/i);
-    if (teamMatch && teamMatch[1]) query = `últimas notícias ou próximo jogo ${teamMatch[1]} 2026`;
-    else query = `${message} 2026`;
+    if (teamMatch && teamMatch[1].trim().length < 30) {
+      query = `${teamMatch[1].trim()} ${message.includes('escalação') ? 'escalação' : 'próximo jogo'} 2026`;
+    } else {
+      query = `${message} 2026`;
+    }
   }
-  return query;
+  if (contexts.includes('evento') && /expo|feira|evento|começa|início/i.test(message)) {
+    const currentYear = new Date().getFullYear();
+    query = `${message} ${currentYear}`;
+  }
+  if (contexts.includes('clima')) {
+    const locationMatch = message.match(/(em|no|na) (.*?)(?:\?|$)/i);
+    if (locationMatch && locationMatch[2].trim().length < 30) {
+      query = `clima ${locationMatch[2].trim()}`;
+    } else {
+      query = `clima ${message}`;
+    }
+  }
+  if (contexts.includes('noticias') && !/(notícia|notícias)/i.test(query)) {
+    query = `últimas notícias ${query}`;
+  }
+  return query.trim();
 }
 
 // ============================================================
-// HANDLER PRINCIPAL POST
+// WEBHOOK PRINCIPAL
 // ============================================================
 export async function POST(req: NextRequest) {
   try {
-    let messageText = '';
-    let userId = '';
-    let userFirstName = 'Usuário';
+    console.time('[Performance] total');
+    // ----------------------------------------------------------
+    // 1. Parse da requisição (JSON ou FormData com áudio)
+    // ----------------------------------------------------------
+    let messageText: string;
+    let userId: string;
+    let userFirstName = "Usuário";
     let location: { latitude: number; longitude: number } | null = null;
-    let isAudio = false;
 
     const contentType = req.headers.get('content-type') || '';
     if (contentType.includes('multipart/form-data')) {
-      isAudio = true;
       const formData = await req.formData();
-      const audioFile = formData.get('audio') as Blob | null;
+      const audioFile = formData.get('audio') as File | null;
       const userIdField = formData.get('userId') as string | null;
       const userFirstNameField = formData.get('userFirstName') as string | null;
+
       const latField = formData.get('latitude') as string | null;
       const lngField = formData.get('longitude') as string | null;
-
-      if (latField && lngField && !isNaN(parseFloat(latField)) && !isNaN(parseFloat(lngField))) {
+      if (latField && lngField) {
         location = { latitude: parseFloat(latField), longitude: parseFloat(lngField) };
       }
-      if (!audioFile || !userIdField) return NextResponse.json({ error: 'Campos obrigatórios ausentes' }, { status: 400 });
-      
+
+      if (!audioFile || !userIdField) {
+        return NextResponse.json({ error: 'Campos obrigatórios: audio, userId' }, { status: 400 });
+      }
+
       userId = userIdField;
       if (userFirstNameField) userFirstName = userFirstNameField;
-      
+
       const buffer = Buffer.from(await audioFile.arrayBuffer());
       const whisperFormData = new FormData();
       whisperFormData.append('file', new Blob([buffer]), 'audio.ogg');
       whisperFormData.append('model', 'whisper-1');
       whisperFormData.append('language', 'pt');
-      
+
       const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
         body: whisperFormData
       });
-      if (!whisperRes.ok) return NextResponse.json({ error: 'Falha na transcrição' }, { status: 500 });
-      
+
+      if (!whisperRes.ok) {
+        return NextResponse.json({ error: 'Falha na transcrição' }, { status: 500 });
+      }
+
       const whisperData = await whisperRes.json();
       messageText = whisperData.text?.trim() || '';
-      if (!messageText) return NextResponse.json({ error: 'Áudio vazio' }, { status: 400 });
-
+      if (!messageText) {
+        return NextResponse.json({ error: 'Áudio vazio ou ininteligível' }, { status: 400 });
+      }
     } else {
       const body = await req.json();
       messageText = body.message || body.text || '';
@@ -814,92 +903,547 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (!messageText || !userId) return NextResponse.json({ error: 'Mensagem ou userId ausente' }, { status: 400 });
-
-    const userResult = await supabase.from('users').select('nickname, current_context, principles, L3, ashen_memories, active_model_route').eq('id', userId).single();
-    if (userResult.error) throw new Error('Usuário não encontrado.');
-    
-    const authorName = userResult.data?.nickname || userFirstName;
-    const { sessionId } = await getOrCreateSession(userId);
-    
-    ensureMemoryHealth(userId);
-
-    let locationContext = '';
-    if (location) {
-      const alertas = await verificarAlertasDeProximidade(userId, location.latitude, location.longitude);
-      const lugaresInfo = await checkProximidade(location.latitude, location.longitude);
-      locationContext = `[LOCALIZAÇÃO ATUAL DO USUÁRIO]\nLat: ${location.latitude}, Lng: ${location.longitude}\n${lugaresInfo}\n${alertas}`;
+    if (!messageText || !userId) {
+      return NextResponse.json({ error: 'Mensagem ou userId ausente' }, { status: 400 });
     }
 
+    // ----------------------------------------------------------
+    // 2. Dados essenciais do usuário
+    // ----------------------------------------------------------
+    const userResult = await supabase
+      .from('users')
+      .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone')
+      .eq('id', userId).single();
+    const userProfile = userResult.data;
+    const authorName = userProfile?.nickname || userFirstName;
+    const assistantName = userProfile?.assistant_name || 'Lev';
+    const userTimezone = userProfile?.timezone || 'America/Sao_Paulo';
+    const currentContextL3 = userProfile?.current_context || "Sem dossiê ainda.";
+    const pendingQuestion = userProfile?.pending_question || null;
+
+    ensureMemoryHealth(userId).catch(e => console.error('[Health] Erro em background:', e));
+
+    // ----------------------------------------------------------
+    // 3. Processamento de localização (se enviada)
+    // ----------------------------------------------------------
+    let locationContext = "";
+    let geoAlert = null;
+
+    if (location) {
+      const { latitude, longitude } = location;
+      const endereco = await checkProximidade(latitude, longitude);
+      locationContext = `${endereco}\nCoordenadas exatas: ${latitude}, ${longitude}`;
+      await supabase.from('config').upsert(
+        { key: `last_location_${userId}`, value: JSON.stringify({ latitude, longitude, endereco, ts: Date.now() }) },
+        { onConflict: 'key' }
+      );
+      const alertaGeo = await verificarAlertasDeProximidade(userId, latitude, longitude);
+      if (alertaGeo.temAlerta) {
+        geoAlert = alertaGeo.mensagem;
+        return NextResponse.json({ reply: geoAlert, ok: true });
+      }
+      if (!messageText) messageText = "[Enviou Localização]";
+    } else {
+      const { data: lastLoc } = await supabase
+        .from('config').select('value')
+        .eq('key', `last_location_${userId}`).single();
+      if (lastLoc?.value) {
+        try {
+          const loc = JSON.parse(lastLoc.value);
+          const idadeMinutos = (Date.now() - loc.ts) / 60000;
+          if (idadeMinutos <= 60) {
+            locationContext = `${loc.endereco}\nCoordenadas exatas: ${loc.latitude}, ${loc.longitude} (compartilhada há ${Math.round(idadeMinutos)} min)`;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    // ----------------------------------------------------------
+    // 4. Classificação de contexto, tópicos L4 e roteamento
+    // ----------------------------------------------------------
+    console.time('[Performance] context_classification');
     const detectedContexts = await classifyContextWithL4(messageText, userId);
+    console.timeEnd('[Performance] context_classification');
+    
     await updateTopicIndex(userId, detectedContexts, messageText);
     const relatedTopicsBlock = await getRelatedTopics(userId, detectedContexts[0] || 'casual');
-    
-    // Simulação do Router de Modelos (baseado no seu contexto)
-    const modelRoute = { model: 'google/gemini-2.0-flash-001', label: 'Flash' };
-    const temperature = 0.7;
 
+    const modelRoute = routeModel(detectedContexts);
+    const temperature = getTemperature(detectedContexts);
+    const blockPlan = planContextualBlocks(detectedContexts);
+
+    console.log(`[Sprint1] contextos: ${detectedContexts.join(',')} | modelo: ${modelRoute.label} | temp: ${temperature}`);
+
+    // ----------------------------------------------------------
+    // 5. PESQUISA FORÇADA (se necessário) – agora usando searchWeb
+    // ----------------------------------------------------------
     let forcedSearchResult = "";
     if (shouldForceSearch(messageText, detectedContexts)) {
       const searchQuery = refineSearchQuery(messageText, detectedContexts);
+      console.log(`[ForcedSearch] Executando pesquisa para: ${searchQuery}`);
       try {
-        const result = await executeTool({ function: { name: 'searchWeb', arguments: JSON.stringify({ query: searchQuery }) } }, userId, {});
-        forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA VIA SERPER]\nConsulta: "${searchQuery}"\nResultado:\n${result}`;
+        // Simula uma chamada de ferramenta searchWeb
+        const toolCall = {
+          function: {
+            name: 'searchWeb',
+            arguments: JSON.stringify({ query: searchQuery })
+          }
+        };
+        const result = await executeTool(toolCall, userId, {});
+        forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA]\nConsulta: "${searchQuery}"\nResultado:\n${result}`;
       } catch (e) {
-        forcedSearchResult = "\n[ERRO NA PESQUISA] Não foi possível obter informações.";
+        console.error("[ForcedSearch] Falha:", e);
+        forcedSearchResult = "\n[ERRO NA PESQUISA] Não foi possível obter informações atualizadas.";
       }
     }
 
-    const { data: recentHistory } = await supabase.from('brain').select('role, content, metadata').eq('user_id', userId).eq('session_id', sessionId).order('created_at', { ascending: false }).limit(6);
-    const conversationHistory = (recentHistory || []).reverse().map(h => ({ role: h.role, content: h.content }));
-
-    const queryEmbedding = await getCachedEmbedding(messageText);
-    let hdBlock = "";
-    const { data: search } = await supabase.rpc('match_memories', { query_embedding: queryEmbedding, match_threshold: 0.4, match_count: 3 });
-    if (search && search.length > 0) hdBlock = search.map((r: any) => r.summary).join('\n---\n');
-
-    let onboardingState = await getOrCreateOnboardingStatePersistent(userId);
-    const onboardingBlock = buildOnboardingBlock(onboardingState);
-
-    const systemPrompt = `Você é Jarvis, um assistente AI rigoroso e prático. O usuário é ${authorName}.
-HOJE É: ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.
-Mantenha o tom profissional, direto e técnico quando solicitado. Não gere informações, consulte as ferramentas.
-
-${forcedSearchResult}
-${locationContext ? `\n${locationContext}` : ''}
-${relatedTopicsBlock ? relatedTopicsBlock : ''}
-${hdBlock ? `[MEMÓRIAS DE LONGO PRAZO]\n${hdBlock}` : ''}
-${onboardingBlock}
-
-Você tem ferramentas nativas: \`searchWeb\` e \`getWeatherForecast\`, além das ferramentas de diário e listas. DEVE usá-las para responder com exatidão sobre 2026. REGRAS COMPORTAMENTAIS: Não repita informações falsas de futebol ou clima.`;
-
-    const messages = [ { role: 'system', content: systemPrompt }, ...conversationHistory, { role: 'user', content: messageText } ];
-
-    let openRouterRes = await callOpenRouterWithTools(messages, tools, modelRoute.model, temperature);
-    let finalResponse = openRouterRes.content;
-
-    if (openRouterRes.toolCalls && openRouterRes.toolCalls.length > 0) {
-      messages.push({ role: 'assistant', content: finalResponse || '', tool_calls: openRouterRes.toolCalls });
-      for (const call of openRouterRes.toolCalls) {
-        const result = await executeTool(call, userId, {});
-        messages.push({ role: 'tool', name: call.function.name, content: result, tool_call_id: call.id });
-      }
-      const followUpRes = await callOpenRouterWithTools(messages, [], modelRoute.model, temperature);
-      finalResponse = followUpRes.content;
-    }
-
-    await supabase.from('brain').insert([
-      { user_id: userId, session_id: sessionId, category: 'chat', role: 'user', content: messageText },
-      { user_id: userId, session_id: sessionId, category: 'chat', role: 'assistant', content: finalResponse }
+    // ----------------------------------------------------------
+    // 6. Busca de dados de contexto
+    // ----------------------------------------------------------
+    const basePromises = Promise.all([
+      supabase
+        .from('users')
+        .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone')
+        .eq('id', userId).single(),
+      getOrCreateSession(userId),
+      supabase
+        .from('events')
+        .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
+        .eq('user_id', userId).order('relevance_score', { ascending: false }),
+      supabase
+        .from('memory_ashes')
+        .select('ash_summary, period_start, period_end')
+        .eq('user_id', userId).order('period_end', { ascending: false }).limit(5),
+      supabase
+        .from('onboarding_progress')
+        .select('*').eq('user_id', userId).single(),
+      buildGapsBlock(userId, messageText),
+      supabase
+        .from('principles')
+        .select('content, category').order('created_at', { ascending: true }),
     ]);
 
-    const backgroundTasks: Promise<any>[] = [];
-    if (onboardingState.stage !== 'completed') {
-      backgroundTasks.push(withRetry(() => processOnboardingFromMessage(userId, messageText, finalResponse, onboardingState)));
+    const conditionalTasks: Promise<any>[] = [];
+    if (blockPlan.loadCalendar) {
+      conditionalTasks.push(getGoogleContext());
+      conditionalTasks.push(getMicrosoftCalendarContext());
     }
-    backgroundTasks.push(withRetry(() => extractDiary(userId, messageText, 'anytime')));
-    Promise.all(backgroundTasks).catch(e => console.error('[Background] Erro geral:', e));
+    if (blockPlan.loadEmail) {
+      conditionalTasks.push(getRecentEmails(undefined, 3, false));
+    }
+    if (blockPlan.loadTopics) {
+      conditionalTasks.push(buildTopicBlock(userId, messageText));
+    }
+    if (blockPlan.loadDiary) {
+      conditionalTasks.push(buildDiaryGoalsBlock(userId));
+    }
+    
+    const [
+      [
+        userProfileResult,
+        sessionId,
+        eventsResult,
+        ashesResult,
+        onboardingResult,
+        gapsBlock,
+        principlesResult,
+      ],
+      conditionalResults
+    ] = await Promise.all([basePromises, Promise.all(conditionalTasks)]);
+    
+    let googleContextBlock = null, microsoftContextBlock = null, emailRadarBlock = null;
+    let topicBlock = '', diaryGoalsBlock = '';
+    let resultIndex = 0;
+    if (blockPlan.loadCalendar) {
+      googleContextBlock = conditionalResults[resultIndex++];
+      microsoftContextBlock = conditionalResults[resultIndex++];
+    }
+    if (blockPlan.loadEmail) {
+      emailRadarBlock = conditionalResults[resultIndex++];
+    }
+    if (blockPlan.loadTopics) {
+      topicBlock = conditionalResults[resultIndex++] || '';
+    }
+    if (blockPlan.loadDiary) {
+      diaryGoalsBlock = conditionalResults[resultIndex++] || '';
+    }
+    
+    const recommendationsBlock = blockPlan.loadRecommendations
+      ? await buildRecommendationsBlock(userId, messageText)
+      : '';
 
+    const isGoogleError = typeof googleContextBlock === 'string' && googleContextBlock.includes('Erro');
+    const isMicrosoftError = typeof microsoftContextBlock === 'string' && microsoftContextBlock.includes('Erro');
+    const isEmailError = typeof emailRadarBlock === 'string' && emailRadarBlock?.includes('Erro');
+    const cleanGoogleContext = isGoogleError ? null : googleContextBlock;
+    const cleanMicrosoftContext = isMicrosoftError ? null : microsoftContextBlock;
+    const cleanEmailRadarBlock = isEmailError ? null : emailRadarBlock;
+
+    const principles = principlesResult?.data || [];
+    const principlesBlock = principles.length > 0
+      ? principles.map((p: any) => `- ${p.content}`).join('\n')
+      : '';
+
+    const isFemale = currentContextL3.toLowerCase().includes('feminino') ||
+                     currentContextL3.toLowerCase().includes('mulher');
+    const informalAddress = isFemale ? 'miga' : 'cara';
+
+    let onboardingState = onboardingResult?.data || null;
+    if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(userId);
+    const onboardingBlock = buildOnboardingBlock(onboardingState);
+
+    // Eventos
+    const events = eventsResult.data || [];
+    const hoje = new Date();
+    hoje.setHours(0,0,0,0);
+    const sortedEvents = [...events].sort((a,b) => {
+      const da = new Date(a.event_date).getTime();
+      const db = new Date(b.event_date).getTime();
+      return Math.abs(da - hoje.getTime()) - Math.abs(db - hoje.getTime());
+    });
+    const upcomingEvents = sortedEvents.filter(e => {
+      const evDate = new Date(e.event_date);
+      const diffDays = Math.ceil((evDate.getTime() - hoje.getTime()) / (1000*3600*24));
+      return diffDays >= 0 && diffDays <= 7;
+    });
+    const highRelevanceEvents = sortedEvents.filter(e => (e.relevance_score || 0) >= 0.7 && !upcomingEvents.includes(e));
+    const activeEvents = sortedEvents.filter(e => {
+      const evDate = new Date(e.event_date);
+      return evDate >= hoje || (e.decay_type === 'permanent' && evDate < hoje);
+    });
+    const eventsBlock = activeEvents.length > 0 ? [
+      upcomingEvents.length > 0
+        ? `🔴 NOS PRÓXIMOS DIAS:\n${upcomingEvents.map(e => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}`
+        : null,
+      highRelevanceEvents.length > 0
+        ? `🟡 IMPORTANTES:\n${highRelevanceEvents.map(e => `  - ${e.title}: ${e.event_date}`).join('\n')}`
+        : null,
+    ].filter(Boolean).join('\n\n') : "Nenhum evento cadastrado.";
+
+    const ashes = ashesResult.data || [];
+    const ashesBlock = ashes.length > 0 ? ashes.map((a: any) => a.ash_summary).join('\n') : null;
+
+    // Notas contextuais
+    let personNotesBlock = "";
+    const [childrenResult, personNotesResult] = await Promise.all([
+      supabase.from('children').select('name, nickname, lev_notes')
+        .eq('parent_id', userId).not('lev_notes', 'is', null),
+      supabase.from('person_notes').select('person_name, person_type, note, noted_at')
+        .eq('user_id', userId).order('noted_at', { ascending: false }).limit(20),
+    ]);
+    const msgLower = messageText.toLowerCase();
+    const childNotes = (childrenResult.data || []).filter((c: any) => {
+      const nick = (c.nickname || '').toLowerCase();
+      const name = (c.name || '').split(' ')[0].toLowerCase();
+      return msgLower.includes(nick) || msgLower.includes(name);
+    });
+    const pNotes = (personNotesResult.data || []).filter((n: any) => {
+      const parts = n.person_name.toLowerCase().split(' ');
+      return parts.some((p: string) => p.length >= 3 && new RegExp(`\\b${p}\\b`).test(msgLower));
+    });
+    if (childNotes.length > 0 || pNotes.length > 0) {
+      const lines: string[] = [];
+      for (const c of childNotes) lines.push(`${c.nickname || c.name.split(' ')[0]}: ${c.lev_notes}`);
+      for (const n of pNotes) lines.push(`${n.person_name} [${n.noted_at}]: ${n.note}`);
+      personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
+    }
+
+    // HD vetorial
+    const queryEmbedding = await getCachedEmbedding(messageText);
+    let hdBlock = "";
+    let hdMemoryIds: string[] = [];
+    if (queryEmbedding) {
+      const { data: search } = await supabase.rpc('match_memories', {
+        query_embedding: queryEmbedding,
+        match_threshold: 0.4,
+        match_count: 3
+      }) as { data: any[] | null };
+      if (search && search.length > 0) {
+        hdBlock = search.filter((r: any) => !r.summary.startsWith('[CINZA]')).map((r: any) => r.summary).join('\n---\n');
+        hdMemoryIds = search.map((r: any) => r.id);
+      }
+    }
+
+    // RAM comprimida
+    let ramBlock = "";
+    const { data: historySession } = await supabase
+      .from('brain').select('content, metadata')
+      .eq('user_id', userId).eq('session_id', sessionId)
+      .neq('category', 'archived').order('created_at', { ascending: false }).limit(10);
+    const topicShifted = await detectTopicShiftWithL4(userId, detectedContexts);
+    if (historySession && historySession.length >= 2) {
+      if (topicShifted) {
+        const summary = compressToSummary(historySession.slice(3));
+        const recentRaw = [...historySession].slice(0, 3).reverse().map((h: any) => {
+          const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
+          return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
+        }).join('\n\n');
+        ramBlock = `${summary}\n\n${recentRaw}`;
+      } else {
+        ramBlock = [...historySession].reverse().map((h: any) => {
+          const ai = (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim();
+          return `${authorName}: ${h.content}\n${assistantName}: ${ai}`;
+        }).join('\n\n');
+      }
+    } else {
+      const semanticBlock = await semanticRamCompression(historySession || [], userId, messageText, queryEmbedding);
+      if (semanticBlock) ramBlock = semanticBlock;
+      else if (hdBlock) ramBlock = `[Contexto anterior consolidado]\n${hdBlock}`;
+    }
+    if (ramBlock.length > RAM_MAX_CHARS) ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
+
+    // Classificador temporal
+    const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
+    const truncatedL3 = truncateByWeight(currentContextL3, weights.l3, 6000);
+    const truncatedHd = truncateByWeight(hdBlock, weights.hd, 6000);
+    const truncatedAshes = ashesBlock ? truncateByWeight(ashesBlock, weights.ashes, 6000) : null;
+    const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
+    const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
+
+    // ----------------------------------------------------------
+    // 7. System prompt – VERSÃO REFORÇADA (com pesquisa automática)
+    // ----------------------------------------------------------
+    const systemPrompt = `
+Você é ${assistantName}, assistente pessoal de ${authorName}.
+Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
+
+🚨 **REGRRA ABSOLUTA – PESQUISE SEMPRE!** 🚨
+
+Para QUALQUER pergunta sobre:
+- Jogos, partidas, resultados esportivos (futebol, basquete, F1, etc.)
+- Datas e horários de eventos futuros (exposições, shows, estreias)
+- Notícias recentes, cotações, clima em outras cidades
+- Escalações de times, tabelas de campeonatos
+- Qualquer informação que possa ter mudado desde ontem
+
+**VOCÊ DEVE** chamar a ferramenta \`searchWeb\` ANTES de responder.
+
+**ATENÇÃO:** Se o bloco "[PESQUISA AUTOMÁTICA REALIZADA]" estiver presente no contexto, você DEVE usá-lo como fonte principal e NÃO inventar informações. Se o bloco indicar erro, diga que não foi possível obter dados atualizados.
+
+${forcedSearchResult}
+
+${cleanGoogleContext    ? `[AGENDA GOOGLE ATUALIZADA]\n${cleanGoogleContext}`      : ''}
+${cleanMicrosoftContext ? `[AGENDA OUTLOOK ATUALIZADA]\n${cleanMicrosoftContext}`  : ''}
+${cleanEmailRadarBlock  ? `[RADAR DE EMAILS RELEVANTES]\n${cleanEmailRadarBlock}`  : ''}
+${locationContext       ? `\n${locationContext}`                                    : ''}
+${relatedTopicsBlock    ? relatedTopicsBlock                                        : ''}
+
+${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${truncatedL3}` : ''}
+
+${personNotesBlock     ? personNotesBlock     : ''}
+${recommendationsBlock ? recommendationsBlock : ''}
+${topicBlock           ? topicBlock           : ''}
+${isMeaningfulDiaryBlock(diaryGoalsBlock) ? diaryGoalsBlock : ''}
+
+${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]\n${truncatedHd}` : ''}
+
+${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao citar]\n${truncatedAshes}` : ''}
+
+${onboardingBlock}
+${gapsBlock}
+
+${principlesBlock ? `[BÚSSOLA — seu jeito de ser no mundo, não regras a citar]\n${principlesBlock}` : ''}
+
+Você tem ferramentas nativas: \`buscar_memoria_longa\`, \`consultar_agenda\`, \`listar_emails_recentes\`, \`salvar_evento\`, \`atualizar_meta\`, \`registrar_no_diario\`, \`searchWeb\`, \`getWeatherForecast\`, e as de lugares/listas.
+
+REGRAS COMPORTAMENTAIS:
+1. FOCO: Responda O QUE FOI PERGUNTADO. Nunca mude de assunto.
+   - Pronomes ("esse filme", "isso", "ele") sempre se referem ao ÚLTIMO assunto.
+   - NUNCA repita sugestão rejeitada.
+
+2. TOM: Amigo inteligente, direto, humano.
+   - Use "${informalAddress}" no máximo 1x por conversa.
+   - NUNCA comece com "Considerando que" / "Levando em conta seu perfil".
+   - PROIBIDO: "Anotado!", "Registrado!", "Guardei aqui!". Se salvou algo via ferramenta, diga naturalmente: "Feito.", "Tá na agenda."
+
+3. PRESENÇA EMOCIONAL: Quando ${authorName} compartilhar algo difícil, seja empático – não aja como sistema de registros.
+
+4. MEMÓRIA: Use notas e memórias naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
+
+5. FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
+
+6. LOCALIZAÇÃO: Se disponível, use para contextualizar – não cite coordenadas.
+
+7. EVENTOS: Prioridade máxima a eventos nos próximos 7 dias.
+
+8. CLASSIFICAÇÃO: Ao final da sua resposta, inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].
+`.trim();
+
+    // ----------------------------------------------------------
+    // 8. Montagem das mensagens (histórico intercalado)
+    // ----------------------------------------------------------
+    const { data: historyForMessages } = await supabase
+      .from('brain').select('content, metadata')
+      .eq('user_id', userId).neq('category', 'archived')
+      .order('created_at', { ascending: false }).limit(10);
+
+    const conversationMessages: any[] = [
+      { role: 'system', content: systemPrompt },
+      ...(historyForMessages || []).reverse().flatMap((h: any) => [
+        { role: 'user', content: h.content },
+        { role: 'assistant', content: (h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim() }
+      ]),
+      { role: 'user', content: messageText }
+    ];
+
+    // ----------------------------------------------------------
+    // 9. Comandos especiais (ignorar, apagar)
+    // ----------------------------------------------------------
+    const ignorePatterns = /ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|esquece|delete isso/i;
+    if (ignorePatterns.test(messageText)) {
+      const { data: lastEntry } = await supabase
+        .from('brain').select('id').eq('user_id', userId)
+        .order('created_at', { ascending: false }).limit(1).single();
+      if (lastEntry) await supabase.from('brain').delete().eq('id', lastEntry.id);
+      return NextResponse.json({ reply: 'Feito — apaguei o que foi dito antes. 🗑️', ok: true });
+    }
+
+    // ----------------------------------------------------------
+    // 10. Pré‑extração e feedback interno
+    // ----------------------------------------------------------
+    const noisePatterns = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i;
+    const isLikelyNoise = noisePatterns.test(messageText.trim()) && messageText.length < 30;
+
+    let extractionSummary = '';
+    if (!isLikelyNoise) {
+      try {
+        extractionSummary = await extractAndSummarize(userId, authorName, messageText);
+      } catch (e) {
+        console.error('[Extrator/pre] Erro:', e);
+      }
+    }
+
+    const feedbackContent = extractionSummary
+      ? `[INTERNO]\nRegistrado: ${extractionSummary}\nConfirme em 1 frase curta. Ex: "Dia 13 de dezembro, certo." / "Guardei o aniversário de casamento."\nPROIBIDO: "Anota aí", "Anotado!", "Registrado!" — nunca.`
+      : `[INTERNO]\nVocê é o assistente — NUNCA diga "Anota aí" ou peça ao usuário para anotar algo.\nSe o usuário informar uma data ou fato, confirme brevemente ou responda naturalmente.`;
+    conversationMessages.push({ role: 'system', content: feedbackContent });
+
+    // ----------------------------------------------------------
+    // 11. Loop ReAct com ferramentas
+    // ----------------------------------------------------------
+    let finalResponse = '';
+    let attempts = 0;
+    const maxAttempts = 5;
+
+    while (attempts < maxAttempts) {
+      const response = await callOpenRouterWithTools(
+        conversationMessages,
+        tools,
+        modelRoute.model,
+        temperature,
+        12000
+      );
+      const { content, toolCalls } = response;
+
+      if (!toolCalls || toolCalls.length === 0) {
+        finalResponse = content;
+        break;
+      }
+
+      conversationMessages.push({
+        role: 'assistant',
+        content: null,
+        tool_calls: toolCalls
+      });
+
+      for (const toolCall of toolCalls) {
+        const result = await executeTool(toolCall, userId, { authorName, assistantName });
+        conversationMessages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: result
+        });
+      }
+
+      attempts++;
+    }
+
+    if (attempts >= maxAttempts) {
+      finalResponse = "Ops, tive que encerrar após muitas tentativas. Pode repetir?";
+    }
+
+    // ----------------------------------------------------------
+    // 12. Pós‑processamento (categoria, remoção de tags)
+    // ----------------------------------------------------------
+    let category = 'info';
+    const categoryMatch = finalResponse.match(/\[CLASSE:\s*(\w+)\]/i);
+    if (categoryMatch) category = categoryMatch[1].toLowerCase();
+    finalResponse = finalResponse.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
+
+    if (!finalResponse && extractionSummary) {
+      const feedbacks = ['Certo.', 'Ok.', 'Guardei.', 'Entendido.'];
+      finalResponse = feedbacks[Math.floor(Math.random() * feedbacks.length)];
+    }
+
+    // ----------------------------------------------------------
+    // 13. Persistência no banco
+    // ----------------------------------------------------------
+    const { error: insertError } = await supabase.from('brain').insert([{
+      content: messageText,
+      category,
+      user_id: userId,
+      session_id: sessionId,
+      project_tag: 'geral',
+      embedding: queryEmbedding,
+      metadata: {
+        ai_reply: finalResponse,
+        user: authorName,
+        horizon: weights.horizon,
+        pending_resolved: !!pendingQuestion,
+        model_used: modelRoute.model,
+        model_label: modelRoute.label,
+        temperature_used: temperature,
+        contexts_detected: detectedContexts,
+        forced_search_used: forcedSearchResult ? true : false,
+      }
+    }]);
+
+    if (insertError) console.error('BRAIN INSERT ERRO:', insertError);
+    else console.log('BRAIN INSERT OK — user:', userId, 'session:', sessionId, 'model:', modelRoute.label);
+
+    for (const memId of hdMemoryIds) await reinforceMemory(memId);
+
+    // ----------------------------------------------------------
+    // 14. Tarefas em background (extração, compactação)
+    // ----------------------------------------------------------
+    const backgroundTasks: Promise<any>[] = [];
+
+    if (onboardingState?.status === 'in_progress') {
+      backgroundTasks.push(
+        withRetry(() => processOnboardingFromMessage(userId, messageText, finalResponse, onboardingState))
+          .catch(e => console.error('[Onboarding] Erro após retries:', e))
+      );
+    }
+
+    if (!isLikelyNoise) {
+      backgroundTasks.push(
+        withRetry(() => extractRecomendacao(userId, messageText, finalResponse))
+          .catch(e => console.error('[Extrator/recomendacao] Erro:', e))
+      );
+      backgroundTasks.push(
+        withRetry(() => extractDiary(userId, messageText, 'anytime'))
+          .catch(e => console.error('[diary] Erro:', e))
+      );
+      backgroundTasks.push(
+        withRetry(() => extractGoal(userId, messageText))
+          .catch(e => console.error('[goals] Erro:', e))
+      );
+    }
+
+    Promise.all([
+      ...backgroundTasks,
+      supabase
+        .from('brain').select('*', { count: 'exact', head: true })
+        .eq('user_id', userId).eq('category', 'info')
+        .then(({ count }) => {
+          if (count && count >= 20) return compactMemory(userId, authorName);
+        }),
+    ]).catch(e => console.error('[Background] Erro geral:', e));
+
+    console.timeEnd('[Performance] total');
+    // ----------------------------------------------------------
+    // 15. Retorno para o app
+    // ----------------------------------------------------------
     return NextResponse.json({ reply: finalResponse, ok: true });
 
   } catch (error: any) {
