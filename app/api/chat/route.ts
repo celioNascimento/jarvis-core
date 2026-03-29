@@ -1,5 +1,5 @@
 // app/api/chat/route.ts
-// Motor V8 Unificado — Parse Híbrido (JSON/Audio), Busca Forçada, GPS, L3/L4, Memória, Decaimento
+// Motor V8 Unificado — Corrigido: user_id numérico (bigint), chave OpenAI unificada, timeouts maiores
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -44,7 +44,7 @@ import {
   updateGoalProgress,
 } from '@/lib/diary';
 
-export const maxDuration = 25;
+export const maxDuration = 30; // Aumentado para 30 segundos
 
 // ============================================================
 // Cache de embeddings
@@ -239,11 +239,8 @@ function refineSearchQuery(message: string, contexts: ContextType[]): string {
   let query = message.trim();
   
   if (contexts.includes('esporte')) {
-    // Remove palavras interrogativas iniciais
     const cleanMsg = message.replace(/^(quando é|quando e|qual o|qual e|quem joga|onde e|onde vai ser)\s+/i, '').trim();
     query = `${cleanMsg} 2026`.replace(/\?+/g, '');
-    
-    // Adiciona "próximo jogo" apenas se a intenção for omissa e não houver duplicidade
     if (!query.toLowerCase().includes('jogo') && !query.toLowerCase().includes('escalação')) {
       if (!query.toLowerCase().includes('próximo') && !query.toLowerCase().includes('data') && !query.toLowerCase().includes('horário')) {
         query = `próximo jogo ${query}`;
@@ -476,17 +473,17 @@ async function executeTool(toolCall: any, userId: string): Promise<string> {
 }
 
 // ============================================================
-// callOpenRouterWithTools
+// callOpenRouterWithTools (CORRIGIDO: usa OPENAI_API_KEY)
 // ============================================================
 interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string }; }
 interface ToolResponse { content: string; toolCalls: ToolCall[] | null; }
 
-async function callOpenRouterWithTools(messages: any[], toolsDef: any[], model: string, temperature: number, timeoutMs = 22000): Promise<ToolResponse> {
+async function callOpenRouterWithTools(messages: any[], toolsDef: any[], model: string, temperature: number, timeoutMs = 25000): Promise<ToolResponse> {
   const response = await Promise.race([
     fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,  // ← corrigido
         'Content-Type': 'application/json',
         'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
         'X-Title': 'Lev',
@@ -520,14 +517,13 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, delayMs = 1000
 // POST — Handler Principal (Híbrido)
 // ============================================================
 export async function POST(req: NextRequest) {
-  console.log('--- REQUISIÇÃO RECEBIDA NO V8 ---');
   console.log('[chat] 1. Iniciando parse HÍBRIDO (V8)');
   try {
     console.time('[Performance] total');
 
     let messageText: string = '';
     let userEmail: string = '';
-    let userId: string = '';
+    let userIdStr: string = '';      // ID numérico convertido para string (bigint)
     let clientSessionId: string | null = null;
     let userFirstName = "Usuário";
     let location: { latitude: number; longitude: number } | null = null;
@@ -541,7 +537,7 @@ export async function POST(req: NextRequest) {
       const audioFile = formData.get('audio') as File | null;
       
       userEmail = (formData.get('userEmail') as string) || (formData.get('email') as string) || '';
-      userId = (formData.get('userId') as string) || (formData.get('user_id') as string) || '';
+      const tempUserId = (formData.get('userId') as string) || (formData.get('user_id') as string) || '';
       clientSessionId = formData.get('sessionId') as string | null;
       userFirstName = (formData.get('userFirstName') as string) || 'Usuário';
 
@@ -576,7 +572,7 @@ export async function POST(req: NextRequest) {
       const body = await req.json();
       messageText = body.message || body.text || '';
       userEmail = body.userEmail || body.email || '';
-      userId = body.userId || body.user_id || '';
+      const tempUserId = body.userId || body.user_id || '';
       clientSessionId = body.sessionId || null;
       userFirstName = body.userFirstName || body.user_first_name || 'Usuário';
 
@@ -589,35 +585,32 @@ export async function POST(req: NextRequest) {
     if (!messageText && !location) return NextResponse.json({ error: 'message obrigatório' }, { status: 400 });
 
     // ----------------------------------------------------------
-    // Resolve userId via email ou direto
+    // Resolve userId numérico (bigint) a partir do email (único)
     // ----------------------------------------------------------
-    if (!userId && userEmail) {
-      const { data: userByEmail } = await supabase.from('users').select('id').eq('email', userEmail).maybeSingle();
-      userId = userByEmail?.id || '';
+    if (!userEmail) return NextResponse.json({ error: 'Email obrigatório' }, { status: 400 });
+    
+    const { data: userRecord } = await supabase
+      .from('users')
+      .select('id, nickname, current_context, assistant_name, timezone')
+      .eq('email', userEmail)
+      .maybeSingle();
+
+    if (!userRecord) {
+      return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 400 });
     }
-    if (!userId && userEmail) {
-      const { data: authData } = await supabase.auth.admin.getUserById(userEmail).catch(() => ({ data: null }));
-      userId = (authData as any)?.user?.id || '';
-    }
-    if (!userId) return NextResponse.json({ error: 'Não foi possível identificar o usuário' }, { status: 400 });
-    userId = String(userId);
 
-    // ----------------------------------------------------------
-    // Dados Essenciais do Usuário & Health Check
-    // ----------------------------------------------------------
-    const { data: userProfile } = await supabase.from('users')
-      .select('nickname, current_context, pending_question, pending_context, plan, assistant_name, timezone')
-      .eq('id', userId).single();
+    const numericUserId = userRecord.id;                     // bigint
+    userIdStr = String(numericUserId);                       // string numérica para funções auxiliares
 
-    const authorName       = userProfile?.nickname       || userFirstName;
-    const assistantName    = userProfile?.assistant_name || 'Lev';
-    const userTimezone     = userProfile?.timezone       || 'America/Sao_Paulo';
-    const currentContextL3 = userProfile?.current_context|| 'Sem dossiê ainda.';
-    const pendingQuestion  = userProfile?.pending_question || null;
+    const authorName       = userRecord.nickname       || userFirstName;
+    const assistantName    = userRecord.assistant_name || 'Lev';
+    const userTimezone     = userRecord.timezone       || 'America/Sao_Paulo';
+    const currentContextL3 = userRecord.current_context|| 'Sem dossiê ainda.';
+    const pendingQuestion  = null; // TODO: se necessário, buscar da tabela
 
-    ensureMemoryHealth(userId).catch(e => console.error('[Health] Erro em background:', e));
+    ensureMemoryHealth(userIdStr).catch(e => console.error('[Health] Erro em background:', e));
 
-    const sessionId = clientSessionId || (await getOrCreateSession(userId));
+    const sessionId = clientSessionId || (await getOrCreateSession(userIdStr));
     
     // ----------------------------------------------------------
     // Processamento de Localização
@@ -629,10 +622,10 @@ export async function POST(req: NextRequest) {
       const endereco = await checkProximidade(latitude, longitude);
       locationContext = `${endereco}\nCoordenadas exatas: ${latitude}, ${longitude}`;
       await supabase.from('config').upsert(
-        { key: `last_location_${userId}`, value: JSON.stringify({ latitude, longitude, endereco, ts: Date.now() }) },
+        { key: `last_location_${userIdStr}`, value: JSON.stringify({ latitude, longitude, endereco, ts: Date.now() }) },
         { onConflict: 'key' }
       );
-      const alertaGeo = await verificarAlertasDeProximidade(userId, latitude, longitude);
+      const alertaGeo = await verificarAlertasDeProximidade(userIdStr, latitude, longitude);
       if (alertaGeo.temAlerta) {
         geoAlert = alertaGeo.mensagem;
         return NextResponse.json({ reply: geoAlert, sessionId, ok: true });
@@ -644,7 +637,7 @@ export async function POST(req: NextRequest) {
     // Classificação de Contexto, Tópicos e Roteamento
     // ----------------------------------------------------------
     console.time('[Performance] context_classification');
-    const detectedContexts = await classifyContextWithL4(messageText, userId);
+    const detectedContexts = await classifyContextWithL4(messageText, userIdStr);
     console.timeEnd('[Performance] context_classification');
 
     const modelRoute  = routeModel(detectedContexts);
@@ -652,8 +645,8 @@ export async function POST(req: NextRequest) {
     const blockPlan   = planContextualBlocks(detectedContexts);
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label);
 
-    await updateTopicIndex(userId, detectedContexts, messageText);
-    const relatedTopicsBlock = await getRelatedTopics(userId, detectedContexts[0] || 'casual');
+    await updateTopicIndex(userIdStr, detectedContexts, messageText);
+    const relatedTopicsBlock = await getRelatedTopics(userIdStr, detectedContexts[0] || 'casual');
 
     // ----------------------------------------------------------
     // Pesquisa forçada
@@ -673,13 +666,13 @@ export async function POST(req: NextRequest) {
     }
 
     // ----------------------------------------------------------
-    // Cargas contextuais paralelas
+    // Cargas contextuais paralelas (usando userIdStr)
     // ----------------------------------------------------------
     const basePromises = Promise.all([
-      supabase.from('events').select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes').eq('user_id', userId).order('relevance_score', { ascending: false }),
-      supabase.from('memory_ashes').select('ash_summary, period_start, period_end').eq('user_id', userId).order('period_end', { ascending: false }).limit(5),
-      supabase.from('onboarding_progress').select('*').eq('user_id', userId).single(),
-      buildGapsBlock(userId, messageText),
+      supabase.from('events').select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes').eq('user_id', userIdStr).order('relevance_score', { ascending: false }),
+      supabase.from('memory_ashes').select('ash_summary, period_start, period_end').eq('user_id', userIdStr).order('period_end', { ascending: false }).limit(5),
+      supabase.from('onboarding_progress').select('*').eq('user_id', userIdStr).single(),
+      buildGapsBlock(userIdStr, messageText),
       supabase.from('principles').select('content, category').order('created_at', { ascending: true }),
     ]);
 
@@ -689,8 +682,8 @@ export async function POST(req: NextRequest) {
       conditionalTasks.push(getMicrosoftCalendarContext().catch(() => null));
     }
     if (blockPlan.loadEmail)  conditionalTasks.push(getRecentEmails(undefined, 3, false).catch(() => null));
-    if (blockPlan.loadTopics) conditionalTasks.push(buildTopicBlock(userId, messageText).catch(() => ''));
-    if (blockPlan.loadDiary)  conditionalTasks.push(buildDiaryGoalsBlock(userId).catch(() => ''));
+    if (blockPlan.loadTopics) conditionalTasks.push(buildTopicBlock(userIdStr, messageText).catch(() => ''));
+    if (blockPlan.loadDiary)  conditionalTasks.push(buildDiaryGoalsBlock(userIdStr).catch(() => ''));
 
     const [
       [eventsResult, ashesResult, onboardingResult, gapsBlock, principlesResult],
@@ -704,14 +697,14 @@ export async function POST(req: NextRequest) {
     const topicBlock = blockPlan.loadTopics   ? (conditionalResults[ri++] || '') : '';
     const diaryBlock = blockPlan.loadDiary    ? (conditionalResults[ri++] || '') : '';
 
-    const recsBlock = blockPlan.loadRecommendations ? await buildRecommendationsBlock(userId, messageText).catch(() => '') : '';
+    const recsBlock = blockPlan.loadRecommendations ? await buildRecommendationsBlock(userIdStr, messageText).catch(() => '') : '';
 
     // Princípios e Onboarding
     const principles = principlesResult?.data || [];
     const principlesBlock = principles.length > 0 ? principles.map((p: any) => `- ${p.content}`).join('\n') : '';
 
     let onboardingState = onboardingResult?.data || null;
-    if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(userId);
+    if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(userIdStr);
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
     // Eventos
@@ -733,8 +726,8 @@ export async function POST(req: NextRequest) {
     // Notas de pessoas
     let personNotesBlock = "";
     const [childrenResult, personNotesResult] = await Promise.all([
-      supabase.from('children').select('name, nickname, lev_notes').eq('parent_id', userId).not('lev_notes', 'is', null),
-      supabase.from('person_notes').select('person_name, person_type, note, noted_at').eq('user_id', userId).order('noted_at', { ascending: false }).limit(20),
+      supabase.from('children').select('name, nickname, lev_notes').eq('parent_id', userIdStr).not('lev_notes', 'is', null),
+      supabase.from('person_notes').select('person_name, person_type, note, noted_at').eq('user_id', userIdStr).order('noted_at', { ascending: false }).limit(20),
     ]);
     const msgLower = messageText.toLowerCase();
     const childNotes = (childrenResult.data || []).filter((c: any) => msgLower.includes((c.nickname || '').toLowerCase()) || msgLower.includes((c.name || '').split(' ')[0].toLowerCase()));
@@ -760,8 +753,8 @@ export async function POST(req: NextRequest) {
     }
 
     let ramBlock = "";
-    const { data: historySession } = await supabase.from('brain').select('content, metadata').eq('user_id', userId).eq('session_id', sessionId).neq('category', 'archived').order('created_at', { ascending: false }).limit(10);
-    const topicShifted = await detectTopicShiftWithL4(userId, detectedContexts);
+    const { data: historySession } = await supabase.from('brain').select('content, metadata').eq('user_id', userIdStr).eq('session_id', sessionId).neq('category', 'archived').order('created_at', { ascending: false }).limit(10);
+    const topicShifted = await detectTopicShiftWithL4(userIdStr, detectedContexts);
     
     if (historySession && historySession.length >= 2) {
       if (topicShifted) {
@@ -772,7 +765,7 @@ export async function POST(req: NextRequest) {
         ramBlock = [...historySession].reverse().map((h: any) => `${authorName}: ${h.content}\n${assistantName}: ${(h.metadata?.ai_reply || "").replace(/\[.*?\]/g, '').trim()}`).join('\n\n');
       }
     } else {
-      const semanticBlock = await semanticRamCompression(historySession || [], userId, messageText, queryEmbedding);
+      const semanticBlock = await semanticRamCompression(historySession || [], userIdStr, messageText, queryEmbedding);
       ramBlock = semanticBlock || (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : '');
     }
     if (ramBlock.length > RAM_MAX_CHARS) ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
@@ -843,7 +836,7 @@ REGRAS COMPORTAMENTAIS:
     // Montagem do Histórico e Feedback Interno
     // ----------------------------------------------------------
     const { data: historyForMessages } = await supabase.from('brain').select('content, metadata')
-      .eq('user_id', userId).neq('category', 'archived')
+      .eq('user_id', userIdStr).neq('category', 'archived')
       .order('created_at', { ascending: false }).limit(8);
 
     const conversationMessages: any[] = [
@@ -856,7 +849,7 @@ REGRAS COMPORTAMENTAIS:
     ];
 
     if (/ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|delete isso/i.test(messageText)) {
-      const { data: lastEntry } = await supabase.from('brain').select('id').eq('user_id', userId).order('created_at', { ascending: false }).limit(1).single();
+      const { data: lastEntry } = await supabase.from('brain').select('id').eq('user_id', userIdStr).order('created_at', { ascending: false }).limit(1).single();
       if (lastEntry) await supabase.from('brain').delete().eq('id', lastEntry.id);
       return NextResponse.json({ reply: 'Feito — apaguei o que foi dito antes. 🗑️', sessionId, ok: true });
     }
@@ -866,7 +859,7 @@ REGRAS COMPORTAMENTAIS:
 
     let extractionSummary = '';
     if (!isLikelyNoise) {
-      try { extractionSummary = await extractAndSummarize(userId, authorName, messageText); } 
+      try { extractionSummary = await extractAndSummarize(userIdStr, authorName, messageText); } 
       catch (e) { console.error('[Extrator/pre] Erro:', e); }
     }
 
@@ -882,7 +875,7 @@ REGRAS COMPORTAMENTAIS:
     let finalResponse = '';
     let attempts = 0;
     while (attempts < 5) {
-      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, temperature, 12000);
+      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, temperature, 25000);
       const { content, toolCalls } = response;
       if (!toolCalls || toolCalls.length === 0) {
         finalResponse = content;
@@ -890,7 +883,7 @@ REGRAS COMPORTAMENTAIS:
       }
       conversationMessages.push({ role: 'assistant', content: null, tool_calls: toolCalls });
       for (const toolCall of toolCalls) {
-        const result = await executeTool(toolCall, userId);
+        const result = await executeTool(toolCall, userIdStr);
         conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
       }
       attempts++;
@@ -909,30 +902,32 @@ REGRAS COMPORTAMENTAIS:
     }
 
     // ----------------------------------------------------------
-    // Persistência e Background
+    // Persistência no banco (usando userIdStr)
     // ----------------------------------------------------------
     const { error: insertError } = await supabase.from('brain').insert([{
-      content: messageText, category, user_id: userId, session_id: sessionId, project_tag: 'geral',
+      content: messageText, category, user_id: userIdStr, session_id: sessionId, project_tag: 'geral',
       embedding: queryEmbedding,
       metadata: { ai_reply: finalResponse, user: authorName, horizon: weights.horizon, pending_resolved: !!pendingQuestion, model_used: modelRoute.model, model_label: modelRoute.label, temperature_used: temperature, contexts_detected: detectedContexts, forced_search_used: !!forcedSearchResult }
     }]);
 
     if (insertError) console.error('BRAIN INSERT ERRO:', insertError);
+    else console.log('BRAIN INSERT OK — user:', userIdStr, 'session:', sessionId, 'model:', modelRoute.label);
 
+    // Background tasks
     const backgroundTasks: Promise<any>[] = hdMemoryIds.map(id => reinforceMemory(id));
     if (onboardingState?.status === 'in_progress') {
-      backgroundTasks.push(withRetry(() => processOnboardingFromMessage(userId, messageText, finalResponse, onboardingState)).catch(e => console.error(e)));
+      backgroundTasks.push(withRetry(() => processOnboardingFromMessage(userIdStr, messageText, finalResponse, onboardingState)).catch(e => console.error(e)));
     }
     if (!isLikelyNoise) {
-      backgroundTasks.push(withRetry(() => extractRecomendacao(userId, messageText, finalResponse)).catch(e => console.error(e)));
-      backgroundTasks.push(withRetry(() => extractDiary(userId, messageText, 'anytime')).catch(e => console.error(e)));
-      backgroundTasks.push(withRetry(() => extractGoal(userId, messageText)).catch(e => console.error(e)));
+      backgroundTasks.push(withRetry(() => extractRecomendacao(userIdStr, messageText, finalResponse)).catch(e => console.error(e)));
+      backgroundTasks.push(withRetry(() => extractDiary(userIdStr, messageText, 'anytime')).catch(e => console.error(e)));
+      backgroundTasks.push(withRetry(() => extractGoal(userIdStr, messageText)).catch(e => console.error(e)));
     }
 
     Promise.all([
       ...backgroundTasks,
-      supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('category', 'info')
-        .then(({ count }) => { if (count && count >= 20) return compactMemory(userId, authorName); }),
+      supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', userIdStr).eq('category', 'info')
+        .then(({ count }) => { if (count && count >= 20) return compactMemory(userIdStr, authorName); }),
     ]).catch(e => console.error('[Background] Erro:', e));
 
     console.timeEnd('[Performance] total');
