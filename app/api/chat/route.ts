@@ -62,8 +62,7 @@ export const maxDuration = 30;
 // ============================================================
 function assertNumericUserId(userId: string, caller: string): void {
   if (!/^\d+$/.test(userId)) {
-    throw new Error(
-      `[${caller}] FATAL: userId não é bigint numérico — recebeu: "${userId}". ` +
+    throw new Error(`[${caller}] FATAL: userId não é bigint numérico — recebeu: "${userId}".` +
       `Certifique-se de passar numericUserIdStr (String(userRecord.id)) e não o UUID do Auth.`
     );
   }
@@ -73,6 +72,7 @@ function assertNumericUserId(userId: string, caller: string): void {
 // Cache de embeddings
 // ============================================================
 const embeddingCache = new Map<string, number[]>();
+
 async function getCachedEmbedding(text: string): Promise<number[]> {
   if (embeddingCache.has(text)) return embeddingCache.get(text)!;
   const embedding = await generateEmbedding(text);
@@ -87,11 +87,14 @@ async function updateEventRelevance(userId: string) {
   assertNumericUserId(userId, 'updateEventRelevance');
   const hoje = new Date();
   hoje.setHours(0, 0, 0, 0);
+
   const { data: events } = await supabase
     .from('events')
     .select('id, title, event_date, decay_type, relevance_score')
     .eq('user_id', userId);
+
   if (!events) return;
+
   const updates = [];
   for (const ev of events) {
     const eventDate = new Date(ev.event_date);
@@ -99,6 +102,7 @@ async function updateEventRelevance(userId: string) {
     const diffDays = Math.ceil(
       (eventDate.getTime() - hoje.getTime()) / (1000 * 3600 * 24)
     );
+
     let newScore = 0;
     switch (ev.decay_type) {
       case 'recurring_annual':
@@ -124,11 +128,13 @@ async function updateEventRelevance(userId: string) {
           newScore = Math.max(0, (ev.relevance_score || 0) * 0.95);
         else newScore = ev.relevance_score || 0;
     }
+
     newScore = Math.min(0.95, Math.max(0, newScore));
     if (Math.abs(newScore - (ev.relevance_score || 0)) > 0.01) {
       updates.push({ id: ev.id, relevance_score: newScore });
     }
   }
+
   if (updates.length) {
     for (const upd of updates) {
       await supabase
@@ -147,6 +153,7 @@ async function ensureMemoryHealth(userId: string) {
   assertNumericUserId(userId, 'ensureMemoryHealth');
   try {
     await updateEventRelevance(userId);
+
     const { data: topics } = await supabase
       .from('topic_index')
       .select('id, weight')
@@ -155,6 +162,7 @@ async function ensureMemoryHealth(userId: string) {
         'last_mentioned',
         new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
       );
+
     if (topics && topics.length) {
       for (const topic of topics) {
         const newWeight = (topic.weight || 0) * 0.95;
@@ -197,72 +205,26 @@ function classifyContextRegex(text: string): ContextType[] {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
+
   const rules: Array<[RegExp, ContextType]> = [
-    [
-      /diario|diário|hoje foi|hoje ta|hoje está|acordei|dormi|dormir|meu dia|como foi meu|reflexao|refletindo|gratid/i,
-      'diario',
-    ],
-    [
-      /meta|objetivo|quero (conseguir|fazer|terminar|lancar|comecar)|prazo|progresso|etapa|concluir|finalizar/i,
-      'meta',
-    ],
-    [
-      /reuniao|reunião|consulta|compromisso|agend|horario|horário|amanha as|amanhã às|segunda|terça|quarta|quinta|sexta|sabado|domingo|às \d|as \d{1,2}h/i,
-      'agenda',
-    ],
-    [
-      /projeto|app|aplicativo|sistema|api|deploy|feature|sprint|mvp|startup|produto|desenvolv/i,
-      'projeto',
-    ],
-    [
-      /filho|filha|esposa|marido|mae|mãe|pai|irmao|irmão|família|familia|cônjuge|conjuge|casamento|nasceu|aniversario de casamento/i,
-      'familia',
-    ],
-    [
-      /medic|médic|saude|saúde|exame|remedio|remédio|hospital|dor |doenca|doença|sintoma|consulta médica/i,
-      'saude',
-    ],
-    [
-      /sinto|estou (triste|feliz|ansioso|cansado|animado|frustrado|preocupado|deprimido|sozinho)|me sinto|to mal|tô mal|to bem|tô bem|angustia|angústia|estressado/i,
-      'emocao',
-    ],
-    [
-      /email|e-mail|inbox|caixa de entrada|mensagem do|mensagem da|enviou|recebeu/i,
-      'email',
-    ],
-    [
-      /indica|recomend|sugere|onde posso|tem algum|onde tem|restaurante|lugar|lugar bom|conhece algum/i,
-      'recomendacao',
-    ],
-    [
-      /aniversario|aniversário|natal|pascoa|páscoa|ano novo|feriado|data importante|comemora/i,
-      'evento',
-    ],
-    [
-      /acordo|desperto|academia|treino|trabalho as|trabalho às|entrada no trabalho|saida do trabalho|rotina|horario de/i,
-      'rotina',
-    ],
-    [
-      /gosto de|nao gosto de|não gosto de|prefiro|adoro|odeio|minha comida|meu filme|minha musica|minha música/i,
-      'preferencia',
-    ],
-    [
-      /quando falo em|quando eu falar|pode chamar de|se eu disser|apelido|alias/i,
-      'alias',
-    ],
-    [
-      /jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo|escalação/i,
-      'esporte',
-    ],
-    [
-      /noticia|notícias|últimas|recente|aconteceu|hoje no|manchete|jornal|portal|g1|globo|folha|estadão/i,
-      'noticias',
-    ],
-    [
-      /clima|tempo|temperatura|chuva|frio|calor|previsão|amanhecer|entardecer|umidade|vento|chover|chuvoso/i,
-      'clima',
-    ],
+    [/diario|diário|hoje foi|hoje ta|hoje está|acordei|dormi|dormir|meu dia|como foi meu|reflexao|refletindo|gratid/i, 'diario'],
+    [/meta|objetivo|quero (conseguir|fazer|terminar|lancar|comecar)|prazo|progresso|etapa|concluir|finalizar/i, 'meta'],
+    [/reuniao|reunião|consulta|compromisso|agend|horario|horário|amanha as|amanhã às|segunda|terça|quarta|quinta|sexta|sabado|domingo|às \d|as \d{1,2}h/i, 'agenda'],
+    [/projeto|app|aplicativo|sistema|api|deploy|feature|sprint|mvp|startup|produto|desenvolv/i, 'projeto'],
+    [/filho|filha|esposa|marido|mae|mãe|pai|irmao|irmão|família|familia|cônjuge|conjuge|casamento|nasceu|aniversario de casamento/i, 'familia'],
+    [/medic|médic|saude|saúde|exame|remedio|remédio|hospital|dor|doenca|doença|sintoma|consulta médica/i, 'saude'],
+    [/sinto|estou (triste|feliz|ansioso|cansado|animado|frustrado|preocupado|deprimido|sozinho)|me sinto|to mal|tô mal|to bem|tô bem|angustia|angústia|estressado/i, 'emocao'],
+    [/email|e-mail|inbox|caixa de entrada|mensagem do|mensagem da|enviou|recebeu/i, 'email'],
+    [/indica|recomend|sugere|onde posso|tem algum|onde tem|restaurante|lugar|lugar bom|conhece algum/i, 'recomendacao'],
+    [/aniversario|aniversário|natal|pascoa|páscoa|ano novo|feriado|data importante|comemora/i, 'evento'],
+    [/acordo|desperto|academia|treino|trabalho as|trabalho às|entrada no trabalho|saida do trabalho|rotina|horario de/i, 'rotina'],
+    [/gosto de|nao gosto de|não gosto de|prefiro|adoro|odeio|minha comida|meu filme|minha musica|minha música/i, 'preferencia'],
+    [/quando falo em|quando eu falar|pode chamar de|se eu disser|apelido|alias/i, 'alias'],
+    [/jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo|escalação/i, 'esporte'],
+    [/noticia|notícias|últimas|recente|aconteceu|hoje no|manchete|jornal|portal|g1|globo|folha|estadão/i, 'noticias'],
+    [/clima|tempo|temperatura|chuva|frio|calor|previsão|amanhecer|entardecer|umidade|vento|chover|chuvoso/i, 'clima'],
   ];
+
   const detected: ContextType[] = [];
   for (const [rx, ctx] of rules) {
     if (rx.test(t)) detected.push(ctx);
@@ -275,12 +237,14 @@ async function classifyContextWithL4(
   userId: string
 ): Promise<ContextType[]> {
   const regexContexts = classifyContextRegex(text);
+
   if (regexContexts.length > 2) {
     const { data: topicWeights } = await supabase
       .from('topic_index')
       .select('topic, weight')
       .eq('user_id', userId)
       .in('topic', regexContexts);
+
     if (topicWeights && topicWeights.length > 0) {
       const sorted = topicWeights.sort(
         (a, b) => (b.weight || 0) - (a.weight || 0)
@@ -343,6 +307,7 @@ function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
 
   const personalKeywords =
     /\b(eu|meu|minha|meus|minhas|comecei|trabalhei|trabalho|nasci|moro|morei|casei|tive|tenho|familia|esposa|marido|filho|filha|minha vida|meu trabalho|minha historia|quando comecei|quando fui|quando entrei)\b/i;
+
   if (personalKeywords.test(lower)) {
     console.log('[shouldForceSearch] Frase pessoal detectada — usando banco de dados, sem busca web.');
     return false;
@@ -350,6 +315,7 @@ function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
 
   const keywords =
     /\b(jogo|partida|futebol|basquete|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificacao|tabela|artilheiro|resultado|placar|hoje tem|proximo|escalacao|expo|feira|comeca|inicio|data de|horario de|edicao|noticia|ultimas|recente|aconteceu|clima|temperatura|chuva|chover|previsao|cotacao|preco do|valor do|dolar|euro|bitcoin|ibovespa)\b/i;
+
   if (keywords.test(lower)) {
     console.log('[shouldForceSearch] Palavra-chave externa detectada, forçando busca');
     return true;
@@ -410,6 +376,7 @@ async function updateTopicIndex(userId: string, contexts: string[], messageText:
   const keyTerms = words
     .filter((w) => w.length > 3 && !/[0-9]/.test(w))
     .slice(0, 5);
+
   for (const ctx of contexts) {
     const { data: existing } = await supabase
       .from('topic_index')
@@ -417,6 +384,7 @@ async function updateTopicIndex(userId: string, contexts: string[], messageText:
       .eq('user_id', userId)
       .eq('topic', ctx)
       .maybeSingle();
+
     const newWeight = (existing?.weight || 0) + 0.1;
     await supabase.from('topic_index').upsert(
       {
@@ -439,6 +407,7 @@ async function getRelatedTopics(userId: string, currentContext: string): Promise
     .neq('topic', currentContext)
     .order('weight', { ascending: false })
     .limit(3);
+
   if (!related?.length) return '';
   return `\n[TÓPICOS RELACIONADOS]\n${related
     .map((t: any) => `- ${t.topic} (peso: ${Math.round((t.weight || 0) * 100)}%)`)
@@ -452,10 +421,13 @@ async function detectTopicShiftWithL4(userId: string, currentContexts: ContextTy
     .eq('user_id', userId)
     .order('last_mentioned', { ascending: false })
     .limit(5);
+
   if (!recentTopics?.length) return false;
+
   const hasCurrentTopic = currentContexts.some((ctx) =>
     recentTopics.some((t: any) => t.topic === ctx && (t.weight || 0) >= 0.3)
   );
+
   return !hasCurrentTopic && !currentContexts.includes('casual');
 }
 
@@ -480,11 +452,13 @@ async function semanticRamCompression(
 ): Promise<string> {
   if (!history.length) return '';
   const embedding = currentEmbedding || (await getCachedEmbedding(messageText));
+
   const { data: relevantMemories } = (await supabase.rpc('match_memories', {
     query_embedding: embedding,
     match_threshold: 0.4,
     match_count: 5,
   })) as { data: any[] | null };
+
   if (relevantMemories && relevantMemories.length > 0) {
     const semanticBlock = relevantMemories
       .filter((r: any) => !r.summary.startsWith('[CINZA]'))
@@ -515,6 +489,7 @@ async function getOrCreateOnboardingStatePersistent(userId: string) {
     .order('created_at', { ascending: false })
     .limit(1)
     .single();
+
   if (onboardingMemory?.metadata?.state) {
     return onboardingMemory.metadata.state;
   }
@@ -918,6 +893,7 @@ interface ToolCall {
   type: 'function';
   function: { name: string; arguments: string };
 }
+
 interface ToolResponse {
   content: string;
   toolCalls: ToolCall[] | null;
@@ -948,13 +924,15 @@ async function callOpenRouterWithTools(
         max_tokens: 2000,
       }),
     }),
-    new Promise<Response>((_, reject) =>
+    new Promise((_, reject) =>
       setTimeout(() => reject(new Error('Timeout')), timeoutMs)
     ),
   ]);
+
   if (!response.ok) throw new Error(`OpenRouter error: ${response.status}`);
   const data = await response.json();
   const choice = data.choices?.[0];
+
   return {
     content: choice?.message?.content || '',
     toolCalls: choice?.message?.tool_calls || null,
@@ -987,6 +965,7 @@ async function withRetry<T>(
 // ============================================================
 export async function POST(req: NextRequest) {
   console.log('[chat] Iniciando — V8 Dual-ID corrigido');
+
   try {
     console.time('[Performance] total');
 
@@ -1073,7 +1052,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ----------------------------------------------------------
-    // Lookup do usuário — aceita email OU userId
+    // Look up do usuário — aceita email OU userId
     // jarvis.users.id é BIGINT → numericUserIdStr
     // ----------------------------------------------------------
     let userRecord: any = null;
@@ -1130,27 +1109,17 @@ export async function POST(req: NextRequest) {
     // Resolve authUserId via Auth Admin (fonte confiável)
     let authUserId: string = numericUserIdStr; // fallback final
 
-    // No arquivo ./app/api/chat/route.ts
-
-if (userEmail) {
-  try {
-    // Substitua getUserByEmail por listUsers com filtro
-    const { data: { users }, error: authError } = await supabase.auth.admin.listUsers({
-      filters: {
-        email: userEmail
+    if (userEmail) {
+      try {
+        const { data: authData } = await supabase.auth.admin.getUserByEmail(userEmail);
+        if (authData?.user?.id) {
+          authUserId = authData.user.id;
+          console.log('[chat] authUserId resolvido via email:', authUserId);
+        }
+      } catch (e) {
+        console.warn('[chat] Falha ao buscar authUserId via email, tentando fallbacks:', e);
       }
-    });
-
-    const authUser = users?.[0];
-
-    if (authUser?.id) {
-      authUserId = authUser.id;
-      console.log('[chat] authUserId resolvido via email:', authUserId);
     }
-  } catch (err) {
-    console.error('[chat] Erro ao buscar authUserId por email:', err);
-  }
-}
 
     // Fallback 1: tempUserId é UUID válido → usa diretamente
     if (authUserId === numericUserIdStr && tempUserId) {
@@ -1481,54 +1450,42 @@ if (userEmail) {
     // ----------------------------------------------------------
     const systemPrompt = `Você é ${assistantName}, assistente pessoal de ${authorName}.
 Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
-
 🚨 REGRA ABSOLUTA – PESQUISE SEMPRE! 🚨
 Para QUALQUER pergunta sobre:
-- Jogos, partidas, resultados esportivos (futebol, basquete, F1, etc.)
-- Datas e horários de eventos futuros
-- Notícias recentes, cotações, clima em outras cidades
-- Escalações de times, tabelas de campeonatos
-- Qualquer informação que possa ter mudado desde ontem
-
+Jogos, partidas, resultados esportivos (futebol, basquete, F1, etc.)
+Datas e horários de eventos futuros
+Notícias recentes, cotações, clima em outras cidades
+Escalações de times, tabelas de campeonatos
+Qualquer informação que possa ter mudado desde ontem
 VOCÊ DEVE chamar a ferramenta \`searchWeb\` ANTES de responder.
-
 ATENÇÃO: Se o bloco "[PESQUISA AUTOMÁTICA REALIZADA]" estiver presente, você DEVE usá-lo como fonte principal e NÃO inventar informações.
-
 ${forcedSearchResult}
-
 ${googleCtx ? `[AGENDA GOOGLE]\n${googleCtx}` : ''}
 ${msCtx ? `[AGENDA OUTLOOK]\n${msCtx}` : ''}
 ${emailBlock ? `[EMAILS RECENTES]\n${emailBlock}` : ''}
 ${locationContext ? `\n${locationContext}` : ''}
 ${relatedTopicsBlock ? relatedTopicsBlock : ''}
-
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${truncatedL3}` : ''}
-
 ${personNotesBlock ? personNotesBlock : ''}
 ${recsBlock ? recsBlock : ''}
 ${topicBlock ? topicBlock : ''}
 ${isMeaningfulDiaryBlock(diaryBlock) ? diaryBlock : ''}
-
 ${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]\n${truncatedHd}` : ''}
 ${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao citar]\n${truncatedAshes}` : ''}
-
 [EVENTOS]\n${truncatedEvents}
-
 ${onboardingBlock}
 ${gapsBlock ? gapsBlock : ''}
-
 ${principlesBlock ? `[BÚSSOLA — seu jeito de ser no mundo, não regras a citar]\n${principlesBlock}` : ''}
-
 REGRAS COMPORTAMENTAIS:
-1. FOCO: Responda O QUE FOI PERGUNTADO. Pronomes referem-se ao último assunto. Nunca repita sugestão rejeitada.
-2. TOM: Amigo inteligente, direto, humano. Use "${informalAddress}" no máximo 1x por conversa. Nunca comece com "Considerando que".
-3. PROIBIDO: "Anotado!", "Registrado!". Se salvou via ferramenta, diga naturalmente: "Feito." ou "Tá na agenda."
-4. PRESENÇA EMOCIONAL: Seja empático quando compartilhado algo difícil.
-5. MEMÓRIA: Use notas naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
-6. FAMÍLIA: Nunca assuma que a mãe/pai de um filho é o cônjuge atual.
-7. LOCALIZAÇÃO: Se disponível, use para contextualizar – não cite coordenadas.
-8. PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe adequadamente e limpe a pendência.` : 'Nenhuma pergunta pendente.'}
-9. CLASSIFICAÇÃO: Ao final da sua resposta, inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
+FOCO: Responda O QUE FOI PERGUNTADO. Pronomes referem-se ao último assunto. Nunca repita sugestão rejeitada.
+TOM: Amigo inteligente, direto, humano. Use "${informalAddress}" no máximo 1x por conversa. Nunca comece com "Considerando que".
+PROIBIDO: "Anotado!", "Registrado!". Se salvou via ferramenta, diga naturalmente: "Feito." ou "Tá na agenda."
+PRESENÇA EMOCIONAL: Seja empático quando compartilhado algo difícil.
+MEMÓRIA: Use notas naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
+FAMÍLIA: Nunca assuma que a mãe/pai de um filho é o cônjuge atual.
+LOCALIZAÇÃO: Se disponível, use para contextualizar – não cite coordenadas.
+PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe adequadamente e limpe a pendência.` : 'Nenhuma pergunta pendente.'}
+CLASSIFICAÇÃO: Ao final da sua resposta, inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
 
     // ----------------------------------------------------------
     // Montagem do Histórico
@@ -1602,6 +1559,7 @@ REGRAS COMPORTAMENTAIS:
     console.log('[chat] Chamando OpenRouter (model:', modelRoute.model, ')');
     let finalResponse = '';
     let attempts = 0;
+
     while (attempts < 5) {
       const response = await callOpenRouterWithTools(
         conversationMessages,
@@ -1631,7 +1589,6 @@ REGRAS COMPORTAMENTAIS:
           content: result,
         });
       }
-
       attempts++;
     }
 
@@ -1690,7 +1647,6 @@ REGRAS COMPORTAMENTAIS:
       );
 
     const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
-
     if (onboardingState?.status === 'in_progress') {
       backgroundTasks.push(
         withRetry(() =>
@@ -1703,7 +1659,6 @@ REGRAS COMPORTAMENTAIS:
         ).catch((e) => console.error('[Onboarding] Erro:', e))
       );
     }
-
     if (!isLikelyNoise) {
       backgroundTasks.push(
         withRetry(() =>
