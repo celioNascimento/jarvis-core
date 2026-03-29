@@ -629,7 +629,7 @@ async function executeTool(toolCall: any, userId: string, context: any): Promise
       try {
         console.log(`[executeTool] Chamando searchWeb com query: "${parsedArgs.query}"`);
         const result = await searchWeb(parsedArgs.query);
-        console.log(`[executeTool] Resultado da busca: ${result.substring(0, 200)}...`);
+        console.log(`[executeTool] Resultado da busca (primeiros 200 chars): ${result.substring(0, 200)}...`);
         return result;
       } catch (error) {
         console.error('[executeTool] Erro em searchWeb:', error);
@@ -797,31 +797,27 @@ function planContextualBlocks(contexts: ContextType[]): {
 }
 
 // ============================================================
-// DETECTA SE A PERGUNTA EXIGE PESQUISA FORÇADA (versão melhorada)
+// DETECTA SE A PERGUNTA EXIGE PESQUISA FORÇADA (VERSÃO SIMPLIFICADA E ROBUSTA)
 // ============================================================
-
 function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
-  console.log('[shouldForceSearch] Forçando true para teste');
-  return true; // SEMPRE fará a busca
-}
-
-/* function shouldForceSearch(message: string, contexts: ContextType[]): boolean {
   const lower = message.toLowerCase();
+  // Palavras-chave que indicam necessidade de busca
+  const keywords = /\b(jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificação|tabela|artilheiro|resultado|placar|hoje tem|quando é|próximo|escalação|expo|feira|evento|começa|início|data de|horário de|edição|notícia|últimas|recente|aconteceu|clima|tempo|temperatura|chuva|chover|previsão|cotação|preço do|valor do|dólar|euro|bitcoin|ibovespa)\b/i;
   
-  // Palavras que indicam necessidade de informação atualizada
-  const keywords = /jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificação|tabela|artilheiro|resultado|placar|hoje tem|quando é|próximo|escalação|expo|feira|evento|começa|início|data de|horário de|edição|notícia|últimas|recente|aconteceu|clima|tempo|temperatura|chuva|chover|previsão|cotação|preço do|valor do|dólar|euro|bitcoin|ibovespa/i;
+  if (keywords.test(lower)) {
+    console.log('[shouldForceSearch] Palavra-chave detectada, forçando busca');
+    return true;
+  }
   
-  if (!keywords.test(lower)) return false;
+  // Palavras temporais
+  if (/(quando|qual|qual é|como está|como fica|o que aconteceu|o que rolou|vai chover|vai ter|como vai ser)/i.test(lower)) {
+    console.log('[shouldForceSearch] Palavra temporal detectada, forçando busca');
+    return true;
+  }
   
-  // Se já há contexto de esporte, notícias ou clima, força pesquisa
-  if (contexts.includes('esporte') || contexts.includes('noticias') || contexts.includes('clima')) return true;
-  
-  // Se a pergunta contém "quando", "qual", "qual é", "como está", "vai", etc., provavelmente precisa de dados atuais
-  if (/(quando|qual|qual é|como está|como fica|o que aconteceu|o que rolou|vai chover|vai ter|como vai ser)/i.test(lower)) return true;
-  
+  console.log('[shouldForceSearch] Nenhum gatilho detectado, busca não forçada');
   return false;
 }
- */
 
 // ============================================================
 // REFINA A QUERY DE BUSCA COM BASE NA MENSAGEM
@@ -991,7 +987,7 @@ export async function POST(req: NextRequest) {
     console.log(`[Sprint1] contextos: ${detectedContexts.join(',')} | modelo: ${modelRoute.label} | temp: ${temperature}`);
 
     // ----------------------------------------------------------
-    // 5. PESQUISA FORÇADA (se necessário) – agora usando searchWeb
+    // 5. PESQUISA FORÇADA – AGORA GARANTIDA PARA PALAVRAS-CHAVE
     // ----------------------------------------------------------
     let forcedSearchResult = "";
     const shouldForce = shouldForceSearch(messageText, detectedContexts);
@@ -1000,24 +996,20 @@ export async function POST(req: NextRequest) {
       const searchQuery = refineSearchQuery(messageText, detectedContexts);
       console.log(`[ForcedSearch] Executando pesquisa para: ${searchQuery}`);
       try {
-        // Simula uma chamada de ferramenta searchWeb
-        const toolCall = {
-          function: {
-            name: 'searchWeb',
-            arguments: JSON.stringify({ query: searchQuery })
-          }
-        };
-        const result = await executeTool(toolCall, userId, {});
+        // Chamada direta à função searchWeb (sem depender do toolCall)
+        const result = await searchWeb(searchQuery);
         forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA]\nConsulta: "${searchQuery}"\nResultado:\n${result}`;
         console.log(`[ForcedSearch] Resultado obtido (primeiros 200 chars): ${result.substring(0, 200)}`);
       } catch (e) {
         console.error("[ForcedSearch] Falha:", e);
         forcedSearchResult = "\n[ERRO NA PESQUISA] Não foi possível obter informações atualizadas.";
       }
+    } else {
+      console.log("[ForcedSearch] Nenhuma pesquisa forçada será feita.");
     }
 
     // ----------------------------------------------------------
-    // 6. Busca de dados de contexto
+    // 6. Busca de dados de contexto (mantido igual)
     // ----------------------------------------------------------
     const basePromises = Promise.all([
       supabase
@@ -1220,7 +1212,7 @@ export async function POST(req: NextRequest) {
     const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     // ----------------------------------------------------------
-    // 7. System prompt – VERSÃO REFORÇADA (com pesquisa automática)
+    // 7. System prompt – com pesquisa forçada injetada
     // ----------------------------------------------------------
     const systemPrompt = `
 Você é ${assistantName}, assistente pessoal de ${authorName}.
@@ -1338,7 +1330,7 @@ REGRAS COMPORTAMENTAIS:
     conversationMessages.push({ role: 'system', content: feedbackContent });
 
     // ----------------------------------------------------------
-    // 11. Loop ReAct com ferramentas
+    // 11. Loop ReAct com ferramentas (mantido)
     // ----------------------------------------------------------
     let finalResponse = '';
     let attempts = 0;
