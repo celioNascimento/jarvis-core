@@ -854,6 +854,7 @@ function refineSearchQuery(message: string, contexts: ContextType[]): string {
 // WEBHOOK PRINCIPAL
 // ============================================================
 export async function POST(req: NextRequest) {
+  console.log('[DEPLOY] Versão com busca forçada - 2025-03-29');
   try {
     console.time('[Performance] total');
     // ----------------------------------------------------------
