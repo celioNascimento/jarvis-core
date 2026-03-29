@@ -365,35 +365,40 @@ function shouldForceSearch(
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
 
-  // Se o usuário fala de si mesmo, prioriza o banco de dados
+  // REGRA 1 (ALTA PRIORIDADE): Se a frase é sobre o próprio usuário,
+  // o banco de dados tem a resposta — nunca buscar na web.
+  // Inclui pronomes de 1ª pessoa E verbos conjugados na 1ª pessoa.
   const personalKeywords =
-    /\b(eu|meu|minha|comecei|trabalhei|trabalho|nasci|moro|familia|esposa|filho)\b/i;
+    /\b(eu|meu|minha|meus|minhas|comecei|trabalhei|trabalho|nasci|moro|morei|casei|tive|tenho|familia|esposa|marido|filho|filha|minha vida|meu trabalho|minha historia|quando comecei|quando fui|quando entrei)\b/i;
   if (personalKeywords.test(lower)) {
     console.log(
-      '[shouldForceSearch] Palavras pessoais detectadas, abortando busca web.'
+      '[shouldForceSearch] Frase pessoal detectada — usando banco de dados, sem busca web.'
     );
     return false;
   }
 
+  // REGRA 2: Palavras-chave de domínio externo (esporte, mercado, notícias, clima)
   const keywords =
-    /\b(jogo|partida|futebol|basquete|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificacao|tabela|artilheiro|resultado|placar|hoje tem|quando e|proximo|escalacao|expo|feira|evento|comeca|inicio|data de|horario de|edicao|noticia|ultimas|recente|aconteceu|clima|temperatura|chuva|chover|previsao|cotacao|preco do|valor do|dolar|euro|bitcoin|ibovespa)\b/i;
+    /\b(jogo|partida|futebol|basquete|volei|tenis|f1|corrida|campeonato|copa|libertadores|copa do brasil|classificacao|tabela|artilheiro|resultado|placar|hoje tem|proximo|escalacao|expo|feira|comeca|inicio|data de|horario de|edicao|noticia|ultimas|recente|aconteceu|clima|temperatura|chuva|chover|previsao|cotacao|preco do|valor do|dolar|euro|bitcoin|ibovespa)\b/i;
   if (keywords.test(lower)) {
-    console.log('[shouldForceSearch] Palavra-chave detectada, forçando busca');
+    console.log('[shouldForceSearch] Palavra-chave externa detectada, forçando busca');
     return true;
   }
 
+  // REGRA 3: Palavras temporais — SÓ disparam se não houver contexto pessoal
+  // "quando" sozinho não é suficiente se não houver objeto externo claro
   if (
-    /(quando|qual e|como esta|como fica|o que aconteceu|o que rolou|vai chover|vai ter|como vai ser)/i.test(
+    /(qual e|como esta|como fica|o que aconteceu|o que rolou|vai chover|vai ter|como vai ser)/i.test(
       lower
     )
   ) {
     console.log(
-      '[shouldForceSearch] Palavra temporal detectada, forçando busca'
+      '[shouldForceSearch] Palavra temporal de domínio externo detectada, forçando busca'
     );
     return true;
   }
 
-  console.log('[shouldForceSearch] Nenhum gatilho detectado');
+  console.log('[shouldForceSearch] Nenhum gatilho externo detectado');
   return false;
 }
 
@@ -1284,11 +1289,17 @@ export async function POST(req: NextRequest) {
 
     // ----------------------------------------------------------
     // ARQUITETURA DUAL-ID:
-    // numericUserIdStr → tabelas com bigint: events, topic_index, goals, diary, children, person_notes
-    // authUserId       → tabelas com text/uuid: brain, favorite_places, shopping_items, sessions
+    // numericUserIdStr → TODAS as tabelas do schema jarvis, incluindo brain
+    //                    (bigint): events, topic_index, goals, diary, children,
+    //                    person_notes, brain, sessions, memories, config
+    // authUserId       → favorite_places e shopping_items (text/uuid, schema público)
+    //                    Fallback: se tempUserId for UUID do Auth, usado só nessas duas tabelas
     // ----------------------------------------------------------
     const numericUserIdStr = String(userRecord.id);
-    const authUserId = tempUserId || numericUserIdStr;
+    // authUserId: para favorite_places/shopping_items que podem usar UUID do Auth
+    // Se tempUserId for um UUID válido (contém '-'), usa ele; caso contrário usa numérico
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(tempUserId);
+    const authUserId = isUUID ? tempUserId : numericUserIdStr;
 
     const authorName = userRecord.nickname || userFirstName;
     const assistantName = userRecord.assistant_name || 'Lev';
@@ -1316,7 +1327,7 @@ export async function POST(req: NextRequest) {
       locationContext = `${endereco}\nCoordenadas exatas: ${latitude}, ${longitude}`;
       await supabase.from('config').upsert(
         {
-          key: `last_location_${authUserId}`,
+          key: `last_location_${numericUserIdStr}`,
           value: JSON.stringify({
             latitude,
             longitude,
@@ -1344,7 +1355,7 @@ export async function POST(req: NextRequest) {
       const { data: lastLoc } = await supabase
         .from('config')
         .select('value')
-        .eq('key', `last_location_${authUserId}`)
+        .eq('key', `last_location_${numericUserIdStr}`)
         .single();
       if (lastLoc?.value) {
         try {
@@ -1621,7 +1632,7 @@ export async function POST(req: NextRequest) {
     const { data: historySession } = await supabase
       .from('brain')
       .select('content, metadata')
-      .eq('user_id', authUserId)
+      .eq('user_id', numericUserIdStr)
       .eq('session_id', sessionId)
       .neq('category', 'archived')
       .order('created_at', { ascending: false })
@@ -1664,7 +1675,7 @@ export async function POST(req: NextRequest) {
     } else {
       const semanticBlock = await semanticRamCompression(
         historySession || [],
-        authUserId,
+        numericUserIdStr,
         messageText,
         queryEmbedding
       );
@@ -1760,7 +1771,7 @@ REGRAS COMPORTAMENTAIS:
     const { data: historyForMessages } = await supabase
       .from('brain')
       .select('content, metadata')
-      .eq('user_id', authUserId)
+      .eq('user_id', numericUserIdStr)
       .neq('category', 'archived')
       .order('created_at', { ascending: false })
       .limit(8);
@@ -1788,7 +1799,7 @@ REGRAS COMPORTAMENTAIS:
       const { data: lastEntry } = await supabase
         .from('brain')
         .select('id')
-        .eq('user_id', authUserId)
+        .eq('user_id', numericUserIdStr)
         .order('created_at', { ascending: false })
         .limit(1)
         .single();
@@ -1891,13 +1902,14 @@ REGRAS COMPORTAMENTAIS:
     }
 
     // ----------------------------------------------------------
-    // Persistência no banco (brain usa authUserId)
+    // Persistência no banco
+    // brain.user_id é bigint → usa numericUserIdStr
     // ----------------------------------------------------------
     const { error: insertError } = await supabase.from('brain').insert([
       {
         content: messageText,
         category,
-        user_id: authUserId,
+        user_id: numericUserIdStr,
         session_id: sessionId,
         project_tag: 'geral',
         embedding: queryEmbedding,
@@ -1919,7 +1931,7 @@ REGRAS COMPORTAMENTAIS:
     else
       console.log(
         'BRAIN INSERT OK — user:',
-        authUserId,
+        numericUserIdStr,
         'session:',
         sessionId,
         'model:',
@@ -1967,11 +1979,11 @@ REGRAS COMPORTAMENTAIS:
       supabase
         .from('brain')
         .select('*', { count: 'exact', head: true })
-        .eq('user_id', authUserId)
+        .eq('user_id', numericUserIdStr)
         .eq('category', 'info')
         .then(({ count }) => {
           if (count && count >= 20)
-            return compactMemory(authUserId, authorName);
+            return compactMemory(numericUserIdStr, authorName);
         }),
     ]).catch((e) => console.error('[Background] Erro:', e));
 
