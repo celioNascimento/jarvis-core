@@ -1255,4 +1255,8 @@ function planContextualBlocks(contexts: ContextType[]): {
     loadCalendar:        contexts.some(c => ['agenda', 'evento', 'familia'].includes(c)),
     loadEmail:           contexts.some(c => ['email'].includes(c)),
   };
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 3101e30 (update)
