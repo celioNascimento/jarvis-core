@@ -1,6 +1,6 @@
 // app/api/chat/route.ts
 // Motor V8 Unificado — Arquitetura Dual-ID
-// ✅ CORREÇÕES: && em vez de & &, => em vez de = >, tipos, threshold 0.28
+// ✅ CORREÇÕES: && em vez de & &, => em vez de = >, threshold 0.28, null handling
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
 
         const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` },
+          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
           body: whisperFormData,
         });
 
