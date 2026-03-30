@@ -1,7 +1,5 @@
 // lib/jarvis.ts
-// Motor Central — Conexões, IA, Vetores e Utilitários
-// ✅ CORREÇÕES: Embedding timeout, headers OpenRouter, tratamento de null/undefined
-
+// ✅ CORREÇÕES: Tipos explícitos + headers OpenRouter + timeout
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
 
@@ -16,7 +14,6 @@ export const supabase = createClient(
 
 // ============================================================
 // 2. MOTOR DE IA (OpenRouter)
-// ✅ CORREÇÃO: Headers adicionais + melhor tratamento de erro
 // ============================================================
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -24,10 +21,10 @@ export async function callOpenRouter(
   input: string | ChatMessage[],
   model: string = "google/gemini-2.0-flash-001",
   temperature: number = 0.7
-): Promise<string> {
+): Promise<string> {  // ✅ Tipo explícito
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000); // ✅ Aumentado para 12s
+    const timeout = setTimeout(() => controller.abort(), 12000);
 
     const messages: ChatMessage[] = typeof input === 'string'
       ? [{ role: 'user', content: input }]
@@ -39,7 +36,7 @@ export async function callOpenRouter(
       headers: {
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
-        // ✅ Headers opcionais do OpenRouter para melhor rastreabilidade
+        // ✅ Headers opcionais do OpenRouter
         "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
         "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
@@ -53,7 +50,6 @@ export async function callOpenRouter(
 
     clearTimeout(timeout);
 
-    // ✅ Log do status HTTP para debug
     if (!res.ok) {
       const errorText = await res.text();
       console.error(`[OpenRouter] HTTP ${res.status}:`, errorText);
@@ -81,14 +77,13 @@ export async function callOpenRouter(
 
 // ============================================================
 // 3. MOTOR VETORIAL (Embeddings via OpenRouter)
-// ✅ CORREÇÕES: Timeout 15s, headers, validação de resposta, logs
 // ============================================================
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
     console.log('[Embedding] Gerando para:', text.substring(0, 60) + (text.length > 60 ? '...' : ''));
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000); // ✅ Aumentado para 15s
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
     const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",
@@ -103,14 +98,12 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
       body: JSON.stringify({
         model: "openai/text-embedding-3-small",
         input: text,
-        // ✅ Dimensão explícita para consistência
         dimensions: 1536,
       })
     });
 
     clearTimeout(timeout);
 
-    // ✅ Log do status HTTP
     console.log('[Embedding] HTTP Status:', res.status);
 
     if (!res.ok) {
@@ -158,7 +151,6 @@ export async function sendTelegram(chatId: string | number, text: string): Promi
 
 // ============================================================
 // 5. GERENCIADOR DE SESSÃO
-// sessions.user_id é bigint — recebe numericUserIdStr (correto)
 // ============================================================
 export async function getOrCreateSession(userId: string): Promise<string> {
   try {
@@ -203,7 +195,6 @@ export async function getOrCreateSession(userId: string): Promise<string> {
 
 // ============================================================
 // 6. GERENCIADOR DE PERGUNTA PENDENTE
-// users.id é bigint — recebe numericUserIdStr (correto)
 // ============================================================
 export async function getPendingQuestion(userId: string): Promise<{ question: string | null; context: any }> {
   try {
