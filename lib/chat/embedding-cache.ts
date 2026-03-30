@@ -1,9 +1,8 @@
 // lib/chat/embedding-cache.ts
-// ✅ CORREÇÃO: Cache persiste no banco (jarvis.config)
+// Cache de embeddings persiste no banco (jarvis.config)
 import { supabase } from '@/lib/jarvis';
 import { generateEmbedding } from '@/lib/jarvis';
 
-// Hash simples para criar chaves de cache únicas
 function hashCode(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -18,7 +17,6 @@ export async function getCachedEmbedding(text: string): Promise<number[] | null>
   const cacheKey = `embedding_${hash}`;
   
   try {
-    // 1. Tenta cache no banco de dados
     const { data } = await supabase
       .from('config')
       .select('value')
@@ -37,11 +35,9 @@ export async function getCachedEmbedding(text: string): Promise<number[] | null>
       }
     }
     
-    // 2. Gera novo embedding
     console.log('[Embedding Cache] MISS, gerando novo:', cacheKey);
     const embedding = await generateEmbedding(text);
     
-    // 3. ✅ Só salva no cache se não for null
     if (embedding && embedding.length > 0) {
       await supabase.from('config').upsert({
         key: cacheKey,
@@ -55,7 +51,6 @@ export async function getCachedEmbedding(text: string): Promise<number[] | null>
     return embedding;
   } catch (error) {
     console.error('[Embedding Cache] Erro:', error);
-    // Fallback: gera embedding sem cache
     return await generateEmbedding(text);
   }
 }
