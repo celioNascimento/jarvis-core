@@ -1,8 +1,5 @@
 // lib/chat/embedding-cache.ts
-// ✅ CORREÇÃO: Cache agora persiste no banco (jarvis.config)
-// Em Next.js serverless, cada request roda em container diferente
-// Map em memória é perdido entre requests → embeddings inconsistentes
-
+// ✅ CORREÇÃO: Cache persiste no banco (jarvis.config)
 import { supabase } from '@/lib/jarvis';
 import { generateEmbedding } from '@/lib/jarvis';
 
@@ -44,7 +41,7 @@ export async function getCachedEmbedding(text: string): Promise<number[] | null>
     console.log('[Embedding Cache] MISS, gerando novo:', cacheKey);
     const embedding = await generateEmbedding(text);
     
-    // 3. Salva no cache (TTL implícito via cleanup periódico se necessário)
+    // 3. ✅ Só salva no cache se não for null
     if (embedding && embedding.length > 0) {
       await supabase.from('config').upsert({
         key: cacheKey,
