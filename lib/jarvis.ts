@@ -32,14 +32,6 @@ export async function callOpenRouter(
       ? [{ role: 'user', content: input }]
       : input;
 
-    // 🔍 LOG DE DEBUG — ANTES do fetch (não dentro!)
-    console.log('[OpenRouter DEBUG] Headers:', {
-      authDefined: !!process.env.OPENROUTER_API_KEY,
-      authLength: process.env.OPENROUTER_API_KEY?.length || 0,
-      url: "https://openrouter.ai/api/v1/chat/completions",
-    });
-
-    // ✅ Fetch com headers SEM ESPAÇOS
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       signal: controller.signal,
