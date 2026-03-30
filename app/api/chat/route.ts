@@ -52,7 +52,9 @@ import {
 import { tools } from '@/lib/chat/tools-def';
 import { executeTool } from '@/lib/chat/tools-executor';
 import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
+
 export const maxDuration = 30;
+
 // ============================================================
 // Onboarding Persistente
 // ============================================================
@@ -68,6 +70,7 @@ async function getOrCreateOnboardingStatePersistent(userId: string) {
   if (onboardingMemory?.metadata?.state) return onboardingMemory.metadata.state;
   return await initOnboarding(userId);
 }
+
 // ============================================================
 // POST — Handler Principal
 // ============================================================
@@ -143,77 +146,74 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'userEmail ou userId obrigatório' }, { status: 400 });
 
     // ----------------------------------------------------------
-    // Look up do usuário — aceita email OU userId
+    // Lookup do usuário — email OU auth_user_id (UUID do Auth)
     // ----------------------------------------------------------
     let userRecord: any = null;
 
+    // 1. Tenta lookup por email (SEMPRE funciona se email for único)
     if (userEmail) {
-      const { data } = await supabase
+      console.log('[chat] Buscando usuário por email:', userEmail);
+      const { data, error } = await supabase
         .from('users')
         .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context')
         .eq('email', userEmail)
         .maybeSingle();
+      
+      if (error) console.error('[chat] Erro na busca por email:', error);
+      if (data) console.log('[chat] Usuário encontrado por email, id:', data.id);
+      
       userRecord = data;
     }
 
+    // 2. Fallback: lookup por auth_user_id (UUID do Supabase Auth)
     if (!userRecord && tempUserId) {
-      const isNumeric = /^\d+$/.test(tempUserId);
-      if (isNumeric) {
-        const { data } = await supabase
-          .from('users')
-          .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context')
-          .eq('id', tempUserId)
-          .maybeSingle();
-        userRecord = data;
-      } else {
-        console.warn('[chat] tempUserId é UUID do Auth:', tempUserId);
-        const { data } = await supabase
+      // Verifica se é um UUID válido
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
+      
+      if (isUUID) {
+        console.log('[chat] Buscando usuário por auth_user_id (UUID):', tempUserId);
+        const { data, error } = await supabase
           .from('users')
           .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context')
           .eq('auth_user_id', tempUserId)
           .maybeSingle();
+        
+        if (error) console.error('[chat] Erro na busca por auth_user_id:', error);
+        if (data) console.log('[chat] Usuário encontrado por UUID, id:', data.id);
+        
         userRecord = data;
+      } else {
+        console.warn('[chat] tempUserId não é UUID válido:', tempUserId);
       }
     }
 
-    if (!userRecord)
-      return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
+    // 3. Usuário não encontrado → erro
+    if (!userRecord) {
+      console.error('[chat] USUÁRIO NÃO ENCONTRADO! email:', userEmail, 'userId:', tempUserId);
+      return NextResponse.json({ 
+        error: 'Usuário não encontrado. Faça login novamente.',
+        debug: { email: userEmail, userId: tempUserId }
+      }, { status: 404 });
+    }
 
     // ----------------------------------------------------------
-    // DUAL-ID — CORIGIDO (sem getUserByEmail)
+    // DUAL-ID: numericUserIdStr (bigint) para FKs, authUserId (UUID) para Auth
     // ----------------------------------------------------------
     const numericUserIdStr = String(userRecord.id);
-    assertNumericUserId(numericUserIdStr, 'POST /api/chat — numericUserIdStr');
+    assertNumericUserId(numericUserIdStr, 'POST /api/chat');
 
-    // Prioriza o auth_user_id já armazenado na tabela users
-    let authUserId: string = userRecord.auth_user_id || numericUserIdStr;
-
-    if (!authUserId || authUserId === numericUserIdStr) {
-      if (userEmail) {
-        // Busca pelo email na tabela users para pegar o auth_user_id
-        const { data: userData } = await supabase
-          .from('users')
-          .select('auth_user_id')
-          .eq('email', userEmail)
-          .maybeSingle();
-
-        if (userData?.auth_user_id) {
-          authUserId = userData.auth_user_id;
-          console.log('[chat] authUserId via users.auth_user_id:', authUserId);
-        }
-      }
-
-      if (!authUserId && tempUserId) {
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
-        if (isUUID) {
-          authUserId = tempUserId;
-          console.log('[chat] authUserId via tempUserId UUID:', authUserId);
-        }
+    // authUserId para operações do Supabase Auth (RLS, storage, etc.)
+    let authUserId: string = userRecord.auth_user_id || tempUserId;
+    if (!authUserId && userEmail) {
+      try {
+        const { data: authData } = await supabase.auth.admin.getUserByEmail(userEmail);
+        if (authData?.user?.id) authUserId = authData.user.id;
+      } catch (e) {
+        console.warn('[chat] Falha ao buscar authUserId via email:', e);
       }
     }
 
-    if (authUserId === numericUserIdStr)
-      console.warn('[chat] authUserId não resolvido — listas/lugares podem não funcionar.');
+    console.log('[chat] numericUserIdStr:', numericUserIdStr, 'authUserId:', authUserId);
 
     const authorName = userRecord.nickname || userFirstName;
     const assistantName = userRecord.assistant_name || 'Lev';
@@ -371,21 +371,41 @@ export async function POST(req: NextRequest) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
+    // ----------------------------------------------------------
+    // BUSCA DE MEMÓRIAS HD — CORREÇÕES APLICADAS
+    // ----------------------------------------------------------
     const queryEmbedding = await getCachedEmbedding(messageText);
     let hdBlock = '';
     let hdMemoryIds: string[] = [];
+    
     if (queryEmbedding) {
-      const { data: search } = (await supabase.rpc('match_memories', {
-        query_embedding: queryEmbedding,
-        match_threshold: 0.4,
-        match_count: 3,
-      })) as { data: any[] | null };
-      if (search?.length) {
-        hdBlock = search.filter((r: any) => !r.summary.startsWith('[CINZA]')).map((r: any) => r.summary).join('\n---\n');
+      console.log('[Embedding] Gerado com sucesso, dimensões:', queryEmbedding.length);
+      
+      const { data: search, error } = (await supabase.rpc('match_memories', {
+        query_embedding: queryEmbedding, 
+        match_threshold: 0.28,  // ✅ DE 0.4 PARA 0.28
+        match_count: 8,         // ✅ DE 3 PARA 8
+      })) as { data: any[] | null; error?: any };
+      
+      if (error) {
+        console.error('[Memória HD] Erro na RPC:', error);
+      } else if (search?.length) {
+        console.log('[Memória HD]', search.length, 'memórias encontradas');
+        console.log('[Scores]', search.map((r: any) => `${r.summary.substring(0, 50)}... = ${r.similarity.toFixed(3)}`));
+        
+        hdBlock = search.filter((r: any) => !r.summary.startsWith('[CINZA]'))
+          .map((r: any) => r.summary).join('\n---\n');
         hdMemoryIds = search.map((r: any) => r.id);
+      } else {
+        console.warn('[Memória HD] Nenhuma memória encontrada — threshold 0.28 pode ainda estar alto');
       }
+    } else {
+      console.error('[Embedding] Falha ao gerar embedding');
     }
 
+    // ----------------------------------------------------------
+    // Memória RAM (histórico da sessão)
+    // ----------------------------------------------------------
     let ramBlock = '';
     const { data: historySession } = await supabase
       .from('brain').select('content, metadata').eq('user_id', numericUserIdStr).eq('session_id', sessionId).neq('category', 'archived').order('created_at', { ascending: false }).limit(10);
@@ -454,6 +474,7 @@ MEMÓRIA: Use notas naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
+
     // ----------------------------------------------------------
     // Histórico de conversa
     // ----------------------------------------------------------
