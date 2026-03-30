@@ -32,12 +32,16 @@ export async function callOpenRouter(
       ? [{ role: 'user', content: input }]
       : input;
 
-    // ✅ URL SEM ESPAÇOS
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",  // ✅ SEM ESPAÇOS
+      // 🔍 LOG DE DEBUG — remova após testar
+console.log('[OpenRouter DEBUG] Headers enviados:', {
+  authDefined: !!process.env.OPENROUTER_API_KEY,
+  authLength: process.env.OPENROUTER_API_KEY?.length || 0,
+  url: "https://openrouter.ai/api/v1/chat/completions",
+});
+      method: "POST",
       signal: controller.signal,
       headers: {
-        // ✅ HEADERS SEM ESPAÇOS - COPIE EXATAMENTE ASSIM
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
         "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
@@ -77,7 +81,6 @@ export async function callOpenRouter(
     return "❌ Erro na conexão com a IA.";
   }
 }
-
 // ============================================================
 // 3. MOTOR VETORIAL (Embeddings via OpenRouter)
 // ============================================================
