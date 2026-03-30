@@ -1,7 +1,6 @@
 // app/api/chat/route.ts
 // Motor V8 Unificado — Arquitetura Dual-ID
 // Refatorado: lógica dividida em módulos em lib/chat/
-
 import { NextRequest, NextResponse } from 'next/server';
 import {
   supabase,
@@ -27,7 +26,6 @@ import {
   extractRecomendacao,
 } from '@/lib/extractor-jobs';
 import { extractDiary, extractGoal, buildDiaryGoalsBlock } from '@/lib/diary';
-
 // ── Módulos locais ────────────────────────────────────────────
 import { assertNumericUserId } from '@/lib/chat/guards';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
@@ -54,9 +52,7 @@ import {
 import { tools } from '@/lib/chat/tools-def';
 import { executeTool } from '@/lib/chat/tools-executor';
 import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
-
 export const maxDuration = 30;
-
 // ============================================================
 // Onboarding Persistente
 // ============================================================
@@ -69,20 +65,16 @@ async function getOrCreateOnboardingStatePersistent(userId: string) {
     .order('created_at', { ascending: false })
     .limit(1)
     .single();
-
   if (onboardingMemory?.metadata?.state) return onboardingMemory.metadata.state;
   return await initOnboarding(userId);
 }
-
 // ============================================================
 // POST — Handler Principal
 // ============================================================
 export async function POST(req: NextRequest) {
   console.log('[chat] Iniciando — V8 Dual-ID refatorado');
-
   try {
     console.time('[Performance] total');
-
     let messageText = '';
     let userEmail = '';
     let tempUserId = '';
@@ -188,30 +180,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
 
     // ----------------------------------------------------------
-    // DUAL-ID
+    // DUAL-ID — CORIGIDO (sem getUserByEmail)
     // ----------------------------------------------------------
     const numericUserIdStr = String(userRecord.id);
     assertNumericUserId(numericUserIdStr, 'POST /api/chat — numericUserIdStr');
 
-    let authUserId: string = numericUserIdStr;
+    // Prioriza o auth_user_id já armazenado na tabela users
+    let authUserId: string = userRecord.auth_user_id || numericUserIdStr;
 
-    if (userEmail) {
-      try {
-        const { data: authData } = await supabase.auth.admin.getUserByEmail(userEmail);
-        if (authData?.user?.id) {
-          authUserId = authData.user.id;
-          console.log('[chat] authUserId via email:', authUserId);
+    if (!authUserId || authUserId === numericUserIdStr) {
+      if (userEmail) {
+        // Busca pelo email na tabela users para pegar o auth_user_id
+        const { data: userData } = await supabase
+          .from('users')
+          .select('auth_user_id')
+          .eq('email', userEmail)
+          .maybeSingle();
+
+        if (userData?.auth_user_id) {
+          authUserId = userData.auth_user_id;
+          console.log('[chat] authUserId via users.auth_user_id:', authUserId);
         }
-      } catch (e) {
-        console.warn('[chat] Falha ao buscar authUserId via email:', e);
       }
-    }
 
-    if (authUserId === numericUserIdStr && tempUserId) {
-      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
-      if (isUUID) {
-        authUserId = tempUserId;
-        console.log('[chat] authUserId via tempUserId UUID:', authUserId);
+      if (!authUserId && tempUserId) {
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
+        if (isUUID) {
+          authUserId = tempUserId;
+          console.log('[chat] authUserId via tempUserId UUID:', authUserId);
+        }
       }
     }
 
@@ -409,7 +406,7 @@ export async function POST(req: NextRequest) {
       }
     } else {
       const semanticBlock = await semanticRamCompression(historySession || [], numericUserIdStr, messageText, queryEmbedding);
-      ramBlock = semanticBlock || (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : '');
+      ramBlock = semanticBlock || (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : ' ');
     }
     if (ramBlock.length > RAM_MAX_CHARS) ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
 
@@ -457,7 +454,6 @@ MEMÓRIA: Use notas naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
-
     // ----------------------------------------------------------
     // Histórico de conversa
     // ----------------------------------------------------------
