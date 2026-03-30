@@ -1,6 +1,7 @@
 // app/api/chat/route.ts
 // Motor V8 Unificado — Arquitetura Dual-ID
 // Refatorado: lógica dividida em módulos em lib/chat/
+// ✅ CORREÇÃO: Removido getUserByEmail (não existe na API v2) + threshold ajustado
 import { NextRequest, NextResponse } from 'next/server';
 import {
   supabase,
@@ -155,7 +156,7 @@ export async function POST(req: NextRequest) {
       console.log('[chat] Buscando usuário por email:', userEmail);
       const { data, error } = await supabase
         .from('users')
-        .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context')
+        .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context, auth_user_id')
         .eq('email', userEmail)
         .maybeSingle();
       
@@ -174,7 +175,7 @@ export async function POST(req: NextRequest) {
         console.log('[chat] Buscando usuário por auth_user_id (UUID):', tempUserId);
         const { data, error } = await supabase
           .from('users')
-          .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context')
+          .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context, auth_user_id')
           .eq('auth_user_id', tempUserId)
           .maybeSingle();
         
@@ -202,15 +203,22 @@ export async function POST(req: NextRequest) {
     const numericUserIdStr = String(userRecord.id);
     assertNumericUserId(numericUserIdStr, 'POST /api/chat');
 
-    // authUserId para operações do Supabase Auth (RLS, storage, etc.)
-    let authUserId: string = userRecord.auth_user_id || tempUserId;
-    if (!authUserId && userEmail) {
-      try {
-        const { data: authData } = await supabase.auth.admin.getUserByEmail(userEmail);
-        if (authData?.user?.id) authUserId = authData.user.id;
-      } catch (e) {
-        console.warn('[chat] Falha ao buscar authUserId via email:', e);
+    // ✅ CORREÇÃO: authUserId vem do userRecord.auth_user_id (já buscado no banco)
+    // NÃO usa supabase.auth.admin.getUserByEmail (não existe na API v2)
+    let authUserId: string | null = userRecord.auth_user_id || null;
+
+    if (!authUserId && tempUserId) {
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
+      if (isUUID) {
+        authUserId = tempUserId;
+        console.log('[chat] authUserId via tempUserId UUID:', authUserId);
       }
+    }
+
+    // Fallback final
+    if (!authUserId) {
+      console.warn('[chat] authUserId não resolvido — operações de Auth podem falhar');
+      authUserId = numericUserIdStr; // Fallback seguro para queries no banco
     }
 
     console.log('[chat] numericUserIdStr:', numericUserIdStr, 'authUserId:', authUserId);
@@ -381,6 +389,7 @@ export async function POST(req: NextRequest) {
     if (queryEmbedding) {
       console.log('[Embedding] Gerado com sucesso, dimensões:', queryEmbedding.length);
       
+      // ✅ CORREÇÃO: threshold 0.28 (era 0.4) + match_count 8 (era 3)
       const { data: search, error } = (await supabase.rpc('match_memories', {
         query_embedding: queryEmbedding, 
         match_threshold: 0.28,  // ✅ DE 0.4 PARA 0.28
