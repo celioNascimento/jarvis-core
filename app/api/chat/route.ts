@@ -1,7 +1,8 @@
 // app/api/chat/route.ts
 // Motor V8 Unificado — Arquitetura Dual-ID
 // Refatorado: lógica dividida em módulos em lib/chat/
-// ✅ CORREÇÃO: Removido getUserByEmail (não existe na API v2) + threshold ajustado
+// ✅ CORREÇÕES: Tipos TypeScript, getUserByEmail removido, threshold ajustado
+
 import { NextRequest, NextResponse } from 'next/server';
 import {
   supabase,
@@ -434,7 +435,13 @@ export async function POST(req: NextRequest) {
         ).join('\n\n');
       }
     } else {
-      const semanticBlock = await semanticRamCompression(historySession || [], numericUserIdStr, messageText, queryEmbedding);
+      // ✅ CORREÇÃO: queryEmbedding pode ser null, converter para undefined
+      const semanticBlock = await semanticRamCompression(
+        historySession || [], 
+        numericUserIdStr, 
+        messageText, 
+        queryEmbedding ?? undefined  // ✅ Converte null para undefined
+      );
       ramBlock = semanticBlock || (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : ' ');
     }
     if (ramBlock.length > RAM_MAX_CHARS) ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
