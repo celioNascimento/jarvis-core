@@ -1,3 +1,7 @@
+// lib/jarvis.ts
+// Motor Central — Conexões, IA, Vetores e Utilitários
+// ✅ CORREÇÕES: Embedding timeout, headers OpenRouter, tratamento de null/undefined
+
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
 
@@ -12,7 +16,7 @@ export const supabase = createClient(
 
 // ============================================================
 // 2. MOTOR DE IA (OpenRouter)
-// CORREÇÃO: era OPENAI_API_KEY — trocado para OPENROUTER_API_KEY
+// ✅ CORREÇÃO: Headers adicionais + melhor tratamento de erro
 // ============================================================
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -20,10 +24,10 @@ export async function callOpenRouter(
   input: string | ChatMessage[],
   model: string = "google/gemini-2.0-flash-001",
   temperature: number = 0.7
-) {
+): Promise<string> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 12000); // ✅ Aumentado para 12s
 
     const messages: ChatMessage[] = typeof input === 'string'
       ? [{ role: 'user', content: input }]
@@ -33,9 +37,11 @@ export async function callOpenRouter(
       method: "POST",
       signal: controller.signal,
       headers: {
-        // CORREÇÃO: era OPENAI_API_KEY — OpenRouter exige sua própria chave
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        // ✅ Headers opcionais do OpenRouter para melhor rastreabilidade
+        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
       body: JSON.stringify({
         model,
@@ -46,10 +52,18 @@ export async function callOpenRouter(
     });
 
     clearTimeout(timeout);
+
+    // ✅ Log do status HTTP para debug
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(`[OpenRouter] HTTP ${res.status}:`, errorText);
+      return `❌ Erro na conexão com a IA: ${res.status}`;
+    }
+
     const data = await res.json();
 
     if (data.error) {
-      console.error("OpenRouter erro:", JSON.stringify(data.error));
+      console.error("[OpenRouter] Erro na resposta:", JSON.stringify(data.error));
       return data.error.message || "❌ Erro IA.";
     }
 
@@ -57,37 +71,72 @@ export async function callOpenRouter(
 
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      console.error("OpenRouter timeout após 8s");
+      console.error("[OpenRouter] Timeout após 12s");
       return "Timeout — tenta de novo em instantes.";
     }
-    console.error("Erro callOpenRouter:", e);
+    console.error("[OpenRouter] Exceção:", e?.message || e);
     return "❌ Erro na conexão com a IA.";
   }
 }
 
 // ============================================================
-// 3. MOTOR VETORIAL
-// CORREÇÃO: era OPENAI_API_KEY — trocado para OPENROUTER_API_KEY
-// (embeddings são roteados pelo OpenRouter via openai/text-embedding-3-small)
+// 3. MOTOR VETORIAL (Embeddings via OpenRouter)
+// ✅ CORREÇÕES: Timeout 15s, headers, validação de resposta, logs
 // ============================================================
-export async function generateEmbedding(text: string) {
+export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
+    console.log('[Embedding] Gerando para:', text.substring(0, 60) + (text.length > 60 ? '...' : ''));
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000); // ✅ Aumentado para 15s
+
     const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",
+      signal: controller.signal,
       headers: {
-        // CORREÇÃO: era OPENAI_API_KEY
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        // ✅ Headers opcionais do OpenRouter
+        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
       body: JSON.stringify({
         model: "openai/text-embedding-3-small",
-        input: text
+        input: text,
+        // ✅ Dimensão explícita para consistência
+        dimensions: 1536,
       })
     });
+
+    clearTimeout(timeout);
+
+    // ✅ Log do status HTTP
+    console.log('[Embedding] HTTP Status:', res.status);
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error('[Embedding] Erro HTTP:', res.status, errorText);
+      return null;
+    }
+
     const json = await res.json();
-    return json.data?.[0]?.embedding || null;
-  } catch (e) {
-    console.error("Erro generateEmbedding:", e);
+
+    // ✅ Validar estrutura da resposta
+    if (!json.data?.[0]?.embedding) {
+      console.error('[Embedding] Resposta inválida:', JSON.stringify(json).substring(0, 200));
+      return null;
+    }
+
+    const embedding = json.data[0].embedding;
+    console.log('[Embedding] Sucesso, dimensões:', embedding.length);
+    return embedding;
+
+  } catch (e: any) {
+    if (e.name === 'AbortError') {
+      console.error('[Embedding] Timeout após 15s');
+    } else {
+      console.error('[Embedding] Exceção:', e?.message || e);
+    }
     return null;
   }
 }
@@ -95,7 +144,7 @@ export async function generateEmbedding(text: string) {
 // ============================================================
 // 4. MENSAGEIRO TELEGRAM
 // ============================================================
-export async function sendTelegram(chatId: string | number, text: string) {
+export async function sendTelegram(chatId: string | number, text: string): Promise<void> {
   try {
     await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
       method: 'POST',
@@ -103,7 +152,7 @@ export async function sendTelegram(chatId: string | number, text: string) {
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
     });
   } catch (e) {
-    console.error("Erro ao enviar Telegram", e);
+    console.error("[Telegram] Erro ao enviar:", e);
   }
 }
 
@@ -147,7 +196,7 @@ export async function getOrCreateSession(userId: string): Promise<string> {
 
     return newSession?.id || 'default';
   } catch (e) {
-    console.error("Erro getOrCreateSession:", e);
+    console.error("[Session] Erro getOrCreateSession:", e);
     return 'default';
   }
 }
@@ -173,7 +222,7 @@ export async function getPendingQuestion(userId: string): Promise<{ question: st
   }
 }
 
-export async function setPendingQuestion(userId: string, question: string | null, context: any = null) {
+export async function setPendingQuestion(userId: string, question: string | null, context: any = null): Promise<void> {
   try {
     await supabase
       .from('users')
@@ -183,11 +232,11 @@ export async function setPendingQuestion(userId: string, question: string | null
       })
       .eq('id', userId);
   } catch (e) {
-    console.error("Erro setPendingQuestion:", e);
+    console.error("[PendingQuestion] Erro setPendingQuestion:", e);
   }
 }
 
-export async function clearPendingQuestion(userId: string) {
+export async function clearPendingQuestion(userId: string): Promise<void> {
   await setPendingQuestion(userId, null, null);
 }
 
@@ -211,7 +260,7 @@ function memoriaEhValida(texto: string): boolean {
   return true;
 }
 
-export async function compactMemory(userId: string, authorName: string) {
+export async function compactMemory(userId: string, authorName: string): Promise<void> {
   try {
     const { data: rawBrain } = await supabase
       .from('brain')
@@ -220,7 +269,10 @@ export async function compactMemory(userId: string, authorName: string) {
       .neq('category', 'noise')
       .order('created_at', { ascending: true });
 
-    if (!rawBrain || rawBrain.length < 20) return;
+    if (!rawBrain || rawBrain.length < 20) {
+      console.log(`[Memory] Insuficiente para compactar: ${rawBrain?.length || 0} entradas`);
+      return;
+    }
 
     const { data: userProfile } = await supabase
       .from('users')
@@ -308,7 +360,7 @@ TAREFA: Integre as novas informações ao Dossiê existente.
       console.log(`🧹 Memória de ${authorName} consolidada. ${entradasValidas.length} entradas → L3 + HD.`);
     }
   } catch (e) {
-    console.error("Erro na compactação:", e);
+    console.error("[Memory] Erro na compactação:", e);
   }
 }
 
@@ -349,6 +401,7 @@ export async function checkSystemInterrupts(userId: string) {
       reason: temFolga ? "Feriado/Folga detectado" : null
     };
   } catch (e) {
+    console.error("[Interrupts] Erro:", e);
     return { shouldPauseMorningRoutine: false, reason: null };
   }
 }
@@ -356,7 +409,7 @@ export async function checkSystemInterrupts(userId: string) {
 // ============================================================
 // 10. REFORÇO DE MEMÓRIA
 // ============================================================
-export async function reinforceMemory(memoryId: string) {
+export async function reinforceMemory(memoryId: string): Promise<void> {
   try {
     const { data } = await supabase
       .from('memories')
@@ -378,6 +431,6 @@ export async function reinforceMemory(memoryId: string) {
       })
       .eq('id', memoryId);
   } catch (e) {
-    console.error("Erro reinforceMemory:", e);
+    console.error("[Memory] Erro reinforceMemory:", e);
   }
 }
