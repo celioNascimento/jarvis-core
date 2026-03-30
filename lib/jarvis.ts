@@ -32,11 +32,12 @@ export async function callOpenRouter(
       ? [{ role: 'user', content: input }]
       : input;
 
+    // ✅ URL SEM ESPAÇOS
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
+      method: "POST",  // ✅ SEM ESPAÇOS
       signal: controller.signal,
       headers: {
-        // ✅ SEM ESPAÇOS nas chaves!
+        // ✅ HEADERS SEM ESPAÇOS - COPIE EXATAMENTE ASSIM
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
         "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
