@@ -1,6 +1,6 @@
 // app/api/chat/route.ts
 // Motor V8 Unificado — Arquitetura Dual-ID
-// Refatorado: lógica dividida em módulos em lib/chat/
+// ✅ CORREÇÕES APLICADAS: threshold, match_count, logs de debug
 import { NextRequest, NextResponse } from 'next/server';
 import {
   supabase,
@@ -52,7 +52,9 @@ import {
 import { tools } from '@/lib/chat/tools-def';
 import { executeTool } from '@/lib/chat/tools-executor';
 import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
+
 export const maxDuration = 30;
+
 // ============================================================
 // Onboarding Persistente
 // ============================================================
@@ -68,6 +70,7 @@ async function getOrCreateOnboardingStatePersistent(userId: string) {
   if (onboardingMemory?.metadata?.state) return onboardingMemory.metadata.state;
   return await initOnboarding(userId);
 }
+
 // ============================================================
 // POST — Handler Principal
 // ============================================================
@@ -143,7 +146,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'userEmail ou userId obrigatório' }, { status: 400 });
 
     // ----------------------------------------------------------
-    // Look up do usuário — aceita email OU userId
+    // Lookup do usuário — aceita email OU userId
     // ----------------------------------------------------------
     let userRecord: any = null;
 
@@ -180,35 +183,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
 
     // ----------------------------------------------------------
-    // DUAL-ID — CORIGIDO (sem getUserByEmail)
+    // DUAL-ID
     // ----------------------------------------------------------
     const numericUserIdStr = String(userRecord.id);
     assertNumericUserId(numericUserIdStr, 'POST /api/chat — numericUserIdStr');
 
-    // Prioriza o auth_user_id já armazenado na tabela users
-    let authUserId: string = userRecord.auth_user_id || numericUserIdStr;
+    let authUserId: string = numericUserIdStr;
 
-    if (!authUserId || authUserId === numericUserIdStr) {
-      if (userEmail) {
-        // Busca pelo email na tabela users para pegar o auth_user_id
-        const { data: userData } = await supabase
-          .from('users')
-          .select('auth_user_id')
-          .eq('email', userEmail)
-          .maybeSingle();
-
-        if (userData?.auth_user_id) {
-          authUserId = userData.auth_user_id;
-          console.log('[chat] authUserId via users.auth_user_id:', authUserId);
+    if (userEmail) {
+      try {
+        const { data: authData } = await supabase.auth.admin.getUserByEmail(userEmail);
+        if (authData?.user?.id) {
+          authUserId = authData.user.id;
+          console.log('[chat] authUserId via email:', authUserId);
         }
+      } catch (e) {
+        console.warn('[chat] Falha ao buscar authUserId via email:', e);
       }
+    }
 
-      if (!authUserId && tempUserId) {
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
-        if (isUUID) {
-          authUserId = tempUserId;
-          console.log('[chat] authUserId via tempUserId UUID:', authUserId);
-        }
+    if (authUserId === numericUserIdStr && tempUserId) {
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
+      if (isUUID) {
+        authUserId = tempUserId;
+        console.log('[chat] authUserId via tempUserId UUID:', authUserId);
       }
     }
 
@@ -224,6 +222,7 @@ export async function POST(req: NextRequest) {
     ensureMemoryHealth(numericUserIdStr).catch((e) => console.error('[Health]', e));
 
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
+    console.log('[chat] sessionId:', sessionId);
 
     // ----------------------------------------------------------
     // Localização
@@ -371,21 +370,40 @@ export async function POST(req: NextRequest) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
+    // ----------------------------------------------------------
+    // ✅ BUSCA DE MEMÓRIAS HD — CORREÇÕES APLICADAS
+    // ----------------------------------------------------------
     const queryEmbedding = await getCachedEmbedding(messageText);
     let hdBlock = '';
     let hdMemoryIds: string[] = [];
+    
     if (queryEmbedding) {
-      const { data: search } = (await supabase.rpc('match_memories', {
-        query_embedding: queryEmbedding,
-        match_threshold: 0.4,
-        match_count: 3,
-      })) as { data: any[] | null };
-      if (search?.length) {
+      console.log('[Embedding] Gerado com sucesso, dimensões:', queryEmbedding.length);
+      
+      const { data: search, error } = (await supabase.rpc('match_memories', {
+        query_embedding: queryEmbedding, 
+        match_threshold: 0.28,  // ✅ DE 0.4 PARA 0.28
+        match_count: 8,         // ✅ DE 3 PARA 8
+      })) as { data: any[] | null; error?: any };
+      
+      if (error) {
+        console.error('[Memória HD] Erro na RPC:', error);
+      } else if (search?.length) {
+        console.log('[Memória HD]', search.length, 'memórias encontradas');
+        console.log('[Scores]', search.map((r: any) => `${r.summary.substring(0, 50)}... = ${r.similarity.toFixed(3)}`));
+        
         hdBlock = search.filter((r: any) => !r.summary.startsWith('[CINZA]')).map((r: any) => r.summary).join('\n---\n');
         hdMemoryIds = search.map((r: any) => r.id);
+      } else {
+        console.warn('[Memória HD] Nenhuma memória encontrada — threshold 0.28 pode ainda estar alto');
       }
+    } else {
+      console.error('[Embedding] Falha ao gerar embedding');
     }
 
+    // ----------------------------------------------------------
+    // Memória RAM (histórico da sessão)
+    // ----------------------------------------------------------
     let ramBlock = '';
     const { data: historySession } = await supabase
       .from('brain').select('content, metadata').eq('user_id', numericUserIdStr).eq('session_id', sessionId).neq('category', 'archived').order('created_at', { ascending: false }).limit(10);
@@ -454,6 +472,7 @@ MEMÓRIA: Use notas naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
+
     // ----------------------------------------------------------
     // Histórico de conversa
     // ----------------------------------------------------------
