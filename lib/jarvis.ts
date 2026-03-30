@@ -36,6 +36,7 @@ export async function callOpenRouter(
       method: "POST",
       signal: controller.signal,
       headers: {
+        // ✅ SEM ESPAÇOS nas chaves!
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
         "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
@@ -75,7 +76,6 @@ export async function callOpenRouter(
     return "❌ Erro na conexão com a IA.";
   }
 }
-
 // ============================================================
 // 3. MOTOR VETORIAL (Embeddings via OpenRouter)
 // ✅ Usa OPENROUTER_API_KEY (mesma chave do chat)
@@ -84,7 +84,6 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
   try {
     console.log('[Embedding] Gerando para:', text.substring(0, 60) + (text.length > 60 ? '...' : ''));
 
-    // Debug: verifica se a chave existe
     if (!process.env.OPENROUTER_API_KEY) {
       console.error('[Embedding] OPENROUTER_API_KEY NÃO DEFINIDA!');
       return null;
@@ -97,7 +96,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
       method: "POST",
       signal: controller.signal,
       headers: {
-        // ✅ SEM ESPAÇOS nas chaves dos headers!
+        // ✅ SEM ESPAÇOS nas chaves!
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
         "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
