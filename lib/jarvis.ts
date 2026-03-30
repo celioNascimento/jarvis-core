@@ -35,11 +35,7 @@ export async function callOpenRouter(
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       signal: controller.signal,
-      headers: {
-        // ✅ SEM ESPAÇOS nas chaves!
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+      headers: {"Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,"Content-Type": "application/json","HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
         "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
       body: JSON.stringify({
@@ -95,13 +91,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
     const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",
       signal: controller.signal,
-      headers: {
-        // ✅ SEM ESPAÇOS nas chaves!
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
-        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
-      },
+      headers: {"Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,"Content-Type": "application/json","HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',"X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI'},
       body: JSON.stringify({
         model: "openai/text-embedding-3-small",
         input: text,
