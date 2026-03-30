@@ -1,6 +1,6 @@
 // app/api/chat/route.ts
 // Motor V8 Unificado — Arquitetura Dual-ID
-// ✅ CORREÇÕES: && em vez de & &, => em vez de = >, threshold 0.28, null handling
+// ✅ CORREÇÕES: threshold 0.10 (compatibilidade OpenRouter embeddings), logs de score
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -146,7 +146,7 @@ export async function POST(req: NextRequest) {
         .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context, auth_user_id')
         .eq('email', userEmail)
         .maybeSingle();
-      
+
       if (error) console.error('[chat] Erro na busca por email:', error);
       if (data) console.log('[chat] Usuário encontrado por email, id:', data.id);
       userRecord = data;
@@ -154,7 +154,7 @@ export async function POST(req: NextRequest) {
 
     if (!userRecord && tempUserId) {
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
-      
+
       if (isUUID) {
         console.log('[chat] Buscando usuário por auth_user_id (UUID):', tempUserId);
         const { data, error } = await supabase
@@ -162,7 +162,7 @@ export async function POST(req: NextRequest) {
           .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context, auth_user_id')
           .eq('auth_user_id', tempUserId)
           .maybeSingle();
-        
+
         if (error) console.error('[chat] Erro na busca por auth_user_id:', error);
         if (data) console.log('[chat] Usuário encontrado por UUID, id:', data.id);
         userRecord = data;
@@ -173,7 +173,7 @@ export async function POST(req: NextRequest) {
 
     if (!userRecord) {
       console.error('[chat] USUÁRIO NÃO ENCONTRADO! email:', userEmail, 'userId:', tempUserId);
-      return NextResponse.json({ 
+      return NextResponse.json({
         error: 'Usuário não encontrado. Faça login novamente.',
         debug: { email: userEmail, userId: tempUserId }
       }, { status: 404 });
@@ -350,31 +350,35 @@ export async function POST(req: NextRequest) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
-    // BUSCA DE MEMÓRIAS HD — CORREÇÕES APLICADAS
+    // BUSCA DE MEMÓRIAS HD
+    // ✅ threshold 0.10 — compatível com embeddings via OpenRouter
+    // Monitore os [Scores] nos logs. Se scores ficarem acima de 0.25 consistentemente,
+    // pode subir para 0.20. Se ficarem abaixo de 0.15, as memórias antigas são
+    // incompatíveis e devem ser deletadas via SQL (veja comentário no final do arquivo).
     const queryEmbedding = await getCachedEmbedding(messageText);
     let hdBlock = '';
     let hdMemoryIds: string[] = [];
-    
+
     if (queryEmbedding) {
       console.log('[Embedding] Gerado com sucesso, dimensões:', queryEmbedding.length);
-      
+
       const { data: search, error } = (await supabase.rpc('match_memories', {
-        query_embedding: queryEmbedding, 
-        match_threshold: 0.28,  // ✅ DE 0.4 PARA 0.28
-        match_count: 8,         // ✅ DE 3 PARA 8
+        query_embedding: queryEmbedding,
+        match_threshold: 0.10,
+        match_count: 8,
       })) as { data: any[] | null; error?: any };
-      
+
       if (error) {
         console.error('[Memória HD] Erro na RPC:', error);
       } else if (search?.length) {
         console.log('[Memória HD]', search.length, 'memórias encontradas');
         console.log('[Scores]', search.map((r: any) => `${r.summary.substring(0, 50)}... = ${r.similarity.toFixed(3)}`));
-        
+
         hdBlock = search.filter((r: any) => !r.summary.startsWith('[CINZA]'))
           .map((r: any) => r.summary).join('\n---\n');
         hdMemoryIds = search.map((r: any) => r.id);
       } else {
-        console.warn('[Memória HD] Nenhuma memória encontrada');
+        console.warn('[Memória HD] Nenhuma memória encontrada — considere deletar memórias antigas incompatíveis');
       }
     } else {
       console.error('[Embedding] Falha ao gerar embedding');
@@ -401,10 +405,10 @@ export async function POST(req: NextRequest) {
       }
     } else {
       const semanticBlock = await semanticRamCompression(
-        historySession || [], 
-        numericUserIdStr, 
-        messageText, 
-        queryEmbedding ?? undefined  // ✅ Converte null para undefined
+        historySession || [],
+        numericUserIdStr,
+        messageText,
+        queryEmbedding ?? undefined
       );
       ramBlock = semanticBlock || (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : ' ');
     }
@@ -536,7 +540,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       user_id: numericUserIdStr,
       session_id: sessionId,
       project_tag: 'geral',
-      embedding: queryEmbedding ?? undefined,  // ✅ Converte null para undefined
+      embedding: queryEmbedding ?? undefined,
       metadata: {
         ai_reply: finalResponse,
         user: authorName,
@@ -579,3 +583,13 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
+
+// ============================================================
+// SE [Scores] nos logs ficarem todos abaixo de 0.15 após o deploy,
+// as 5 memórias antigas são incompatíveis. Delete-as com:
+//
+// delete from jarvis.memories where user_id = '8595482774';
+//
+// Novas memórias serão geradas automaticamente pelo compactMemory
+// após 20 interações acumuladas no brain.
+// ============================================================
