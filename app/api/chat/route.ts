@@ -1,7 +1,6 @@
 // app/api/chat/route.ts
 // Motor V8 Unificado — Arquitetura Dual-ID
-// Refatorado: lógica dividida em módulos em lib/chat/
-// ✅ CORREÇÕES: Tipos TypeScript, getUserByEmail removido, threshold ajustado
+// ✅ CORREÇÕES: && em vez de & &, => em vez de = >, tipos, threshold 0.28
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -28,7 +27,6 @@ import {
   extractRecomendacao,
 } from '@/lib/extractor-jobs';
 import { extractDiary, extractGoal, buildDiaryGoalsBlock } from '@/lib/diary';
-// ── Módulos locais ────────────────────────────────────────────
 import { assertNumericUserId } from '@/lib/chat/guards';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import { ensureMemoryHealth } from '@/lib/chat/event-relevance';
@@ -57,9 +55,6 @@ import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
 
 export const maxDuration = 30;
 
-// ============================================================
-// Onboarding Persistente
-// ============================================================
 async function getOrCreateOnboardingStatePersistent(userId: string) {
   const { data: onboardingMemory } = await supabase
     .from('memories')
@@ -73,9 +68,6 @@ async function getOrCreateOnboardingStatePersistent(userId: string) {
   return await initOnboarding(userId);
 }
 
-// ============================================================
-// POST — Handler Principal
-// ============================================================
 export async function POST(req: NextRequest) {
   console.log('[chat] Iniciando — V8 Dual-ID refatorado');
   try {
@@ -87,9 +79,6 @@ export async function POST(req: NextRequest) {
     let userFirstName = 'Usuário';
     let location: { latitude: number; longitude: number } | null = null;
 
-    // ----------------------------------------------------------
-    // Parse Híbrido: Áudio (FormData) vs Texto (JSON)
-    // ----------------------------------------------------------
     const contentType = req.headers.get('content-type') || '';
     if (contentType.includes('multipart/form-data')) {
       const formData = await req.formData();
@@ -118,7 +107,7 @@ export async function POST(req: NextRequest) {
 
         const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` },
+          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
           body: whisperFormData,
         });
 
@@ -147,12 +136,9 @@ export async function POST(req: NextRequest) {
     if (!userEmail && !tempUserId)
       return NextResponse.json({ error: 'userEmail ou userId obrigatório' }, { status: 400 });
 
-    // ----------------------------------------------------------
-    // Lookup do usuário — email OU auth_user_id (UUID do Auth)
-    // ----------------------------------------------------------
+    // Lookup do usuário
     let userRecord: any = null;
 
-    // 1. Tenta lookup por email (SEMPRE funciona se email for único)
     if (userEmail) {
       console.log('[chat] Buscando usuário por email:', userEmail);
       const { data, error } = await supabase
@@ -163,13 +149,10 @@ export async function POST(req: NextRequest) {
       
       if (error) console.error('[chat] Erro na busca por email:', error);
       if (data) console.log('[chat] Usuário encontrado por email, id:', data.id);
-      
       userRecord = data;
     }
 
-    // 2. Fallback: lookup por auth_user_id (UUID do Supabase Auth)
     if (!userRecord && tempUserId) {
-      // Verifica se é um UUID válido
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
       
       if (isUUID) {
@@ -182,14 +165,12 @@ export async function POST(req: NextRequest) {
         
         if (error) console.error('[chat] Erro na busca por auth_user_id:', error);
         if (data) console.log('[chat] Usuário encontrado por UUID, id:', data.id);
-        
         userRecord = data;
       } else {
         console.warn('[chat] tempUserId não é UUID válido:', tempUserId);
       }
     }
 
-    // 3. Usuário não encontrado → erro
     if (!userRecord) {
       console.error('[chat] USUÁRIO NÃO ENCONTRADO! email:', userEmail, 'userId:', tempUserId);
       return NextResponse.json({ 
@@ -198,14 +179,10 @@ export async function POST(req: NextRequest) {
       }, { status: 404 });
     }
 
-    // ----------------------------------------------------------
-    // DUAL-ID: numericUserIdStr (bigint) para FKs, authUserId (UUID) para Auth
-    // ----------------------------------------------------------
+    // DUAL-ID
     const numericUserIdStr = String(userRecord.id);
     assertNumericUserId(numericUserIdStr, 'POST /api/chat');
 
-    // ✅ CORREÇÃO: authUserId vem do userRecord.auth_user_id (já buscado no banco)
-    // NÃO usa supabase.auth.admin.getUserByEmail (não existe na API v2)
     let authUserId: string | null = userRecord.auth_user_id || null;
 
     if (!authUserId && tempUserId) {
@@ -216,10 +193,9 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Fallback final
     if (!authUserId) {
       console.warn('[chat] authUserId não resolvido — operações de Auth podem falhar');
-      authUserId = numericUserIdStr; // Fallback seguro para queries no banco
+      authUserId = numericUserIdStr;
     }
 
     console.log('[chat] numericUserIdStr:', numericUserIdStr, 'authUserId:', authUserId);
@@ -234,9 +210,7 @@ export async function POST(req: NextRequest) {
 
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
 
-    // ----------------------------------------------------------
     // Localização
-    // ----------------------------------------------------------
     let locationContext = '';
     if (location) {
       const { latitude, longitude } = location;
@@ -263,9 +237,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ----------------------------------------------------------
-    // Classificação, roteamento e tópicos
-    // ----------------------------------------------------------
+    // Classificação e roteamento
     console.time('[Performance] context_classification');
     const detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
     console.timeEnd('[Performance] context_classification');
@@ -278,9 +250,7 @@ export async function POST(req: NextRequest) {
     await updateTopicIndex(numericUserIdStr, detectedContexts, messageText);
     const relatedTopicsBlock = await getRelatedTopics(numericUserIdStr, detectedContexts[0] || 'casual');
 
-    // ----------------------------------------------------------
     // Pesquisa forçada
-    // ----------------------------------------------------------
     let forcedSearchResult = '';
     if (shouldForceSearch(messageText, detectedContexts)) {
       const searchQuery = refineSearchQuery(messageText, detectedContexts);
@@ -294,9 +264,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ----------------------------------------------------------
-    // Cargas contextuais paralelas
-    // ----------------------------------------------------------
+    // Cargas contextuais
     const basePromises = Promise.all([
       supabase.from('events').select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes').eq('user_id', numericUserIdStr).order('relevance_score', { ascending: false }),
       supabase.from('memory_ashes').select('ash_summary, period_start, period_end').eq('user_id', numericUserIdStr).order('period_end', { ascending: false }).limit(5),
@@ -335,6 +303,7 @@ export async function POST(req: NextRequest) {
     if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(numericUserIdStr);
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
+    // Eventos
     const events = eventsResult.data || [];
     const hoje = new Date();
     hoje.setHours(0, 0, 0, 0);
@@ -360,6 +329,7 @@ export async function POST(req: NextRequest) {
     const ashes = ashesResult.data || [];
     const ashesBlock = ashes.length > 0 ? ashes.map((a: any) => a.ash_summary).join('\n') : null;
 
+    // Notas de pessoas
     let personNotesBlock = '';
     const [childrenResult, personNotesResult] = await Promise.all([
       supabase.from('children').select('name, nickname, lev_notes').eq('parent_id', numericUserIdStr).not('lev_notes', 'is', null),
@@ -380,9 +350,7 @@ export async function POST(req: NextRequest) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
-    // ----------------------------------------------------------
     // BUSCA DE MEMÓRIAS HD — CORREÇÕES APLICADAS
-    // ----------------------------------------------------------
     const queryEmbedding = await getCachedEmbedding(messageText);
     let hdBlock = '';
     let hdMemoryIds: string[] = [];
@@ -390,7 +358,6 @@ export async function POST(req: NextRequest) {
     if (queryEmbedding) {
       console.log('[Embedding] Gerado com sucesso, dimensões:', queryEmbedding.length);
       
-      // ✅ CORREÇÃO: threshold 0.28 (era 0.4) + match_count 8 (era 3)
       const { data: search, error } = (await supabase.rpc('match_memories', {
         query_embedding: queryEmbedding, 
         match_threshold: 0.28,  // ✅ DE 0.4 PARA 0.28
@@ -407,15 +374,13 @@ export async function POST(req: NextRequest) {
           .map((r: any) => r.summary).join('\n---\n');
         hdMemoryIds = search.map((r: any) => r.id);
       } else {
-        console.warn('[Memória HD] Nenhuma memória encontrada — threshold 0.28 pode ainda estar alto');
+        console.warn('[Memória HD] Nenhuma memória encontrada');
       }
     } else {
       console.error('[Embedding] Falha ao gerar embedding');
     }
 
-    // ----------------------------------------------------------
-    // Memória RAM (histórico da sessão)
-    // ----------------------------------------------------------
+    // Memória RAM
     let ramBlock = '';
     const { data: historySession } = await supabase
       .from('brain').select('content, metadata').eq('user_id', numericUserIdStr).eq('session_id', sessionId).neq('category', 'archived').order('created_at', { ascending: false }).limit(10);
@@ -435,7 +400,6 @@ export async function POST(req: NextRequest) {
         ).join('\n\n');
       }
     } else {
-      // ✅ CORREÇÃO: queryEmbedding pode ser null, converter para undefined
       const semanticBlock = await semanticRamCompression(
         historySession || [], 
         numericUserIdStr, 
@@ -456,9 +420,7 @@ export async function POST(req: NextRequest) {
     const isFemale = currentContextL3.toLowerCase().includes('feminino') || currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
 
-    // ----------------------------------------------------------
     // System Prompt
-    // ----------------------------------------------------------
     const systemPrompt = `Você é ${assistantName}, assistente pessoal de ${authorName}.
 Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
 🚨 REGRA ABSOLUTA – PESQUISE SEMPRE! 🚨
@@ -491,9 +453,7 @@ FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
 
-    // ----------------------------------------------------------
     // Histórico de conversa
-    // ----------------------------------------------------------
     const { data: historyForMessages } = await supabase
       .from('brain').select('content, metadata').eq('user_id', numericUserIdStr).neq('category', 'archived').order('created_at', { ascending: false }).limit(8);
 
@@ -532,9 +492,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         : `[INTERNO]\nVocê é o assistente — NUNCA diga "Anota aí". Confirme brevemente.`,
     });
 
-    // ----------------------------------------------------------
     // ReAct Loop
-    // ----------------------------------------------------------
     let finalResponse = '';
     let attempts = 0;
 
@@ -571,16 +529,14 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     if (pendingQuestion)
       clearPendingQuestion(numericUserIdStr).catch((e) => console.error('[PendingQ]', e));
 
-    // ----------------------------------------------------------
     // Persistência
-    // ----------------------------------------------------------
     const { error: insertError } = await supabase.from('brain').insert([{
       content: messageText,
       category,
       user_id: numericUserIdStr,
       session_id: sessionId,
       project_tag: 'geral',
-      embedding: queryEmbedding,
+      embedding: queryEmbedding ?? undefined,  // ✅ Converte null para undefined
       metadata: {
         ai_reply: finalResponse,
         user: authorName,
