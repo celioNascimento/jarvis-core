@@ -1,6 +1,6 @@
 // lib/jarvis.ts
 // Motor Central — Conexões, IA, Vetores e Utilitários
-// ✅ CORREÇÕES: Headers sem espaços, tipos explícitos, OPENAI_API_KEY consistente
+// ✅ CORREÇÕES: Headers sem espaços, OpenRouter para embeddings, tipos explícitos
 
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
@@ -15,7 +15,7 @@ export const supabase = createClient(
 );
 
 // ============================================================
-// 2. MOTOR DE IA (OpenRouter para chat, OpenAI para embeddings)
+// 2. MOTOR DE IA (OpenRouter para chat)
 // ============================================================
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -77,31 +77,34 @@ export async function callOpenRouter(
 }
 
 // ============================================================
-// 3. MOTOR VETORIAL (Embeddings via OpenAI API direta)
-// ✅ Usa OPENAI_API_KEY conforme solicitado
+// 3. MOTOR VETORIAL (Embeddings via OpenRouter)
+// ✅ Usa OPENROUTER_API_KEY (mesma chave do chat)
 // ============================================================
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
     console.log('[Embedding] Gerando para:', text.substring(0, 60) + (text.length > 60 ? '...' : ''));
 
     // Debug: verifica se a chave existe
-    if (!process.env.OPENAI_API_KEY) {
-      console.error('[Embedding] OPENAI_API_KEY NÃO DEFINIDA!');
+    if (!process.env.OPENROUTER_API_KEY) {
+      console.error('[Embedding] OPENROUTER_API_KEY NÃO DEFINIDA!');
       return null;
     }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
-    const res = await fetch("https://api.openai.com/v1/embeddings", {
+    const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",
       signal: controller.signal,
       headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        // ✅ SEM ESPAÇOS nas chaves dos headers!
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
+        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
       body: JSON.stringify({
-        model: "text-embedding-3-small",
+        model: "openai/text-embedding-3-small",
         input: text,
         dimensions: 1536,
       })
