@@ -1,6 +1,6 @@
 // lib/jarvis.ts
 // Motor Central — Conexões, IA, Vetores e Utilitários
-// ✅ CORREÇÕES: Headers sem espaços, tipos explícitos, operadores corrigidos
+// ✅ CORREÇÕES: OPENAI_API_KEY, headers sem espaços, tipos explícitos, operadores corrigidos
 
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
@@ -15,13 +15,13 @@ export const supabase = createClient(
 );
 
 // ============================================================
-// 2. MOTOR DE IA (OpenRouter)
+// 2. MOTOR DE IA (OpenAI API direta para testes)
 // ============================================================
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 export async function callOpenRouter(
   input: string | ChatMessage[],
-  model: string = "google/gemini-2.0-flash-001",
+  model: string = "gpt-4o-mini",
   temperature: number = 0.7
 ): Promise<string> {
   try {
@@ -32,14 +32,12 @@ export async function callOpenRouter(
       ? [{ role: 'user', content: input }]
       : input;
 
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       signal: controller.signal,
       headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
-        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
       body: JSON.stringify({
         model,
@@ -53,14 +51,14 @@ export async function callOpenRouter(
 
     if (!res.ok) {
       const errorText = await res.text();
-      console.error(`[OpenRouter] HTTP ${res.status}:`, errorText);
+      console.error(`[OpenAI] HTTP ${res.status}:`, errorText);
       return `❌ Erro na conexão com a IA: ${res.status}`;
     }
 
     const data = await res.json();
 
     if (data.error) {
-      console.error("[OpenRouter] Erro na resposta:", JSON.stringify(data.error));
+      console.error("[OpenAI] Erro na resposta:", JSON.stringify(data.error));
       return data.error.message || "❌ Erro IA.";
     }
 
@@ -68,41 +66,38 @@ export async function callOpenRouter(
 
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      console.error("[OpenRouter] Timeout após 12s");
+      console.error("[OpenAI] Timeout após 12s");
       return "Timeout — tenta de novo em instantes.";
     }
-    console.error("[OpenRouter] Exceção:", e?.message || e);
+    console.error("[OpenAI] Exceção:", e?.message || e);
     return "❌ Erro na conexão com a IA.";
   }
 }
 
 // ============================================================
-// 3. MOTOR VETORIAL (Embeddings via OpenRouter)
+// 3. MOTOR VETORIAL (Embeddings via OpenAI API direta)
 // ============================================================
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
     console.log('[Embedding] Gerando para:', text.substring(0, 60) + (text.length > 60 ? '...' : ''));
 
-    if (!process.env.OPENROUTER_API_KEY) {
-      console.error('[Embedding] OPENROUTER_API_KEY NÃO DEFINIDA!');
+    if (!process.env.OPENAI_API_KEY) {
+      console.error('[Embedding] OPENAI_API_KEY NÃO DEFINIDA!');
       return null;
     }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
-    const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
+    const res = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
       signal: controller.signal,
       headers: {
-        // ✅ SEM ESPAÇOS nas chaves!
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
-        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
       body: JSON.stringify({
-        model: "openai/text-embedding-3-small",
+        model: "text-embedding-3-small",
         input: text,
         dimensions: 1536,
       })
@@ -319,7 +314,7 @@ TAREFA: Integre as novas informações ao Dossiê existente.
 - Retorne APENAS o Dossiê atualizado em português, sem comentários, sem markdown excessivo
     `.trim();
 
-    const newContext = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.3);
+    const newContext = await callOpenRouter(prompt, "gpt-4o-mini", 0.3);
 
     if (!memoriaEhValida(newContext)) {
       console.error('[Memory] Compactação rejeitada — resumo inválido detectado');

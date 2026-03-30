@@ -1,5 +1,4 @@
 // lib/chat/embedding-cache.ts
-// Cache de embeddings persiste no banco (jarvis.config)
 import { supabase } from '@/lib/jarvis';
 import { generateEmbedding } from '@/lib/jarvis';
 
