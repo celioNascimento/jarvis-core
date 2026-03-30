@@ -1,5 +1,7 @@
 // lib/jarvis.ts
-// ✅ CORREÇÕES: Tipos explícitos + headers OpenRouter + timeout
+// Motor Central — Conexões, IA, Vetores e Utilitários
+// ✅ CORREÇÕES: Headers sem espaços, tipos explícitos, OPENAI_API_KEY consistente
+
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
 
@@ -13,7 +15,7 @@ export const supabase = createClient(
 );
 
 // ============================================================
-// 2. MOTOR DE IA (OpenRouter)
+// 2. MOTOR DE IA (OpenRouter para chat, OpenAI para embeddings)
 // ============================================================
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -21,7 +23,7 @@ export async function callOpenRouter(
   input: string | ChatMessage[],
   model: string = "google/gemini-2.0-flash-001",
   temperature: number = 0.7
-): Promise<string> {  // ✅ Tipo explícito
+): Promise<string> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000);
@@ -36,7 +38,6 @@ export async function callOpenRouter(
       headers: {
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
-        // ✅ Headers opcionais do OpenRouter
         "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
         "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
@@ -76,27 +77,31 @@ export async function callOpenRouter(
 }
 
 // ============================================================
-// 3. MOTOR VETORIAL (Embeddings via OpenRouter)
+// 3. MOTOR VETORIAL (Embeddings via OpenAI API direta)
+// ✅ Usa OPENAI_API_KEY conforme solicitado
 // ============================================================
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
     console.log('[Embedding] Gerando para:', text.substring(0, 60) + (text.length > 60 ? '...' : ''));
 
+    // Debug: verifica se a chave existe
+    if (!process.env.OPENAI_API_KEY) {
+      console.error('[Embedding] OPENAI_API_KEY NÃO DEFINIDA!');
+      return null;
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
-    const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
+    const res = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
       signal: controller.signal,
       headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
-        // ✅ Headers opcionais do OpenRouter
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
-        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
       body: JSON.stringify({
-        model: "openai/text-embedding-3-small",
+        model: "text-embedding-3-small",
         input: text,
         dimensions: 1536,
       })
@@ -114,7 +119,6 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
 
     const json = await res.json();
 
-    // ✅ Validar estrutura da resposta
     if (!json.data?.[0]?.embedding) {
       console.error('[Embedding] Resposta inválida:', JSON.stringify(json).substring(0, 200));
       return null;
