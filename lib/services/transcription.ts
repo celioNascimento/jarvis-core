@@ -1,7 +1,8 @@
-// lib/services/transcription.ts
+// src/lib/services/transcription.ts
 // ✅ Serviço centralizado para transcrição via Whisper (OpenAI Direct)
 // ✅ Usa OPENAI_API_KEY_1 — isolada do OpenRouter para controle de custos
-// ✅ FIX: Buffer.slice() garante ArrayBuffer puro (sem SharedArrayBuffer) para compatibilidade com Blob
+// ✅ FIX: Buffer.slice() garante ArrayBuffer puro para compatibilidade com Blob
+// ✅ FIX: mimeType configurável — suporta .m4a (React Native) e .ogg (outros)
 
 import { OpenAI } from 'openai';
 
@@ -9,6 +10,7 @@ export interface TranscriptionOptions {
   language?: string;
   model?: string;
   timeoutMs?: number;
+  mimeType?: string;
 }
 
 export interface TranscriptionResult {
@@ -22,14 +24,9 @@ const DEFAULT_OPTIONS: Required<TranscriptionOptions> = {
   language: 'pt',
   model: 'whisper-1',
   timeoutMs: 30000,
+  mimeType: 'audio/mp4', // .m4a é audio/mp4 — compatível com Whisper
 };
 
-/**
- * Transcreve áudio usando Whisper API (OpenAI Direct)
- * @param audioBuffer - Buffer do arquivo de áudio
- * @param options - Configurações opcionais
- * @returns Promise com resultado da transcrição
- */
 export async function transcribeAudio(
   audioBuffer: Buffer,
   options: TranscriptionOptions = {}
@@ -47,14 +44,16 @@ export async function transcribeAudio(
 
     const openai = new OpenAI({ apiKey });
 
-    // ✅ FIX: .slice() retorna ArrayBuffer puro, eliminando a incompatibilidade com SharedArrayBuffer
+    // Garante ArrayBuffer puro (sem SharedArrayBuffer) para o Blob
     const arrayBuffer = audioBuffer.buffer.slice(
       audioBuffer.byteOffset,
       audioBuffer.byteOffset + audioBuffer.byteLength
     ) as ArrayBuffer;
-    const blob = new Blob([arrayBuffer], { type: 'audio/ogg' });
 
-    // Cria AbortController para timeout controlado
+    const blob = new Blob([arrayBuffer], { type: config.mimeType });
+
+    console.log(`[Transcription] Enviando blob — size: ${blob.size} bytes, type: ${blob.type}`);
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
 
@@ -106,13 +105,8 @@ export async function transcribeAudio(
   }
 }
 
-/**
- * Helper: extrai buffer de um File/Blob
- * Útil para normalizar entrada em diferentes rotas
- */
 export async function extractAudioBuffer(file: File | Blob): Promise<Buffer> {
   if (file instanceof Buffer) return file;
-
   const arrayBuffer = await file.arrayBuffer();
   return Buffer.from(arrayBuffer);
 }
