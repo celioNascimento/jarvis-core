@@ -1,6 +1,7 @@
 // app/api/chat/route.ts
 // Motor V8 Unificado — Arquitetura Dual-ID
 // ✅ CORREÇÕES: threshold 0.10 (compatibilidade OpenRouter embeddings), logs de score
+// ✅ TRANSCRIÇÃO: usa lib/services/transcription.ts com OPENAI_API_KEY_1
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -52,6 +53,8 @@ import {
 import { tools } from '@/lib/chat/tools-def';
 import { executeTool } from '@/lib/chat/tools-executor';
 import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
+// ✅ NOVO IMPORT: serviço de transcrição
+import { transcribeAudio, extractAudioBuffer } from '@/lib/services/transcription';
 
 export const maxDuration = 60;
 
@@ -98,23 +101,25 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Áudio ou texto obrigatório' }, { status: 400 });
       }
 
+      // ✅ TRANSCRIÇÃO REFACTORED: usa serviço centralizado com OPENAI_API_KEY_1
       if (audioFile) {
-        const buffer = Buffer.from(await audioFile.arrayBuffer());
-        const whisperFormData = new FormData();
-        whisperFormData.append('file', new Blob([buffer]), 'audio.ogg');
-        whisperFormData.append('model', 'whisper-1');
-        whisperFormData.append('language', 'pt');
+        console.time('[Transcription] whisper');
+        
+        const buffer = await extractAudioBuffer(audioFile);
+        const result = await transcribeAudio(buffer, { language: 'pt' });
+        
+        console.timeEnd('[Transcription] whisper');
 
-        const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-          body: whisperFormData,
-        });
+        if (!result.success) {
+          console.error('[Chat] Transcrição falhou:', result.error);
+          return NextResponse.json(
+            { error: result.error || 'Falha na transcrição' }, 
+            { status: result.error?.includes('Autenticação') ? 401 : 500 }
+          );
+        }
 
-        if (!whisperRes.ok)
-          return NextResponse.json({ error: 'Falha na transcrição' }, { status: 500 });
-        const whisperData = await whisperRes.json();
-        messageText = whisperData.text?.trim() || '';
+        messageText = result.text || '';
+        console.log('[Chat] Transcrição concluída:', messageText.substring(0, 100) + (messageText.length > 100 ? '...' : ''));
       } else {
         messageText = (formData.get('message') as string) || (formData.get('text') as string) || '';
       }
@@ -592,4 +597,4 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
 //
 // Novas memórias serão geradas automaticamente pelo compactMemory
 // após 20 interações acumuladas no brain.
-// ============================================================ 
+// ============================================================
