@@ -1,6 +1,6 @@
 // lib/jarvis.ts
 // Motor Central — Conexões, IA, Vetores e Utilitários
-// ✅ CORREÇÕES: OPENAI_API_KEY, headers sem espaços, tipos explícitos, operadores corrigidos
+// ✅ CORREÇÕES: callOpenRouter e generateEmbedding via OpenRouter (OPENAI_API_KEY)
 
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
@@ -15,13 +15,13 @@ export const supabase = createClient(
 );
 
 // ============================================================
-// 2. MOTOR DE IA (OpenAI API direta para testes)
+// 2. MOTOR DE IA (via OpenRouter)
 // ============================================================
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 export async function callOpenRouter(
   input: string | ChatMessage[],
-  model: string = "gpt-4o-mini",
+  model: string = "google/gemini-2.0-flash-001",
   temperature: number = 0.7
 ): Promise<string> {
   try {
@@ -32,12 +32,14 @@ export async function callOpenRouter(
       ? [{ role: 'user', content: input }]
       : input;
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       signal: controller.signal,
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
+        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
       body: JSON.stringify({
         model,
@@ -51,14 +53,14 @@ export async function callOpenRouter(
 
     if (!res.ok) {
       const errorText = await res.text();
-      console.error(`[OpenAI] HTTP ${res.status}:`, errorText);
+      console.error(`[OpenRouter] HTTP ${res.status}:`, errorText);
       return `❌ Erro na conexão com a IA: ${res.status}`;
     }
 
     const data = await res.json();
 
     if (data.error) {
-      console.error("[OpenAI] Erro na resposta:", JSON.stringify(data.error));
+      console.error("[OpenRouter] Erro na resposta:", JSON.stringify(data.error));
       return data.error.message || "❌ Erro IA.";
     }
 
@@ -66,16 +68,16 @@ export async function callOpenRouter(
 
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      console.error("[OpenAI] Timeout após 12s");
+      console.error("[OpenRouter] Timeout após 12s");
       return "Timeout — tenta de novo em instantes.";
     }
-    console.error("[OpenAI] Exceção:", e?.message || e);
+    console.error("[OpenRouter] Exceção:", e?.message || e);
     return "❌ Erro na conexão com a IA.";
   }
 }
 
 // ============================================================
-// 3. MOTOR VETORIAL (Embeddings via OpenAI API direta)
+// 3. MOTOR VETORIAL (Embeddings via OpenRouter)
 // ============================================================
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
@@ -89,15 +91,17 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
-    const res = await fetch("https://api.openai.com/v1/embeddings", {
+    const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",
       signal: controller.signal,
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
+        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
       },
       body: JSON.stringify({
-        model: "text-embedding-3-small",
+        model: "openai/text-embedding-3-small",
         input: text,
         dimensions: 1536,
       })
@@ -314,7 +318,7 @@ TAREFA: Integre as novas informações ao Dossiê existente.
 - Retorne APENAS o Dossiê atualizado em português, sem comentários, sem markdown excessivo
     `.trim();
 
-    const newContext = await callOpenRouter(prompt, "gpt-4o-mini", 0.3);
+    const newContext = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.3);
 
     if (!memoriaEhValida(newContext)) {
       console.error('[Memory] Compactação rejeitada — resumo inválido detectado');
