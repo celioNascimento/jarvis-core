@@ -53,7 +53,7 @@ import { tools } from '@/lib/chat/tools-def';
 import { executeTool } from '@/lib/chat/tools-executor';
 import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 async function getOrCreateOnboardingStatePersistent(userId: string) {
   const { data: onboardingMemory } = await supabase
@@ -592,4 +592,4 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
 //
 // Novas memórias serão geradas automaticamente pelo compactMemory
 // após 20 interações acumuladas no brain.
-// ============================================================
+// ============================================================ 
