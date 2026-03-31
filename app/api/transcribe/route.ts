@@ -13,15 +13,15 @@ export async function POST(req: NextRequest) {
     let mimeType = 'audio/mp4';
 
     if (contentType.includes('application/json')) {
-      // ✅ React Native envia base64 via JSON
+      // ✅ React Native: envia base64 via JSON
       const body = await req.json();
 
       if (!body.audio) {
         return NextResponse.json({ error: 'Campo audio ausente' }, { status: 400 });
       }
 
-      buffer = Buffer.from(body.audio, 'base64');
-      mimeType = body.mimeType || 'audio/mp4';
+      buffer = Buffer.from(body.audio as string, 'base64');
+      mimeType = (body.mimeType as string) || 'audio/mp4';
 
     } else if (contentType.includes('multipart/form-data')) {
       // Fallback: FormData (browser / outros clientes)
@@ -32,15 +32,15 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Nenhum arquivo enviado' }, { status: 400 });
       }
 
-      if (audioField instanceof File || audioField instanceof Blob) {
-        const arrayBuffer = await audioField.arrayBuffer();
-        buffer = Buffer.from(arrayBuffer);
-        mimeType = audioField instanceof File && audioField.name.endsWith('.m4a')
-          ? 'audio/mp4'
-          : (audioField.type || 'audio/mp4');
-      } else {
+      // FormData.get() retorna File | string — narrowing explícito
+      if (typeof audioField === 'string') {
         return NextResponse.json({ error: 'Formato de áudio não suportado' }, { status: 400 });
       }
+
+      // audioField é File (extends Blob) aqui
+      const arrayBuffer = await audioField.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
+      mimeType = audioField.name?.endsWith('.m4a') ? 'audio/mp4' : (audioField.type || 'audio/mp4');
 
     } else {
       return NextResponse.json({ error: 'Content-Type não suportado' }, { status: 415 });
