@@ -1,4 +1,4 @@
-// src/app/api/transcribe/route.ts
+// app/api/transcribe/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { transcribeAudio } from '@/lib/services/transcription';
 
@@ -7,19 +7,50 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData();
-    const audioFile = formData.get('audio') as File | null;
+    const contentType = req.headers.get('content-type') || '';
 
-    if (!audioFile) {
-      return NextResponse.json({ error: 'Nenhum arquivo enviado' }, { status: 400 });
+    let buffer: Buffer;
+    let mimeType = 'audio/mp4';
+
+    if (contentType.includes('application/json')) {
+      // ✅ React Native envia base64 via JSON
+      const body = await req.json();
+
+      if (!body.audio) {
+        return NextResponse.json({ error: 'Campo audio ausente' }, { status: 400 });
+      }
+
+      buffer = Buffer.from(body.audio, 'base64');
+      mimeType = body.mimeType || 'audio/mp4';
+
+    } else if (contentType.includes('multipart/form-data')) {
+      // Fallback: FormData (browser / outros clientes)
+      const formData = await req.formData();
+      const audioField = formData.get('audio');
+
+      if (!audioField) {
+        return NextResponse.json({ error: 'Nenhum arquivo enviado' }, { status: 400 });
+      }
+
+      if (audioField instanceof File || audioField instanceof Blob) {
+        const arrayBuffer = await audioField.arrayBuffer();
+        buffer = Buffer.from(arrayBuffer);
+        mimeType = audioField instanceof File && audioField.name.endsWith('.m4a')
+          ? 'audio/mp4'
+          : (audioField.type || 'audio/mp4');
+      } else {
+        return NextResponse.json({ error: 'Formato de áudio não suportado' }, { status: 400 });
+      }
+
+    } else {
+      return NextResponse.json({ error: 'Content-Type não suportado' }, { status: 415 });
     }
 
-    const arrayBuffer = await audioFile.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    if (!buffer || buffer.length === 0) {
+      return NextResponse.json({ error: 'Arquivo de áudio vazio' }, { status: 400 });
+    }
 
-    // Detecta o tipo real pelo nome do arquivo enviado pelo cliente
-    const fileName = (audioFile as any).name || 'audio.m4a';
-    const mimeType = fileName.endsWith('.m4a') ? 'audio/mp4' : 'audio/ogg';
+    console.log(`[Transcribe] buffer: ${buffer.length} bytes, mimeType: ${mimeType}`);
 
     const result = await transcribeAudio(buffer, { language: 'pt', mimeType });
 
