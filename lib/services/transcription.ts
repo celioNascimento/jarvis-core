@@ -1,6 +1,7 @@
 // lib/services/transcription.ts
 // ✅ Serviço centralizado para transcrição via Whisper (OpenAI Direct)
 // ✅ Usa OPENAI_API_KEY_1 — isolada do OpenRouter para controle de custos
+// ✅ FIX: conversão explícita Buffer → Uint8Array para compatibilidade Blob
 
 import { OpenAI } from 'openai';
 
@@ -46,8 +47,9 @@ export async function transcribeAudio(
 
     const openai = new OpenAI({ apiKey });
 
-    // Converte Buffer para Blob compatível com a SDK
-    const blob = new Blob([audioBuffer], { type: 'audio/ogg' });
+    // ✅ FIX: Converter Buffer para Uint8Array para compatibilidade com Blob
+    const uint8Array = new Uint8Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.byteLength);
+    const blob = new Blob([uint8Array], { type: 'audio/ogg' });
     
     // Cria AbortController para timeout controlado
     const controller = new AbortController();
