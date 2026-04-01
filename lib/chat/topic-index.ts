@@ -1,36 +1,65 @@
-// lib/chat/topic-index.ts
+// lib/chat/topic-index.ts (versão final)
 import { supabase } from '@/lib/jarvis';
 import type { ContextType } from './context-classifier';
 
+/**
+ * Atualiza o índice de tópicos de forma eficiente:
+ * - Uma única SELECT para buscar todos os tópicos existentes
+ * - Cálculo em memória da EMA
+ * - Um único UPSERT para todos os tópicos
+ */
 export async function updateTopicIndex(
   userId: string,
-  contexts: string[],
-  messageText: string
-) {
+  contexts: ContextType[],
+  message: string,
+  emotionalScore?: number
+): Promise<void> {
   if (!contexts.length) return;
-  const words = messageText.toLowerCase().split(/\s+/);
-  const keyTerms = words.filter((w) => w.length > 3 && !/[0-9]/.test(w)).slice(0, 5);
 
-  for (const ctx of contexts) {
-    const { data: existing } = await supabase
-      .from('topic_index')
-      .select('weight')
-      .eq('user_id', userId)
-      .eq('topic', ctx)
-      .maybeSingle();
+  const now = new Date().toISOString();
 
-    const newWeight = (existing?.weight || 0) + 0.1;
-    await supabase.from('topic_index').upsert(
-      {
+  // Buscar todos os tópicos existentes de uma só vez
+  const { data: existing } = await supabase
+    .from('topic_index')
+    .select('topic, weight, emotional_dimension, count')
+    .eq('user_id', userId)
+    .in('topic', contexts);
+
+  const existingMap = new Map((existing || []).map(r => [r.topic, r]));
+
+  const upsertRows = contexts.map(topic => {
+    const rec = existingMap.get(topic);
+    if (rec) {
+      // Tópico já existe: EMA
+      const newWeight = (rec.weight || 0) * 0.7 + 0.3;
+      let newEmotionalDim = rec.emotional_dimension || 0;
+      if (emotionalScore !== undefined) {
+        newEmotionalDim = rec.emotional_dimension * 0.8 + emotionalScore * 0.2;
+      }
+      return {
         user_id: userId,
-        topic: ctx,
-        weight: newWeight,
-        last_mentioned: new Date().toISOString(),
-        related_terms: keyTerms,
-      },
-      { onConflict: 'user_id,topic' }
-    );
-  }
+        topic,
+        weight: Math.min(1.0, newWeight),
+        emotional_dimension: Math.min(1.0, Math.max(0, newEmotionalDim)),
+        count: (rec.count || 0) + 1,
+        last_mentioned: now,
+      };
+    } else {
+      // Novo tópico
+      return {
+        user_id: userId,
+        topic,
+        weight: 1.0,
+        emotional_dimension: emotionalScore ?? 0.0,
+        count: 1,
+        last_mentioned: now,
+      };
+    }
+  });
+
+  await supabase
+    .from('topic_index')
+    .upsert(upsertRows, { onConflict: 'user_id, topic' });
 }
 
 export async function getRelatedTopics(userId: string, currentContext: string): Promise<string> {

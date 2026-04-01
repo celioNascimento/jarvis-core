@@ -58,14 +58,44 @@ export async function classifyContextWithL4(
   return regexContexts;
 }
 
-export function routeModel(contexts: ContextType[]): { model: string; label: string } {
+// NOVO: routeModel agora recebe emotionalScore e topicEmotionalDimension
+export function routeModel(
+  contexts: ContextType[],
+  emotionalScore: number,
+  topicEmotionalDimension?: number
+): { model: string; label: string } {
+  // Se o score emocional for muito alto, vai direto para Sonnet
+  if (emotionalScore > 0.7) {
+    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
+  }
+
+  // Se o tópico tem dimensão emocional alta, prioriza Sonnet
+  if (topicEmotionalDimension && topicEmotionalDimension > 0.7) {
+    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
+  }
+
+  // Tópicos que podem ir para Flash com baixo score emocional
+  const flashFriendly: ContextType[] = ['esporte', 'noticias', 'clima', 'casual', 'rotina', 'alias', 'preferencia', 'recomendacao'];
+  // Agenda pode ir para Flash se score < 0.4
+  if (contexts.includes('agenda') && emotionalScore < 0.4) {
+    return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
+  }
+
+  if (contexts.some(c => flashFriendly.includes(c))) {
+    return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
+  }
+
+  // Tópicos complexos ou emocionais que devem ir para Sonnet se score médio-alto
   const complex: ContextType[] = [
     'agenda', 'projeto', 'familia', 'emocao', 'diario',
-    'meta', 'saude', 'esporte', 'noticias', 'clima',
+    'meta', 'saude', 'evento'
   ];
-  return contexts.some((c) => complex.includes(c))
-    ? { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' }
-    : { model: 'google/gemini-2.0-flash-001', label: 'flash' };
+  if (contexts.some(c => complex.includes(c)) && emotionalScore >= 0.4) {
+    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
+  }
+
+  // Fallback: Flash para economia
+  return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
 }
 
 export function getTemperature(contexts: ContextType[]): number {
