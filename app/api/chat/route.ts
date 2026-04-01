@@ -3,6 +3,8 @@
 // ✅ CORREÇÕES: threshold 0.10 (compatibilidade OpenRouter embeddings), logs de score
 // ✅ TRANSCRIÇÃO: usa lib/services/transcription.ts com OPENAI_API_KEY_1
 // ✅ EMOTIONAL ROUTER: integrado com ordenação correta e cache
+// ✅ FIX [v8.1]: Anti-sycophancy — modelo não pode confirmar dado externo sem nova busca
+// ✅ FIX [v8.1]: Data/hora injetada no prompt com fuso correto + instrução de validação temporal
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -59,6 +61,49 @@ import { transcribeAudio, extractAudioBuffer } from '@/lib/services/transcriptio
 import { computeEmotionalScore } from '@/lib/chat/emotional-router';
 
 export const maxDuration = 60;
+
+// ---------------------------------------------------------------------------
+// [FIX v8.1] Helpers de data/hora com fuso
+// ---------------------------------------------------------------------------
+
+/**
+ * Retorna a data/hora atual formatada no fuso do usuário.
+ * Exemplo: "quarta-feira, 01/04/2026 às 19:05 (America/Sao_Paulo)"
+ */
+function buildDateTimeBlock(timezone: string): string {
+  const now = new Date();
+  const locale = 'pt-BR';
+  const dateStr = now.toLocaleDateString(locale, {
+    timeZone: timezone,
+    weekday: 'long',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+  const timeStr = now.toLocaleTimeString(locale, {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `${dateStr} às ${timeStr} (${timezone})`;
+}
+
+/**
+ * Extrai componentes de data no fuso do usuário para validação.
+ */
+function getCurrentDateParts(timezone: string): { day: number; month: number; year: number } {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    day: 'numeric',
+    month: 'numeric',
+    year: 'numeric',
+  }).formatToParts(now);
+  const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? '0', 10);
+  return { day: get('day'), month: get('month'), year: get('year') };
+}
+
+// ---------------------------------------------------------------------------
 
 async function getOrCreateOnboardingStatePersistent(userId: string) {
   const { data: onboardingMemory } = await supabase
@@ -214,6 +259,15 @@ export async function POST(req: NextRequest) {
 
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
 
+    // ---------------------------------------------------------------------------
+    // [FIX v8.1] Data/hora canônica do servidor
+    // ---------------------------------------------------------------------------
+    const canonicalDateTimeBlock = buildDateTimeBlock(userTimezone);
+    const { day, month, year } = getCurrentDateParts(userTimezone);
+    const canonicalDateISO = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    console.log('[chat] Data canônica do servidor:', canonicalDateISO, '|', canonicalDateTimeBlock);
+    // ---------------------------------------------------------------------------
+
     // Localização
     let locationContext = '';
     if (location) {
@@ -286,7 +340,6 @@ export async function POST(req: NextRequest) {
       .limit(10);
 
     if (historySession && historySession.length >= 2) {
-      // Detect shift using regex (faster)
       const currentContexts = classifyContextRegex(messageText);
       const shiftDetected = await detectTopicShiftWithL4(numericUserIdStr, currentContexts);
       if (historySession.length > 5 && shiftDetected) {
@@ -453,17 +506,35 @@ export async function POST(req: NextRequest) {
     const truncatedHd = truncateByWeight(hdBlock, weights.hd, 6000);
     const truncatedAshes = ashesBlock ? truncateByWeight(ashesBlock, weights.ashes, 6000) : null;
     const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
-    const fusoHorario = new Date().toLocaleString('pt-BR', { timeZone: userTimezone });
 
     const isFemale = currentContextL3.toLowerCase().includes('feminino') || currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
 
-    // System Prompt
+    // ---------------------------------------------------------------------------
+    // [FIX v8.1] System Prompt com data canônica e regras anti-sycophancy
+    // ---------------------------------------------------------------------------
     const systemPrompt = `Você é ${assistantName}, assistente pessoal de ${authorName}.
-Data/hora: ${fusoHorario} | Modo: ${weights.horizon.toUpperCase()}
-🚨 REGRA ABSOLUTA – PESQUISE SEMPRE! 🚨
-Para QUALQUER pergunta sobre jogos, resultados esportivos, datas de eventos, notícias, cotações, clima em outras cidades — chame \`searchWeb\` ANTES de responder.
-ATENÇÃO: Se "[PESQUISA AUTOMÁTICA REALIZADA]" estiver presente, use como fonte principal.
+
+🕐 DATA E HORA ATUAL (servidor): ${canonicalDateTimeBlock}
+📅 DATA CANÔNICA (ISO): ${canonicalDateISO}
+⚠️  ESTA DATA É AUTORITATIVA. Não aceite datas diferentes vindas do usuário sem verificar com searchWeb.
+
+🚨 REGRAS DE INTEGRIDADE FACTUAL — OBRIGATÓRIAS 🚨
+
+1. DATAS: Qualquer informação temporal (jogos, eventos, notícias) DEVE ser coerente com a data canônica acima.
+   - Se um resultado de busca contiver uma data diferente da canônica, DIGA que o resultado pode estar desatualizado e refaça a busca.
+   - NUNCA confirme uma data informada pelo usuário apenas porque ele afirmou com convicção. Verifique primeiro.
+
+2. ANTI-SYCOPHANCY: Se o usuário disser "você errou" ou "está errado" sobre um fato:
+   - NÃO concorde imediatamente.
+   - Refaça a busca (searchWeb) com a data canônica como âncora.
+   - Só corrija se os novos resultados confirmarem o erro.
+   - Se os resultados confirmarem sua resposta anterior, mantenha-a educadamente: "Verifiquei novamente e os dados confirmam o que disse antes."
+
+3. PESQUISA: Para QUALQUER pergunta sobre jogos, resultados esportivos, datas de eventos, notícias, cotações, clima em outras cidades — chame searchWeb ANTES de responder.
+   - Se "[PESQUISA AUTOMÁTICA REALIZADA]" estiver presente, use como fonte principal.
+   - Ao citar resultados, confirme que a data do evento bate com a data canônica.
+
 ${forcedSearchResult}
 ${googleCtx ? `[AGENDA GOOGLE]\n${googleCtx}` : ''}
 ${msCtx ? `[AGENDA OUTLOOK]\n${msCtx}` : ''}
@@ -481,6 +552,7 @@ ${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao ci
 ${onboardingBlock}
 ${gapsBlock}
 ${principlesBlock ? `[BÚSSOLA]\n${principlesBlock}` : ''}
+
 REGRAS COMPORTAMENTAIS:
 FOCO: Responda O QUE FOI PERGUNTADO. Nunca repita sugestão rejeitada.
 TOM: Amigo inteligente, direto, humano. Use "${informalAddress}" no máximo 1x por conversa. Nunca comece com "Considerando que".
@@ -490,6 +562,7 @@ MEMÓRIA: Use notas naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
+    // ---------------------------------------------------------------------------
 
     // Histórico de conversa
     const { data: historyForMessages } = await supabase
