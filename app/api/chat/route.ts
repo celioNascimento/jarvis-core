@@ -2,6 +2,7 @@
 // Motor V8 Unificado — Arquitetura Dual-ID
 // ✅ CORREÇÕES: threshold 0.10 (compatibilidade OpenRouter embeddings), logs de score
 // ✅ TRANSCRIÇÃO: usa lib/services/transcription.ts com OPENAI_API_KEY_1
+// ✅ EMOTIONAL ROUTER: integrado com ordenação correta e cache
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -36,6 +37,7 @@ import {
   routeModel,
   getTemperature,
   planContextualBlocks,
+  classifyContextRegex,
   type ContextType,
 } from '@/lib/chat/context-classifier';
 import { shouldForceSearch, refineSearchQuery } from '@/lib/chat/search-router';
@@ -53,8 +55,8 @@ import {
 import { tools } from '@/lib/chat/tools-def';
 import { executeTool } from '@/lib/chat/tools-executor';
 import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
-// ✅ NOVO IMPORT: serviço de transcrição
 import { transcribeAudio, extractAudioBuffer } from '@/lib/services/transcription';
+import { computeEmotionalScore } from '@/lib/chat/emotional-router';
 
 export const maxDuration = 60;
 
@@ -101,19 +103,16 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Áudio ou texto obrigatório' }, { status: 400 });
       }
 
-      // ✅ TRANSCRIÇÃO REFACTORED: usa serviço centralizado com OPENAI_API_KEY_1
       if (audioFile) {
         console.time('[Transcription] whisper');
-        
         const buffer = await extractAudioBuffer(audioFile);
         const result = await transcribeAudio(buffer, { language: 'pt' });
-        
         console.timeEnd('[Transcription] whisper');
 
         if (!result.success) {
           console.error('[Chat] Transcrição falhou:', result.error);
           return NextResponse.json(
-            { error: result.error || 'Falha na transcrição' }, 
+            { error: result.error || 'Falha na transcrição' },
             { status: result.error?.includes('Autenticação') ? 401 : 500 }
           );
         }
@@ -242,34 +241,128 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Classificação e roteamento
+    // ========== 1. Gerar embedding e buscar memórias HD ==========
+    let queryEmbedding: number[] | null = null;
+    let hdSearchResults: Array<{ similarity: number; emotional_weight: number; summary?: string; id: string }> = [];
+    let hdBlock = '';
+    let hdMemoryIds: string[] = [];
+
+    try {
+      queryEmbedding = await getCachedEmbedding(messageText);
+      if (queryEmbedding) {
+        const { data: search, error } = (await supabase.rpc('match_memories', {
+          query_embedding: queryEmbedding,
+          match_threshold: 0.10,
+          match_count: 8,
+        })) as { data: any[] | null; error?: any };
+
+        if (error) {
+          console.error('[Memória HD] Erro na RPC:', error);
+        } else if (search?.length) {
+          hdSearchResults = search.map((r: any) => ({
+            similarity: r.similarity,
+            emotional_weight: r.emotional_weight ?? 0.5,
+            summary: r.summary,
+            id: r.id,
+          }));
+          hdBlock = hdSearchResults.filter(r => !r.summary?.startsWith('[CINZA]'))
+            .map(r => r.summary).join('\n---\n');
+          hdMemoryIds = hdSearchResults.map(r => r.id);
+        }
+      }
+    } catch (err) {
+      console.error('[Embedding] Erro:', err);
+    }
+
+    // ========== 2. Construir RAM block ==========
+    let ramBlock = '';
+    const { data: historySession } = await supabase
+      .from('brain')
+      .select('content, metadata')
+      .eq('user_id', numericUserIdStr)
+      .eq('session_id', sessionId)
+      .neq('category', 'archived')
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (historySession && historySession.length >= 2) {
+      // Detect shift using regex (faster)
+      const currentContexts = classifyContextRegex(messageText);
+      const shiftDetected = await detectTopicShiftWithL4(numericUserIdStr, currentContexts);
+      if (historySession.length > 5 && shiftDetected) {
+        const summary = compressToSummary(historySession.slice(3));
+        const recentRaw = [...historySession].slice(0, 3).reverse().map(
+          (h: any) => `${authorName}: ${h.content}\n${assistantName}: ${(h.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim()}`
+        ).join('\n\n');
+        ramBlock = `${summary}\n\n${recentRaw}`;
+      } else {
+        ramBlock = [...historySession].reverse().map(
+          (h: any) => `${authorName}: ${h.content}\n${assistantName}: ${(h.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim()}`
+        ).join('\n\n');
+      }
+    } else {
+      const semanticBlock = await semanticRamCompression(
+        historySession || [],
+        numericUserIdStr,
+        messageText,
+        queryEmbedding ?? undefined
+      );
+      ramBlock = semanticBlock || (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : ' ');
+    }
+    if (ramBlock.length > RAM_MAX_CHARS) ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
+
+    // ========== 3. Calcular Emotional Score ==========
+    const emotional = await computeEmotionalScore(
+      messageText,
+      numericUserIdStr,
+      hdSearchResults,
+      ramBlock
+    );
+    console.log('[Emotional] Score:', emotional.score, 'Traj:', emotional.trajectory, 'Triggers:', emotional.triggers);
+
+    // ========== 4. Classificar contexto com L4 ==========
     console.time('[Performance] context_classification');
     const detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
     console.timeEnd('[Performance] context_classification');
 
-    const modelRoute = routeModel(detectedContexts);
+    // ========== 5. Obter dimensão emocional do tópico principal ==========
+    let topicEmotionalDimension: number | undefined;
+    if (detectedContexts.length > 0) {
+      const mainTopic = detectedContexts[0];
+      const { data: topicData } = await supabase
+        .from('topic_index')
+        .select('emotional_dimension')
+        .eq('user_id', numericUserIdStr)
+        .eq('topic', mainTopic)
+        .maybeSingle();
+      if (topicData?.emotional_dimension != null) {
+        topicEmotionalDimension = topicData.emotional_dimension;
+      }
+    }
+
+    // ========== 6. Rotear modelo ==========
+    const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
     const temperature = getTemperature(detectedContexts);
     const blockPlan = planContextualBlocks(detectedContexts);
-    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label);
+    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| emotionalScore:', emotional.score);
 
-    await updateTopicIndex(numericUserIdStr, detectedContexts, messageText);
+    // ========== 7. Atualizar topic index (com emotionalScore) ==========
+    await updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score);
     const relatedTopicsBlock = await getRelatedTopics(numericUserIdStr, detectedContexts[0] || 'casual');
 
-    // Pesquisa forçada
+    // ========== 8. Pesquisa forçada ==========
     let forcedSearchResult = '';
     if (shouldForceSearch(messageText, detectedContexts)) {
       const searchQuery = refineSearchQuery(messageText, detectedContexts);
-      console.log('[chat] ForcedSearch:', searchQuery);
       try {
         const result = await searchWeb(searchQuery);
         forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA]\nConsulta: "${searchQuery}"\nResultado:\n${result}`;
       } catch (e) {
-        console.error('[chat] ForcedSearch falhou:', e);
         forcedSearchResult = '\n[ERRO NA PESQUISA] Não foi possível obter informações atualizadas.';
       }
     }
 
-    // Cargas contextuais
+    // ========== 9. Cargas contextuais condicionais ==========
     const basePromises = Promise.all([
       supabase.from('events').select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes').eq('user_id', numericUserIdStr).order('relevance_score', { ascending: false }),
       supabase.from('memory_ashes').select('ash_summary, period_start, period_end').eq('user_id', numericUserIdStr).order('period_end', { ascending: false }).limit(5),
@@ -354,70 +447,6 @@ export async function POST(req: NextRequest) {
       for (const n of pNotes) lines.push(`${n.person_name} [${n.noted_at}]: ${n.note}`);
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
-
-    // BUSCA DE MEMÓRIAS HD
-    // ✅ threshold 0.10 — compatível com embeddings via OpenRouter
-    // Monitore os [Scores] nos logs. Se scores ficarem acima de 0.25 consistentemente,
-    // pode subir para 0.20. Se ficarem abaixo de 0.15, as memórias antigas são
-    // incompatíveis e devem ser deletadas via SQL (veja comentário no final do arquivo).
-    const queryEmbedding = await getCachedEmbedding(messageText);
-    let hdBlock = '';
-    let hdMemoryIds: string[] = [];
-
-    if (queryEmbedding) {
-      console.log('[Embedding] Gerado com sucesso, dimensões:', queryEmbedding.length);
-
-      const { data: search, error } = (await supabase.rpc('match_memories', {
-        query_embedding: queryEmbedding,
-        match_threshold: 0.10,
-        match_count: 8,
-      })) as { data: any[] | null; error?: any };
-
-      if (error) {
-        console.error('[Memória HD] Erro na RPC:', error);
-      } else if (search?.length) {
-        console.log('[Memória HD]', search.length, 'memórias encontradas');
-        console.log('[Scores]', search.map((r: any) => `${r.summary.substring(0, 50)}... = ${r.similarity.toFixed(3)}`));
-
-        hdBlock = search.filter((r: any) => !r.summary.startsWith('[CINZA]'))
-          .map((r: any) => r.summary).join('\n---\n');
-        hdMemoryIds = search.map((r: any) => r.id);
-      } else {
-        console.warn('[Memória HD] Nenhuma memória encontrada — considere deletar memórias antigas incompatíveis');
-      }
-    } else {
-      console.error('[Embedding] Falha ao gerar embedding');
-    }
-
-    // Memória RAM
-    let ramBlock = '';
-    const { data: historySession } = await supabase
-      .from('brain').select('content, metadata').eq('user_id', numericUserIdStr).eq('session_id', sessionId).neq('category', 'archived').order('created_at', { ascending: false }).limit(10);
-
-    const topicShifted = await detectTopicShiftWithL4(numericUserIdStr, detectedContexts);
-
-    if (historySession && historySession.length >= 2) {
-      if (topicShifted) {
-        const summary = compressToSummary(historySession.slice(3));
-        const recentRaw = [...historySession].slice(0, 3).reverse().map(
-          (h: any) => `${authorName}: ${h.content}\n${assistantName}: ${(h.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim()}`
-        ).join('\n\n');
-        ramBlock = `${summary}\n\n${recentRaw}`;
-      } else {
-        ramBlock = [...historySession].reverse().map(
-          (h: any) => `${authorName}: ${h.content}\n${assistantName}: ${(h.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim()}`
-        ).join('\n\n');
-      }
-    } else {
-      const semanticBlock = await semanticRamCompression(
-        historySession || [],
-        numericUserIdStr,
-        messageText,
-        queryEmbedding ?? undefined
-      );
-      ramBlock = semanticBlock || (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : ' ');
-    }
-    if (ramBlock.length > RAM_MAX_CHARS) ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
 
     const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
     const truncatedL3 = truncateByWeight(currentContextL3, weights.l3, 6000);
@@ -556,6 +585,9 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         temperature_used: temperature,
         contexts_detected: detectedContexts,
         forced_search_used: !!forcedSearchResult,
+        emotional_score: emotional.score,
+        emotional_triggers: emotional.triggers,
+        emotional_trajectory: emotional.trajectory,
       },
     }]);
 
@@ -588,13 +620,3 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
-
-// ============================================================
-// SE [Scores] nos logs ficarem todos abaixo de 0.15 após o deploy,
-// as 5 memórias antigas são incompatíveis. Delete-as com:
-//
-// delete from jarvis.memories where user_id = '8595482774';
-//
-// Novas memórias serão geradas automaticamente pelo compactMemory
-// após 20 interações acumuladas no brain.
-// ============================================================
