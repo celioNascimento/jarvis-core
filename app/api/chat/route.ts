@@ -454,15 +454,15 @@ export async function POST(req: NextRequest) {
     );
     console.log('[Emotional] Score:', emotional.score, 'Traj:', emotional.trajectory, 'Triggers:', emotional.triggers);
 
-    // ========== 4. Classificar contexto com L4 (com cache) ==========
-    console.time('[Performance] context_classification');
-    const contextCacheKey = `context_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-    let detectedContexts = cache.get<string[]>(contextCacheKey);
-    if (!detectedContexts) {
-      detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
-      cache.set(contextCacheKey, detectedContexts, 20000); // 20 segundos
-    }
-    console.timeEnd('[Performance] context_classification');
+      // ========== 4. Classificar contexto com L4 (com cache) ==========
+      console.time('[Performance] context_classification');
+      const contextCacheKey = `context_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+      let detectedContexts = cache.get<ContextType[]>(contextCacheKey);
+      if (!detectedContexts) {
+        detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
+        cache.set(contextCacheKey, detectedContexts, 20000); // 20 segundos
+      }
+      console.timeEnd('[Performance] context_classification');
 
     // ========== 5. Obter dimensão emocional do tópico principal ==========
     let topicEmotionalDimension: number | undefined;
