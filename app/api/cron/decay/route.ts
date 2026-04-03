@@ -99,12 +99,9 @@ Retorne APENAS a linha comprimida, sem explicações.
       }
     };
 
-    console.log('🧠 Decay v1.2 completo:', JSON.stringify(stats));
-
     return NextResponse.json({ ok: true, stats });
 
   } catch (error: any) {
-    console.error("Erro no cron de decay:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
