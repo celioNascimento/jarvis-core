@@ -130,7 +130,6 @@ REGRAS:
 
     await sendTelegram(userId, aiReply);
 
-    console.log('[briefing] Enviado para', userId);
     return NextResponse.json({ ok: true });
 
   } catch (error: any) {

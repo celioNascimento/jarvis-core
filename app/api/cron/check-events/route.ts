@@ -118,8 +118,6 @@ REGRAS:
         const mensagem = await callOpenRouter(prompt);
 
         await sendTelegram(user.telegram_chat_id, mensagem);
-        console.log(`[check-events] ${authorName} — "${event.title}" (${statusTxt}) ENVIADO`);
-
         // Marca como notificado este ano
         await supabase
           .from('events')
