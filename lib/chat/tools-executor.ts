@@ -12,6 +12,32 @@ import { updateGoalProgress } from '@/lib/diary';
 import { getCachedEmbedding } from './embedding-cache';
 import { assertNumericUserId } from './guards';
 
+// ===================== INSIGHTS (convertem dados em informação relevante) =====================
+// Certifique-se de que os arquivos existam em lib/insights/
+import { getWeatherInsight } from '@/lib/insights/weather-insights';
+// import { getHolidayInsight } from '@/lib/insights/holiday-insights';    // descomente quando implementado
+// import { getDocumentInsight } from '@/lib/insights/document-insights';  // descomente quando implementado
+// import { getCalendarInsight } from '@/lib/insights/calendar-insights';  // descomente quando implementado
+// ============================================================================================
+
+// ---------------------------------------------------------------------------
+// Helper para obter a última localização salva do usuário
+// ---------------------------------------------------------------------------
+async function getUserLastLocation(numericUserIdStr: string): Promise<{ lat: number; lng: number } | null> {
+  const { data: locData } = await supabase
+    .from('config')
+    .select('value')
+    .eq('key', `last_location_${numericUserIdStr}`)
+    .single();
+  if (!locData?.value) return null;
+  try {
+    const { latitude, longitude } = JSON.parse(locData.value);
+    return { lat: latitude, lng: longitude };
+  } catch {
+    return null;
+  }
+}
+
 export async function executeTool(
   toolCall: any,
   authUserId: string,
@@ -148,6 +174,36 @@ export async function executeTool(
       if (!itens?.length) return `Lista de ${p.lugar} está vazia.`;
       return `Lista de ${p.lugar}:\n${itens.map((i: any) => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
     }
+
+    // ===================== FERRAMENTAS DE INSIGHT =====================
+    case 'get_weather_insights': {
+      const location = await getUserLastLocation(numericUserIdStr);
+      if (!location) {
+        return 'Não sei sua localização atual. Compartilhe sua localização no chat para eu poder dar dicas do clima.';
+      }
+      // Obtém o nome do usuário (opcional) – tenta extrair do perfil
+      let userName = '';
+      const { data: userData } = await supabase
+        .from('users')
+        .select('nickname')
+        .eq('id', numericUserIdStr)
+        .single();
+      if (userData?.nickname) userName = userData.nickname;
+      return await getWeatherInsight(location.lat, location.lng, userName);
+    }
+
+    // Exemplo de como adicionar outros insights (descomente quando os módulos estiverem prontos)
+    /*
+    case 'get_holiday_insight': {
+      return await getHolidayInsight(numericUserIdStr);
+    }
+    case 'get_document_insight': {
+      return await getDocumentInsight(numericUserIdStr);
+    }
+    case 'get_calendar_insight': {
+      return await getCalendarInsight(numericUserIdStr, authUserId);
+    }
+    */
 
     default:
       return `Ferramenta ${name} não implementada.`;
