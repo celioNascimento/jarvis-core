@@ -5,6 +5,9 @@
 // ✅ EMOTIONAL ROUTER: integrado com ordenação correta e cache
 // ✅ FIX [v8.1]: Anti-sycophancy — modelo não pode confirmar dado externo sem nova busca
 // ✅ FIX [v8.1]: Data/hora injetada no prompt com fuso correto + instrução de validação temporal
+// ✅ FIX [v8.2]: Sanitização de saída — remove [INTERNO:], [DEBUG:], [ERROR:] e dados sensíveis
+// ✅ FIX [v8.3]: Fallback universal para resposta vazia após sanitização
+// ✅ FIX [v8.4]: Cache em memória com TTL para chamadas repetitivas (Supabase, Google, Microsoft, L4, blocos)
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -61,6 +64,84 @@ import { transcribeAudio, extractAudioBuffer } from '@/lib/services/transcriptio
 import { computeEmotionalScore } from '@/lib/chat/emotional-router';
 
 export const maxDuration = 60;
+
+// ===================== [FIX v8.4] CACHE EM MEMÓRIA COM TTL =====================
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
+class MemoryCache {
+  private store = new Map<string, CacheEntry<any>>();
+  private defaultTTL = 30000; // 30 segundos
+
+  set<T>(key: string, value: T, ttlMs?: number): void {
+    const expiresAt = Date.now() + (ttlMs ?? this.defaultTTL);
+    this.store.set(key, { value, expiresAt });
+  }
+
+  get<T>(key: string): T | null {
+    const entry = this.store.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      this.store.delete(key);
+      return null;
+    }
+    return entry.value as T;
+  }
+
+  clear(): void {
+    this.store.clear();
+  }
+
+  cleanup(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.store.entries()) {
+      if (now > entry.expiresAt) this.store.delete(key);
+    }
+  }
+}
+
+const cache = new MemoryCache();
+// Limpeza automática a cada 1 minuto (evita vazamento de memória)
+setInterval(() => cache.cleanup(), 60000);
+// ====================================================================
+
+// ---------------------------------------------------------------------------
+// [FIX v8.2] Função para sanitizar dados sensíveis na resposta
+// ---------------------------------------------------------------------------
+function sanitizeSensitiveData(text: string): string {
+  if (!text) return text;
+  
+  // Remove padrões comuns de chaves de API e tokens
+  const patterns = [
+    /(sk-[A-Za-z0-9_\-]{20,})/gi,           // OpenAI keys
+    /(Bearer\s+[A-Za-z0-9_\-\.]{20,})/gi,   // Bearer tokens
+    /(Authorization:\s*['"]?[A-Za-z0-9_\-]+)/gi,
+    /(api[_-]?key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi,
+    /(password['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi,
+    /(secret['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi,
+    /(token['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi,
+    /(x-api-key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi,
+  ];
+  
+  let sanitized = text;
+  for (const pattern of patterns) {
+    sanitized = sanitized.replace(pattern, (match) => {
+      // Preserva a estrutura, mas esconde o valor sensível
+      if (match.includes('=')) {
+        return match.replace(/=.*/, '= [REDACTED]');
+      } else if (match.includes(':')) {
+        return match.replace(/:.*/, ': [REDACTED]');
+      } else {
+        return '[REDACTED]';
+      }
+    });
+  }
+  
+  return sanitized;
+}
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // [FIX v8.1] Helpers de data/hora com fuso
@@ -373,9 +454,14 @@ export async function POST(req: NextRequest) {
     );
     console.log('[Emotional] Score:', emotional.score, 'Traj:', emotional.trajectory, 'Triggers:', emotional.triggers);
 
-    // ========== 4. Classificar contexto com L4 ==========
+    // ========== 4. Classificar contexto com L4 (com cache) ==========
     console.time('[Performance] context_classification');
-    const detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
+    const contextCacheKey = `context_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+    let detectedContexts = cache.get<string[]>(contextCacheKey);
+    if (!detectedContexts) {
+      detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
+      cache.set(contextCacheKey, detectedContexts, 20000); // 20 segundos
+    }
     console.timeEnd('[Performance] context_classification');
 
     // ========== 5. Obter dimensão emocional do tópico principal ==========
@@ -415,47 +501,154 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ========== 9. Cargas contextuais condicionais ==========
-    const basePromises = Promise.all([
-      supabase.from('events').select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes').eq('user_id', numericUserIdStr).order('relevance_score', { ascending: false }),
-      supabase.from('memory_ashes').select('ash_summary, period_start, period_end').eq('user_id', numericUserIdStr).order('period_end', { ascending: false }).limit(5),
-      supabase.from('onboarding_progress').select('*').eq('user_id', numericUserIdStr).single(),
-      buildGapsBlock(numericUserIdStr, messageText),
-      supabase.from('principles').select('content, category').order('created_at', { ascending: true }),
-    ]);
-
-    const conditionalTasks: Promise<any>[] = [];
-    if (blockPlan.loadCalendar) {
-      conditionalTasks.push(getGoogleContext().catch(() => null));
-      conditionalTasks.push(getMicrosoftCalendarContext().catch(() => null));
+    // ========== 9. Cargas contextuais condicionais (COM CACHE) ==========
+    // --- Supabase: events ---
+    const eventsCacheKey = `events_${numericUserIdStr}`;
+    let events = cache.get<any[]>(eventsCacheKey);
+    if (!events) {
+      const { data } = await supabase
+        .from('events')
+        .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
+        .eq('user_id', numericUserIdStr)
+        .order('relevance_score', { ascending: false });
+      events = data || [];
+      cache.set(eventsCacheKey, events);
     }
-    if (blockPlan.loadEmail) conditionalTasks.push(getRecentEmails(undefined, 3, false).catch(() => null));
-    if (blockPlan.loadTopics) conditionalTasks.push(buildTopicBlock(numericUserIdStr, messageText).catch(() => ''));
-    if (blockPlan.loadDiary) conditionalTasks.push(buildDiaryGoalsBlock(numericUserIdStr).catch(() => ''));
 
-    const [[eventsResult, ashesResult, onboardingResult, gapsBlock, principlesResult], conditionalResults] =
-      await Promise.all([basePromises, Promise.all(conditionalTasks)]);
+    // --- Supabase: memory_ashes ---
+    const ashesCacheKey = `ashes_${numericUserIdStr}`;
+    let ashes = cache.get<any[]>(ashesCacheKey);
+    if (!ashes) {
+      const { data } = await supabase
+        .from('memory_ashes')
+        .select('ash_summary, period_start, period_end')
+        .eq('user_id', numericUserIdStr)
+        .order('period_end', { ascending: false })
+        .limit(5);
+      ashes = data || [];
+      cache.set(ashesCacheKey, ashes);
+    }
 
-    let ri = 0;
-    const googleCtx = blockPlan.loadCalendar ? conditionalResults[ri++] : null;
-    const msCtx = blockPlan.loadCalendar ? conditionalResults[ri++] : null;
-    const emailBlock = blockPlan.loadEmail ? conditionalResults[ri++] : null;
-    const topicBlock = blockPlan.loadTopics ? conditionalResults[ri++] || '' : '';
-    const diaryBlock = blockPlan.loadDiary ? conditionalResults[ri++] || '' : '';
+    // --- Supabase: principles ---
+    const principlesCacheKey = `principles_${numericUserIdStr}`;
+    let principles = cache.get<any[]>(principlesCacheKey);
+    if (!principles) {
+      const { data } = await supabase
+        .from('principles')
+        .select('content, category')
+        .order('created_at', { ascending: true });
+      principles = data || [];
+      cache.set(principlesCacheKey, principles);
+    }
 
-    const recsBlock = blockPlan.loadRecommendations
-      ? await buildRecommendationsBlock(numericUserIdStr, messageText).catch(() => '')
-      : '';
+    // --- Supabase: children notes ---
+    const childrenCacheKey = `children_${numericUserIdStr}`;
+    let childrenData = cache.get<any[]>(childrenCacheKey);
+    if (!childrenData) {
+      const { data } = await supabase
+        .from('children')
+        .select('name, nickname, lev_notes')
+        .eq('parent_id', numericUserIdStr)
+        .not('lev_notes', 'is', null);
+      childrenData = data || [];
+      cache.set(childrenCacheKey, childrenData);
+    }
 
-    const principles = principlesResult?.data || [];
-    const principlesBlock = principles.length > 0 ? principles.map((p: any) => `- ${p.content}`).join('\n') : '';
+    // --- Supabase: person_notes ---
+    const personNotesCacheKey = `person_notes_${numericUserIdStr}`;
+    let personNotesData = cache.get<any[]>(personNotesCacheKey);
+    if (!personNotesData) {
+      const { data } = await supabase
+        .from('person_notes')
+        .select('person_name, person_type, note, noted_at')
+        .eq('user_id', numericUserIdStr)
+        .order('noted_at', { ascending: false })
+        .limit(20);
+      personNotesData = data || [];
+      cache.set(personNotesCacheKey, personNotesData);
+    }
 
-    let onboardingState = onboardingResult?.data || null;
-    if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(numericUserIdStr);
+    // --- Gaps block (com cache) ---
+    const gapsCacheKey = `gaps_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+    let gapsBlock = cache.get<string>(gapsCacheKey);
+    if (!gapsBlock) {
+      gapsBlock = await buildGapsBlock(numericUserIdStr, messageText);
+      cache.set(gapsCacheKey, gapsBlock, 60000); // 1 minuto
+    }
+
+    // --- Topic block (com cache) ---
+    let topicBlock = '';
+    if (blockPlan.loadTopics) {
+      const topicCacheKey = `topic_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+      topicBlock = cache.get<string>(topicCacheKey) || '';
+      if (!topicBlock) {
+        topicBlock = await buildTopicBlock(numericUserIdStr, messageText).catch(() => '');
+        cache.set(topicCacheKey, topicBlock, 60000);
+      }
+    }
+
+    // --- Diary block (com cache) ---
+    let diaryBlock = '';
+    if (blockPlan.loadDiary) {
+      const diaryCacheKey = `diary_${numericUserIdStr}`;
+      diaryBlock = cache.get<string>(diaryCacheKey) || '';
+      if (!diaryBlock) {
+        diaryBlock = await buildDiaryGoalsBlock(numericUserIdStr).catch(() => '');
+        cache.set(diaryCacheKey, diaryBlock, 60000);
+      }
+    }
+
+    // --- Recommendations block (com cache) ---
+    let recsBlock = '';
+    if (blockPlan.loadRecommendations) {
+      const recsCacheKey = `recs_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+      recsBlock = cache.get<string>(recsCacheKey) || '';
+      if (!recsBlock) {
+        recsBlock = await buildRecommendationsBlock(numericUserIdStr, messageText).catch(() => '');
+        cache.set(recsCacheKey, recsBlock, 60000);
+      }
+    }
+
+    // --- Google e Microsoft Calendar (com cache) ---
+    let googleCtx = null;
+    let msCtx = null;
+    if (blockPlan.loadCalendar) {
+      const calendarCacheKey = `calendar_${authUserId}`;
+      const cached = cache.get<{ google: any; ms: any }>(calendarCacheKey);
+      if (cached) {
+        googleCtx = cached.google;
+        msCtx = cached.ms;
+      } else {
+        googleCtx = await getGoogleContext().catch(() => null);
+        msCtx = await getMicrosoftCalendarContext().catch(() => null);
+        cache.set(calendarCacheKey, { google: googleCtx, ms: msCtx }, 30000);
+      }
+    }
+
+    // --- Emails (com cache) ---
+    let emailBlock = null;
+    if (blockPlan.loadEmail) {
+      const emailCacheKey = `emails_${authUserId}`;
+      emailBlock = cache.get(emailCacheKey);
+      if (!emailBlock) {
+        emailBlock = await getRecentEmails(undefined, 3, false).catch(() => null);
+        cache.set(emailCacheKey, emailBlock, 30000);
+      }
+    }
+
+    // ========== Montar blocos de evento, ashes, onboarding, etc. ==========
+    let onboardingState = null;
+    const onboardingCacheKey = `onboarding_${numericUserIdStr}`;
+    onboardingState = cache.get(onboardingCacheKey);
+    if (!onboardingState) {
+      const { data } = await supabase.from('onboarding_progress').select('*').eq('user_id', numericUserIdStr).single();
+      onboardingState = data || null;
+      if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(numericUserIdStr);
+      cache.set(onboardingCacheKey, onboardingState, 60000);
+    }
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
     // Eventos
-    const events = eventsResult.data || [];
     const hoje = new Date();
     hoje.setHours(0, 0, 0, 0);
     const sortedEvents = [...events].sort(
@@ -477,20 +670,15 @@ export async function POST(req: NextRequest) {
           ].filter(Boolean).join('\n\n')
         : 'Nenhum evento cadastrado.';
 
-    const ashes = ashesResult.data || [];
     const ashesBlock = ashes.length > 0 ? ashes.map((a: any) => a.ash_summary).join('\n') : null;
 
-    // Notas de pessoas
+    // Notas de pessoas (filtragem em memória)
     let personNotesBlock = '';
-    const [childrenResult, personNotesResult] = await Promise.all([
-      supabase.from('children').select('name, nickname, lev_notes').eq('parent_id', numericUserIdStr).not('lev_notes', 'is', null),
-      supabase.from('person_notes').select('person_name, person_type, note, noted_at').eq('user_id', numericUserIdStr).order('noted_at', { ascending: false }).limit(20),
-    ]);
     const msgLower = messageText.toLowerCase();
-    const childNotes = (childrenResult.data || []).filter(
+    const childNotes = childrenData.filter(
       (c: any) => msgLower.includes((c.nickname || '').toLowerCase()) || msgLower.includes((c.name || '').split(' ')[0].toLowerCase())
     );
-    const pNotes = (personNotesResult.data || []).filter((n: any) =>
+    const pNotes = personNotesData.filter((n: any) =>
       n.person_name.toLowerCase().split(' ').some((p: string) => p.length >= 3 && new RegExp(`\\b${p}\\b`).test(msgLower))
     );
 
@@ -551,7 +739,7 @@ ${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao ci
 [EVENTOS]\n${truncatedEvents}
 ${onboardingBlock}
 ${gapsBlock}
-${principlesBlock ? `[BÚSSOLA]\n${principlesBlock}` : ''}
+${principlesBlock ? `[BÚSSOLA]\n${principles.map((p: any) => `- ${p.content}`).join('\n')}` : ''}
 
 REGRAS COMPORTAMENTAIS:
 FOCO: Responda O QUE FOI PERGUNTADO. Nunca repita sugestão rejeitada.
@@ -632,10 +820,31 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     if (categoryMatch) category = categoryMatch[1].toLowerCase();
     finalResponse = finalResponse.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
 
+    // =================================================================
+    // [FIX v8.2] Sanitização de saída – remove marcadores e protege dados
+    // =================================================================
+    finalResponse = finalResponse.replace(/\[INTERNO:.*?\]/gi, '');
+    finalResponse = finalResponse.replace(/\[DEBUG:.*?\]/gi, '');
+    finalResponse = finalResponse.replace(/\[ERROR:.*?\]/gi, '');
+    finalResponse = finalResponse.trim();
+
+    // Filtro de chaves de API e senhas
+    finalResponse = sanitizeSensitiveData(finalResponse);
+    // =================================================================
+
+    // =================================================================
+    // [FIX v8.3] Fallback universal para resposta vazia
+    // =================================================================
     if (!finalResponse && extractionSummary) {
       const feedbacks = ['Certo.', 'Ok.', 'Guardei.', 'Entendido.'];
       finalResponse = feedbacks[Math.floor(Math.random() * feedbacks.length)];
     }
+
+    if (!finalResponse) {
+      console.warn('[Sanitização] Resposta ficou completamente vazia. Usando fallback genérico.');
+      finalResponse = 'Entendi. Podemos continuar?';
+    }
+    // =================================================================
 
     if (pendingQuestion)
       clearPendingQuestion(numericUserIdStr).catch((e) => console.error('[PendingQ]', e));

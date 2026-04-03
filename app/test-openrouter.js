@@ -17,9 +17,6 @@ async function test() {
       max_tokens: 50,
     }),
   });
-
-  console.log('Status:', res.status);
-  console.log('Resposta:', await res.text());
 }
 
 test();

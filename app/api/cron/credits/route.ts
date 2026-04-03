@@ -36,8 +36,6 @@ export async function GET(req: Request) {
       sonnet: stats?.filter(s => s.model_tier === 'sonnet').length || 0,
     };
 
-    console.log(`💳 Créditos ${currentMonth}/${currentYear} inicializados:`, summary);
-
     return NextResponse.json({ ok: true, period: `${currentMonth}/${currentYear}`, summary });
 
   } catch (error: any) {
