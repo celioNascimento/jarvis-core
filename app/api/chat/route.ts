@@ -687,7 +687,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     ]).catch((e) => console.error('[Background]', e));
 
     console.timeEnd('[Performance] total');
-    return NextResponse.json({ reply: finalResponse, sessionId, assistantName, ok: true });
+    return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
   } catch (error: any) {
     console.error('[chat] ERRO:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
