@@ -8,6 +8,7 @@
 // ✅ FIX [v8.2]: Sanitização de saída — remove [INTERNO:], [DEBUG:], [ERROR:] e dados sensíveis
 // ✅ FIX [v8.3]: Fallback universal para resposta vazia após sanitização
 // ✅ FIX [v8.4]: Cache em memória com TTL para chamadas repetitivas (Supabase, Google, Microsoft, L4, blocos)
+// ✅ FIX [v8.5]: Correção de tipos TypeScript (ContextType[], principlesBlock -> principles)
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -113,10 +114,9 @@ setInterval(() => cache.cleanup(), 60000);
 function sanitizeSensitiveData(text: string): string {
   if (!text) return text;
   
-  // Remove padrões comuns de chaves de API e tokens
   const patterns = [
-    /(sk-[A-Za-z0-9_\-]{20,})/gi,           // OpenAI keys
-    /(Bearer\s+[A-Za-z0-9_\-\.]{20,})/gi,   // Bearer tokens
+    /(sk-[A-Za-z0-9_\-]{20,})/gi,
+    /(Bearer\s+[A-Za-z0-9_\-\.]{20,})/gi,
     /(Authorization:\s*['"]?[A-Za-z0-9_\-]+)/gi,
     /(api[_-]?key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi,
     /(password['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi,
@@ -128,17 +128,11 @@ function sanitizeSensitiveData(text: string): string {
   let sanitized = text;
   for (const pattern of patterns) {
     sanitized = sanitized.replace(pattern, (match) => {
-      // Preserva a estrutura, mas esconde o valor sensível
-      if (match.includes('=')) {
-        return match.replace(/=.*/, '= [REDACTED]');
-      } else if (match.includes(':')) {
-        return match.replace(/:.*/, ': [REDACTED]');
-      } else {
-        return '[REDACTED]';
-      }
+      if (match.includes('=')) return match.replace(/=.*/, '= [REDACTED]');
+      if (match.includes(':')) return match.replace(/:.*/, ': [REDACTED]');
+      return '[REDACTED]';
     });
   }
-  
   return sanitized;
 }
 // ---------------------------------------------------------------------------
@@ -146,11 +140,6 @@ function sanitizeSensitiveData(text: string): string {
 // ---------------------------------------------------------------------------
 // [FIX v8.1] Helpers de data/hora com fuso
 // ---------------------------------------------------------------------------
-
-/**
- * Retorna a data/hora atual formatada no fuso do usuário.
- * Exemplo: "quarta-feira, 01/04/2026 às 19:05 (America/Sao_Paulo)"
- */
 function buildDateTimeBlock(timezone: string): string {
   const now = new Date();
   const locale = 'pt-BR';
@@ -169,9 +158,6 @@ function buildDateTimeBlock(timezone: string): string {
   return `${dateStr} às ${timeStr} (${timezone})`;
 }
 
-/**
- * Extrai componentes de data no fuso do usuário para validação.
- */
 function getCurrentDateParts(timezone: string): { day: number; month: number; year: number } {
   const now = new Date();
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -183,7 +169,6 @@ function getCurrentDateParts(timezone: string): { day: number; month: number; ye
   const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? '0', 10);
   return { day: get('day'), month: get('month'), year: get('year') };
 }
-
 // ---------------------------------------------------------------------------
 
 async function getOrCreateOnboardingStatePersistent(userId: string) {
@@ -340,14 +325,11 @@ export async function POST(req: NextRequest) {
 
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
 
-    // ---------------------------------------------------------------------------
-    // [FIX v8.1] Data/hora canônica do servidor
-    // ---------------------------------------------------------------------------
+    // Data/hora canônica do servidor
     const canonicalDateTimeBlock = buildDateTimeBlock(userTimezone);
     const { day, month, year } = getCurrentDateParts(userTimezone);
     const canonicalDateISO = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     console.log('[chat] Data canônica do servidor:', canonicalDateISO, '|', canonicalDateTimeBlock);
-    // ---------------------------------------------------------------------------
 
     // Localização
     let locationContext = '';
@@ -454,15 +436,15 @@ export async function POST(req: NextRequest) {
     );
     console.log('[Emotional] Score:', emotional.score, 'Traj:', emotional.trajectory, 'Triggers:', emotional.triggers);
 
-      // ========== 4. Classificar contexto com L4 (com cache) ==========
-      console.time('[Performance] context_classification');
-      const contextCacheKey = `context_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-      let detectedContexts = cache.get<ContextType[]>(contextCacheKey);
-      if (!detectedContexts) {
-        detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
-        cache.set(contextCacheKey, detectedContexts, 20000); // 20 segundos
-      }
-      console.timeEnd('[Performance] context_classification');
+    // ========== 4. Classificar contexto com L4 (com cache) ==========
+    console.time('[Performance] context_classification');
+    const contextCacheKey = `context_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+    let detectedContexts = cache.get<ContextType[]>(contextCacheKey);
+    if (!detectedContexts) {
+      detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
+      cache.set(contextCacheKey, detectedContexts, 20000);
+    }
+    console.timeEnd('[Performance] context_classification');
 
     // ========== 5. Obter dimensão emocional do tópico principal ==========
     let topicEmotionalDimension: number | undefined;
@@ -485,7 +467,7 @@ export async function POST(req: NextRequest) {
     const blockPlan = planContextualBlocks(detectedContexts);
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| emotionalScore:', emotional.score);
 
-    // ========== 7. Atualizar topic index (com emotionalScore) ==========
+    // ========== 7. Atualizar topic index ==========
     await updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score);
     const relatedTopicsBlock = await getRelatedTopics(numericUserIdStr, detectedContexts[0] || 'casual');
 
@@ -502,7 +484,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ========== 9. Cargas contextuais condicionais (COM CACHE) ==========
-    // --- Supabase: events ---
+    // Events
     const eventsCacheKey = `events_${numericUserIdStr}`;
     let events = cache.get<any[]>(eventsCacheKey);
     if (!events) {
@@ -515,7 +497,7 @@ export async function POST(req: NextRequest) {
       cache.set(eventsCacheKey, events);
     }
 
-    // --- Supabase: memory_ashes ---
+    // Memory ashes
     const ashesCacheKey = `ashes_${numericUserIdStr}`;
     let ashes = cache.get<any[]>(ashesCacheKey);
     if (!ashes) {
@@ -529,7 +511,7 @@ export async function POST(req: NextRequest) {
       cache.set(ashesCacheKey, ashes);
     }
 
-    // --- Supabase: principles ---
+    // Principles
     const principlesCacheKey = `principles_${numericUserIdStr}`;
     let principles = cache.get<any[]>(principlesCacheKey);
     if (!principles) {
@@ -541,7 +523,7 @@ export async function POST(req: NextRequest) {
       cache.set(principlesCacheKey, principles);
     }
 
-    // --- Supabase: children notes ---
+    // Children
     const childrenCacheKey = `children_${numericUserIdStr}`;
     let childrenData = cache.get<any[]>(childrenCacheKey);
     if (!childrenData) {
@@ -554,7 +536,7 @@ export async function POST(req: NextRequest) {
       cache.set(childrenCacheKey, childrenData);
     }
 
-    // --- Supabase: person_notes ---
+    // Person notes
     const personNotesCacheKey = `person_notes_${numericUserIdStr}`;
     let personNotesData = cache.get<any[]>(personNotesCacheKey);
     if (!personNotesData) {
@@ -568,15 +550,15 @@ export async function POST(req: NextRequest) {
       cache.set(personNotesCacheKey, personNotesData);
     }
 
-    // --- Gaps block (com cache) ---
+    // Gaps block
     const gapsCacheKey = `gaps_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
     let gapsBlock = cache.get<string>(gapsCacheKey);
     if (!gapsBlock) {
       gapsBlock = await buildGapsBlock(numericUserIdStr, messageText);
-      cache.set(gapsCacheKey, gapsBlock, 60000); // 1 minuto
+      cache.set(gapsCacheKey, gapsBlock, 60000);
     }
 
-    // --- Topic block (com cache) ---
+    // Topic block
     let topicBlock = '';
     if (blockPlan.loadTopics) {
       const topicCacheKey = `topic_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
@@ -587,7 +569,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // --- Diary block (com cache) ---
+    // Diary block
     let diaryBlock = '';
     if (blockPlan.loadDiary) {
       const diaryCacheKey = `diary_${numericUserIdStr}`;
@@ -598,7 +580,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // --- Recommendations block (com cache) ---
+    // Recommendations block
     let recsBlock = '';
     if (blockPlan.loadRecommendations) {
       const recsCacheKey = `recs_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
@@ -609,7 +591,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // --- Google e Microsoft Calendar (com cache) ---
+    // Google e Microsoft Calendar
     let googleCtx = null;
     let msCtx = null;
     if (blockPlan.loadCalendar) {
@@ -625,7 +607,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // --- Emails (com cache) ---
+    // Emails
     let emailBlock = null;
     if (blockPlan.loadEmail) {
       const emailCacheKey = `emails_${authUserId}`;
@@ -636,7 +618,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ========== Montar blocos de evento, ashes, onboarding, etc. ==========
+    // Onboarding
     let onboardingState = null;
     const onboardingCacheKey = `onboarding_${numericUserIdStr}`;
     onboardingState = cache.get(onboardingCacheKey);
@@ -648,7 +630,7 @@ export async function POST(req: NextRequest) {
     }
     const onboardingBlock = buildOnboardingBlock(onboardingState);
 
-    // Eventos
+    // Montar blocos de eventos
     const hoje = new Date();
     hoje.setHours(0, 0, 0, 0);
     const sortedEvents = [...events].sort(
@@ -698,9 +680,9 @@ export async function POST(req: NextRequest) {
     const isFemale = currentContextL3.toLowerCase().includes('feminino') || currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
 
-    // ---------------------------------------------------------------------------
-    // [FIX v8.1] System Prompt com data canônica e regras anti-sycophancy
-    // ---------------------------------------------------------------------------
+    // ========== System Prompt ==========
+    const principlesText = principles.length > 0 ? principles.map((p: any) => `- ${p.content}`).join('\n') : '';
+
     const systemPrompt = `Você é ${assistantName}, assistente pessoal de ${authorName}.
 
 🕐 DATA E HORA ATUAL (servidor): ${canonicalDateTimeBlock}
@@ -739,7 +721,7 @@ ${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao ci
 [EVENTOS]\n${truncatedEvents}
 ${onboardingBlock}
 ${gapsBlock}
-${principlesBlock ? `[BÚSSOLA]\n${principles.map((p: any) => `- ${p.content}`).join('\n')}` : ''}
+${principlesText ? `[BÚSSOLA]\n${principlesText}` : ''}
 
 REGRAS COMPORTAMENTAIS:
 FOCO: Responda O QUE FOI PERGUNTADO. Nunca repita sugestão rejeitada.
@@ -750,7 +732,6 @@ MEMÓRIA: Use notas naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
-    // ---------------------------------------------------------------------------
 
     // Histórico de conversa
     const { data: historyForMessages } = await supabase
@@ -827,8 +808,6 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     finalResponse = finalResponse.replace(/\[DEBUG:.*?\]/gi, '');
     finalResponse = finalResponse.replace(/\[ERROR:.*?\]/gi, '');
     finalResponse = finalResponse.trim();
-
-    // Filtro de chaves de API e senhas
     finalResponse = sanitizeSensitiveData(finalResponse);
     // =================================================================
 
