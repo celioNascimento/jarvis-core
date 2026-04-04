@@ -326,6 +326,9 @@ export async function POST(req: NextRequest) {
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
 
     // Data/hora canônica do servidor
+    const canonicalDateTimeBlock = buildDateTimeBlock(userTimezone);
+    const { day, month, year } = getCurrentDateParts(userTimezone);
+    const canonicalDateISO = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
    // app/api/chat/route.ts (trecho crítico - linhas ~290-320)
 
 // Localização
@@ -362,7 +365,7 @@ if (location) {
   if (alertaGeo.temAlerta)
     return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
   if (!messageText) messageText = '[Enviou Localização]';
-}
+};
 
     // ========== 1. Gerar embedding e buscar memórias HD ==========
     let queryEmbedding: number[] | null = null;
