@@ -28,14 +28,28 @@ async function reverseGeocode(lat: number, lon: number): Promise<string> {
     if (!res.ok) return 'Localização desconhecida';
 
     const data = await res.json();
-    const city =
-      data.address?.city ||
-      data.address?.town ||
-      data.address?.village;
-    const state = data.address?.state;
+    const addr = data.address ?? {};
 
-    if (city && state) return `${city}, ${state}`;
+    // Bairro: tenta os campos em ordem de precisão
+    const neighbourhood =
+      addr.neighbourhood ||
+      addr.suburb ||
+      addr.city_district ||
+      addr.borough ||
+      null;
+
+    const city =
+      addr.city ||
+      addr.town ||
+      addr.village ||
+      null;
+
+    // Monta: "Vila Madalena, São Paulo" ou "São Paulo, SP" como fallback
+    if (neighbourhood && city) return `${neighbourhood}, ${city}`;
+    if (neighbourhood && addr.state) return `${neighbourhood}, ${addr.state}`;
+    if (city && addr.state) return `${city}, ${addr.state}`;
     if (city) return city;
+
     return data.display_name?.split(',')[0] ?? 'Localização desconhecida';
   } catch (e) {
     console.warn('[ReverseGeocode] Erro:', e);
@@ -125,9 +139,10 @@ export async function GET(req: NextRequest) {
             lon = savedCoords.lon;
 
             const enderecoInvalido =
-              !parsed.endereco ||
-              parsed.endereco.includes('não disponível') ||
-              parsed.endereco.includes('Configuração pendente');
+  !parsed.endereco ||
+  parsed.endereco.includes('não disponível') ||
+  parsed.endereco.includes('Configuração pendente') ||
+  !parsed.endereco.includes(','); // ← sem vírgula = sem bairro, refaz
 
             locationLabel = enderecoInvalido
               ? await reverseGeocode(lat, lon)
