@@ -221,24 +221,27 @@ export async function checkProximidade(
       }
     }
 
-    // ✅ SALVAMENTO AUTOMÁTICO NO SCHEMA JARVIS (CORREÇÃO CRÍTICA)
+     // ✅ SALVAMENTO AUTOMÁTICO NO SCHEMA JARVIS (CORREÇÃO CRÍTICA)
     if (numericUserId && cidade && estado) {
-      await supabase
-        .from('user_locations') // ✅ Cliente já aponta para schema jarvis
-        .upsert(
-          {
-            user_id: numericUserId,
-            latitude: parseFloat(lat.toFixed(6)),
-            longitude: parseFloat(lng.toFixed(6)),
-            city: cidade.trim(),
-            state: estado.trim(),
-            country: pais,
-            last_updated: new Date().toISOString(),
-          },
-          { onConflict: 'user_id' }
-        )
-        .catch((e) => console.error('[Geo] Upsert localização:', e));
-    }
+  supabase
+    .from('user_locations')
+    .upsert(
+      {
+        user_id: numericUserId,
+        latitude: parseFloat(lat.toFixed(6)),
+        longitude: parseFloat(lng.toFixed(6)),
+        city: cidade.trim(),
+        state: estado.trim(),
+        country: pais,
+        last_updated: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' }
+    )
+    .then(
+      ({ error }) => { if (error) console.error('[Geo] Upsert localização:', error); },
+      (e) => console.error('[Geo] Upsert localização:', e)
+    );
+}
 
     // === 6. MONTAGEM DO CONTEXTO FINAL ===
     const latMasked = lat.toFixed(2);
