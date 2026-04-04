@@ -1,6 +1,6 @@
 // lib/insights/weather-insights.ts
-import { fetchWeather } from '../openmeteo';
-import { callOpenRouter } from '../chat/openrouter';
+import { fetchWeather } from '@/lib/openmeteo';
+import { callOpenRouterWithTools } from '../chat/openrouter';
 import { getCachedInsight, setCachedInsight } from './insight-cache';
 
 export async function getWeatherInsight(
@@ -25,7 +25,15 @@ Você é um assistente pessoal prestativo. Com base nos seguintes dados climáti
 Escreva UMA frase curta (máximo 20 palavras) que seja útil e prática. Dê um conselho simples: levar guarda-chuva, aproveitar o sol, evitar sair, etc. Seja amigável, direto, sem rodeios. Não invente informações adicionais.
 `;
 
-  const response = await callOpenRouter([{ role: 'user', content: prompt }], 'gpt-3.5-turbo', 0.7, 150);
+  const messages = [{ role: 'user', content: prompt }];
+  // Usamos callOpenRouterWithTools (sem ferramentas, apenas o modelo)
+  const response = await callOpenRouterWithTools(
+    messages,
+    [], // sem ferramentas
+    'gpt-3.5-turbo',
+    0.7,
+    150
+  );
   const insight = response.content.trim();
   setCachedInsight(cacheKey, insight, 300); // 5 minutos
   return insight;
