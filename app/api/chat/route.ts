@@ -326,37 +326,43 @@ export async function POST(req: NextRequest) {
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
 
     // Data/hora canônica do servidor
-    const canonicalDateTimeBlock = buildDateTimeBlock(userTimezone);
-    const { day, month, year } = getCurrentDateParts(userTimezone);
-    const canonicalDateISO = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    console.log('[chat] Data canônica do servidor:', canonicalDateISO, '|', canonicalDateTimeBlock);
+   // app/api/chat/route.ts (trecho crítico - linhas ~290-320)
 
-    // Localização
-    let locationContext = '';
-    if (location) {
-      const { latitude, longitude } = location;
-      const endereco = await checkProximidade(latitude, longitude);
-      locationContext = `${endereco}\nCoordenadas exatas: ${latitude}, ${longitude}`;
-      await supabase.from('config').upsert(
-        { key: `last_location_${numericUserIdStr}`, value: JSON.stringify({ latitude, longitude, endereco, ts: Date.now() }) },
-        { onConflict: 'key' }
-      );
-      const alertaGeo = await verificarAlertasDeProximidade(authUserId, latitude, longitude);
-      if (alertaGeo.temAlerta)
-        return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
-      if (!messageText) messageText = '[Enviou Localização]';
-    } else {
-      const { data: lastLoc } = await supabase
-        .from('config').select('value').eq('key', `last_location_${numericUserIdStr}`).single();
-      if (lastLoc?.value) {
-        try {
-          const loc = JSON.parse(lastLoc.value);
-          const idadeMinutos = (Date.now() - loc.ts) / 60000;
-          if (idadeMinutos <= 60)
-            locationContext = `${loc.endereco}\nCoordenadas: ${loc.latitude}, ${loc.longitude} (há ${Math.round(idadeMinutos)} min)`;
-        } catch { /* ignore */ }
-      }
-    }
+// Localização
+let locationContext = '';
+if (location) {
+  const { latitude, longitude } = location;
+  const latMasked = parseFloat(latitude.toFixed(2));
+  const lngMasked = parseFloat(longitude.toFixed(2));
+
+  // ✅ CHAMADA ÚNICA: checkProximidade já salva em jarvis.user_locations
+  const endereco = await checkProximidade(latitude, longitude, numericUserIdStr);
+  locationContext = `${endereco}\n(Localização aproximada)`;
+
+  // ❌ REMOVIDO: NÃO DUPLICAR salvamento aqui!
+  // await supabase.from('user_locations').upsert(...) ← REMOVIDO!
+
+  // ✅ Armazenar em config para fallback rápido (sem dados sensíveis)
+  await supabase
+    .from('config')
+    .upsert(
+      {
+        key: `last_location_${numericUserIdStr}`,
+        value: JSON.stringify({
+          lat_approx: latMasked,
+          lng_approx: lngMasked,
+          endereco,
+          ts: Date.now(),
+        }),
+      },
+      { onConflict: 'key' }
+    );
+
+  const alertaGeo = await verificarAlertasDeProximidade(authUserId, latitude, longitude);
+  if (alertaGeo.temAlerta)
+    return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
+  if (!messageText) messageText = '[Enviou Localização]';
+}
 
     // ========== 1. Gerar embedding e buscar memórias HD ==========
     let queryEmbedding: number[] | null = null;
@@ -880,4 +886,4 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     console.error('[chat] ERRO:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-}
+};

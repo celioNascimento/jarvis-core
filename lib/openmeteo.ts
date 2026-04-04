@@ -1,4 +1,4 @@
-// src/lib/openmeteo.ts
+
 
 export interface DailyForecast {
     date: string;
