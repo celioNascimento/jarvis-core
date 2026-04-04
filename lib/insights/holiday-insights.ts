@@ -1,5 +1,5 @@
 // lib/insights/holiday-insights.ts
-import { getUpcomingHolidays } from '@/lib/holidays';
+import { getUpcomingHolidays } from '../holidays';
 import { callOpenRouterWithTools } from '@/lib/chat/openrouter';
 import { getCachedInsight, setCachedInsight } from './insight-cache';
 
