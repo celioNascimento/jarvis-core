@@ -1,22 +1,24 @@
 // app/api/insights/weather/route.ts
 import { getWeatherInsight } from '@/lib/insights/weather-insights';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
+import { supabase } from '@/lib/jarvis';
 
 export async function GET(req: Request) {
-  const supabase = createRouteHandlerClient({ cookies });
-
-  // Auth via Supabase session (mesmo padrão do projeto)
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
+  const authHeader = req.headers.get('authorization');
+  const token = authHeader?.replace('Bearer ', '');
+  if (!token) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Busca o numeric ID — mesmo padrão do chat/route.ts
+  // Valida o token e pega o usuário — mesmo padrão do projeto
+  const { data: { user } } = await supabase.auth.getUser(token);
+  if (!user) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { data: userRecord } = await supabase
     .from('users')
     .select('id, nickname')
-    .eq('auth_user_id', session.user.id)
+    .eq('auth_user_id', user.id)
     .maybeSingle();
 
   if (!userRecord) {
@@ -25,7 +27,6 @@ export async function GET(req: Request) {
 
   const numericUserId = String(userRecord.id);
 
-  // Chave idêntica à usada no chat/route.ts: last_location_{numericUserId}
   const { data: locationData } = await supabase
     .from('config')
     .select('value')
@@ -37,7 +38,7 @@ export async function GET(req: Request) {
   }
 
   const { latitude, longitude } = JSON.parse(locationData.value);
-  const userName = userRecord.nickname || session.user.email?.split('@')[0];
+  const userName = userRecord.nickname || user.email?.split('@')[0];
 
   const insight = await getWeatherInsight(latitude, longitude, userName);
   return Response.json({ insight });
