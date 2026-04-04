@@ -1,6 +1,6 @@
 // lib/insights/document-insights.ts
-import { supabase } from '../supabase';
-import { callOpenRouter } from '../chat/openrouter';
+import { supabase } from '@/lib/jarvis';
+import { callOpenRouterWithTools } from '@/lib/chat/openrouter';
 import { getCachedInsight, setCachedInsight } from './insight-cache';
 
 export async function getDocumentInsight(userId: string): Promise<string> {
@@ -16,9 +16,9 @@ export async function getDocumentInsight(userId: string): Promise<string> {
     .limit(3);
 
   if (!data || data.length === 0) {
-    const noDocMsg = 'Nenhum documento cadastrado.';
-    setCachedInsight(cacheKey, noDocMsg, 7200);
-    return noDocMsg;
+    const msg = 'Nenhum documento cadastrado.';
+    setCachedInsight(cacheKey, msg, 7200);
+    return msg;
   }
 
   const today = new Date().toISOString().slice(0, 10);
@@ -27,15 +27,16 @@ export async function getDocumentInsight(userId: string): Promise<string> {
     return { ...doc, days };
   });
 
-  const prompt = `
-Documentos do usuário:
-${docsWithDays.map(d => `${d.label}: vence em ${d.days} dias`).join('\n')}
+  const prompt = `Documentos do usuário:\n${docsWithDays.map(d => `${d.label}: vence em ${d.days} dias`).join('\n')}\nEscreva uma frase curta (máx 20 palavras) alertando sobre o documento mais urgente. Se nenhum vencer em menos de 7 dias, diga "Nada urgente por enquanto."`;
 
-Escreva uma frase curta (máx 20 palavras) alertando sobre o documento mais urgente, se houver. Se nenhum vencer em menos de 7 dias, diga "Nada urgente por enquanto."
-`;
-
-  const response = await callOpenRouter([{ role: 'user', content: prompt }], 'gpt-3.5-turbo', 0.7, 150);
+  const response = await callOpenRouterWithTools(
+    [{ role: 'user', content: prompt }],
+    [],
+    'gpt-3.5-turbo',
+    0.7,
+    150
+  );
   const insight = response.content.trim();
-  setCachedInsight(cacheKey, insight, 1800); // 30 minutos
+  setCachedInsight(cacheKey, insight, 1800);
   return insight;
 }
