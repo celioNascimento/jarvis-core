@@ -1,5 +1,8 @@
 // lib/geo.ts
 // Cache em memória com limite fixo (100 entradas) + garbage collection
+
+import { supabase } from '@/lib/jarvis';
+
 const MAX_CACHE_SIZE = 100;
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const CLEANUP_INTERVAL = 6 * 60 * 1000; // 6 minutos
