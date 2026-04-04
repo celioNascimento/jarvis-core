@@ -1,6 +1,6 @@
 // app/api/holidays/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/jarvis'; // Service role + schema jarvis
+import { supabase } from '@/lib/jarvis'; // service role + schema jarvis
 
 function normalizeString(str: string): string {
   return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
@@ -8,9 +8,7 @@ function normalizeString(str: string): string {
 
 async function getNationalHolidays(year: number): Promise<any[]> {
   try {
-    const res = await fetch(`https://brasilapi.com.br/api/feriados/v1/${year}`, {
-      next: { revalidate: 3600 },
-    });
+    const res = await fetch(`https://brasilapi.com.br/api/feriados/v1/${year}`, { next: { revalidate: 3600 } });
     if (!res.ok) return [];
     const data = await res.json();
     return data.map((h: any) => ({
@@ -27,10 +25,7 @@ async function getNationalHolidays(year: number): Promise<any[]> {
 async function getStateHolidays(year: number, state: string | null): Promise<any[]> {
   if (!state) return [];
   const stateHolidays: Record<string, Array<{ date: string; name: string }>> = {
-    PR: [
-      { date: '06-29', name: 'Dia de São Pedro' },
-      { date: '12-19', name: 'Dia do Paraná' },
-    ],
+    PR: [{ date: '06-29', name: 'Dia de São Pedro' }, { date: '12-19', name: 'Dia do Paraná' }],
     SP: [{ date: '07-09', name: 'Revolução Constitucionalista' }],
     RJ: [{ date: '03-01', name: 'Dia da Cidade do Rio de Janeiro' }],
     MG: [{ date: '07-16', name: 'Dia de Nossa Senhora do Carmo' }],
@@ -66,30 +61,21 @@ async function getStateHolidays(year: number, state: string | null): Promise<any
   }));
 }
 
-async function getMunicipalHolidays(
-  year: number,
-  city: string | null,
-  state: string | null
-): Promise<any[]> {
+async function getMunicipalHolidays(year: number, city: string | null, state: string | null): Promise<any[]> {
   if (!city || !state) return [];
-
   const cityNorm = normalizeString(city);
   const stateUpper = state.toUpperCase();
-
-  // ✅ Busca no schema jarvis (cliente já configurado)
   const { data, error } = await supabase
-    .from('municipal_holidays') // ✅ Sem prefixo - cliente usa schema jarvis
+    .from('municipal_holidays')
     .select('date, name')
     .gte('date', `${year}-01-01`)
     .lte('date', `${year}-12-31`)
     .eq('state_uf', stateUpper)
     .ilike('city_name', `%${cityNorm}%`);
-
   if (error) {
     console.error('[Holidays] Municipal query error:', error);
     return [];
   }
-
   return data.map((h) => ({
     id: `${h.date}_${cityNorm}`,
     name: `${h.name} (Municipal)`,
@@ -105,12 +91,12 @@ export async function GET(req: NextRequest) {
     let city: string | null = null;
     let state: string | null = null;
 
-    // ✅ USAR APENAS SERVICE ROLE CLIENT (já configurado com schema jarvis)
     if (token) {
-      const {  { user }, error } = await supabase.auth.getUser(token);
+      // ✅ CORRIGIDO: desestruturação correta de data
+      const { data: { user }, error } = await supabase.auth.getUser(token);
       if (!error && user?.id) {
-        const {  loc } = await supabase
-          .from('user_locations') // ✅ Schema jarvis
+        const { data: loc } = await supabase
+          .from('user_locations')
           .select('city, state')
           .eq('user_id', user.id)
           .maybeSingle();
@@ -131,13 +117,7 @@ export async function GET(req: NextRequest) {
     const startStr = startDate.toISOString().slice(0, 10);
     const endStr = endDate.toISOString().slice(0, 10);
 
-    const [
-      nationalThisYear,
-      nationalNextYear,
-      municipalThisYear,
-      municipalNextYear,
-      stateHolidays,
-    ] = await Promise.all([
+    const [nationalThisYear, nationalNextYear, municipalThisYear, municipalNextYear, stateHolidays] = await Promise.all([
       getNationalHolidays(currentYear),
       nextYear !== currentYear ? getNationalHolidays(nextYear) : Promise.resolve([]),
       getMunicipalHolidays(currentYear, city, state),
@@ -167,9 +147,6 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: any) {
     console.error('[API /holidays]', error);
-    return NextResponse.json(
-      { error: 'Erro ao buscar feriados', holidays: [] },
-      { status: 200 }
-    );
+    return NextResponse.json({ error: 'Erro ao buscar feriados', holidays: [] }, { status: 200 });
   }
 }
