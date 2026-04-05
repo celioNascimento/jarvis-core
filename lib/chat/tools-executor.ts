@@ -13,13 +13,9 @@ import { getCachedEmbedding } from './embedding-cache';
 import { assertNumericUserId } from './guards';
 import { createReminderTool } from './tools/reminder-tool';
 
-// ===================== INSIGHTS (convertem dados em informação relevante) =====================
-// Certifique-se de que os arquivos existam em lib/insights/
-import { getWeatherInsight } from '@/lib/insights/weather-insights';
-// import { getHolidayInsight } from '@/lib/insights/holiday-insights';    // descomente quando implementado
-// import { getDocumentInsight } from '@/lib/insights/document-insights';  // descomente quando implementado
-// import { getCalendarInsight } from '@/lib/insights/calendar-insights';  // descomente quando implementado
-// ============================================================================================
+// ===================== INSIGHTS =====================
+// Import dinâmico para evitar erro de módulo não encontrado em produção
+// ====================================================
 
 // ---------------------------------------------------------------------------
 // Helper para obter a última localização salva do usuário
@@ -28,12 +24,20 @@ async function getUserLastLocation(numericUserIdStr: string): Promise<{ lat: num
   const { data: locData } = await supabase
     .from('config')
     .select('value')
-    .eq('key', `last_location_${numericUserIdStr}`) // ✅ CORRIGIDO: Template string com acento grave
+    .eq('key', `last_location_${numericUserIdStr}`)
     .single();
+
   if (!locData?.value) return null;
+
   try {
-    const { latitude, longitude } = JSON.parse(locData.value);
-    return { lat: latitude, lng: longitude };
+    const parsed = JSON.parse(locData.value);
+    // Compatibilidade: aceita tanto latitude/longitude quanto lat_approx/lng_approx
+    const lat = parsed.latitude ?? parsed.lat_approx;
+    const lng = parsed.longitude ?? parsed.lng_approx;
+    if (typeof lat === 'number' && typeof lng === 'number') {
+      return { lat, lng };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -51,7 +55,7 @@ export async function executeTool(
   try {
     p = JSON.parse(args);
   } catch {
-    return `Erro ao parsear argumentos de ${name}.`; // ✅ CORRIGIDO: Template string com acento grave
+    return `Erro ao parsear argumentos de ${name}.`;
   }
 
   async function getPlaceId(nome: string): Promise<string | null> {
@@ -80,7 +84,7 @@ export async function executeTool(
       );
     }
 
-    case 'consultar_agenda': { // ✅ CORRIGIDO: Chave de bloco correta (sem ; após {)
+    case 'consultar_agenda': {
       const [g, o] = await Promise.all([getGoogleContext(), getMicrosoftCalendarContext()]);
       return `Google Calendar:\n${g}\n\nOutlook:\n${o}`;
     }
@@ -88,7 +92,7 @@ export async function executeTool(
     case 'listar_emails_recentes':
       return await getRecentEmails(p.filtro, 5, true);
 
-    case 'salvar_evento': { // ✅ CORRIGIDO: Chave de bloco correta
+    case 'salvar_evento': {
       const cat = p.titulo.toLowerCase().includes('aniversario') ? 'family' : 'personal';
       await upsertEvent(numericUserIdStr, {
         title: p.titulo,
@@ -102,10 +106,9 @@ export async function executeTool(
       return `Evento "${p.titulo}" salvo.`;
     }
 
-    // ===================== FERRAMENTA DE LEMBRETES (CRÍTICA PARA GISELLE) =====================
+    // ===================== FERRAMENTA DE LEMBRETES =====================
     case 'create_reminder':
       return await createReminderTool(p, numericUserIdStr, authUserId);
-    // =========================================================================================
 
     case 'atualizar_meta':
       return await updateGoalProgress(numericUserIdStr, p.titulo_parcial, p.progresso, p.etapa_concluida);
@@ -125,7 +128,7 @@ export async function executeTool(
     case 'getWeatherForecast':
       return await getWeatherForecast(p.lat, p.lng);
 
-    case 'salvar_lugar': { // ✅ CORRIGIDO: Chave de bloco correta
+    case 'salvar_lugar': {
       const { error } = await supabase.from('favorite_places').upsert(
         {
           user_id: authUserId,
@@ -144,7 +147,7 @@ export async function executeTool(
       await supabase.from('favorite_places').delete().eq('user_id', authUserId).ilike('name', p.nome.trim());
       return `Lugar "${p.nome}" removido.`;
 
-    case 'adicionar_item_lista': { // ✅ CORRIGIDO: Chave de bloco correta
+    case 'adicionar_item_lista': {
       const pid = await getPlaceId(p.lugar);
       if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
       await supabase.from('shopping_items').upsert(
@@ -154,21 +157,21 @@ export async function executeTool(
       return `"${p.item}" adicionado à lista de ${p.lugar}.`;
     }
 
-    case 'marcar_feito': { // ✅ CORRIGIDO: Chave de bloco correta
+    case 'marcar_feito': {
       const pid = await getPlaceId(p.lugar);
       if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
       await supabase.from('shopping_items').update({ done: true }).eq('user_id', authUserId).ilike('item', p.item.trim()).eq('place_id', pid);
       return `"${p.item}" marcado como comprado.`;
     }
 
-    case 'remover_item_lista': { // ✅ CORRIGIDO: Chave de bloco correta
+    case 'remover_item_lista': {
       const pid = await getPlaceId(p.lugar);
       if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
       await supabase.from('shopping_items').delete().eq('user_id', authUserId).ilike('item', p.item.trim()).eq('place_id', pid);
       return `"${p.item}" removido.`;
     }
 
-    case 'ver_lista': { // ✅ CORRIGIDO: Chave de bloco correta
+    case 'ver_lista': {
       const pid = await getPlaceId(p.lugar);
       if (!pid) return `Lista de ${p.lugar} está vazia.`;
       const { data: itens } = await supabase
@@ -182,34 +185,28 @@ export async function executeTool(
     }
 
     // ===================== FERRAMENTAS DE INSIGHT =====================
-    case 'get_weather_insights': { // ✅ CORRIGIDO: Chave de bloco correta
+    case 'get_weather_insights': {
       const location = await getUserLastLocation(numericUserIdStr);
       if (!location) {
-        return 'Não sei sua localização atual. Compartilhe sua localização no chat para eu poder dar dicas do clima.';
+        return 'Compartilhe sua localização para eu poder dar dicas do clima. 📍';
       }
-      // Obtém o nome do usuário (opcional) – tenta extrair do perfil
-      let userName = '';
-      const { data: userData } = await supabase
-        .from('users')
-        .select('nickname')
-        .eq('id', numericUserIdStr)
-        .single();
-      if (userData?.nickname) userName = userData.nickname;
-      return await getWeatherInsight(location.lat, location.lng, userName);
+      try {
+        // Import dinâmico para evitar erro de módulo caso o arquivo não exista em produção
+        const { getWeatherInsight } = await import('@/lib/insights/weather-insights');
+        // Obtém o nome do usuário para personalização
+        let userName = '';
+        const { data: userData } = await supabase
+          .from('users')
+          .select('nickname')
+          .eq('id', numericUserIdStr)
+          .single();
+        if (userData?.nickname) userName = userData.nickname;
+        return await getWeatherInsight(location.lat, location.lng, userName);
+      } catch (err) {
+        console.error('[WeatherInsight] Erro ao carregar módulo:', err);
+        return 'Funcionalidade de insights climáticos em desenvolvimento. Em breve! 🌤️';
+      }
     }
-
-    // Exemplo de como adicionar outros insights (descomente quando os módulos estiverem prontos)
-    /*
-    case 'get_holiday_insight': {
-      return await getHolidayInsight(numericUserIdStr);
-    }
-    case 'get_document_insight': {
-      return await getDocumentInsight(numericUserIdStr);
-    }
-    case 'get_calendar_insight': {
-      return await getCalendarInsight(numericUserIdStr, authUserId);
-    }
-    */
 
     default:
       return `Ferramenta ${name} não implementada.`;

@@ -1,12 +1,14 @@
+// lib/chat/tools/reminder-tool.ts
 import { supabase } from '@/lib/jarvis';
 
 interface CreateReminderParams {
   title: string;
   type: 'temporary' | 'agenda' | 'recurring' | 'location';
   delay_minutes?: number;
-  scheduled_time?: string;   // ISO com timezone, ex: "2026-04-10T17:00:00-03:00"
+  scheduled_time?: string;
   frequency?: 'daily' | 'weekly' | 'monthly';
-  location_trigger?: string; // nome do local (deve existir em favorite_places)
+  location_trigger?: string;
+  relevance_score?: number; // ✅ adicionado
 }
 
 export async function createReminderTool(
@@ -14,7 +16,7 @@ export async function createReminderTool(
   numericUserId: string,
   _authUserId: string
 ): Promise<string> {
-  const { title, type, delay_minutes, scheduled_time, frequency, location_trigger } = params;
+  const { title, type, delay_minutes, scheduled_time, frequency, location_trigger, relevance_score } = params;
 
   // Validações
   if (!title || title.trim().length === 0) {
@@ -54,7 +56,6 @@ export async function createReminderTool(
   } else if (type === 'agenda') {
     scheduledTime = new Date(scheduled_time!);
   }
-  // recurring e location não têm scheduled_time inicial (location será tratado por geofencing)
 
   const { data, error } = await supabase
     .from('reminders')
@@ -69,6 +70,7 @@ export async function createReminderTool(
       status: 'pending',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      relevance_score: relevance_score ?? 0.5, // ✅ usa o valor passado ou padrão
     })
     .select('id')
     .single();
@@ -78,7 +80,6 @@ export async function createReminderTool(
     return `Erro ao salvar lembrete: ${error.message}`;
   }
 
-  // Mensagem de confirmação amigável
   let confirm = `✅ Lembrete "${title}" criado. `;
   if (type === 'temporary') {
     confirm += `Vou te avisar em ${delay_minutes} minutos.`;
