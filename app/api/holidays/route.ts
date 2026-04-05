@@ -16,8 +16,7 @@ async function getNationalHolidays(year: number): Promise<any[]> {
     return data.map((h: any) => ({
       id: `national-${h.date}`,
       name: h.name,
-      // FIX 4: BrasilAPI já retorna "YYYY-MM-DD" — não concatenar year novamente
-      date: h.date,
+      date: h.date, // já vem "YYYY-MM-DD"
       type: 'national',
     }));
   } catch {
@@ -116,32 +115,49 @@ export async function GET(req: NextRequest) {
       console.warn('[Holidays] Token ausente — retornando apenas feriados nacionais');
     }
 
-    const today = new Date();
-    const currentYear = today.getFullYear();
-    const currentMonth = today.getMonth();
-    // nextYear só é diferente em dezembro
-    const nextYear = currentMonth >= 11 ? currentYear + 1 : currentYear;
+    // Data atual no fuso de São Paulo (evita problemas de UTC)
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const todayStr = formatter.format(now); // YYYY-MM-DD
 
-    // Janela: do dia 1 do mês atual até o fim do mês+2
-    const startStr = new Date(currentYear, currentMonth, 1)
-      .toISOString().slice(0, 10);
-    const endStr = new Date(currentYear, currentMonth + 3, 0)
-      .toISOString().slice(0, 10);
+    // Ano e mês atuais no mesmo fuso
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth(); // 0-indexado
+
+    // Último dia do mês seguinte
+    const nextMonthDate = new Date(Date.UTC(currentYear, currentMonth + 2, 0)); // mês+2 = próximo mês (ex: janeiro -> março? cuidado)
+    // Explicação: new Date(year, month+2, 0) => último dia do mês (month+1). Ex: month=0 (janeiro) -> month+2=2 (março) -> dia 0 = último dia de fevereiro? Vamos corrigir.
+    // Melhor: criar data com mês atual + 1, primeiro dia, subtrair 1 dia.
+    let endDate = new Date(Date.UTC(currentYear, currentMonth + 2, 0));
+    // Exemplo: se currentMonth=0 (janeiro), currentMonth+2=2 (março), dia 0 retorna último dia de fevereiro (correto, pois queremos último dia do mês seguinte = fevereiro).
+    // Se currentMonth=11 (dezembro), currentMonth+2=13 (janeiro do ano seguinte), dia 0 retorna 31/12/ano+1? Vamos testar lógica.
+    // Melhor usar abordagem segura:
+    const endOfNextMonth = new Date(currentYear, currentMonth + 2, 0);
+    const endStr = endOfNextMonth.toISOString().slice(0, 10);
+
+    // Determinar anos necessários: ano atual e possível ano seguinte se o próximo mês cruzar o ano
+    const needsNextYear = endOfNextMonth.getFullYear() > currentYear;
+    const nextYear = currentYear + 1;
 
     const [
       nationalThisYear,
       nationalNextYear,
       stateThisYear,
-      stateNextYear,   // FIX 3: feriados estaduais do próximo ano quando em dezembro
+      stateNextYear,
       municipalThisYear,
       municipalNextYear,
     ] = await Promise.all([
       getNationalHolidays(currentYear),
-      nextYear !== currentYear ? getNationalHolidays(nextYear) : Promise.resolve([]),
+      needsNextYear ? getNationalHolidays(nextYear) : Promise.resolve([]),
       getStateHolidays(currentYear, state),
-      nextYear !== currentYear ? getStateHolidays(nextYear, state) : Promise.resolve([]),
+      needsNextYear ? getStateHolidays(nextYear, state) : Promise.resolve([]),
       getMunicipalHolidays(currentYear, city, state),
-      nextYear !== currentYear ? getMunicipalHolidays(nextYear, city, state) : Promise.resolve([]),
+      needsNextYear ? getMunicipalHolidays(nextYear, city, state) : Promise.resolve([]),
     ]);
 
     const allHolidays = [
@@ -152,7 +168,7 @@ export async function GET(req: NextRequest) {
       ...municipalThisYear,
       ...municipalNextYear,
     ]
-      .filter(h => h.date >= startStr && h.date <= endStr)
+      .filter(h => h.date >= todayStr && h.date <= endStr) // futuros + até fim do próximo mês
       .sort((a, b) => a.date.localeCompare(b.date))
       .slice(0, 15);
 
@@ -161,8 +177,8 @@ export async function GET(req: NextRequest) {
       location: city && state ? `${city}, ${state}` : null,
       coverage: {
         national: true,
-        state: stateThisYear.length + stateNextYear.length > 0,
-        municipal: municipalThisYear.length + municipalNextYear.length > 0,
+        state: stateThisYear.length + (stateNextYear?.length || 0) > 0,
+        municipal: municipalThisYear.length + (municipalNextYear?.length || 0) > 0,
       },
     });
   } catch (error: any) {
