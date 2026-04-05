@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
 import { sendPushNotification } from '@/lib/notifications/push';
-import { isNationalHoliday, isMunicipalHoliday } from '@/lib/holiday';
+import { isNationalHoliday, isMunicipalHoliday } from '@/lib/holidays';
 
 // ============================================================
 // Helper: Buscar timezone do usuário (da tabela users)
