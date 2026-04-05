@@ -8,13 +8,16 @@ function normalizeString(str: string): string {
 
 async function getNationalHolidays(year: number): Promise<any[]> {
   try {
-    const res = await fetch(`https://brasilapi.com.br/api/feriados/v1/${year}`, { next: { revalidate: 3600 } });
+    const res = await fetch(`https://brasilapi.com.br/api/feriados/v1/${year}`, {
+      next: { revalidate: 3600 },
+    });
     if (!res.ok) return [];
     const data = await res.json();
     return data.map((h: any) => ({
-      id: `${year}-${h.date}`,
+      id: `national-${h.date}`,
       name: h.name,
-      date: `${year}-${h.date}`,
+      // FIX 4: BrasilAPI já retorna "YYYY-MM-DD" — não concatenar year novamente
+      date: h.date,
       type: 'national',
     }));
   } catch {
@@ -52,16 +55,20 @@ async function getStateHolidays(year: number, state: string | null): Promise<any
     RR: [{ date: '10-05', name: 'Dia de Roraima' }],
     DF: [{ date: '04-21', name: 'Dia de Tiradentes' }],
   };
-  const holidays = stateHolidays[state.toUpperCase()] || [];
-  return holidays.map((h) => ({
-    id: `${year}-${h.date}_${state}`,
+  const holidays = stateHolidays[state.toUpperCase()] ?? [];
+  return holidays.map(h => ({
+    id: `state-${year}-${h.date}-${state}`,
     name: h.name,
     date: `${year}-${h.date}`,
     type: 'state',
   }));
 }
 
-async function getMunicipalHolidays(year: number, city: string | null, state: string | null): Promise<any[]> {
+async function getMunicipalHolidays(
+  year: number,
+  city: string | null,
+  state: string | null,
+): Promise<any[]> {
   if (!city || !state) return [];
   const cityNorm = normalizeString(city);
   const stateUpper = state.toUpperCase();
@@ -76,8 +83,8 @@ async function getMunicipalHolidays(year: number, city: string | null, state: st
     console.error('[Holidays] Municipal query error:', error);
     return [];
   }
-  return data.map((h) => ({
-    id: `${h.date}_${cityNorm}`,
+  return data.map(h => ({
+    id: `municipal-${h.date}-${cityNorm}`,
     name: `${h.name} (Municipal)`,
     date: h.date,
     type: 'municipal',
@@ -86,15 +93,15 @@ async function getMunicipalHolidays(year: number, city: string | null, state: st
 
 export async function GET(req: NextRequest) {
   try {
-    const authHeader = req.headers.get('authorization');
-    const token = authHeader?.replace('Bearer ', '');
+    const token = req.headers.get('authorization')?.replace('Bearer ', '');
     let city: string | null = null;
     let state: string | null = null;
 
     if (token) {
-      // ✅ CORRIGIDO: desestruturação correta de data
       const { data: { user }, error } = await supabase.auth.getUser(token);
-      if (!error && user?.id) {
+      if (error) {
+        console.warn('[Holidays] Token inválido:', error.message);
+      } else if (user?.id) {
         const { data: loc } = await supabase
           .from('user_locations')
           .select('city, state')
@@ -105,34 +112,47 @@ export async function GET(req: NextRequest) {
           state = loc.state;
         }
       }
+    } else {
+      console.warn('[Holidays] Token ausente — retornando apenas feriados nacionais');
     }
 
     const today = new Date();
     const currentYear = today.getFullYear();
     const currentMonth = today.getMonth();
+    // nextYear só é diferente em dezembro
     const nextYear = currentMonth >= 11 ? currentYear + 1 : currentYear;
 
-    const startDate = new Date(currentYear, currentMonth, 1);
-    const endDate = new Date(currentYear, currentMonth + 2, 0);
-    const startStr = startDate.toISOString().slice(0, 10);
-    const endStr = endDate.toISOString().slice(0, 10);
+    // Janela: do dia 1 do mês atual até o fim do mês+2
+    const startStr = new Date(currentYear, currentMonth, 1)
+      .toISOString().slice(0, 10);
+    const endStr = new Date(currentYear, currentMonth + 3, 0)
+      .toISOString().slice(0, 10);
 
-    const [nationalThisYear, nationalNextYear, municipalThisYear, municipalNextYear, stateHolidays] = await Promise.all([
+    const [
+      nationalThisYear,
+      nationalNextYear,
+      stateThisYear,
+      stateNextYear,   // FIX 3: feriados estaduais do próximo ano quando em dezembro
+      municipalThisYear,
+      municipalNextYear,
+    ] = await Promise.all([
       getNationalHolidays(currentYear),
       nextYear !== currentYear ? getNationalHolidays(nextYear) : Promise.resolve([]),
+      getStateHolidays(currentYear, state),
+      nextYear !== currentYear ? getStateHolidays(nextYear, state) : Promise.resolve([]),
       getMunicipalHolidays(currentYear, city, state),
       nextYear !== currentYear ? getMunicipalHolidays(nextYear, city, state) : Promise.resolve([]),
-      getStateHolidays(currentYear, state),
     ]);
 
     const allHolidays = [
       ...nationalThisYear,
       ...nationalNextYear,
+      ...stateThisYear,
+      ...stateNextYear,
       ...municipalThisYear,
       ...municipalNextYear,
-      ...stateHolidays,
     ]
-      .filter((h) => h.date >= startStr && h.date <= endStr)
+      .filter(h => h.date >= startStr && h.date <= endStr)
       .sort((a, b) => a.date.localeCompare(b.date))
       .slice(0, 15);
 
@@ -141,12 +161,15 @@ export async function GET(req: NextRequest) {
       location: city && state ? `${city}, ${state}` : null,
       coverage: {
         national: true,
-        state: stateHolidays.length > 0,
+        state: stateThisYear.length + stateNextYear.length > 0,
         municipal: municipalThisYear.length + municipalNextYear.length > 0,
       },
     });
   } catch (error: any) {
     console.error('[API /holidays]', error);
-    return NextResponse.json({ error: 'Erro ao buscar feriados', holidays: [] }, { status: 200 });
+    return NextResponse.json(
+      { error: 'Erro ao buscar feriados', holidays: [] },
+      { status: 200 },
+    );
   }
 }
