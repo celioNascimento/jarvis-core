@@ -9,6 +9,7 @@
 // ✅ FIX [v8.3]: Fallback universal para resposta vazia após sanitização
 // ✅ FIX [v8.4]: Cache em memória com TTL para chamadas repetitivas (Supabase, Google, Microsoft, L4, blocos)
 // ✅ FIX [v8.5]: Correção de tipos TypeScript (ContextType[], principlesBlock -> principles)
+// ✅ FIX [v8.6]: Adicionado bloco de feriados nacionais próximos no system prompt
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -63,6 +64,7 @@ import { executeTool } from '@/lib/chat/tools-executor';
 import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
 import { transcribeAudio, extractAudioBuffer } from '@/lib/services/transcription';
 import { computeEmotionalScore } from '@/lib/chat/emotional-router';
+import { getUpcomingHolidays } from '@/lib/holidays';
 
 export const maxDuration = 60;
 
@@ -627,6 +629,17 @@ if (location) {
       }
     }
 
+    // ✅ FERIADOS NACIONAIS PRÓXIMOS (adicionado v8.6)
+    let holidaysBlock = '';
+    try {
+      const holidays = await getUpcomingHolidays(10); // próximos 10 feriados
+      if (holidays.length > 0) {
+        holidaysBlock = `\n[FERIADOS NACIONAIS PRÓXIMOS]\n${holidays.map(h => `- ${h.name}: ${new Date(h.date).toLocaleDateString('pt-BR')}`).join('\n')}`;
+      }
+    } catch (err) {
+      console.error('[Holidays] Erro ao buscar feriados:', err);
+    }
+
     // Onboarding
     let onboardingState = null;
     const onboardingCacheKey = `onboarding_${numericUserIdStr}`;
@@ -715,6 +728,7 @@ if (location) {
    - Ao citar resultados, confirme que a data do evento bate com a data canônica.
 
 ${forcedSearchResult}
+${holidaysBlock}
 ${googleCtx ? `[AGENDA GOOGLE]\n${googleCtx}` : ''}
 ${msCtx ? `[AGENDA OUTLOOK]\n${msCtx}` : ''}
 ${emailBlock ? `[EMAILS RECENTES]\n${emailBlock}` : ''}
