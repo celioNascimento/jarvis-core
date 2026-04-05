@@ -218,4 +218,45 @@ export const tools = [
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
+  // Adicione este objeto ao array `tools` existente
+
+{
+  type: "function",
+  function: {
+    name: "create_reminder",
+    description: "Cria um lembrete para o usuário. Use quando ele pedir 'me lembra', 'avisa', 'lembrar', 'não esquecer' com tempo ou local.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Título curto do lembrete (ex: 'Desligar feijão', 'Ligar para João')"
+        },
+        type: {
+          type: "string",
+          enum: ["temporary", "agenda", "recurring", "location"],
+          description: "temporary = daqui a X minutos; agenda = data/hora fixa; recurring = repetição; location = geofencing"
+        },
+        delay_minutes: {
+          type: "integer",
+          description: "Obrigatório se type = temporary. Número de minutos a partir de agora."
+        },
+        scheduled_time: {
+          type: "string",
+          description: "Obrigatório se type = agenda. Data/hora no formato ISO com timezone, ex: '2026-04-10T17:00:00-03:00'"
+        },
+        frequency: {
+          type: "string",
+          enum: ["daily", "weekly", "monthly"],
+          description: "Obrigatório se type = recurring."
+        },
+        location_trigger: {
+          type: "string",
+          description: "Obrigatório se type = location. Nome do local (deve estar em favorite_places). Ex: 'casa', 'mercado', 'escritório'"
+        }
+      },
+      required: ["title", "type"]
+    }
+  }
+}
 ];

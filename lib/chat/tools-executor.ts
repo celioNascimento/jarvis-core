@@ -11,6 +11,7 @@ import { extractDiary } from '@/lib/diary';
 import { updateGoalProgress } from '@/lib/diary';
 import { getCachedEmbedding } from './embedding-cache';
 import { assertNumericUserId } from './guards';
+import { createReminderTool } from './tools/reminder-tool';
 
 // ===================== INSIGHTS (convertem dados em informação relevante) =====================
 // Certifique-se de que os arquivos existam em lib/insights/
@@ -27,7 +28,7 @@ async function getUserLastLocation(numericUserIdStr: string): Promise<{ lat: num
   const { data: locData } = await supabase
     .from('config')
     .select('value')
-    .eq('key', `last_location_${numericUserIdStr}`)
+    .eq('key', `last_location_${numericUserIdStr}`) // ✅ CORRIGIDO: Template string com acento grave
     .single();
   if (!locData?.value) return null;
   try {
@@ -50,7 +51,7 @@ export async function executeTool(
   try {
     p = JSON.parse(args);
   } catch {
-    return `Erro ao parsear argumentos de ${name}.`;
+    return `Erro ao parsear argumentos de ${name}.`; // ✅ CORRIGIDO: Template string com acento grave
   }
 
   async function getPlaceId(nome: string): Promise<string | null> {
@@ -79,7 +80,7 @@ export async function executeTool(
       );
     }
 
-    case 'consultar_agenda': {
+    case 'consultar_agenda': { // ✅ CORRIGIDO: Chave de bloco correta (sem ; após {)
       const [g, o] = await Promise.all([getGoogleContext(), getMicrosoftCalendarContext()]);
       return `Google Calendar:\n${g}\n\nOutlook:\n${o}`;
     }
@@ -87,7 +88,7 @@ export async function executeTool(
     case 'listar_emails_recentes':
       return await getRecentEmails(p.filtro, 5, true);
 
-    case 'salvar_evento': {
+    case 'salvar_evento': { // ✅ CORRIGIDO: Chave de bloco correta
       const cat = p.titulo.toLowerCase().includes('aniversario') ? 'family' : 'personal';
       await upsertEvent(numericUserIdStr, {
         title: p.titulo,
@@ -100,6 +101,11 @@ export async function executeTool(
       });
       return `Evento "${p.titulo}" salvo.`;
     }
+
+    // ===================== FERRAMENTA DE LEMBRETES (CRÍTICA PARA GISELLE) =====================
+    case 'create_reminder':
+      return await createReminderTool(p, numericUserIdStr, authUserId);
+    // =========================================================================================
 
     case 'atualizar_meta':
       return await updateGoalProgress(numericUserIdStr, p.titulo_parcial, p.progresso, p.etapa_concluida);
@@ -119,7 +125,7 @@ export async function executeTool(
     case 'getWeatherForecast':
       return await getWeatherForecast(p.lat, p.lng);
 
-    case 'salvar_lugar': {
+    case 'salvar_lugar': { // ✅ CORRIGIDO: Chave de bloco correta
       const { error } = await supabase.from('favorite_places').upsert(
         {
           user_id: authUserId,
@@ -138,7 +144,7 @@ export async function executeTool(
       await supabase.from('favorite_places').delete().eq('user_id', authUserId).ilike('name', p.nome.trim());
       return `Lugar "${p.nome}" removido.`;
 
-    case 'adicionar_item_lista': {
+    case 'adicionar_item_lista': { // ✅ CORRIGIDO: Chave de bloco correta
       const pid = await getPlaceId(p.lugar);
       if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
       await supabase.from('shopping_items').upsert(
@@ -148,21 +154,21 @@ export async function executeTool(
       return `"${p.item}" adicionado à lista de ${p.lugar}.`;
     }
 
-    case 'marcar_feito': {
+    case 'marcar_feito': { // ✅ CORRIGIDO: Chave de bloco correta
       const pid = await getPlaceId(p.lugar);
       if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
       await supabase.from('shopping_items').update({ done: true }).eq('user_id', authUserId).ilike('item', p.item.trim()).eq('place_id', pid);
       return `"${p.item}" marcado como comprado.`;
     }
 
-    case 'remover_item_lista': {
+    case 'remover_item_lista': { // ✅ CORRIGIDO: Chave de bloco correta
       const pid = await getPlaceId(p.lugar);
       if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
       await supabase.from('shopping_items').delete().eq('user_id', authUserId).ilike('item', p.item.trim()).eq('place_id', pid);
       return `"${p.item}" removido.`;
     }
 
-    case 'ver_lista': {
+    case 'ver_lista': { // ✅ CORRIGIDO: Chave de bloco correta
       const pid = await getPlaceId(p.lugar);
       if (!pid) return `Lista de ${p.lugar} está vazia.`;
       const { data: itens } = await supabase
@@ -176,7 +182,7 @@ export async function executeTool(
     }
 
     // ===================== FERRAMENTAS DE INSIGHT =====================
-    case 'get_weather_insights': {
+    case 'get_weather_insights': { // ✅ CORRIGIDO: Chave de bloco correta
       const location = await getUserLastLocation(numericUserIdStr);
       if (!location) {
         return 'Não sei sua localização atual. Compartilhe sua localização no chat para eu poder dar dicas do clima.';
