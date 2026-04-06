@@ -1,9 +1,5 @@
 // app/api/chat/route.ts
-// Motor V8.9.4 — Implementações finais de otimização
-// ✅ Segunda busca HD condicional (emotional > 0.6)
-// ✅ topicEmotionalDimension paralelizado no Promise.all
-// ✅ Cache para getRelatedTopics
-// ✅ Comentários limpos
+// Motor V8.9.6 — Suporte a maxTokens dinâmico (passado para openrouter)
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -176,7 +172,7 @@ function trimAssistantReply(reply: string, maxChars = 300): string {
 }
 
 export async function POST(req: NextRequest) {
-  console.log('[chat] Iniciando — V8.9.4 (otimizações finais)');
+  console.log('[chat] Iniciando — V8.9.6 (maxTokens dinâmico)');
   try {
     console.time('[Performance] total');
     let messageText = '';
@@ -365,7 +361,6 @@ export async function POST(req: NextRequest) {
       try {
         queryEmbedding = await getCachedEmbedding(messageText);
         if (queryEmbedding) {
-          // Threshold fixo 0.22: compromisso entre precisão e recall
           const { data: search, error } = (await supabase.rpc('match_memories', {
             query_embedding: queryEmbedding,
             match_threshold: 0.22,
@@ -467,7 +462,7 @@ export async function POST(req: NextRequest) {
     );
     console.log('[Emotional] Score:', emotional.score, 'Traj:', emotional.trajectory);
 
-    // ========== 6. Segunda busca HD condicional (apenas se score alto e poucos resultados) ==========
+    // ========== 6. Segunda busca HD condicional ==========
     if (emotional.score > 0.6 && queryEmbedding && hdSearchResults.length < 6) {
       try {
         const { data: extraSearch } = (await supabase.rpc('match_memories', {
@@ -498,13 +493,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ========== 7. Tópico emocional (agora será obtido no Promise.all) ==========
+    // ========== 7. Tópico emocional (paralelizado no Promise.all) ==========
     let topicEmotionalDimension: number | undefined;
 
-    // ========== 8. Roteamento e blockPlan (aguarda topicEmotionalDimension, mas vamos calcular em paralelo) ==========
-    // O roteamento será feito após o Promise.all que traz topicEmotionalDimension
-
-    // ========== 9. Cargas contextuais condicionais + topicEmotionalDimension + relatedTopics com cache ==========
+    // ========== 8. Cargas contextuais condicionais + topicEmotionalDimension ==========
     const [
       events,
       ashes,
@@ -514,7 +506,6 @@ export async function POST(req: NextRequest) {
       onboardingState,
       topicEmotionalDimValue,
     ] = await Promise.all([
-      // Events
       (async () => {
         const key = `events_${numericUserIdStr}`;
         const cached = cache.get<any[]>(key);
@@ -528,7 +519,6 @@ export async function POST(req: NextRequest) {
         cache.set(key, val);
         return val;
       })(),
-      // Ashes
       (async () => {
         const key = `ashes_${numericUserIdStr}`;
         const cached = cache.get<any[]>(key);
@@ -543,7 +533,6 @@ export async function POST(req: NextRequest) {
         cache.set(key, val);
         return val;
       })(),
-      // Principles
       (async () => {
         const key = `principles_${numericUserIdStr}`;
         const cached = cache.get<any[]>(key);
@@ -556,7 +545,6 @@ export async function POST(req: NextRequest) {
         cache.set(key, val);
         return val;
       })(),
-      // Children
       (async () => {
         const key = `children_${numericUserIdStr}`;
         const cached = cache.get<any[]>(key);
@@ -570,7 +558,6 @@ export async function POST(req: NextRequest) {
         cache.set(key, val);
         return val;
       })(),
-      // Person notes
       (async () => {
         const key = `person_notes_${numericUserIdStr}`;
         const cached = cache.get<any[]>(key);
@@ -585,7 +572,6 @@ export async function POST(req: NextRequest) {
         cache.set(key, val);
         return val;
       })(),
-      // Onboarding state
       (async () => {
         const key = `onboarding_${numericUserIdStr}`;
         const cached = cache.get(key);
@@ -599,7 +585,6 @@ export async function POST(req: NextRequest) {
         cache.set(key, state, 60000);
         return state;
       })(),
-      // topicEmotionalDimension (agora paralelizado)
       (async () => {
         if (!detectedContexts.length) return undefined;
         const { data } = await supabase
@@ -614,13 +599,13 @@ export async function POST(req: NextRequest) {
 
     topicEmotionalDimension = topicEmotionalDimValue;
 
-    // ========== 10. Roteamento e blockPlan (agora com topicEmotionalDimension disponível) ==========
+    // ========== 9. Roteamento e blockPlan ==========
     const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
     const temperature = getTemperature(detectedContexts);
     const blockPlan = planContextualBlocks(detectedContexts);
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| blockPlan:', blockPlan);
 
-    // ========== 11. Pesquisa forçada ==========
+    // ========== 10. Pesquisa forçada ==========
     let forcedSearchResult = '';
     if (shouldForceSearch(messageText, detectedContexts)) {
       const searchQuery = refineSearchQuery(messageText, detectedContexts);
@@ -632,7 +617,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ========== 12. Blocos condicionais + relatedTopics com cache ==========
+    // ========== 11. Blocos condicionais + relatedTopics com cache ==========
     const [gapsBlock, topicBlock, diaryBlock, recsBlock, relatedTopicsBlock] = await Promise.all([
       blockPlan.loadGaps
         ? (async () => {
@@ -690,7 +675,7 @@ export async function POST(req: NextRequest) {
         : Promise.resolve(''),
     ]);
 
-    // ========== 13. Calendários e emails ==========
+    // ========== 12. Calendários e emails ==========
     let googleCtx = null;
     let msCtx = null;
     if (blockPlan.loadCalendar) {
@@ -718,12 +703,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Feriados condicionais
+    // Feriados condicionais com cache
     let holidaysBlock = '';
     const needsHolidays = detectedContexts.includes('agenda') || detectedContexts.includes('evento') || detectedContexts.includes('familia');
     if (needsHolidays) {
       try {
-        const holidays = await getUpcomingHolidays(10);
+        const holidaysCacheKey = `holidays_${canonicalDateISO}`;
+        let holidays = cache.get<any[]>(holidaysCacheKey);
+        if (!holidays) {
+          holidays = await getUpcomingHolidays(10);
+          cache.set(holidaysCacheKey, holidays, 3600000);
+        }
         if (holidays.length > 0) {
           holidaysBlock = `\n[FERIADOS NACIONAIS PRÓXIMOS]\n${holidays.map(h => `- ${h.name}: ${new Date(h.date).toLocaleDateString('pt-BR')}`).join('\n')}`;
         }
@@ -877,6 +867,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     let attempts = 0;
 
     while (attempts < 5) {
+      // ✅ Agora com 6 argumentos (maxTokens incluso)
       const response = await callOpenRouterWithTools(
         conversationMessages,
         tools,
