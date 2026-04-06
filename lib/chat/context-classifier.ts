@@ -5,7 +5,8 @@ export type ContextType =
   | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario'
   | 'meta' | 'saude' | 'recomendacao' | 'evento' | 'rotina'
   | 'preferencia' | 'alias' | 'email' | 'casual' | 'esporte'
-  | 'noticias' | 'clima';
+  | 'noticias' | 'clima'
+  | 'math' | 'trivial';
 
 const RULES: Array<[RegExp, ContextType]> = [
   [/diario|diário|hoje foi|hoje ta|hoje está|acordei|dormi|dormir|meu dia|como foi meu|reflexao|refletindo|gratid/i, 'diario'],
@@ -24,6 +25,10 @@ const RULES: Array<[RegExp, ContextType]> = [
   [/jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo|escalação/i, 'esporte'],
   [/noticia|notícias|últimas|recente|aconteceu|hoje no|manchete|jornal|portal|g1|globo|folha|estadão/i, 'noticias'],
   [/clima|tempo|temperatura|chuva|frio|calor|previsão|amanhecer|entardecer|umidade|vento|chover|chuvoso/i, 'clima'],
+  // ✅ math e trivial
+  [/^[0-9+\-*/%() ]+$/, 'math'],
+  [/quanto é|quanto dá|calcule|soma|subtraia|multiplique|divida|raiz|potência|^[0-9]+ (mais|vezes|dividido por|menos) [0-9]+/i, 'math'],
+  [/^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i, 'trivial'],
 ];
 
 export function classifyContextRegex(text: string): ContextType[] {
@@ -32,7 +37,8 @@ export function classifyContextRegex(text: string): ContextType[] {
   for (const [rx, ctx] of RULES) {
     if (rx.test(t)) detected.push(ctx);
   }
-  return detected.length > 0 ? detected : ['casual'];
+  // Remove duplicatas mantendo ordem
+  return detected.length > 0 ? [...new Map(detected.map(d => [d, d])).values()] : ['casual'];
 }
 
 export async function classifyContextWithL4(
@@ -40,6 +46,10 @@ export async function classifyContextWithL4(
   userId: string
 ): Promise<ContextType[]> {
   const regexContexts = classifyContextRegex(text);
+
+  if (regexContexts.includes('math') || regexContexts.includes('trivial')) {
+    return regexContexts;
+  }
 
   if (regexContexts.length > 2) {
     const { data: topicWeights } = await supabase
@@ -58,62 +68,52 @@ export async function classifyContextWithL4(
   return regexContexts;
 }
 
-// NOVO: routeModel agora recebe emotionalScore e topicEmotionalDimension
 export function routeModel(
   contexts: ContextType[],
   emotionalScore: number,
   topicEmotionalDimension?: number
 ): { model: string; label: string } {
-  // Se o score emocional for muito alto, vai direto para Sonnet
-  if (emotionalScore > 0.7) {
-    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
-  }
+  if (emotionalScore > 0.7) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
+  if (topicEmotionalDimension && topicEmotionalDimension > 0.7) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
 
-  // Se o tópico tem dimensão emocional alta, prioriza Sonnet
-  if (topicEmotionalDimension && topicEmotionalDimension > 0.7) {
-    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
-  }
+  const flashFriendly: ContextType[] = ['esporte', 'noticias', 'clima', 'casual', 'rotina', 'alias', 'preferencia', 'recomendacao', 'math', 'trivial'];
+  if (contexts.includes('agenda') && emotionalScore < 0.4) return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
+  if (contexts.some(c => flashFriendly.includes(c))) return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
 
-  // Tópicos que podem ir para Flash com baixo score emocional
-  const flashFriendly: ContextType[] = ['esporte', 'noticias', 'clima', 'casual', 'rotina', 'alias', 'preferencia', 'recomendacao'];
-  // Agenda pode ir para Flash se score < 0.4
-  if (contexts.includes('agenda') && emotionalScore < 0.4) {
-    return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
-  }
+  const complex: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude', 'evento'];
+  if (contexts.some(c => complex.includes(c)) && emotionalScore >= 0.4) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
 
-  if (contexts.some(c => flashFriendly.includes(c))) {
-    return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
-  }
-
-  // Tópicos complexos ou emocionais que devem ir para Sonnet se score médio-alto
-  const complex: ContextType[] = [
-    'agenda', 'projeto', 'familia', 'emocao', 'diario',
-    'meta', 'saude', 'evento'
-  ];
-  if (contexts.some(c => complex.includes(c)) && emotionalScore >= 0.4) {
-    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
-  }
-
-  // Fallback: Flash para economia
   return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
 }
 
 export function getTemperature(contexts: ContextType[]): number {
   if (contexts.some((c) => ['emocao', 'diario'].includes(c))) return 0.9;
-  if (contexts.some((c) => ['casual', 'projeto', 'familia', 'meta', 'esporte'].includes(c))) return 0.7;
-  if (contexts.some((c) => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima'].includes(c))) return 0.5;
+  if (contexts.some((c) => ['casual', 'projeto', 'familia', 'meta', 'esporte', 'trivial'].includes(c))) return 0.7;
+  if (contexts.some((c) => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima', 'math'].includes(c))) return 0.5;
   if (contexts.some((c) => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
   return 0.7;
 }
 
 export function planContextualBlocks(contexts: ContextType[]) {
+  const hasEmotional = contexts.includes('emocao');
+  const hasSearch = contexts.includes('esporte') || contexts.includes('noticias') || contexts.includes('clima');
+  const hasPlanning = contexts.includes('agenda') || contexts.includes('evento') || contexts.includes('meta') || contexts.includes('projeto');
+  const isCasualOnly = contexts.length === 1 && contexts[0] === 'casual';
+  const isTrivial = contexts.includes('math') || contexts.includes('trivial');
+  const needsMemory = hasEmotional || contexts.includes('diario') || contexts.includes('familia') || contexts.includes('saude');
+  const needsLongTerm = contexts.includes('diario') || contexts.includes('emocao'); // ✅ removido 'reflexao'
+
   return {
     loadTopics: contexts.some((c) =>
       ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia', 'esporte', 'noticias', 'clima'].includes(c)
-    ),
-    loadDiary: contexts.some((c) => ['diario', 'meta', 'emocao', 'casual'].includes(c)),
-    loadRecommendations: contexts.some((c) => ['recomendacao', 'casual'].includes(c)),
-    loadCalendar: contexts.some((c) => ['agenda', 'evento', 'familia'].includes(c)),
-    loadEmail: contexts.some((c) => ['email'].includes(c)),
+    ) && !isTrivial,
+    loadDiary: contexts.some((c) => ['diario', 'meta', 'emocao', 'casual'].includes(c)) && !isTrivial,
+    loadRecommendations: contexts.some((c) => ['recomendacao', 'casual'].includes(c)) && !isTrivial,
+    loadCalendar: contexts.some((c) => ['agenda', 'evento', 'familia'].includes(c)) && !isTrivial,
+    loadEmail: contexts.some((c) => ['email'].includes(c)) && !isTrivial,
+    loadL3: !isTrivial && (hasPlanning || hasEmotional || contexts.includes('familia') || contexts.includes('saude') || contexts.includes('projeto')),
+    loadHD: needsMemory && !isTrivial && !isCasualOnly,
+    loadAshes: needsLongTerm && !isTrivial && (contexts.includes('diario') || contexts.includes('emocao')),
+    loadGaps: (hasPlanning || hasEmotional) && !isTrivial,
   };
 }
