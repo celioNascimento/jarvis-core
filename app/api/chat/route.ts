@@ -1,15 +1,9 @@
 // app/api/chat/route.ts
-// Motor V8 Unificado — Arquitetura Dual-ID
-// ✅ CORREÇÕES: threshold 0.10 (compatibilidade OpenRouter embeddings), logs de score
-// ✅ TRANSCRIÇÃO: usa lib/services/transcription.ts com OPENAI_API_KEY_1
-// ✅ EMOTIONAL ROUTER: integrado com ordenação correta e cache
-// ✅ FIX [v8.1]: Anti-sycophancy — modelo não pode confirmar dado externo sem nova busca
-// ✅ FIX [v8.1]: Data/hora injetada no prompt com fuso correto + instrução de validação temporal
-// ✅ FIX [v8.2]: Sanitização de saída — remove [INTERNO:], [DEBUG:], [ERROR:] e dados sensíveis
-// ✅ FIX [v8.3]: Fallback universal para resposta vazia após sanitização
-// ✅ FIX [v8.4]: Cache em memória com TTL para chamadas repetitivas (Supabase, Google, Microsoft, L4, blocos)
-// ✅ FIX [v8.5]: Correção de tipos TypeScript (ContextType[], principlesBlock -> principles)
-// ✅ FIX [v8.6]: Adicionado bloco de feriados nacionais próximos no system prompt
+// Motor V8.9.4 — Implementações finais de otimização
+// ✅ Segunda busca HD condicional (emotional > 0.6)
+// ✅ topicEmotionalDimension paralelizado no Promise.all
+// ✅ Cache para getRelatedTopics
+// ✅ Comentários limpos
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -68,7 +62,7 @@ import { getUpcomingHolidays } from '@/lib/holidays';
 
 export const maxDuration = 60;
 
-// ===================== [FIX v8.4] CACHE EM MEMÓRIA COM TTL =====================
+// ===================== CACHE =====================
 interface CacheEntry<T> {
   value: T;
   expiresAt: number;
@@ -76,7 +70,7 @@ interface CacheEntry<T> {
 
 class MemoryCache {
   private store = new Map<string, CacheEntry<any>>();
-  private defaultTTL = 30000; // 30 segundos
+  private defaultTTL = 30000;
 
   set<T>(key: string, value: T, ttlMs?: number): void {
     const expiresAt = Date.now() + (ttlMs ?? this.defaultTTL);
@@ -106,16 +100,11 @@ class MemoryCache {
 }
 
 const cache = new MemoryCache();
-// Limpeza automática a cada 1 minuto (evita vazamento de memória)
 setInterval(() => cache.cleanup(), 60000);
 // ====================================================================
 
-// ---------------------------------------------------------------------------
-// [FIX v8.2] Função para sanitizar dados sensíveis na resposta
-// ---------------------------------------------------------------------------
 function sanitizeSensitiveData(text: string): string {
   if (!text) return text;
-  
   const patterns = [
     /(sk-[A-Za-z0-9_\-]{20,})/gi,
     /(Bearer\s+[A-Za-z0-9_\-\.]{20,})/gi,
@@ -126,7 +115,6 @@ function sanitizeSensitiveData(text: string): string {
     /(token['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi,
     /(x-api-key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi,
   ];
-  
   let sanitized = text;
   for (const pattern of patterns) {
     sanitized = sanitized.replace(pattern, (match) => {
@@ -137,11 +125,7 @@ function sanitizeSensitiveData(text: string): string {
   }
   return sanitized;
 }
-// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// [FIX v8.1] Helpers de data/hora com fuso
-// ---------------------------------------------------------------------------
 function buildDateTimeBlock(timezone: string): string {
   const now = new Date();
   const locale = 'pt-BR';
@@ -171,7 +155,6 @@ function getCurrentDateParts(timezone: string): { day: number; month: number; ye
   const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? '0', 10);
   return { day: get('day'), month: get('month'), year: get('year') };
 }
-// ---------------------------------------------------------------------------
 
 async function getOrCreateOnboardingStatePersistent(userId: string) {
   const { data: onboardingMemory } = await supabase
@@ -181,13 +164,19 @@ async function getOrCreateOnboardingStatePersistent(userId: string) {
     .eq('category', 'onboarding')
     .order('created_at', { ascending: false })
     .limit(1)
-    .single();
+    .maybeSingle();
   if (onboardingMemory?.metadata?.state) return onboardingMemory.metadata.state;
   return await initOnboarding(userId);
 }
 
+function trimAssistantReply(reply: string, maxChars = 300): string {
+  if (!reply) return '';
+  const cleaned = reply.replace(/\[.*?\]/g, '').trim();
+  return cleaned.length > maxChars ? cleaned.slice(0, maxChars) + '…' : cleaned;
+}
+
 export async function POST(req: NextRequest) {
-  console.log('[chat] Iniciando — V8 Dual-ID refatorado');
+  console.log('[chat] Iniciando — V8.9.4 (otimizações finais)');
   try {
     console.time('[Performance] total');
     let messageText = '';
@@ -197,6 +186,7 @@ export async function POST(req: NextRequest) {
     let userFirstName = 'Usuário';
     let location: { latitude: number; longitude: number } | null = null;
 
+    // --- Parsing do request ---
     const contentType = req.headers.get('content-type') || '';
     if (contentType.includes('multipart/form-data')) {
       const formData = await req.formData();
@@ -253,7 +243,7 @@ export async function POST(req: NextRequest) {
     if (!userEmail && !tempUserId)
       return NextResponse.json({ error: 'userEmail ou userId obrigatório' }, { status: 400 });
 
-    // Lookup do usuário
+    // --- Lookup do usuário ---
     let userRecord: any = null;
 
     if (userEmail) {
@@ -296,7 +286,6 @@ export async function POST(req: NextRequest) {
       }, { status: 404 });
     }
 
-    // DUAL-ID
     const numericUserIdStr = String(userRecord.id);
     assertNumericUserId(numericUserIdStr, 'POST /api/chat');
 
@@ -327,127 +316,82 @@ export async function POST(req: NextRequest) {
 
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
 
-    // Data/hora canônica do servidor
+    // Data/hora canônica
     const canonicalDateTimeBlock = buildDateTimeBlock(userTimezone);
     const { day, month, year } = getCurrentDateParts(userTimezone);
     const canonicalDateISO = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-   // app/api/chat/route.ts (trecho crítico - linhas ~290-320)
 
-// Localização
-let locationContext = '';
-if (location) {
-  const { latitude, longitude } = location;
-  const latMasked = parseFloat(latitude.toFixed(2));
-  const lngMasked = parseFloat(longitude.toFixed(2));
+    // Localização
+    let locationContext = '';
+    if (location) {
+      const { latitude, longitude } = location;
+      const latMasked = parseFloat(latitude.toFixed(2));
+      const lngMasked = parseFloat(longitude.toFixed(2));
 
-  // ✅ CHAMADA ÚNICA: checkProximidade já salva em jarvis.user_locations
-  const endereco = await checkProximidade(latitude, longitude, numericUserIdStr);
-  locationContext = `${endereco}\n(Localização aproximada)`;
+      const endereco = await checkProximidade(latitude, longitude, numericUserIdStr);
+      locationContext = `${endereco}\n(Localização aproximada)`;
 
-  // ❌ REMOVIDO: NÃO DUPLICAR salvamento aqui!
-  // await supabase.from('user_locations').upsert(...) ← REMOVIDO!
+      await supabase
+        .from('config')
+        .upsert(
+          {
+            key: `last_location_${numericUserIdStr}`,
+            value: JSON.stringify({
+              lat_approx: latMasked,
+              lng_approx: lngMasked,
+              endereco,
+              ts: Date.now(),
+            }),
+          },
+          { onConflict: 'key' }
+        );
 
-  // ✅ Armazenar em config para fallback rápido (sem dados sensíveis)
-  await supabase
-    .from('config')
-    .upsert(
-      {
-        key: `last_location_${numericUserIdStr}`,
-        value: JSON.stringify({
-          lat_approx: latMasked,
-          lng_approx: lngMasked,
-          endereco,
-          ts: Date.now(),
-        }),
-      },
-      { onConflict: 'key' }
-    );
+      const alertaGeo = await verificarAlertasDeProximidade(authUserId, latitude, longitude);
+      if (alertaGeo.temAlerta)
+        return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
+      if (!messageText) messageText = '[Enviou Localização]';
+    }
 
-  const alertaGeo = await verificarAlertasDeProximidade(authUserId, latitude, longitude);
-  if (alertaGeo.temAlerta)
-    return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
-  if (!messageText) messageText = '[Enviou Localização]';
-};
+    // ========== 1. Classificação rápida para decidir se precisa de embedding ==========
+    const quickContexts = classifyContextRegex(messageText);
+    const isTrivialEarly = quickContexts.includes('math') || quickContexts.includes('trivial');
 
-    // ========== 1. Gerar embedding e buscar memórias HD ==========
     let queryEmbedding: number[] | null = null;
     let hdSearchResults: Array<{ similarity: number; emotional_weight: number; summary?: string; id: string }> = [];
     let hdBlock = '';
     let hdMemoryIds: string[] = [];
 
-    try {
-      queryEmbedding = await getCachedEmbedding(messageText);
-      if (queryEmbedding) {
-        const { data: search, error } = (await supabase.rpc('match_memories', {
-          query_embedding: queryEmbedding,
-          match_threshold: 0.10,
-          match_count: 8,
-        })) as { data: any[] | null; error?: any };
+    if (!isTrivialEarly) {
+      try {
+        queryEmbedding = await getCachedEmbedding(messageText);
+        if (queryEmbedding) {
+          // Threshold fixo 0.22: compromisso entre precisão e recall
+          const { data: search, error } = (await supabase.rpc('match_memories', {
+            query_embedding: queryEmbedding,
+            match_threshold: 0.22,
+            match_count: 8,
+          })) as { data: any[] | null; error?: any };
 
-        if (error) {
-          console.error('[Memória HD] Erro na RPC:', error);
-        } else if (search?.length) {
-          hdSearchResults = search.map((r: any) => ({
-            similarity: r.similarity,
-            emotional_weight: r.emotional_weight ?? 0.5,
-            summary: r.summary,
-            id: r.id,
-          }));
-          hdBlock = hdSearchResults.filter(r => !r.summary?.startsWith('[CINZA]'))
-            .map(r => r.summary).join('\n---\n');
-          hdMemoryIds = hdSearchResults.map(r => r.id);
+          if (error) {
+            console.error('[Memória HD] Erro na RPC:', error);
+          } else if (search?.length) {
+            hdSearchResults = search.map((r: any) => ({
+              similarity: r.similarity,
+              emotional_weight: r.emotional_weight ?? 0.5,
+              summary: r.summary,
+              id: r.id,
+            }));
+            hdBlock = hdSearchResults.filter(r => !r.summary?.startsWith('[CINZA]'))
+              .map(r => r.summary).join('\n---\n');
+            hdMemoryIds = hdSearchResults.map(r => r.id);
+          }
         }
+      } catch (err) {
+        console.error('[Embedding] Erro:', err);
       }
-    } catch (err) {
-      console.error('[Embedding] Erro:', err);
     }
 
-    // ========== 2. Construir RAM block ==========
-    let ramBlock = '';
-    const { data: historySession } = await supabase
-      .from('brain')
-      .select('content, metadata')
-      .eq('user_id', numericUserIdStr)
-      .eq('session_id', sessionId)
-      .neq('category', 'archived')
-      .order('created_at', { ascending: false })
-      .limit(10);
-
-    if (historySession && historySession.length >= 2) {
-      const currentContexts = classifyContextRegex(messageText);
-      const shiftDetected = await detectTopicShiftWithL4(numericUserIdStr, currentContexts);
-      if (historySession.length > 5 && shiftDetected) {
-        const summary = compressToSummary(historySession.slice(3));
-        const recentRaw = [...historySession].slice(0, 3).reverse().map(
-          (h: any) => `${authorName}: ${h.content}\n${assistantName}: ${(h.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim()}`
-        ).join('\n\n');
-        ramBlock = `${summary}\n\n${recentRaw}`;
-      } else {
-        ramBlock = [...historySession].reverse().map(
-          (h: any) => `${authorName}: ${h.content}\n${assistantName}: ${(h.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim()}`
-        ).join('\n\n');
-      }
-    } else {
-      const semanticBlock = await semanticRamCompression(
-        historySession || [],
-        numericUserIdStr,
-        messageText,
-        queryEmbedding ?? undefined
-      );
-      ramBlock = semanticBlock || (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : ' ');
-    }
-    if (ramBlock.length > RAM_MAX_CHARS) ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
-
-    // ========== 3. Calcular Emotional Score ==========
-    const emotional = await computeEmotionalScore(
-      messageText,
-      numericUserIdStr,
-      hdSearchResults,
-      ramBlock
-    );
-    console.log('[Emotional] Score:', emotional.score, 'Traj:', emotional.trajectory, 'Triggers:', emotional.triggers);
-
-    // ========== 4. Classificar contexto com L4 (com cache) ==========
+    // ========== 2. Classificação completa com L4 ==========
     console.time('[Performance] context_classification');
     const contextCacheKey = `context_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
     let detectedContexts = cache.get<ContextType[]>(contextCacheKey);
@@ -457,32 +401,226 @@ if (location) {
     }
     console.timeEnd('[Performance] context_classification');
 
-    // ========== 5. Obter dimensão emocional do tópico principal ==========
-    let topicEmotionalDimension: number | undefined;
-    if (detectedContexts.length > 0) {
-      const mainTopic = detectedContexts[0];
-      const { data: topicData } = await supabase
-        .from('topic_index')
-        .select('emotional_dimension')
-        .eq('user_id', numericUserIdStr)
-        .eq('topic', mainTopic)
-        .maybeSingle();
-      if (topicData?.emotional_dimension != null) {
-        topicEmotionalDimension = topicData.emotional_dimension;
+    // ========== 3. Detecção de shift (condicional para triviais) ==========
+    const shiftDetected = !isTrivialEarly
+      ? await detectTopicShiftWithL4(numericUserIdStr, detectedContexts)
+      : false;
+    console.log('[Shift] detectado:', shiftDetected);
+
+    // ========== 4. Construção do histórico ==========
+    const { data: historySession } = await supabase
+      .from('brain')
+      .select('content, metadata')
+      .eq('user_id', numericUserIdStr)
+      .eq('session_id', sessionId)
+      .neq('category', 'archived')
+      .order('created_at', { ascending: false })
+      .limit(6);
+
+    let ramBlock = '';
+    let recentPairs: any[] = [];
+
+    const hasEnoughHistory = historySession && historySession.length >= 2;
+
+    if (hasEnoughHistory) {
+      const pairsToUse = shiftDetected
+        ? historySession.slice(0, 1)
+        : historySession.slice(0, 4);
+
+      recentPairs = [...pairsToUse].reverse().flatMap((h: any) => [
+        { role: 'user' as const, content: h.content },
+        { role: 'assistant' as const, content: trimAssistantReply(h.metadata?.ai_reply || '') },
+      ]);
+
+      if (shiftDetected && historySession && historySession.length > 1) {
+        const validHistory = historySession.filter(h => h.metadata?.ai_reply);
+        if (validHistory.length > 1) {
+          const summary = compressToSummary(validHistory.slice(1));
+          ramBlock = `[CONTEXTO ANTERIOR RESUMIDO]\n${summary}`;
+        } else {
+          ramBlock = '';
+        }
+      }
+    } else {
+      if (historySession && historySession.length > 0) {
+        ramBlock = [...historySession].reverse().map(
+          (h: any) => `${authorName}: ${h.content}\n${assistantName}: ${trimAssistantReply(h.metadata?.ai_reply || '')}`
+        ).join('\n\n');
+      } else {
+        const semanticBlock = await semanticRamCompression(
+          historySession || [],
+          numericUserIdStr,
+          messageText,
+          queryEmbedding ?? undefined
+        );
+        ramBlock = semanticBlock || (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : ' ');
+      }
+      if (ramBlock.length > RAM_MAX_CHARS) ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
+    }
+
+    // ========== 5. Emotional Score ==========
+    const emotional = await computeEmotionalScore(
+      messageText,
+      numericUserIdStr,
+      hdSearchResults,
+      ramBlock
+    );
+    console.log('[Emotional] Score:', emotional.score, 'Traj:', emotional.trajectory);
+
+    // ========== 6. Segunda busca HD condicional (apenas se score alto e poucos resultados) ==========
+    if (emotional.score > 0.6 && queryEmbedding && hdSearchResults.length < 6) {
+      try {
+        const { data: extraSearch } = (await supabase.rpc('match_memories', {
+          query_embedding: queryEmbedding,
+          match_threshold: 0.12,
+          match_count: 12,
+        })) as { data: any[] | null; error?: any };
+
+        if (extraSearch?.length) {
+          const existingIds = new Set(hdMemoryIds);
+          const extras = extraSearch.filter((r: any) => !existingIds.has(r.id));
+          if (extras.length) {
+            const newResults = extras.map((r: any) => ({
+              similarity: r.similarity,
+              emotional_weight: r.emotional_weight ?? 0.5,
+              summary: r.summary,
+              id: r.id,
+            }));
+            hdSearchResults.push(...newResults);
+            hdBlock = hdSearchResults.filter(r => !r.summary?.startsWith('[CINZA]'))
+              .map(r => r.summary).join('\n---\n');
+            hdMemoryIds = hdSearchResults.map(r => r.id);
+            console.log('[Memória HD] Segunda busca adicionou', extras.length, 'memórias emocionais');
+          }
+        }
+      } catch (err) {
+        console.error('[Memória HD] Erro na segunda busca:', err);
       }
     }
 
-    // ========== 6. Rotear modelo ==========
+    // ========== 7. Tópico emocional (agora será obtido no Promise.all) ==========
+    let topicEmotionalDimension: number | undefined;
+
+    // ========== 8. Roteamento e blockPlan (aguarda topicEmotionalDimension, mas vamos calcular em paralelo) ==========
+    // O roteamento será feito após o Promise.all que traz topicEmotionalDimension
+
+    // ========== 9. Cargas contextuais condicionais + topicEmotionalDimension + relatedTopics com cache ==========
+    const [
+      events,
+      ashes,
+      principles,
+      childrenData,
+      personNotesData,
+      onboardingState,
+      topicEmotionalDimValue,
+    ] = await Promise.all([
+      // Events
+      (async () => {
+        const key = `events_${numericUserIdStr}`;
+        const cached = cache.get<any[]>(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('events')
+          .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
+          .eq('user_id', numericUserIdStr)
+          .order('relevance_score', { ascending: false });
+        const val = data || [];
+        cache.set(key, val);
+        return val;
+      })(),
+      // Ashes
+      (async () => {
+        const key = `ashes_${numericUserIdStr}`;
+        const cached = cache.get<any[]>(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('memory_ashes')
+          .select('ash_summary, period_start, period_end')
+          .eq('user_id', numericUserIdStr)
+          .order('period_end', { ascending: false })
+          .limit(5);
+        const val = data || [];
+        cache.set(key, val);
+        return val;
+      })(),
+      // Principles
+      (async () => {
+        const key = `principles_${numericUserIdStr}`;
+        const cached = cache.get<any[]>(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('principles')
+          .select('content, category')
+          .order('created_at', { ascending: true });
+        const val = data || [];
+        cache.set(key, val);
+        return val;
+      })(),
+      // Children
+      (async () => {
+        const key = `children_${numericUserIdStr}`;
+        const cached = cache.get<any[]>(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('children')
+          .select('name, nickname, lev_notes')
+          .eq('parent_id', numericUserIdStr)
+          .not('lev_notes', 'is', null);
+        const val = data || [];
+        cache.set(key, val);
+        return val;
+      })(),
+      // Person notes
+      (async () => {
+        const key = `person_notes_${numericUserIdStr}`;
+        const cached = cache.get<any[]>(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('person_notes')
+          .select('person_name, person_type, note, noted_at')
+          .eq('user_id', numericUserIdStr)
+          .order('noted_at', { ascending: false })
+          .limit(20);
+        const val = data || [];
+        cache.set(key, val);
+        return val;
+      })(),
+      // Onboarding state
+      (async () => {
+        const key = `onboarding_${numericUserIdStr}`;
+        const cached = cache.get(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('onboarding_progress')
+          .select('*')
+          .eq('user_id', numericUserIdStr)
+          .maybeSingle();
+        let state = data || await getOrCreateOnboardingStatePersistent(numericUserIdStr);
+        cache.set(key, state, 60000);
+        return state;
+      })(),
+      // topicEmotionalDimension (agora paralelizado)
+      (async () => {
+        if (!detectedContexts.length) return undefined;
+        const { data } = await supabase
+          .from('topic_index')
+          .select('emotional_dimension')
+          .eq('user_id', numericUserIdStr)
+          .eq('topic', detectedContexts[0])
+          .maybeSingle();
+        return data?.emotional_dimension ?? undefined;
+      })(),
+    ]);
+
+    topicEmotionalDimension = topicEmotionalDimValue;
+
+    // ========== 10. Roteamento e blockPlan (agora com topicEmotionalDimension disponível) ==========
     const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
     const temperature = getTemperature(detectedContexts);
     const blockPlan = planContextualBlocks(detectedContexts);
-    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| emotionalScore:', emotional.score);
+    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| blockPlan:', blockPlan);
 
-    // ========== 7. Atualizar topic index ==========
-    await updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score);
-    const relatedTopicsBlock = await getRelatedTopics(numericUserIdStr, detectedContexts[0] || 'casual');
-
-    // ========== 8. Pesquisa forçada ==========
+    // ========== 11. Pesquisa forçada ==========
     let forcedSearchResult = '';
     if (shouldForceSearch(messageText, detectedContexts)) {
       const searchQuery = refineSearchQuery(messageText, detectedContexts);
@@ -494,115 +632,65 @@ if (location) {
       }
     }
 
-    // ========== 9. Cargas contextuais condicionais (COM CACHE) ==========
-    // Events
-    const eventsCacheKey = `events_${numericUserIdStr}`;
-    let events = cache.get<any[]>(eventsCacheKey);
-    if (!events) {
-      const { data } = await supabase
-        .from('events')
-        .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
-        .eq('user_id', numericUserIdStr)
-        .order('relevance_score', { ascending: false });
-      events = data || [];
-      cache.set(eventsCacheKey, events);
-    }
+    // ========== 12. Blocos condicionais + relatedTopics com cache ==========
+    const [gapsBlock, topicBlock, diaryBlock, recsBlock, relatedTopicsBlock] = await Promise.all([
+      blockPlan.loadGaps
+        ? (async () => {
+            const key = `gaps_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+            let val = cache.get<string>(key);
+            if (!val) {
+              val = await buildGapsBlock(numericUserIdStr, messageText);
+              cache.set(key, val, 60000);
+            }
+            return val;
+          })()
+        : Promise.resolve(''),
+      blockPlan.loadTopics
+        ? (async () => {
+            const key = `topic_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+            let val = cache.get<string>(key);
+            if (!val) {
+              val = await buildTopicBlock(numericUserIdStr, messageText).catch(() => '');
+              cache.set(key, val, 60000);
+            }
+            return val;
+          })()
+        : Promise.resolve(''),
+      blockPlan.loadDiary
+        ? (async () => {
+            const key = `diary_${numericUserIdStr}`;
+            let val = cache.get<string>(key);
+            if (!val) {
+              val = await buildDiaryGoalsBlock(numericUserIdStr).catch(() => '');
+              cache.set(key, val, 60000);
+            }
+            return val;
+          })()
+        : Promise.resolve(''),
+      blockPlan.loadRecommendations
+        ? (async () => {
+            const key = `recs_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+            let val = cache.get<string>(key);
+            if (!val) {
+              val = await buildRecommendationsBlock(numericUserIdStr, messageText).catch(() => '');
+              cache.set(key, val, 60000);
+            }
+            return val;
+          })()
+        : Promise.resolve(''),
+      blockPlan.loadTopics
+        ? (async () => {
+            const key = `related_${numericUserIdStr}_${detectedContexts[0] || 'casual'}`;
+            const cached = cache.get<string>(key);
+            if (cached) return cached;
+            const val = await getRelatedTopics(numericUserIdStr, detectedContexts[0] || 'casual');
+            cache.set(key, val, 30000);
+            return val;
+          })()
+        : Promise.resolve(''),
+    ]);
 
-    // Memory ashes
-    const ashesCacheKey = `ashes_${numericUserIdStr}`;
-    let ashes = cache.get<any[]>(ashesCacheKey);
-    if (!ashes) {
-      const { data } = await supabase
-        .from('memory_ashes')
-        .select('ash_summary, period_start, period_end')
-        .eq('user_id', numericUserIdStr)
-        .order('period_end', { ascending: false })
-        .limit(5);
-      ashes = data || [];
-      cache.set(ashesCacheKey, ashes);
-    }
-
-    // Principles
-    const principlesCacheKey = `principles_${numericUserIdStr}`;
-    let principles = cache.get<any[]>(principlesCacheKey);
-    if (!principles) {
-      const { data } = await supabase
-        .from('principles')
-        .select('content, category')
-        .order('created_at', { ascending: true });
-      principles = data || [];
-      cache.set(principlesCacheKey, principles);
-    }
-
-    // Children
-    const childrenCacheKey = `children_${numericUserIdStr}`;
-    let childrenData = cache.get<any[]>(childrenCacheKey);
-    if (!childrenData) {
-      const { data } = await supabase
-        .from('children')
-        .select('name, nickname, lev_notes')
-        .eq('parent_id', numericUserIdStr)
-        .not('lev_notes', 'is', null);
-      childrenData = data || [];
-      cache.set(childrenCacheKey, childrenData);
-    }
-
-    // Person notes
-    const personNotesCacheKey = `person_notes_${numericUserIdStr}`;
-    let personNotesData = cache.get<any[]>(personNotesCacheKey);
-    if (!personNotesData) {
-      const { data } = await supabase
-        .from('person_notes')
-        .select('person_name, person_type, note, noted_at')
-        .eq('user_id', numericUserIdStr)
-        .order('noted_at', { ascending: false })
-        .limit(20);
-      personNotesData = data || [];
-      cache.set(personNotesCacheKey, personNotesData);
-    }
-
-    // Gaps block
-    const gapsCacheKey = `gaps_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-    let gapsBlock = cache.get<string>(gapsCacheKey);
-    if (!gapsBlock) {
-      gapsBlock = await buildGapsBlock(numericUserIdStr, messageText);
-      cache.set(gapsCacheKey, gapsBlock, 60000);
-    }
-
-    // Topic block
-    let topicBlock = '';
-    if (blockPlan.loadTopics) {
-      const topicCacheKey = `topic_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-      topicBlock = cache.get<string>(topicCacheKey) || '';
-      if (!topicBlock) {
-        topicBlock = await buildTopicBlock(numericUserIdStr, messageText).catch(() => '');
-        cache.set(topicCacheKey, topicBlock, 60000);
-      }
-    }
-
-    // Diary block
-    let diaryBlock = '';
-    if (blockPlan.loadDiary) {
-      const diaryCacheKey = `diary_${numericUserIdStr}`;
-      diaryBlock = cache.get<string>(diaryCacheKey) || '';
-      if (!diaryBlock) {
-        diaryBlock = await buildDiaryGoalsBlock(numericUserIdStr).catch(() => '');
-        cache.set(diaryCacheKey, diaryBlock, 60000);
-      }
-    }
-
-    // Recommendations block
-    let recsBlock = '';
-    if (blockPlan.loadRecommendations) {
-      const recsCacheKey = `recs_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-      recsBlock = cache.get<string>(recsCacheKey) || '';
-      if (!recsBlock) {
-        recsBlock = await buildRecommendationsBlock(numericUserIdStr, messageText).catch(() => '');
-        cache.set(recsCacheKey, recsBlock, 60000);
-      }
-    }
-
-    // Google e Microsoft Calendar
+    // ========== 13. Calendários e emails ==========
     let googleCtx = null;
     let msCtx = null;
     if (blockPlan.loadCalendar) {
@@ -612,13 +700,14 @@ if (location) {
         googleCtx = cached.google;
         msCtx = cached.ms;
       } else {
-        googleCtx = await getGoogleContext().catch(() => null);
-        msCtx = await getMicrosoftCalendarContext().catch(() => null);
+        [googleCtx, msCtx] = await Promise.all([
+          getGoogleContext().catch(() => null),
+          getMicrosoftCalendarContext().catch(() => null),
+        ]);
         cache.set(calendarCacheKey, { google: googleCtx, ms: msCtx }, 30000);
       }
     }
 
-    // Emails
     let emailBlock = null;
     if (blockPlan.loadEmail) {
       const emailCacheKey = `emails_${authUserId}`;
@@ -629,28 +718,19 @@ if (location) {
       }
     }
 
-    // ✅ FERIADOS NACIONAIS PRÓXIMOS (adicionado v8.6)
+    // Feriados condicionais
     let holidaysBlock = '';
-    try {
-      const holidays = await getUpcomingHolidays(10); // próximos 10 feriados
-      if (holidays.length > 0) {
-        holidaysBlock = `\n[FERIADOS NACIONAIS PRÓXIMOS]\n${holidays.map(h => `- ${h.name}: ${new Date(h.date).toLocaleDateString('pt-BR')}`).join('\n')}`;
+    const needsHolidays = detectedContexts.includes('agenda') || detectedContexts.includes('evento') || detectedContexts.includes('familia');
+    if (needsHolidays) {
+      try {
+        const holidays = await getUpcomingHolidays(10);
+        if (holidays.length > 0) {
+          holidaysBlock = `\n[FERIADOS NACIONAIS PRÓXIMOS]\n${holidays.map(h => `- ${h.name}: ${new Date(h.date).toLocaleDateString('pt-BR')}`).join('\n')}`;
+        }
+      } catch (err) {
+        console.error('[Holidays] Erro ao buscar feriados:', err);
       }
-    } catch (err) {
-      console.error('[Holidays] Erro ao buscar feriados:', err);
     }
-
-    // Onboarding
-    let onboardingState = null;
-    const onboardingCacheKey = `onboarding_${numericUserIdStr}`;
-    onboardingState = cache.get(onboardingCacheKey);
-    if (!onboardingState) {
-      const { data } = await supabase.from('onboarding_progress').select('*').eq('user_id', numericUserIdStr).single();
-      onboardingState = data || null;
-      if (!onboardingState) onboardingState = await getOrCreateOnboardingStatePersistent(numericUserIdStr);
-      cache.set(onboardingCacheKey, onboardingState, 60000);
-    }
-    const onboardingBlock = buildOnboardingBlock(onboardingState);
 
     // Montar blocos de eventos
     const hoje = new Date();
@@ -674,9 +754,9 @@ if (location) {
           ].filter(Boolean).join('\n\n')
         : 'Nenhum evento cadastrado.';
 
-    const ashesBlock = ashes.length > 0 ? ashes.map((a: any) => a.ash_summary).join('\n') : null;
+    const ashesBlockRaw = ashes.length > 0 ? ashes.map((a: any) => a.ash_summary).join('\n') : null;
 
-    // Notas de pessoas (filtragem em memória)
+    // Notas de pessoas
     let personNotesBlock = '';
     const msgLower = messageText.toLowerCase();
     const childNotes = childrenData.filter(
@@ -685,7 +765,6 @@ if (location) {
     const pNotes = personNotesData.filter((n: any) =>
       n.person_name.toLowerCase().split(' ').some((p: string) => p.length >= 3 && new RegExp(`\\b${p}\\b`).test(msgLower))
     );
-
     if (childNotes.length > 0 || pNotes.length > 0) {
       const lines: string[] = [];
       for (const c of childNotes) lines.push(`${c.nickname || c.name.split(' ')[0]}: ${c.lev_notes}`);
@@ -693,14 +772,21 @@ if (location) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
-    const weights = classifyTemporalHorizon(messageText, ramBlock, pendingQuestion);
-    const truncatedL3 = truncateByWeight(currentContextL3, weights.l3, 6000);
-    const truncatedHd = truncateByWeight(hdBlock, weights.hd, 6000);
-    const truncatedAshes = ashesBlock ? truncateByWeight(ashesBlock, weights.ashes, 6000) : null;
+    // Truncagem por peso temporal
+    const cleanRamForWeights = ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
+    const weights = classifyTemporalHorizon(messageText, cleanRamForWeights, pendingQuestion);
+    const truncatedL3 = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, 6000) : '';
+    const truncatedHd = blockPlan.loadHD ? truncateByWeight(hdBlock, weights.hd, 6000) : '';
+    const truncatedAshes = (blockPlan.loadAshes && ashesBlockRaw) ? truncateByWeight(ashesBlockRaw, weights.ashes, 6000) : null;
     const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
 
     const isFemale = currentContextL3.toLowerCase().includes('feminino') || currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
+
+    const isLikelyNoise = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i.test(messageText.trim()) && messageText.length < 30;
+    const brevityInstruction = isLikelyNoise || detectedContexts.includes('casual')
+      ? 'RESPONDA EM NO MÁXIMO 2 FRASES. SEJA DIRETO, SEM INTRODUÇÕES.'
+      : 'Seja direto. Evite "Considerando que" e rodeios.';
 
     // ========== System Prompt ==========
     const principlesText = principles.length > 0 ? principles.map((p: any) => `- ${p.content}`).join('\n') : '';
@@ -710,6 +796,8 @@ if (location) {
 🕐 DATA E HORA ATUAL (servidor): ${canonicalDateTimeBlock}
 📅 DATA CANÔNICA (ISO): ${canonicalDateISO}
 ⚠️  ESTA DATA É AUTORITATIVA. Não aceite datas diferentes vindas do usuário sem verificar com searchWeb.
+
+${brevityInstruction}
 
 🚨 REGRAS DE INTEGRIDADE FACTUAL — OBRIGATÓRIAS 🚨
 
@@ -729,9 +817,9 @@ if (location) {
 
 ${forcedSearchResult}
 ${holidaysBlock}
-${googleCtx ? `[AGENDA GOOGLE]\n${googleCtx}` : ''}
-${msCtx ? `[AGENDA OUTLOOK]\n${msCtx}` : ''}
-${emailBlock ? `[EMAILS RECENTES]\n${emailBlock}` : ''}
+${blockPlan.loadCalendar && googleCtx ? `[AGENDA GOOGLE]\n${googleCtx}` : ''}
+${blockPlan.loadCalendar && msCtx ? `[AGENDA OUTLOOK]\n${msCtx}` : ''}
+${blockPlan.loadEmail && emailBlock ? `[EMAILS RECENTES]\n${emailBlock}` : ''}
 ${locationContext ? `\n${locationContext}` : ''}
 ${relatedTopicsBlock}
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${truncatedL3}` : ''}
@@ -742,32 +830,27 @@ ${isMeaningfulDiaryBlock(diaryBlock) ? diaryBlock : ''}
 ${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]\n${truncatedHd}` : ''}
 ${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao citar]\n${truncatedAshes}` : ''}
 [EVENTOS]\n${truncatedEvents}
-${onboardingBlock}
+${onboardingState?.status !== 'completed' ? buildOnboardingBlock(onboardingState) : ''}
 ${gapsBlock}
 ${principlesText ? `[BÚSSOLA]\n${principlesText}` : ''}
 
 REGRAS COMPORTAMENTAIS:
 FOCO: Responda O QUE FOI PERGUNTADO. Nunca repita sugestão rejeitada.
 TOM: Amigo inteligente, direto, humano. Use "${informalAddress}" no máximo 1x por conversa. Nunca comece com "Considerando que".
-PROIBIDO: "Anotado!", "Registrado!". Se salvou via ferramenta: "Feito." ou "Tá na agenda."
+PROIBIDO: "Anota aí", "Anotado!", "Registrado!". Se salvou via ferramenta: "Feito." ou "Tá na agenda."
 PRESENÇA EMOCIONAL: Seja empático quando algo difícil for compartilhado.
 MEMÓRIA: Use notas naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
 
-    // Histórico de conversa
-    const { data: historyForMessages } = await supabase
-      .from('brain').select('content, metadata').eq('user_id', numericUserIdStr).neq('category', 'archived').order('created_at', { ascending: false }).limit(8);
-
+    // ========== Histórico de mensagens ==========
     const conversationMessages: any[] = [
       { role: 'system', content: systemPrompt },
-      ...(historyForMessages || []).reverse().flatMap((h: any) => [
-        { role: 'user', content: h.content },
-        { role: 'assistant', content: (h.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim() },
-      ]),
+      ...(ramBlock && ramBlock.trim() !== '' && ramBlock !== ' ' ? [{ role: 'system', content: ramBlock }] : []),
+      ...recentPairs,
       { role: 'user', content: messageText },
-    ];
+    ].filter(Boolean);
 
     // Comandos especiais
     if (/ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|delete isso/i.test(messageText)) {
@@ -776,31 +859,32 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       return NextResponse.json({ reply: 'Feito — apaguei o que foi dito antes. 🗑️', sessionId, ok: true });
     }
 
-    const noisePatterns = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i;
-    const isLikelyNoise = noisePatterns.test(messageText.trim()) && messageText.length < 30;
-
-    let extractionSummary = '';
-    if (!isLikelyNoise) {
-      try {
-        extractionSummary = await extractAndSummarize(numericUserIdStr, authorName, messageText);
-      } catch (e) {
-        console.error('[Extrator/pre]', e);
-      }
-    }
-
     conversationMessages.push({
       role: 'system',
-      content: extractionSummary
-        ? `[INTERNO]\nRegistrado: ${extractionSummary}\nConfirme em 1 frase curta. PROIBIDO: "Anota aí", "Anotado!", "Registrado!".`
-        : `[INTERNO]\nVocê é o assistente — NUNCA diga "Anota aí". Confirme brevemente.`,
+      content: `[INTERNO] Responda APENAS o que foi perguntado. NUNCA diga "Anota aí" ou "Anotado!".`,
     });
+
+    // max_tokens dinâmico
+    let maxTokens = 350;
+    if (isLikelyNoise) maxTokens = 150;
+    else if (detectedContexts.includes('emocao')) maxTokens = 600;
+    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias') || detectedContexts.includes('clima')) maxTokens = 800;
+    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 500;
+    else if (detectedContexts.includes('casual')) maxTokens = 250;
 
     // ReAct Loop
     let finalResponse = '';
     let attempts = 0;
 
     while (attempts < 5) {
-      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, temperature, 25000);
+      const response = await callOpenRouterWithTools(
+        conversationMessages,
+        tools,
+        modelRoute.model,
+        temperature,
+        25000,
+        maxTokens
+      );
       const { content, toolCalls } = response;
 
       if (!toolCalls || toolCalls.length === 0) {
@@ -824,32 +908,18 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     if (categoryMatch) category = categoryMatch[1].toLowerCase();
     finalResponse = finalResponse.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
 
-    // =================================================================
-    // [FIX v8.2] Sanitização de saída – remove marcadores e protege dados
-    // =================================================================
     finalResponse = finalResponse.replace(/\[INTERNO:.*?\]/gi, '');
     finalResponse = finalResponse.replace(/\[DEBUG:.*?\]/gi, '');
     finalResponse = finalResponse.replace(/\[ERROR:.*?\]/gi, '');
     finalResponse = finalResponse.trim();
     finalResponse = sanitizeSensitiveData(finalResponse);
-    // =================================================================
-
-    // =================================================================
-    // [FIX v8.3] Fallback universal para resposta vazia
-    // =================================================================
-    if (!finalResponse && extractionSummary) {
-      const feedbacks = ['Certo.', 'Ok.', 'Guardei.', 'Entendido.'];
-      finalResponse = feedbacks[Math.floor(Math.random() * feedbacks.length)];
-    }
 
     if (!finalResponse) {
-      console.warn('[Sanitização] Resposta ficou completamente vazia. Usando fallback genérico.');
+      console.warn('[Sanitização] Resposta vazia. Fallback genérico.');
       finalResponse = 'Entendi. Podemos continuar?';
     }
-    // =================================================================
 
-    if (pendingQuestion)
-      clearPendingQuestion(numericUserIdStr).catch((e) => console.error('[PendingQ]', e));
+    if (pendingQuestion) clearPendingQuestion(numericUserIdStr).catch((e) => console.error('[PendingQ]', e));
 
     // Persistência
     const { error: insertError } = await supabase.from('brain').insert([{
@@ -876,15 +946,23 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     }]);
 
     if (insertError) console.error('BRAIN INSERT ERRO:', insertError);
-    else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'session:', sessionId, 'model:', modelRoute.label);
+    else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'model:', modelRoute.label);
 
+    // Background tasks
     const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
+    backgroundTasks.push(
+      updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score)
+        .catch(e => console.error('[TopicIndex]', e))
+    );
     if (onboardingState?.status === 'in_progress') {
       backgroundTasks.push(
         withRetry(() => processOnboardingFromMessage(numericUserIdStr, messageText, finalResponse, onboardingState)).catch((e) => console.error('[Onboarding]', e))
       );
     }
     if (!isLikelyNoise) {
+      backgroundTasks.push(
+        withRetry(() => extractAndSummarize(numericUserIdStr, authorName, messageText)).catch((e) => console.error('[extrator]', e))
+      );
       backgroundTasks.push(withRetry(() => extractRecomendacao(numericUserIdStr, messageText, finalResponse)).catch((e) => console.error('[recomendacao]', e)));
       backgroundTasks.push(withRetry(() => extractDiary(numericUserIdStr, messageText, 'anytime')).catch((e) => console.error('[diary]', e)));
       backgroundTasks.push(withRetry(() => extractGoal(numericUserIdStr, messageText)).catch((e) => console.error('[goals]', e)));
@@ -903,4 +981,4 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     console.error('[chat] ERRO:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-};
+}
