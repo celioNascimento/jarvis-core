@@ -388,11 +388,14 @@ export async function POST(req: NextRequest) {
 
     // ========== 2. Classificação completa com L4 ==========
     console.time('[Performance] context_classification');
-    const contextCacheKey = `context_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+    // Chave baseada no texto completo (hash) para evitar colisões entre mensagens
+    // com prefixos similares mas contextos distintos (ex: "clima aqui" vs "clima no RJ")
+    const msgHash = Buffer.from(messageText).toString('base64').slice(0, 32);
+    const contextCacheKey = `context_${numericUserIdStr}_${msgHash}`;
     let detectedContexts = cache.get<ContextType[]>(contextCacheKey);
     if (!detectedContexts) {
       detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
-      cache.set(contextCacheKey, detectedContexts, 20000);
+      cache.set(contextCacheKey, detectedContexts, 10000); // 10s: evita reprocessamento em retry sem risco de contexto obsoleto
     }
     console.timeEnd('[Performance] context_classification');
 
