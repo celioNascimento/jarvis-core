@@ -8,37 +8,59 @@ export type ContextType =
   | 'noticias' | 'clima'
   | 'math' | 'trivial';
 
-const RULES: Array<[RegExp, ContextType]> = [
-  [/diario|diário|hoje foi|hoje ta|hoje está|acordei|dormi|dormir|meu dia|como foi meu|reflexao|refletindo|gratid/i, 'diario'],
-  [/meta|objetivo|quero (conseguir|fazer|terminar|lancar|comecar)|prazo|progresso|etapa|concluir|finalizar/i, 'meta'],
-  [/reuniao|reunião|consulta|compromisso|agend|horario|horário|amanha as|amanhã às|segunda|terça|quarta|quinta|sexta|sabado|domingo|às \d|as \d{1,2}h/i, 'agenda'],
-  [/projeto|app|aplicativo|sistema|api|deploy|feature|sprint|mvp|startup|produto|desenvolv/i, 'projeto'],
-  [/filho|filha|esposa|marido|mae|mãe|pai|irmao|irmão|família|familia|cônjuge|conjuge|casamento|nasceu|aniversario de casamento/i, 'familia'],
-  [/medic|médic|saude|saúde|exame|remedio|remédio|hospital|dor|doenca|doença|sintoma|consulta médica/i, 'saude'],
-  [/sinto|estou (triste|feliz|ansioso|cansado|animado|frustrado|preocupado|deprimido|sozinho)|me sinto|to mal|tô mal|to bem|tô bem|angustia|angústia|estressado/i, 'emocao'],
-  [/email|e-mail|inbox|caixa de entrada|mensagem do|mensagem da|enviou|recebeu/i, 'email'],
-  [/indica|recomend|sugere|onde posso|tem algum|onde tem|restaurante|lugar|lugar bom|conhece algum/i, 'recomendacao'],
-  [/aniversario|aniversário|natal|pascoa|páscoa|ano novo|feriado|data importante|comemora/i, 'evento'],
-  [/acordo|desperto|academia|treino|trabalho as|trabalho às|entrada no trabalho|saida do trabalho|rotina|horario de/i, 'rotina'],
-  [/gosto de|nao gosto de|não gosto de|prefiro|adoro|odeio|minha comida|meu filme|minha musica|minha música/i, 'preferencia'],
-  [/quando falo em|quando eu falar|pode chamar de|se eu disser|apelido|alias/i, 'alias'],
-  [/jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo|escalação/i, 'esporte'],
-  [/noticia|notícias|últimas|recente|aconteceu|hoje no|manchete|jornal|portal|g1|globo|folha|estadão/i, 'noticias'],
-  [/clima|tempo|temperatura|chuva|frio|calor|previsão|amanhecer|entardecer|umidade|vento|chover|chuvoso/i, 'clima'],
-  // ✅ math e trivial
+// Normaliza uma string removendo acentos (idêntico ao que classifyContextRegex faz com o input)
+function norm(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+// Compila as regexes já normalizadas UMA VEZ no load do módulo.
+// Assim não há custo de normalização por request, e as regexes batem
+// corretamente com o texto do usuário que também é normalizado.
+const RAW_RULES: Array<[string, ContextType]> = [
+  [norm('diario|diário|hoje foi|hoje ta|hoje está|acordei|dormi|dormir|meu dia|como foi meu|reflexao|refletindo|gratid'), 'diario'],
+  [norm('meta|objetivo|quero (conseguir|fazer|terminar|lancar|comecar)|prazo|progresso|etapa|concluir|finalizar'), 'meta'],
+  [norm('reuniao|reunião|consulta|compromisso|agend|horario|horário|amanha as|amanhã às|segunda|terça|quarta|quinta|sexta|sabado|domingo|às \\d|as \\d{1,2}h'), 'agenda'],
+  [norm('projeto|app|aplicativo|sistema|api|deploy|feature|sprint|mvp|startup|produto|desenvolv'), 'projeto'],
+  [norm('filho|filha|esposa|marido|mae|mãe|pai|irmao|irmão|família|familia|cônjuge|conjuge|casamento|nasceu|aniversario de casamento'), 'familia'],
+  [norm('medic|médic|saude|saúde|exame|remedio|remédio|hospital|dor|doenca|doença|sintoma|consulta médica'), 'saude'],
+  [norm('sinto|estou (triste|feliz|ansioso|cansado|animado|frustrado|preocupado|deprimido|sozinho)|me sinto|to mal|tô mal|to bem|tô bem|angustia|angústia|estressado'), 'emocao'],
+  [norm('email|e-mail|inbox|caixa de entrada|mensagem do|mensagem da|enviou|recebeu'), 'email'],
+  [norm('indica|recomend|sugere|onde posso|tem algum|onde tem|restaurante|lugar|lugar bom|conhece algum'), 'recomendacao'],
+  [norm('aniversario|aniversário|natal|pascoa|páscoa|ano novo|feriado|data importante|comemora'), 'evento'],
+  [norm('acordo|desperto|academia|treino|trabalho as|trabalho às|entrada no trabalho|saida do trabalho|rotina|horario de'), 'rotina'],
+  [norm('gosto de|nao gosto de|não gosto de|prefiro|adoro|odeio|minha comida|meu filme|minha musica|minha música'), 'preferencia'],
+  [norm('quando falo em|quando eu falar|pode chamar de|se eu disser|apelido|alias'), 'alias'],
+  [norm('jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo|escalação'), 'esporte'],
+  [norm('noticia|notícias|últimas|recente|aconteceu|hoje no|manchete|jornal|portal|g1|globo|folha|estadão'), 'noticias'],
+  [norm('clima|tempo|temperatura|chuva|frio|calor|previsão|amanhecer|entardecer|umidade|vento|chover|chuvoso|vai chover|como esta o tempo|como esta o clima'), 'clima'],
+];
+
+// Regras que NÃO passam por normalização de acento (math/trivial operam sobre o texto original)
+const RAW_RULES_VERBATIM: Array<[RegExp, ContextType]> = [
   [/^[0-9+\-*/%() ]+$/, 'math'],
-  [/quanto é|quanto dá|calcule|soma|subtraia|multiplique|divida|raiz|potência|^[0-9]+ (mais|vezes|dividido por|menos) [0-9]+/i, 'math'],
-  [/^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i, 'trivial'],
+  [/quanto [eé]|quanto d[aá]|calcule|soma|subtraia|multiplique|divida|raiz|pot[eê]ncia|^[0-9]+ (mais|vezes|dividido por|menos) [0-9]+/i, 'math'],
+  [/^(ok|oi|ol[aá]|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i, 'trivial'],
+];
+
+// Compilado uma vez — zero custo em runtime
+const RULES: Array<[RegExp, ContextType]> = [
+  ...RAW_RULES.map(([src, ctx]) => [new RegExp(src, 'i'), ctx] as [RegExp, ContextType]),
+  ...RAW_RULES_VERBATIM,
 ];
 
 export function classifyContextRegex(text: string): ContextType[] {
+  // Normalização feita uma única vez para todas as regras acento-normalizadas
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const detected: ContextType[] = [];
+
   for (const [rx, ctx] of RULES) {
-    if (rx.test(t)) detected.push(ctx);
+    // math/trivial testam o texto original para preservar símbolos como ^, +, etc.
+    const target = (ctx === 'math' || ctx === 'trivial') ? text.toLowerCase() : t;
+    if (rx.test(target)) detected.push(ctx);
   }
-  // Remove duplicatas mantendo ordem
-  return detected.length > 0 ? [...new Map(detected.map(d => [d, d])).values()] : ['casual'];
+
+  // Remove duplicatas mantendo ordem (Set preserva insertion order)
+  return detected.length > 0 ? [...new Set(detected)] : ['casual'];
 }
 
 export async function classifyContextWithL4(
@@ -65,6 +87,7 @@ export async function classifyContextWithL4(
       return [...prioritized, ...missing];
     }
   }
+
   return regexContexts;
 }
 
@@ -101,7 +124,7 @@ export function planContextualBlocks(contexts: ContextType[]) {
   const isCasualOnly = contexts.length === 1 && contexts[0] === 'casual';
   const isTrivial = contexts.includes('math') || contexts.includes('trivial');
   const needsMemory = hasEmotional || contexts.includes('diario') || contexts.includes('familia') || contexts.includes('saude');
-  const needsLongTerm = contexts.includes('diario') || contexts.includes('emocao'); // ✅ removido 'reflexao'
+  const needsLongTerm = contexts.includes('diario') || contexts.includes('emocao');
 
   return {
     loadTopics: contexts.some((c) =>
