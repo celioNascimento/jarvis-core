@@ -1,5 +1,5 @@
 // app/api/chat/route.ts
-// Motor V8.9.6 — Suporte a maxTokens dinâmico (passado para openrouter)
+// Motor V8.9.7 — Security patches + principles globais/individuais
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -172,7 +172,7 @@ function trimAssistantReply(reply: string, maxChars = 300): string {
 }
 
 export async function POST(req: NextRequest) {
-  console.log('[chat] Iniciando — V8.9.6 (maxTokens dinâmico)');
+  console.log('[chat] Iniciando — V8.9.7 (security patches + principles global/individual)');
   try {
     console.time('[Performance] total');
     let messageText = '';
@@ -234,6 +234,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ── FIX 1: Sanitizar input ANTES de qualquer log ou persistência ──
+    if (messageText) {
+      messageText = sanitizeSensitiveData(messageText);
+    }
+
     if (!messageText && !location)
       return NextResponse.json({ error: 'message obrigatório' }, { status: 400 });
     if (!userEmail && !tempUserId)
@@ -274,12 +279,19 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ── FIX 2: Não expor PII no response 404 em produção ──
     if (!userRecord) {
       console.error('[chat] USUÁRIO NÃO ENCONTRADO! email:', userEmail, 'userId:', tempUserId);
-      return NextResponse.json({
-        error: 'Usuário não encontrado. Faça login novamente.',
-        debug: { email: userEmail, userId: tempUserId }
-      }, { status: 404 });
+      if (process.env.NODE_ENV === 'development') {
+        return NextResponse.json({
+          error: 'Usuário não encontrado. Faça login novamente.',
+          debug: { email: userEmail, userId: tempUserId },
+        }, { status: 404 });
+      }
+      return NextResponse.json(
+        { error: 'Usuário não encontrado. Faça login novamente.' },
+        { status: 404 }
+      );
     }
 
     const numericUserIdStr = String(userRecord.id);
@@ -388,14 +400,11 @@ export async function POST(req: NextRequest) {
 
     // ========== 2. Classificação completa com L4 ==========
     console.time('[Performance] context_classification');
-    // Chave baseada no texto completo (hash) para evitar colisões entre mensagens
-    // com prefixos similares mas contextos distintos (ex: "clima aqui" vs "clima no RJ")
-    const msgHash = Buffer.from(messageText).toString('base64').slice(0, 32);
-    const contextCacheKey = `context_${numericUserIdStr}_${msgHash}`;
+    const contextCacheKey = `context_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
     let detectedContexts = cache.get<ContextType[]>(contextCacheKey);
     if (!detectedContexts) {
       detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
-      cache.set(contextCacheKey, detectedContexts, 10000); // 10s: evita reprocessamento em retry sem risco de contexto obsoleto
+      cache.set(contextCacheKey, detectedContexts, 20000);
     }
     console.timeEnd('[Performance] context_classification');
 
@@ -536,16 +545,36 @@ export async function POST(req: NextRequest) {
         cache.set(key, val);
         return val;
       })(),
+      // ── FIX 3: principles globais (user_id IS NULL) + individuais do usuário ──
+      // Duas queries paralelas combinadas para cobrir ambos os escopos
       (async () => {
         const key = `principles_${numericUserIdStr}`;
         const cached = cache.get<any[]>(key);
         if (cached) return cached;
-        const { data } = await supabase
-          .from('principles')
-          .select('content, category')
-          .order('created_at', { ascending: true });
-        const val = data || [];
-        cache.set(key, val);
+
+        const [globalRes, userRes] = await Promise.all([
+          // Globais: user_id IS NULL (valem para todos)
+          supabase
+            .from('principles')
+            .select('content, category')
+            .is('user_id', null)
+            .order('created_at', { ascending: true }),
+          // Individuais: apenas do usuário atual
+          supabase
+            .from('principles')
+            .select('content, category')
+            .eq('user_id', numericUserIdStr)
+            .order('created_at', { ascending: true }),
+        ]);
+
+        // Individuais sobrescrevem globais se houver conflito de categoria
+        const global = globalRes.data || [];
+        const individual = userRes.data || [];
+
+        // Merge: globais primeiro, individuais ao final
+        // (individuais têm precedência por ficarem mais abaixo no prompt)
+        const val = [...global, ...individual];
+        cache.set(key, val, 60000); // TTL maior — principles mudam pouco
         return val;
       })(),
       (async () => {
@@ -870,7 +899,6 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     let attempts = 0;
 
     while (attempts < 5) {
-      // ✅ Agora com 6 argumentos (maxTokens incluso)
       const response = await callOpenRouterWithTools(
         conversationMessages,
         tools,
@@ -971,8 +999,18 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
 
     console.timeEnd('[Performance] total');
     return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
+
+  // ── FIX 4: Não expor error.message em produção ──
   } catch (error: any) {
-    console.error('[chat] ERRO:', error.message);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const safeMessage = sanitizeSensitiveData(error?.message ?? 'Erro desconhecido');
+    console.error('[chat] ERRO:', safeMessage);
+    return NextResponse.json(
+      {
+        error: process.env.NODE_ENV === 'development'
+          ? safeMessage
+          : 'Erro interno. Tente novamente.',
+      },
+      { status: 500 }
+    );
   }
 }
