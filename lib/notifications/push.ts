@@ -4,17 +4,17 @@ export async function sendPushNotification(userId: number, title: string, body?:
   // Buscar token FCM do usuário (campo fcm_token na tabela users)
   const { data: user, error } = await supabase
     .from('users')
-    .select('fcm_token')
+    .select('push_token')
     .eq('id', userId)
     .single();
 
-  if (error || !user?.fcm_token) {
-    console.log(`[Push] Usuário ${userId} sem token FCM.`);
+  if (error || !user?.push_token) {
+    console.log(`[Push] Usuário ${userId} sem token Push.`);
     return false;
   }
 
   const message = {
-    to: user.fcm_token,
+    to: user.push_token,
     notification: {
       title: '🔔 Lembrete',
       body: body || title,
@@ -61,7 +61,7 @@ export async function sendPushNotification(userId: number, title: string, body?:
     if (result.results && result.results[0]) {
       const errorCode = result.results[0].error;
       if (errorCode === 'NotRegistered' || errorCode === 'InvalidRegistration') {
-        await supabase.from('users').update({ fcm_token: null }).eq('id', userId);
+        await supabase.from('users').update({ push_token: null }).eq('id', userId);
         console.log(`[Push] Token removido para usuário ${userId} (${errorCode})`);
         return false;
       }
