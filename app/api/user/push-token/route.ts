@@ -13,7 +13,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   }
 
-  const { userId, token: pushToken, platform } = await req.json();
+  const { userId, token: push_token, platform } = await req.json();
 
   // Resolve o id numérico independente de receber UUID ou number
   const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(userId));
@@ -41,7 +41,7 @@ export async function POST(req: Request) {
   const { error: updateError } = await supabase
     .schema('jarvis')
     .from('users')
-    .update({ pushToken_token: pushToken, last_active_platform: platform })
+    .update({ push_token: push_token, last_active_token: bearerToken, last_active_platform: platform })
     .eq('id', numericId)
     .eq('auth_user_id', user.id);  // double-check de segurança
 
