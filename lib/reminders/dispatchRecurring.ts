@@ -10,7 +10,7 @@ export async function dispatchRecurringReminders(): Promise<void> {
   const { data: reminders, error } = await supabase
     .schema('jarvis')
     .from('reminders')
-    .select(`id, title, frequency, scheduled_time, users ( push_token )`)
+    .select(`id, title, frequency, scheduled_time, users!fk_reminders_user ( push_token )`)
     .eq('status', 'pending')
     .eq('type', 'recurring')
     .lte('scheduled_time', now.toISOString())

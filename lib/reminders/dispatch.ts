@@ -13,7 +13,7 @@ export async function dispatchPendingReminders(): Promise<void> {
       type,
       frequency,
       scheduled_time,
-      users ( push_token )
+      users!fk_reminders_user ( push_token )
     `)
     .eq('status', 'pending')
     .in('type', ['temporary', 'agenda'])
