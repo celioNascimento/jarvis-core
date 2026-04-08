@@ -1,12 +1,11 @@
-// lib/reminders/dispatch.ts
 import { supabase } from '@/lib/jarvis';
 import { Expo, ExpoPushMessage } from 'expo-server-sdk';
 
 const expo = new Expo();
 
 export async function dispatchPendingReminders(): Promise<void> {
-  // Busca pendentes cujo horário já passou (temporary + agenda)
   const { data: reminders, error } = await supabase
+    .schema('jarvis')
     .from('reminders')
     .select(`
       id,
@@ -14,7 +13,6 @@ export async function dispatchPendingReminders(): Promise<void> {
       type,
       frequency,
       scheduled_time,
-      delay_minutes,
       users ( push_token )
     `)
     .eq('status', 'pending')
@@ -30,12 +28,14 @@ export async function dispatchPendingReminders(): Promise<void> {
   if (!reminders?.length) return;
 
   const messages: ExpoPushMessage[] = [];
-  const toComplete: number[] = [];   // temporary → 'completed'
-  const toReschedule: { id: number; next: string }[] = []; // recurring → próxima data
+  const toComplete: number[] = [];
 
   for (const r of reminders) {
     const token = (r.users as any)?.push_token;
-    if (!token || !Expo.isExpoPushToken(token)) continue;
+    if (!token || !Expo.isExpoPushToken(token)) {
+      console.warn('[Dispatch] Token inválido ou ausente para reminder:', r.id);
+      continue;
+    }
 
     messages.push({
       to: token,
@@ -48,22 +48,38 @@ export async function dispatchPendingReminders(): Promise<void> {
     toComplete.push(r.id);
   }
 
+  if (!messages.length) {
+    console.log('[Dispatch] Nenhuma mensagem válida para enviar.');
+    return;
+  }
+
   // Envia em chunks
   const chunks = expo.chunkPushNotifications(messages);
   for (const chunk of chunks) {
     try {
-      await expo.sendPushNotificationsAsync(chunk);
+      const receipts = await expo.sendPushNotificationsAsync(chunk);
+      // Loga erros por mensagem
+      for (const receipt of receipts) {
+        if (receipt.status === 'error') {
+          console.error('[Dispatch] Erro no receipt:', receipt.message, receipt.details);
+        }
+      }
     } catch (err) {
       console.error('[Dispatch] Erro ao enviar chunk:', err);
     }
   }
 
-  // Marca temporary/agenda como completed
+  // Marca como completed
   if (toComplete.length) {
-    await supabase
+    const { error: updateError } = await supabase
+      .schema('jarvis')
       .from('reminders')
       .update({ status: 'completed', updated_at: new Date().toISOString() })
       .in('id', toComplete);
+
+    if (updateError) {
+      console.error('[Dispatch] Erro ao atualizar status:', updateError.message);
+    }
   }
 
   console.log(`[Dispatch] Enviados: ${messages.length}`);
