@@ -39,11 +39,12 @@ export async function POST(req: Request) {
   }
 
   const { error: updateError } = await supabase
-    .schema('jarvis')
-    .from('users')
-    .update({ push_token: push_token, last_active_token: bearerToken, last_active_platform: platform })
-    .eq('id', numericId)
-    .eq('auth_user_id', user.id);  // double-check de segurança
+  .schema('jarvis')
+  .from('users')
+  .update({ push_token: push_token, last_active_platform: platform })
+  .eq('id', numericId)
+  .eq('auth_user_id', user.id);
+ 
 
   if (updateError) {
     console.error('[push-token] Erro ao salvar push token:', updateError);
