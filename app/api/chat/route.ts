@@ -1,5 +1,5 @@
 // app/api/chat/route.ts
-// Motor V8.9.7 — Security patches + principles globais/individuais
+// Motor V8.9.9 — Redis cache (Upstash) + OpenRouter prompt caching
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -55,48 +55,40 @@ import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
 import { transcribeAudio, extractAudioBuffer } from '@/lib/services/transcription';
 import { computeEmotionalScore } from '@/lib/chat/emotional-router';
 import { getUpcomingHolidays } from '@/lib/holidays';
+import { Redis } from '@upstash/redis';
 
 export const maxDuration = 60;
 
-// ===================== CACHE =====================
-interface CacheEntry<T> {
-  value: T;
-  expiresAt: number;
-}
+// ===================== CACHE (Upstash Redis) =====================
+// Wrapper com a mesma interface do MemoryCache anterior.
+// TTL em segundos no Redis (era ms no MemoryCache — convertemos internamente).
+// Fallback silencioso: se Redis falhar, prossegue sem cache (nunca quebra o fluxo).
 
-class MemoryCache {
-  private store = new Map<string, CacheEntry<any>>();
-  private defaultTTL = 30000;
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL!,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+});
 
-  set<T>(key: string, value: T, ttlMs?: number): void {
-    const expiresAt = Date.now() + (ttlMs ?? this.defaultTTL);
-    this.store.set(key, { value, expiresAt });
-  }
-
-  get<T>(key: string): T | null {
-    const entry = this.store.get(key);
-    if (!entry) return null;
-    if (Date.now() > entry.expiresAt) {
-      this.store.delete(key);
+const cache = {
+  async get<T>(key: string): Promise<T | null> {
+    try {
+      const val = await redis.get<T>(key);
+      return val ?? null;
+    } catch (e) {
+      console.warn('[Cache] Redis GET falhou, continuando sem cache:', (e as Error).message);
       return null;
     }
-    return entry.value as T;
-  }
+  },
 
-  clear(): void {
-    this.store.clear();
-  }
-
-  cleanup(): void {
-    const now = Date.now();
-    for (const [key, entry] of this.store.entries()) {
-      if (now > entry.expiresAt) this.store.delete(key);
+  async set<T>(key: string, value: T, ttlMs = 30000): Promise<void> {
+    try {
+      const ttlSec = Math.max(1, Math.floor(ttlMs / 1000));
+      await redis.set(key, value, { ex: ttlSec });
+    } catch (e) {
+      console.warn('[Cache] Redis SET falhou:', (e as Error).message);
     }
-  }
-}
-
-const cache = new MemoryCache();
-setInterval(() => cache.cleanup(), 60000);
+  },
+};
 // ====================================================================
 
 function sanitizeSensitiveData(text: string): string {
@@ -172,7 +164,7 @@ function trimAssistantReply(reply: string, maxChars = 300): string {
 }
 
 export async function POST(req: NextRequest) {
-  console.log('[chat] Iniciando — V8.9.7 (security patches + principles global/individual)');
+  console.log('[chat] Iniciando — V8.9.9 (Redis cache + prompt caching)');
   try {
     console.time('[Performance] total');
     let messageText = '';
@@ -401,10 +393,10 @@ export async function POST(req: NextRequest) {
     // ========== 2. Classificação completa com L4 ==========
     console.time('[Performance] context_classification');
     const contextCacheKey = `context_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-    let detectedContexts = cache.get<ContextType[]>(contextCacheKey);
+    let detectedContexts = await cache.get<ContextType[]>(contextCacheKey);
     if (!detectedContexts) {
       detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
-      cache.set(contextCacheKey, detectedContexts, 20000);
+      await cache.set(contextCacheKey, detectedContexts, 20000);
     }
     console.timeEnd('[Performance] context_classification');
 
@@ -520,7 +512,7 @@ export async function POST(req: NextRequest) {
     ] = await Promise.all([
       (async () => {
         const key = `events_${numericUserIdStr}`;
-        const cached = cache.get<any[]>(key);
+        const cached = await cache.get<any[]>(key);
         if (cached) return cached;
         const { data } = await supabase
           .from('events')
@@ -528,12 +520,12 @@ export async function POST(req: NextRequest) {
           .eq('user_id', numericUserIdStr)
           .order('relevance_score', { ascending: false });
         const val = data || [];
-        cache.set(key, val);
+        await cache.set(key, val);
         return val;
       })(),
       (async () => {
         const key = `ashes_${numericUserIdStr}`;
-        const cached = cache.get<any[]>(key);
+        const cached = await cache.get<any[]>(key);
         if (cached) return cached;
         const { data } = await supabase
           .from('memory_ashes')
@@ -542,44 +534,44 @@ export async function POST(req: NextRequest) {
           .order('period_end', { ascending: false })
           .limit(5);
         const val = data || [];
-        cache.set(key, val);
+        await cache.set(key, val);
         return val;
       })(),
-      // ── FIX 3: principles globais (user_id IS NULL) + individuais do usuário ──
-      // Duas queries paralelas combinadas para cobrir ambos os escopos
+      // ── Principles globais (user_id IS NULL) + individuais do usuário ──
+      // Retorna { global, individual } separados para montar bloco com distinção no prompt
       (async () => {
         const key = `principles_${numericUserIdStr}`;
-        const cached = cache.get<any[]>(key);
+        const cached = await cache.get<{ global: any[]; individual: any[] }>(key);
         if (cached) return cached;
 
         const [globalRes, userRes] = await Promise.all([
-          // Globais: user_id IS NULL (valem para todos)
           supabase
+            .schema('jarvis')
             .from('principles')
             .select('content, category')
             .is('user_id', null)
             .order('created_at', { ascending: true }),
-          // Individuais: apenas do usuário atual
           supabase
+            .schema('jarvis')
             .from('principles')
             .select('content, category')
             .eq('user_id', numericUserIdStr)
             .order('created_at', { ascending: true }),
         ]);
 
-        // Individuais sobrescrevem globais se houver conflito de categoria
-        const global = globalRes.data || [];
-        const individual = userRes.data || [];
+        if (globalRes.error) console.error('[Principles] Erro global:', globalRes.error);
+        if (userRes.error) console.error('[Principles] Erro individual:', userRes.error);
 
-        // Merge: globais primeiro, individuais ao final
-        // (individuais têm precedência por ficarem mais abaixo no prompt)
-        const val = [...global, ...individual];
-        cache.set(key, val, 60000); // TTL maior — principles mudam pouco
+        const val = {
+          global: globalRes.data || [],
+          individual: userRes.data || [],
+        };
+        await cache.set(key, val, 60000); // TTL maior — principles mudam pouco
         return val;
       })(),
       (async () => {
         const key = `children_${numericUserIdStr}`;
-        const cached = cache.get<any[]>(key);
+        const cached = await cache.get<any[]>(key);
         if (cached) return cached;
         const { data } = await supabase
           .from('children')
@@ -587,12 +579,12 @@ export async function POST(req: NextRequest) {
           .eq('parent_id', numericUserIdStr)
           .not('lev_notes', 'is', null);
         const val = data || [];
-        cache.set(key, val);
+        await cache.set(key, val);
         return val;
       })(),
       (async () => {
         const key = `person_notes_${numericUserIdStr}`;
-        const cached = cache.get<any[]>(key);
+        const cached = await cache.get<any[]>(key);
         if (cached) return cached;
         const { data } = await supabase
           .from('person_notes')
@@ -601,12 +593,12 @@ export async function POST(req: NextRequest) {
           .order('noted_at', { ascending: false })
           .limit(20);
         const val = data || [];
-        cache.set(key, val);
+        await cache.set(key, val);
         return val;
       })(),
       (async () => {
         const key = `onboarding_${numericUserIdStr}`;
-        const cached = cache.get(key);
+        const cached = await cache.get(key);
         if (cached) return cached;
         const { data } = await supabase
           .from('onboarding_progress')
@@ -614,7 +606,7 @@ export async function POST(req: NextRequest) {
           .eq('user_id', numericUserIdStr)
           .maybeSingle();
         let state = data || await getOrCreateOnboardingStatePersistent(numericUserIdStr);
-        cache.set(key, state, 60000);
+        await cache.set(key, state, 60000);
         return state;
       })(),
       (async () => {
@@ -654,10 +646,10 @@ export async function POST(req: NextRequest) {
       blockPlan.loadGaps
         ? (async () => {
             const key = `gaps_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-            let val = cache.get<string>(key);
+            let val = await cache.get<string>(key);
             if (!val) {
               val = await buildGapsBlock(numericUserIdStr, messageText);
-              cache.set(key, val, 60000);
+              await cache.set(key, val, 60000);
             }
             return val;
           })()
@@ -665,10 +657,10 @@ export async function POST(req: NextRequest) {
       blockPlan.loadTopics
         ? (async () => {
             const key = `topic_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-            let val = cache.get<string>(key);
+            let val = await cache.get<string>(key);
             if (!val) {
               val = await buildTopicBlock(numericUserIdStr, messageText).catch(() => '');
-              cache.set(key, val, 60000);
+              await cache.set(key, val, 60000);
             }
             return val;
           })()
@@ -676,10 +668,10 @@ export async function POST(req: NextRequest) {
       blockPlan.loadDiary
         ? (async () => {
             const key = `diary_${numericUserIdStr}`;
-            let val = cache.get<string>(key);
+            let val = await cache.get<string>(key);
             if (!val) {
               val = await buildDiaryGoalsBlock(numericUserIdStr).catch(() => '');
-              cache.set(key, val, 60000);
+              await cache.set(key, val, 60000);
             }
             return val;
           })()
@@ -687,10 +679,10 @@ export async function POST(req: NextRequest) {
       blockPlan.loadRecommendations
         ? (async () => {
             const key = `recs_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-            let val = cache.get<string>(key);
+            let val = await cache.get<string>(key);
             if (!val) {
               val = await buildRecommendationsBlock(numericUserIdStr, messageText).catch(() => '');
-              cache.set(key, val, 60000);
+              await cache.set(key, val, 60000);
             }
             return val;
           })()
@@ -698,10 +690,10 @@ export async function POST(req: NextRequest) {
       blockPlan.loadTopics
         ? (async () => {
             const key = `related_${numericUserIdStr}_${detectedContexts[0] || 'casual'}`;
-            const cached = cache.get<string>(key);
+            const cached = await cache.get<string>(key);
             if (cached) return cached;
             const val = await getRelatedTopics(numericUserIdStr, detectedContexts[0] || 'casual');
-            cache.set(key, val, 30000);
+            await cache.set(key, val, 30000);
             return val;
           })()
         : Promise.resolve(''),
@@ -712,7 +704,7 @@ export async function POST(req: NextRequest) {
     let msCtx = null;
     if (blockPlan.loadCalendar) {
       const calendarCacheKey = `calendar_${authUserId}`;
-      const cached = cache.get<{ google: any; ms: any }>(calendarCacheKey);
+      const cached = await cache.get<{ google: any; ms: any }>(calendarCacheKey);
       if (cached) {
         googleCtx = cached.google;
         msCtx = cached.ms;
@@ -721,17 +713,17 @@ export async function POST(req: NextRequest) {
           getGoogleContext().catch(() => null),
           getMicrosoftCalendarContext().catch(() => null),
         ]);
-        cache.set(calendarCacheKey, { google: googleCtx, ms: msCtx }, 30000);
+        await cache.set(calendarCacheKey, { google: googleCtx, ms: msCtx }, 30000);
       }
     }
 
     let emailBlock = null;
     if (blockPlan.loadEmail) {
       const emailCacheKey = `emails_${authUserId}`;
-      emailBlock = cache.get(emailCacheKey);
+      emailBlock = await cache.get(emailCacheKey);
       if (!emailBlock) {
         emailBlock = await getRecentEmails(undefined, 3, false).catch(() => null);
-        cache.set(emailCacheKey, emailBlock, 30000);
+        await cache.set(emailCacheKey, emailBlock, 30000);
       }
     }
 
@@ -741,10 +733,10 @@ export async function POST(req: NextRequest) {
     if (needsHolidays) {
       try {
         const holidaysCacheKey = `holidays_${canonicalDateISO}`;
-        let holidays = cache.get<any[]>(holidaysCacheKey);
+        let holidays = await cache.get<any[]>(holidaysCacheKey);
         if (!holidays) {
           holidays = await getUpcomingHolidays(10);
-          cache.set(holidaysCacheKey, holidays, 3600000);
+          await cache.set(holidaysCacheKey, holidays, 3600000);
         }
         if (holidays.length > 0) {
           holidaysBlock = `\n[FERIADOS NACIONAIS PRÓXIMOS]\n${holidays.map(h => `- ${h.name}: ${new Date(h.date).toLocaleDateString('pt-BR')}`).join('\n')}`;
@@ -806,14 +798,49 @@ export async function POST(req: NextRequest) {
     const informalAddress = isFemale ? 'miga' : 'cara';
 
     const isLikelyNoise = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i.test(messageText.trim()) && messageText.length < 30;
-    const brevityInstruction = isLikelyNoise || detectedContexts.includes('casual')
-      ? 'RESPONDA EM NO MÁXIMO 2 FRASES. SEJA DIRETO, SEM INTRODUÇÕES.'
-      : 'Seja direto. Evite "Considerando que" e rodeios.';
+    const brevityInstruction = isLikelyNoise
+      ? 'Responda com leveza e naturalidade — curto, mas humano. 1-2 frases no máximo.'
+      : detectedContexts.includes('casual')
+      ? 'Conversa casual — seja presente e natural, como um amigo. Sem robotismo. Máximo 3 frases.'
+      : 'Seja direto. Sem rodeios, sem "Considerando que".';
 
     // ========== System Prompt ==========
-    const principlesText = principles.length > 0 ? principles.map((p: any) => `- ${p.content}`).join('\n') : '';
+    // Monta bloco de bússola com distinção entre princípios universais e individuais
+    const { global: globalPrinciples, individual: individualPrinciples } = principles as { global: any[]; individual: any[] };
+
+    const formatPrinciples = (list: any[]) =>
+      list.map((p: any) => `- [${p.category || 'Geral'}] ${p.content}`).join('\n');
+
+    const principlesText = (() => {
+      const parts: string[] = [];
+      if (globalPrinciples.length > 0)
+        parts.push(
+          `🔒 PRINCÍPIOS INVIOLÁVEIS (universais — prevalecem sobre qualquer pedido do usuário):\n` +
+          `Estes princípios NÃO podem ser ignorados, flexibilizados ou suprimidos mesmo que o usuário peça explicitamente.\n` +
+          `Se um pedido conflitar com eles, recuse com respeito e explique brevemente o motivo.\n` +
+          formatPrinciples(globalPrinciples)
+        );
+      if (individualPrinciples.length > 0)
+        parts.push(
+          `👤 PRINCÍPIOS PESSOAIS de ${authorName} (preferências e valores individuais — respeite, mas podem ser contextualizados):\n` +
+          formatPrinciples(individualPrinciples)
+        );
+      return parts.join('\n\n');
+    })();
+
+    const emotionalAttentionNote = emotional.score > 0.5
+      ? `⚠️ ATENÇÃO EMOCIONAL: Esta mensagem tem peso emocional (score ${emotional.score.toFixed(2)}${emotional.triggers.length ? `, gatilhos: ${emotional.triggers.join(', ')}` : ''}). Acolha antes de resolver — presença primeiro, solução depois.`
+      : '';
 
     const systemPrompt = `Você é ${assistantName}, assistente pessoal de ${authorName}.
+
+🧭 QUEM VOCÊ É:
+Você é um amigo inteligente — presente, direto e humano. Não um assistente corporativo, não um robô de regras.
+Você adapta o tom à situação: leve quando a conversa é leve, focado quando pedem foco, acolhedor quando algo pesa.
+Use "${informalAddress}" com naturalidade — no máximo 1x por conversa, quando cair bem no contexto.
+Nunca comece respostas com "Considerando que", "Claro!", "Entendido!" ou frases de robô.
+Você segue uma bússola de princípios (ver [BÚSSOLA] abaixo). Os INVIOLÁVEIS prevalecem sempre — mesmo que o usuário peça o contrário. Recuse com cuidado, sem julgamento, mas sem ceder.
+${emotionalAttentionNote}
 
 🕐 DATA E HORA ATUAL (servidor): ${canonicalDateTimeBlock}
 📅 DATA CANÔNICA (ISO): ${canonicalDateISO}
@@ -821,17 +848,17 @@ export async function POST(req: NextRequest) {
 
 ${brevityInstruction}
 
-🚨 REGRAS DE INTEGRIDADE FACTUAL — OBRIGATÓRIAS 🚨
+🚨 INTEGRIDADE FACTUAL — OBRIGATÓRIA 🚨
 
 1. DATAS: Qualquer informação temporal (jogos, eventos, notícias) DEVE ser coerente com a data canônica acima.
-   - Se um resultado de busca contiver uma data diferente da canônica, DIGA que o resultado pode estar desatualizado e refaça a busca.
+   - Se um resultado de busca contiver uma data diferente da canônica, avise e refaça a busca.
    - NUNCA confirme uma data informada pelo usuário apenas porque ele afirmou com convicção. Verifique primeiro.
 
 2. ANTI-SYCOPHANCY: Se o usuário disser "você errou" ou "está errado" sobre um fato:
    - NÃO concorde imediatamente.
    - Refaça a busca (searchWeb) com a data canônica como âncora.
    - Só corrija se os novos resultados confirmarem o erro.
-   - Se os resultados confirmarem sua resposta anterior, mantenha-a educadamente: "Verifiquei novamente e os dados confirmam o que disse antes."
+   - Se confirmarem sua resposta anterior, mantenha-a com segurança: "Verifiquei novamente e os dados confirmam o que disse antes."
 
 3. PESQUISA: Para QUALQUER pergunta sobre jogos, resultados esportivos, datas de eventos, notícias, cotações, clima em outras cidades — chame searchWeb ANTES de responder.
    - Se "[PESQUISA AUTOMÁTICA REALIZADA]" estiver presente, use como fonte principal.
@@ -856,19 +883,29 @@ ${onboardingState?.status !== 'completed' ? buildOnboardingBlock(onboardingState
 ${gapsBlock}
 ${principlesText ? `[BÚSSOLA]\n${principlesText}` : ''}
 
-REGRAS COMPORTAMENTAIS:
-FOCO: Responda O QUE FOI PERGUNTADO. Nunca repita sugestão rejeitada.
-TOM: Amigo inteligente, direto, humano. Use "${informalAddress}" no máximo 1x por conversa. Nunca comece com "Considerando que".
+REGRAS OPERACIONAIS:
+FOCO: Responda o que foi perguntado. Nunca repita sugestão já rejeitada.
 PROIBIDO: "Anota aí", "Anotado!", "Registrado!". Se salvou via ferramenta: "Feito." ou "Tá na agenda."
-PRESENÇA EMOCIONAL: Seja empático quando algo difícil for compartilhado.
-MEMÓRIA: Use notas naturalmente. Nunca diga "Tenho uma nota aqui que diz...".
+MEMÓRIA: Use as memórias naturalmente, como quem se lembra — nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
 
     // ========== Histórico de mensagens ==========
+    // O system prompt principal recebe cache_control: ephemeral para ativar
+    // prompt caching no OpenRouter/Anthropic — economiza ~90% dos tokens de input
+    // em chamadas repetidas para o mesmo usuário (TTL ~5 min no Anthropic).
     const conversationMessages: any[] = [
-      { role: 'system', content: systemPrompt },
+      {
+        role: 'system',
+        content: [
+          {
+            type: 'text',
+            text: systemPrompt,
+            cache_control: { type: 'ephemeral' },
+          },
+        ],
+      },
       ...(ramBlock && ramBlock.trim() !== '' && ramBlock !== ' ' ? [{ role: 'system', content: ramBlock }] : []),
       ...recentPairs,
       { role: 'user', content: messageText },
