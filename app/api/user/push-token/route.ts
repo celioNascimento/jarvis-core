@@ -41,7 +41,7 @@ export async function POST(req: Request) {
   const { error: updateError } = await supabase
     .schema('jarvis')
     .from('users')
-    .update({ fcm_token: pushToken, last_active_platform: platform })
+    .update({ pushToken_token: pushToken, last_active_platform: platform })
     .eq('id', numericId)
     .eq('auth_user_id', user.id);  // double-check de segurança
 
