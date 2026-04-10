@@ -7,14 +7,7 @@ export async function dispatchPendingReminders(): Promise<void> {
   const { data: reminders, error } = await supabase
     .schema('jarvis')
     .from('reminders')
-    .select(`
-      id,
-      title,
-      type,
-      frequency,
-      scheduled_time,
-      users!fk_reminders_user ( push_token )
-    `)
+    .select('id, title, type, frequency, scheduled_time, user_id')
     .eq('status', 'pending')
     .in('type', ['temporary', 'agenda'])
     .lte('scheduled_time', new Date().toISOString())
@@ -28,11 +21,20 @@ export async function dispatchPendingReminders(): Promise<void> {
   if (!reminders?.length) return;
 
   const messages: ExpoPushMessage[] = [];
-  const toComplete: number[] = [];
+  const toComplete: string[] = [];
 
   for (const r of reminders) {
-    const token = (r.users as any)?.push_token;
-    console.log('[Dispatch] reminder:', r.id, 'token:', token); // ← adiciona isso
+    // Busca token diretamente — evita problema de join cross-schema
+    const { data: user } = await supabase
+      .schema('jarvis')
+      .from('users')
+      .select('push_token')
+      .eq('id', r.user_id)
+      .single();
+
+    const token = user?.push_token;
+    console.log('[Dispatch] reminder:', r.id, 'token:', token);
+
     if (!token || !Expo.isExpoPushToken(token)) {
       console.warn('[Dispatch] Token inválido ou ausente para reminder:', r.id);
       continue;
@@ -54,12 +56,10 @@ export async function dispatchPendingReminders(): Promise<void> {
     return;
   }
 
-  // Envia em chunks
   const chunks = expo.chunkPushNotifications(messages);
   for (const chunk of chunks) {
     try {
       const receipts = await expo.sendPushNotificationsAsync(chunk);
-      // Loga erros por mensagem
       for (const receipt of receipts) {
         if (receipt.status === 'error') {
           console.error('[Dispatch] Erro no receipt:', receipt.message, receipt.details);
@@ -70,7 +70,6 @@ export async function dispatchPendingReminders(): Promise<void> {
     }
   }
 
-  // Marca como completed
   if (toComplete.length) {
     const { error: updateError } = await supabase
       .schema('jarvis')
