@@ -32,6 +32,7 @@ export async function dispatchPendingReminders(): Promise<void> {
 
   for (const r of reminders) {
     const token = (r.users as any)?.push_token;
+    console.log('[Dispatch] reminder:', r.id, 'token:', token); // ← adiciona isso
     if (!token || !Expo.isExpoPushToken(token)) {
       console.warn('[Dispatch] Token inválido ou ausente para reminder:', r.id);
       continue;
