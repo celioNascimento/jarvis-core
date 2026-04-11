@@ -62,13 +62,13 @@ async function fetchWithTimeout(
  * Verifica proximidade e contexto geográfico do usuário
  * @param lat Latitude (-90 a 90)
  * @param lng Longitude (-180 a 180)
- * @param numericUserId Opcional: se fornecido, salva cidade/UF automaticamente ✅ CORREÇÃO CRÍTICA
+ * @param numericUserId Opcional: se fornecido, salva cidade/UF automaticamente
  * @returns String formatada com localização e pontos de interesse próximos
  */
 export async function checkProximidade(
   lat: number, 
   lng: number,
-  numericUserId?: string // ✅ PARÂMETRO ADICIONADO (não quebra compatibilidade)
+  numericUserId?: string
 ): Promise<string> {
   // === 1. VALIDAÇÃO DE COORDENADAS ===
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
@@ -76,7 +76,7 @@ export async function checkProximidade(
     return `[LOCALIZAÇÃO]\nCoordenadas inválidas.`;
   }
 
-  // === 2. CACHE EM MEMÓRIA (chave arredondada para ~111m) ===
+  // === 2. CACHE EM MEMÓRIA (chave arredondada para ~11m) ===
   const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
   const cached = geoCache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
@@ -106,31 +106,47 @@ export async function checkProximidade(
         if (!geoRes.ok) throw new Error(`HTTP ${geoRes.status}`);
         const geoData = await geoRes.json();
 
-        if (geoData.status === 'OK' && geoData.results?.[0]) {
+        if (geoData.status === 'OK' && geoData.results?.length) {
           enderecoCompleto = geoData.results[0].formatted_address;
-          const comps = geoData.results[0].address_components;
 
+          // 🔍 LOGS TEMPORÁRIOS PARA DEPURAÇÃO
+          console.log('[Geo] results[0] types:', geoData.results[0]?.types);
+          console.log('[Geo] components:', geoData.results[0]?.address_components?.map((c: any) => ({ types: c.types, name: c.long_name })));
+
+          // 🔁 Procura em todos os resultados até achar um que tenha 'route'
+          let comps = geoData.results[0].address_components;
+          for (const result of geoData.results) {
+            const hasRoute = result.address_components.some((c: any) => c.types.includes('route'));
+            if (hasRoute) {
+              comps = result.address_components;
+              break;
+            }
+          }
+
+          // Extração da rua e número
+          const ruaComp = comps.find((c: any) => c.types.includes('route'));
+          rua = ruaComp?.long_name || '';
+          const numeroComp = comps.find((c: any) => c.types.includes('street_number'));
+          const numero = numeroComp?.long_name || '';
+          if (rua && numero) rua = `${rua}, ${numero}`;
+
+          // Bairro / sublocalidade
           const bairroComp =
             comps.find((c: any) => c.types.includes('sublocality')) ||
             comps.find((c: any) => c.types.includes('neighborhood'));
           bairro = bairroComp?.long_name || '';
 
-          const ruaComp = comps.find((c: any) => c.types.includes('route'));
-          rua = ruaComp?.long_name || '';
-
-          const numeroComp = comps.find((c: any) => c.types.includes('street_number'));
-          const numero = numeroComp?.long_name || '';
-        if (rua && numero) rua = `${rua}, ${numero}`;
-
-          // ✅ EXTRAÇÃO ROBUSTA: locality → administrative_area_level_2 (áreas rurais)
+          // Cidade (locality ou administrative_area_level_2)
           const cidadeComp =
             comps.find((c: any) => c.types.includes('locality')) ||
             comps.find((c: any) => c.types.includes('administrative_area_level_2'));
           cidade = cidadeComp?.long_name || '';
 
+          // Estado (administrative_area_level_1)
           const estadoComp = comps.find((c: any) => c.types.includes('administrative_area_level_1'));
           estado = estadoComp?.short_name || estadoComp?.long_name || '';
 
+          // País
           const paisComp = comps.find((c: any) => c.types.includes('country'));
           pais = paisComp?.short_name || '';
         } else {
@@ -168,6 +184,13 @@ export async function checkProximidade(
         if (nomData.display_name) {
           enderecoCompleto = nomData.display_name;
           bairro = nomData.address?.suburb || nomData.address?.neighbourhood || '';
+          
+          // Extração da rua e número no fallback Nominatim
+          const ruaNom = nomData.address?.road || '';
+          const numeroNom = nomData.address?.house_number || '';
+          if (ruaNom && numeroNom) rua = `${ruaNom}, ${numeroNom}`;
+          else if (ruaNom) rua = ruaNom;
+          
           cidade = nomData.address?.city || nomData.address?.town || nomData.address?.village || '';
           estado = nomData.address?.state || '';
           pais = nomData.address?.country_code?.toUpperCase() || '';
@@ -182,19 +205,19 @@ export async function checkProximidade(
       }
     }
 
-    // === 4. MONTAGEM DO LABEL DE LOCALIZAÇÃO ===
+    // === 4. MONTAGEM DO LABEL DE LOCALIZAÇÃO (com rua, bairro, cidade em cascata) ===
     let locationLabel = '';
-    if (bairro && cidade) locationLabel = `${bairro}, ${cidade}`;
-    else if (cidade) locationLabel = cidade;
-    else if (bairro) locationLabel = bairro;
-    else locationLabel = enderecoCompleto.split(',')[0].trim() || 'Localização';
+    if (rua && bairro && cidade)      locationLabel = `${rua} — ${bairro}, ${cidade}`;
+    else if (rua && cidade)           locationLabel = `${rua}, ${cidade}`;
+    else if (bairro && cidade)        locationLabel = `${bairro}, ${cidade}`;
+    else if (cidade)                  locationLabel = cidade;
+    else                              locationLabel = enderecoCompleto.split(',')[0].trim() || 'Localização';
 
     // === 5. BUSCA DE PONTOS DE INTERESSE (apenas Brasil + com chave Google) ===
     let pontosInteresse = '';
     if (apiKey?.trim() && pais === 'BR') {
       try {
         const radius = 1000;
-        // ✅ PARALELIZAÇÃO + VALIDAÇÃO .ok ANTES de .json()
         const [marketRes, wmRes] = await Promise.all([
           fetchWithTimeout(
             `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=supermarket&key=${apiKey}`,
@@ -229,37 +252,35 @@ export async function checkProximidade(
       }
     }
 
-     // ✅ SALVAMENTO AUTOMÁTICO NO SCHEMA JARVIS (CORREÇÃO CRÍTICA)
+    // ✅ SALVAMENTO AUTOMÁTICO NO SCHEMA JARVIS
     if (numericUserId && cidade && estado) {
-  supabase
-    .from('user_locations')
-    .upsert(
-      {
-        user_id: numericUserId,
-        latitude: parseFloat(lat.toFixed(6)),
-        longitude: parseFloat(lng.toFixed(6)),
-        city: cidade.trim(),
-        state: estado.trim(),
-        country: pais,
-        last_updated: new Date().toISOString(),
-      },
-      { onConflict: 'user_id' }
-    )
-    .then(
-      ({ error }) => { if (error) console.error('[Geo] Upsert localização:', error); },
-      (e) => console.error('[Geo] Upsert localização:', e)
-    );
-}
+      supabase
+        .from('user_locations')
+        .upsert(
+          {
+            user_id: numericUserId,
+            latitude: parseFloat(lat.toFixed(6)),
+            longitude: parseFloat(lng.toFixed(6)),
+            city: cidade.trim(),
+            state: estado.trim(),
+            country: pais,
+            last_updated: new Date().toISOString(),
+          },
+          { onConflict: 'user_id' }
+        )
+        .then(
+          ({ error }) => { if (error) console.error('[Geo] Upsert localização:', error); },
+          (e) => console.error('[Geo] Upsert localização:', e)
+        );
+    }
 
-    // === 6. MONTAGEM DO CONTEXTO FINAL ===
-    const latMasked = lat.toFixed(2);
-    const lngMasked = lng.toFixed(2);
-    let contextString = `[LOCALIZAÇÃO]\n📍 ${locationLabel}\n`;
-    contextString += `(Coordenadas aproximadas: ${latMasked}, ${lngMasked})\n`;
+    // === 6. MONTAGEM DO CONTEXTO FINAL (sem coordenadas) ===
+    let contextString = `[LOCALIZAÇÃO]\n📍 ${locationLabel}`;
+    if (estado) contextString += `, ${estado}`;
     if (pontosInteresse) contextString += pontosInteresse;
 
+    // Armazena no cache e retorna
     geoCache.set(cacheKey, { value: contextString, timestamp: Date.now() });
-
     return contextString;
   } catch (error) {
     console.error('[Geo] Erro fatal:', error);
