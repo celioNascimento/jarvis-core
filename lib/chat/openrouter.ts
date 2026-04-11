@@ -19,6 +19,7 @@ export async function callOpenRouterWithTools(
   temperature: number,
   timeoutMs = 25000,
   maxTokens = 2000 // ✅ novo parâmetro com valor padrão
+  toolChoice: any = 'auto' // ← novo parâmetro
 ): Promise<ToolResponse> {
   const response = await Promise.race<Response>([
     fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -33,7 +34,7 @@ export async function callOpenRouterWithTools(
         model,
         messages,
         tools: toolsDef,
-        tool_choice: 'auto',
+        tool_choice: toolChoice,
         temperature,
         max_tokens: maxTokens, // ✅ usa valor dinâmico
       }),
