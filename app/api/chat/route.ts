@@ -981,7 +981,8 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         modelRoute.model,
         temperature,
         25000,
-        maxTokens
+        maxTokens,
+        isReminderIntent ? { type: 'function', function: { name: 'create_reminder' } } : 'auto', //
       );
       const { content, toolCalls } = response;
 

@@ -18,7 +18,7 @@ export async function callOpenRouterWithTools(
   model: string,
   temperature: number,
   timeoutMs = 25000,
-  maxTokens = 2000 // ✅ novo parâmetro com valor padrão
+  maxTokens = 2000, // ✅ novo parâmetro com valor padrão
   toolChoice: any = 'auto' // ← novo parâmetro
 ): Promise<ToolResponse> {
   const response = await Promise.race<Response>([
