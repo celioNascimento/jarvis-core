@@ -972,36 +972,56 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     else if (detectedContexts.includes('casual')) maxTokens = 250;
 
     // ReAct Loop
-    let finalResponse = '';
-    let attempts = 0;
+let finalResponse = '';
+let attempts = 0;
+let forcedToolChoice: any = isReminderIntent
+  ? { type: 'function', function: { name: 'create_reminder' } }
+  : 'auto';
 
-    while (attempts < 5) {
-      const response = await callOpenRouterWithTools(
-        conversationMessages,
-        tools,
-        modelRoute.model,
-        temperature,
-        25000,
-        maxTokens,
-        isReminderIntent ? { type: 'function', function: { name: 'create_reminder' } } : 'auto', //
-      );
-      const { content, toolCalls } = response;
+while (attempts < 5) {
+  const response = await callOpenRouterWithTools(
+    conversationMessages,
+    tools,
+    modelRoute.model,
+    temperature,
+    25000,
+    maxTokens,
+    forcedToolChoice,
+  );
+  const { content, toolCalls } = response;
 
-      if (!toolCalls || toolCalls.length === 0) {
-        finalResponse = content;
-        break;
-      }
+  if (!toolCalls || toolCalls.length === 0) {
+    finalResponse = content;
+    break;
+  }
 
-      conversationMessages.push({ role: 'assistant', content: null, tool_calls: toolCalls });
+  // Após primeira tool call, libera para auto
+  forcedToolChoice = 'auto';
 
-      for (const toolCall of toolCalls) {
-        const result = await executeTool(toolCall, authUserId, numericUserIdStr);
-        conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
-      }
-      attempts++;
+  conversationMessages.push({ role: 'assistant', content: null, tool_calls: toolCalls });
+
+  for (const toolCall of toolCalls) {
+    const result = await executeTool(toolCall, authUserId, numericUserIdStr);
+    conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
+  }
+  attempts++;
+}
+
+   if (!finalResponse) {
+  const lastToolMessage = conversationMessages
+    .filter((m: any) => m.role === 'tool')
+    .pop();
+  if (lastToolMessage) {
+    try {
+      const toolResult = JSON.parse(lastToolMessage.content);
+      finalResponse = toolResult.message || 'Feito.';
+    } catch {
+      finalResponse = 'Feito.';
     }
-
-    if (!finalResponse) finalResponse = 'Ops, não consegui processar. Pode repetir?';
+  } else {
+    finalResponse = 'Ops, não consegui processar. Pode repetir?';
+  }
+}
 
     let category = 'info';
     const categoryMatch = finalResponse.match(/\[CLASSE:\s*(\w+)\]/i);
