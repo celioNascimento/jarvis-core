@@ -58,9 +58,10 @@ export async function createReminderTool(
   }
 
   const { data, error } = await supabase
+    .schema('jarvis')
     .from('reminders')
     .insert({
-      user_id: parseInt(numericUserId, 10),
+      user_id: numericUserId,
       title: title.trim(),
       type,
       scheduled_time: scheduledTime?.toISOString() || null,

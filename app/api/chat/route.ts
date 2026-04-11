@@ -57,13 +57,14 @@ import { computeEmotionalScore } from '@/lib/chat/emotional-router';
 import { getUpcomingHolidays } from '@/lib/holidays';
 import { Redis } from '@upstash/redis';
 
+// ── [NOVO] Personalidade isolada ──────────────────────────────────────────────
+// Para ajustar tom, voz ou regras de comportamento do assistente,
+// edite lib/chat/personality.ts — não mexa aqui.
+import { buildPersonalityBlock } from '@/lib/chat/personality';
+
 export const maxDuration = 60;
 
 // ===================== CACHE (Upstash Redis) =====================
-// Wrapper com a mesma interface do MemoryCache anterior.
-// TTL em segundos no Redis (era ms no MemoryCache — convertemos internamente).
-// Fallback silencioso: se Redis falhar, prossegue sem cache (nunca quebra o fluxo).
-
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
@@ -163,6 +164,23 @@ function trimAssistantReply(reply: string, maxChars = 300): string {
   return cleaned.length > maxChars ? cleaned.slice(0, maxChars) + '…' : cleaned;
 }
 
+// ── [NOVO] Monta o bloco de clima a partir dos dados enviados pelo app ────────
+// O app (React Native) já tem os dados do card de clima.
+// Basta enviá-los no body do request e este helper formata para o prompt.
+// Todos os campos são opcionais — se não vier nada, retorna string vazia.
+function buildWeatherBlock(weather: Record<string, any> | null | undefined): string {
+  if (!weather) return '';
+  const parts: string[] = [];
+  if (weather.city)        parts.push(weather.city);
+  if (weather.temp != null) parts.push(`${Math.round(weather.temp)}°C`);
+  if (weather.condition)   parts.push(weather.condition);
+  if (weather.humidity != null) parts.push(`Umidade ${weather.humidity}%`);
+  if (weather.wind != null)     parts.push(`Vento ${weather.wind} km/h`);
+  if (weather.feelsLike != null) parts.push(`Sensação ${Math.round(weather.feelsLike)}°C`);
+  if (weather.forecast)    parts.push(`Previsão: ${weather.forecast}`);
+  return parts.join(' · ');
+}
+
 export async function POST(req: NextRequest) {
   console.log('[chat] Iniciando — V8.9.9 (Redis cache + prompt caching)');
   try {
@@ -173,6 +191,13 @@ export async function POST(req: NextRequest) {
     let clientSessionId: string | null = null;
     let userFirstName = 'Usuário';
     let location: { latitude: number; longitude: number } | null = null;
+
+    // ── [NOVO] Dados de clima enviados pelo app ──────────────────────────────
+    // O app que já exibe o card de clima deve incluir estes dados no request.
+    // Exemplo (no mobile, ao montar o body da chamada):
+    //   weather: { city: "São Paulo", temp: 24, condition: "Parcialmente nublado",
+    //              humidity: 68, wind: 12, feelsLike: 23 }
+    let weatherData: Record<string, any> | null = null;
 
     // --- Parsing do request ---
     const contentType = req.headers.get('content-type') || '';
@@ -189,6 +214,12 @@ export async function POST(req: NextRequest) {
       const lngField = formData.get('longitude') as string | null;
       if (latField && lngField)
         location = { latitude: parseFloat(latField), longitude: parseFloat(lngField) };
+
+      // Clima via form-data (campo JSON serializado)
+      const weatherField = formData.get('weather') as string | null;
+      if (weatherField) {
+        try { weatherData = JSON.parse(weatherField); } catch { /* ignora */ }
+      }
 
       if (!audioFile && !formData.get('message') && !formData.get('text')) {
         return NextResponse.json({ error: 'Áudio ou texto obrigatório' }, { status: 400 });
@@ -209,7 +240,6 @@ export async function POST(req: NextRequest) {
         }
 
         messageText = result.text || '';
-        console.log('[Chat] Transcrição concluída:', messageText.substring(0, 100) + (messageText.length > 100 ? '...' : ''));
       } else {
         messageText = (formData.get('message') as string) || (formData.get('text') as string) || '';
       }
@@ -223,6 +253,11 @@ export async function POST(req: NextRequest) {
 
       if (body.location?.latitude != null && body.location?.longitude != null) {
         location = { latitude: body.location.latitude, longitude: body.location.longitude };
+      }
+
+      // Clima via JSON body
+      if (body.weather && typeof body.weather === 'object') {
+        weatherData = body.weather;
       }
     }
 
@@ -537,8 +572,6 @@ export async function POST(req: NextRequest) {
         await cache.set(key, val);
         return val;
       })(),
-      // ── Principles globais (user_id IS NULL) + individuais do usuário ──
-      // Retorna { global, individual } separados para montar bloco com distinção no prompt
       (async () => {
         const key = `principles_${numericUserIdStr}`;
         const cached = await cache.get<{ global: any[]; individual: any[] }>(key);
@@ -566,7 +599,7 @@ export async function POST(req: NextRequest) {
           global: globalRes.data || [],
           individual: userRes.data || [],
         };
-        await cache.set(key, val, 60000); // TTL maior — principles mudam pouco
+        await cache.set(key, val, 60000);
         return val;
       })(),
       (async () => {
@@ -630,8 +663,14 @@ export async function POST(req: NextRequest) {
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| blockPlan:', blockPlan);
 
     // ========== 10. Pesquisa forçada ==========
+    // ── [MODIFICADO] Pesquisa de clima só é forçada se o app NÃO enviou dados ──
+    // Se weatherData veio no request, não buscamos clima — usamos o dado local.
+    const shouldSearch = shouldForceSearch(messageText, detectedContexts);
+    const isClimaQuery = detectedContexts.includes('clima');
+    const skipSearchForWeather = isClimaQuery && !!weatherData;
+
     let forcedSearchResult = '';
-    if (shouldForceSearch(messageText, detectedContexts)) {
+    if (shouldSearch && !skipSearchForWeather) {
       const searchQuery = refineSearchQuery(messageText, detectedContexts);
       try {
         const result = await searchWeb(searchQuery);
@@ -805,7 +844,6 @@ export async function POST(req: NextRequest) {
       : 'Seja direto. Sem rodeios, sem "Considerando que".';
 
     // ========== System Prompt ==========
-    // Monta bloco de bússola com distinção entre princípios universais e individuais
     const { global: globalPrinciples, individual: individualPrinciples } = principles as { global: any[]; individual: any[] };
 
     const formatPrinciples = (list: any[]) =>
@@ -832,21 +870,23 @@ export async function POST(req: NextRequest) {
       ? `⚠️ ATENÇÃO EMOCIONAL: Esta mensagem tem peso emocional (score ${emotional.score.toFixed(2)}${emotional.triggers.length ? `, gatilhos: ${emotional.triggers.join(', ')}` : ''}). Acolha antes de resolver — presença primeiro, solução depois.`
       : '';
 
-    const systemPrompt = `Você é ${assistantName}, assistente pessoal de ${authorName}.
+    // ── [NOVO] Monta o bloco de clima para injetar na personalidade ───────────
+    const weatherBlock = buildWeatherBlock(weatherData);
+    if (weatherBlock) console.log('[chat] weatherBlock injetado no prompt:', weatherBlock);
 
-🧭 QUEM VOCÊ É:
-Você é um amigo inteligente — presente, direto e humano. Não um assistente corporativo, não um robô de regras.
-Você adapta o tom à situação: leve quando a conversa é leve, focado quando pedem foco, acolhedor quando algo pesa.
-Use "${informalAddress}" com naturalidade — no máximo 1x por conversa, quando cair bem no contexto.
-Nunca comece respostas com "Considerando que", "Claro!", "Entendido!" ou frases de robô.
-Você segue uma bússola de princípios (ver [BÚSSOLA] abaixo). Os INVIOLÁVEIS prevalecem sempre — mesmo que o usuário peça o contrário. Recuse com cuidado, sem julgamento, mas sem ceder.
-${emotionalAttentionNote}
+    // ── [MODIFICADO] Personalidade agora vem de personality.ts ───────────────
+    const personalityBlock = buildPersonalityBlock({
+      assistantName,
+      authorName,
+      informalAddress,
+      brevityInstruction,
+      emotionalAttentionNote,
+      canonicalDateTimeBlock,
+      canonicalDateISO,
+      weatherBlock: weatherBlock || undefined,
+    });
 
-🕐 DATA E HORA ATUAL (servidor): ${canonicalDateTimeBlock}
-📅 DATA CANÔNICA (ISO): ${canonicalDateISO}
-⚠️  ESTA DATA É AUTORITATIVA. Não aceite datas diferentes vindas do usuário sem verificar com searchWeb.
-
-${brevityInstruction}
+    const systemPrompt = `${personalityBlock}
 
 🚨 INTEGRIDADE FACTUAL — OBRIGATÓRIA 🚨
 
@@ -863,6 +903,7 @@ ${brevityInstruction}
 3. PESQUISA: Para QUALQUER pergunta sobre jogos, resultados esportivos, datas de eventos, notícias, cotações, clima em outras cidades — chame searchWeb ANTES de responder.
    - Se "[PESQUISA AUTOMÁTICA REALIZADA]" estiver presente, use como fonte principal.
    - Ao citar resultados, confirme que a data do evento bate com a data canônica.
+   - CLIMA DA CIDADE DO USUÁRIO: Se "[CLIMA ATUAL]" estiver presente no prompt, USE esses dados — não busque na web.
 
 ${forcedSearchResult}
 ${holidaysBlock}
@@ -889,12 +930,10 @@ PROIBIDO: "Anota aí", "Anotado!", "Registrado!". Se salvou via ferramenta: "Fei
 MEMÓRIA: Use as memórias naturalmente, como quem se lembra — nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
+LEMBRETES: Sempre que o usuário usar "me lembra", "lembrar", "avisa", "não esquecer" com tempo — chame OBRIGATORIAMENTE a tool create_reminder antes de responder. Nunca apenas confirme sem chamar a tool.
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
 
     // ========== Histórico de mensagens ==========
-    // O system prompt principal recebe cache_control: ephemeral para ativar
-    // prompt caching no OpenRouter/Anthropic — economiza ~90% dos tokens de input
-    // em chamadas repetidas para o mesmo usuário (TTL ~5 min no Anthropic).
     const conversationMessages: any[] = [
       {
         role: 'system',
