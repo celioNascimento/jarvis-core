@@ -931,7 +931,11 @@ PROIBIDO: "Anota aí", "Anotado!", "Registrado!". Se salvou via ferramenta: "Fei
 MEMÓRIA: Use as memórias naturalmente, como quem se lembra — nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
-LEMBRETES: Sempre que o usuário usar "me lembra", "lembrar", "avisa", "não esquecer" com tempo — chame OBRIGATORIAMENTE a tool create_reminder antes de responder. Nunca apenas confirme sem chamar a tool.
+LEMBRETES: Sempre que o usuário usar "me lembra", "lembrar", "avisa", "não esquecer", "me avisa", "não deixa eu esquecer" com tempo ou local — chame OBRIGATORIAMENTE a tool create_reminder antes de responder. Nunca apenas confirme sem chamar a tool.
+Ao agendar, considere:
+- Se o scheduled_time cair em feriado nacional ou municipal (ver [FERIADOS NACIONAIS PRÓXIMOS]) ou fim de semana (sábado/domingo), avise e pergunte se confirma ou prefere o próximo dia útil.
+- Se [CLIMA ATUAL] indicar chuva forte, tempestade ou condição adversa no dia/horário do lembrete, mencione proativamente ao confirmar (ex: "Agendado! Mas a previsão indica chuva — leva guarda-chuva.").
+- Para lembretes recorrentes escolares (buscar filho, reunião escolar), ignore fins de semana automaticamente — não pergunte, apenas confirme que será nos dias úteis.
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
 
     // ========== Histórico de mensagens ==========
