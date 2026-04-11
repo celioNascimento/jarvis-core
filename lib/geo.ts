@@ -77,7 +77,7 @@ export async function checkProximidade(
   }
 
   // === 2. CACHE EM MEMÓRIA (chave arredondada para ~111m) ===
-  const cacheKey = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+  const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
   const cached = geoCache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     console.debug(`[Geo] Cache HIT para ${cacheKey}`);
@@ -88,6 +88,7 @@ export async function checkProximidade(
   try {
     const apiKey = process.env.GOOGLE_PLACES_API_KEY;
     let enderecoCompleto = '';
+    let rua = '';
     let bairro = '';
     let cidade = '';
     let estado = '';
@@ -113,6 +114,13 @@ export async function checkProximidade(
             comps.find((c: any) => c.types.includes('sublocality')) ||
             comps.find((c: any) => c.types.includes('neighborhood'));
           bairro = bairroComp?.long_name || '';
+
+          const ruaComp = comps.find((c: any) => c.types.includes('route'));
+          rua = ruaComp?.long_name || '';
+
+          const numeroComp = comps.find((c: any) => c.types.includes('street_number'));
+          const numero = numeroComp?.long_name || '';
+        if (rua && numero) rua = `${rua}, ${numero}`;
 
           // ✅ EXTRAÇÃO ROBUSTA: locality → administrative_area_level_2 (áreas rurais)
           const cidadeComp =
