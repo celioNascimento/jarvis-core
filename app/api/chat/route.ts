@@ -363,6 +363,26 @@ export async function POST(req: NextRequest) {
       const latMasked = parseFloat(latitude.toFixed(2));
       const lngMasked = parseFloat(longitude.toFixed(2));
 
+      let lastKnownLocation: { city: string; state: string } | null = null;
+
+if (!location) {
+  // Sem coordenadas no request — tenta recuperar última posição salva
+  const { data: savedLoc } = await supabase
+    .from('user_locations')
+    .select('city, state, latitude, longitude, last_updated')
+    .eq('user_id', numericUserIdStr)
+    .maybeSingle();
+
+  if (savedLoc?.city) {
+    lastKnownLocation = { city: savedLoc.city, state: savedLoc.state };
+    const hoursAgo = Math.round(
+      (Date.now() - new Date(savedLoc.last_updated).getTime()) / 3600000
+    );
+    locationContext = `[LOCALIZAÇÃO ANTERIOR]\n📍 ${savedLoc.city}, ${savedLoc.state}\n(última atualização: há ~${hoursAgo}h)`;
+    console.log('[chat] Localização resgatada da tabela:', savedLoc.city);
+  }
+}
+
       const endereco = await checkProximidade(latitude, longitude, numericUserIdStr);
       locationContext = `${endereco}\n(Localização aproximada)`;
 
