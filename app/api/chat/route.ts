@@ -1093,6 +1093,11 @@ while (attempts < 5) {
     if (insertError) console.error('BRAIN INSERT ERRO:', insertError);
     else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'model:', modelRoute.label);
 
+    if (!isLikelyNoise) {
+      import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
+        extractProfileFromConversation(parseInt(numericUserIdStr), messageText, finalResponse).catch(console.error);
+      });
+
     // Background tasks
     const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
     backgroundTasks.push(
@@ -1122,6 +1127,7 @@ while (attempts < 5) {
 
     console.timeEnd('[Performance] total');
     return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
+    }
 
   // ── FIX 4: Não expor error.message em produção ──
   } catch (error: any) {
