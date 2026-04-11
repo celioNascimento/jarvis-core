@@ -384,7 +384,7 @@ if (!location) {
 }
 
       const endereco = await checkProximidade(latitude, longitude, numericUserIdStr);
-      locationContext = `${endereco}\n(Localização aproximada)`;
+      locationContext = endereco;
 
       await supabase
         .from('config')
@@ -950,6 +950,7 @@ FOCO: Responda o que foi perguntado. Nunca repita sugestão já rejeitada.
 PROIBIDO: "Anota aí", "Anotado!", "Registrado!". Se salvou via ferramenta: "Feito." ou "Tá na agenda."
 MEMÓRIA: Use as memórias naturalmente, como quem se lembra — nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
+LOCALIZAÇÃO: Mencione apenas bairro e cidade de forma natural. Nunca exponha coordenadas numéricas na resposta.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
 LEMBRETES: Sempre que o usuário usar "me lembra", "lembrar", "avisa", "não esquecer", "me avisa", "não deixa eu esquecer" com tempo ou local — chame OBRIGATORIAMENTE a tool create_reminder antes de responder. Nunca apenas confirme sem chamar a tool.
 Ao agendar, considere:
