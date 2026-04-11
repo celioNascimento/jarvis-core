@@ -1,7 +1,6 @@
-// lib/holiday.ts
+// lib/holidays.ts
 import { supabase } from '@/lib/jarvis';
 
-// Cache em memória para feriados nacionais (evita chamadas repetidas à BrasilAPI)
 const nationalHolidayCache = new Map<string, any[]>();
 
 export interface Holiday {
@@ -10,9 +9,6 @@ export interface Holiday {
   date: string;
 }
 
-/**
- * Busca feriados nacionais de um ano específico na BrasilAPI
- */
 async function fetchNationalHolidays(year: number): Promise<Holiday[]> {
   const cacheKey = `national_${year}`;
   if (nationalHolidayCache.has(cacheKey)) {
@@ -29,7 +25,6 @@ async function fetchNationalHolidays(year: number): Promise<Holiday[]> {
       date: h.date,
     }));
     nationalHolidayCache.set(cacheKey, holidays);
-    // Limpar cache após 1 dia
     setTimeout(() => nationalHolidayCache.delete(cacheKey), 86400000);
     return holidays;
   } catch (err) {
@@ -38,11 +33,6 @@ async function fetchNationalHolidays(year: number): Promise<Holiday[]> {
   }
 }
 
-/**
- * Verifica se uma data é feriado nacional
- * @param date Data a ser verificada
- * @returns boolean
- */
 export async function isNationalHoliday(date: Date): Promise<boolean> {
   const year = date.getFullYear();
   const holidays = await fetchNationalHolidays(year);
@@ -50,13 +40,6 @@ export async function isNationalHoliday(date: Date): Promise<boolean> {
   return holidays.some(h => h.date === dateStr);
 }
 
-/**
- * Verifica se uma data é feriado municipal (baseado na tabela jarvis.municipal_holidays)
- * @param date Data a ser verificada
- * @param city Nome da cidade (ex: 'São Paulo')
- * @param state UF (ex: 'SP')
- * @returns boolean
- */
 export async function isMunicipalHoliday(date: Date, city: string, state: string): Promise<boolean> {
   const dateStr = date.toISOString().slice(0, 10);
   const { data, error } = await supabase
@@ -74,12 +57,11 @@ export async function isMunicipalHoliday(date: Date, city: string, state: string
   return !!data;
 }
 
-/**
- * Retorna os próximos N feriados nacionais a partir de hoje
- * @param limit Quantidade máxima de feriados
- * @returns Lista de feriados
- */
-export async function getUpcomingHolidays(limit = 10): Promise<Holiday[]> {
+export async function getUpcomingHolidays(
+  limit = 10,
+  city?: string,
+  state?: string
+): Promise<Holiday[]> {
   const today = new Date();
   const todayStr = today.toISOString().slice(0, 10);
   const currentYear = today.getFullYear();
@@ -89,8 +71,32 @@ export async function getUpcomingHolidays(limit = 10): Promise<Holiday[]> {
     fetchNationalHolidays(currentYear + 1),
   ]);
 
-  return [...thisYear, ...nextYear]
-    .filter(h => h.date >= todayStr)
+  const national = [...thisYear, ...nextYear].filter(h => h.date >= todayStr);
+
+  let municipal: Holiday[] = [];
+  if (city && state) {
+    const { data, error } = await supabase
+      .from('municipal_holidays')
+      .select('id, name, date')
+      .eq('city_name', city)
+      .eq('state_uf', state)
+      .gte('date', todayStr)
+      .order('date', { ascending: true })
+      .limit(limit);
+
+    if (error) {
+      console.error('[Holiday] Erro ao buscar feriados municipais:', error);
+    } else {
+      municipal = (data || []).map(h => ({
+        id: h.id,
+        name: `${h.name} (municipal)`,
+        date: h.date,
+      }));
+    }
+  }
+
+  return [...national, ...municipal]
     .sort((a, b) => a.date.localeCompare(b.date))
+    .filter((h, i, arr) => arr.findIndex(x => x.date === h.date && x.name === h.name) === i)
     .slice(0, limit);
 }
