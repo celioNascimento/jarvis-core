@@ -26,9 +26,8 @@ import {
   extractRecomendacao,
 } from '@/lib/extractor-jobs';
 import { extractDiary, extractGoal, buildDiaryGoalsBlock } from '@/lib/diary';
-import { assertNumericUserId } from '@/lib/chat/guards';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
-import { ensureMemoryHealth } from '@/lib/chat/event-relevance';
+// import { ensureMemoryHealth } from '@/lib/chat/event-relevance';
 import {
   classifyContextWithL4,
   routeModel,
@@ -322,7 +321,9 @@ export async function POST(req: NextRequest) {
     }
 
     const numericUserIdStr = String(userRecord.id);
-    assertNumericUserId(numericUserIdStr, 'POST /api/chat');
+    if (!numericUserIdStr || isNaN(Number(numericUserIdStr))) {
+      throw new Error('Invalid numeric user ID');
+    }
 
     let authUserId: string | null = userRecord.auth_user_id || null;
 
@@ -347,7 +348,7 @@ export async function POST(req: NextRequest) {
     const currentContextL3 = userRecord.current_context || 'Sem dossiê ainda.';
     const pendingQuestion = userRecord.pending_question || null;
 
-    ensureMemoryHealth(numericUserIdStr).catch((e) => console.error('[Health]', e));
+    // ensureMemoryHealth(numericUserIdStr).catch((e) => console.error('[Health]', e));
 
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
 
