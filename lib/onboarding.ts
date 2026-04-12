@@ -15,7 +15,7 @@ export interface OnboardingState {
   pending: string[];
   next_field: string | null;
   collected_data: Record<string, any>;
-  interruptions: number;
+  interruptions: number; // também usado como contador de mensagens vistas
 }
 
 // Campos do onboarding em ordem de prioridade
@@ -28,8 +28,11 @@ const ONBOARDING_FIELDS = [
   'profissao',
   'rotina',
   'fe',
-  'objetivos'
+  'objetivos',
 ];
+
+// Campos oportunísticos — nunca perguntados, só capturados passivamente
+const OPPORTUNISTIC_FIELDS = ['cabelo', 'pele', 'saude'];
 
 // ============================================================
 // Busca o estado atual do onboarding
@@ -44,7 +47,6 @@ export async function getOnboardingState(userId: string): Promise<OnboardingStat
 
     if (!data) return null;
     return data as OnboardingState;
-
   } catch {
     return null;
   }
@@ -60,7 +62,7 @@ export async function initOnboarding(userId: string): Promise<OnboardingState> {
     pending: [...ONBOARDING_FIELDS],
     next_field: 'nome',
     collected_data: {},
-    interruptions: 0
+    interruptions: 0,
   };
 
   await supabase
@@ -82,10 +84,12 @@ export async function processOnboardingFromMessage(
   aiReply: string,
   state: OnboardingState
 ): Promise<OnboardingState> {
-
   if (state.status === 'completed' || state.status === 'skipped') return state;
 
-  // Usa a IA para extrair informações da mensagem
+  // FIX 3: incrementa interruptions a cada mensagem processada
+  const newInterruptions = (state.interruptions ?? 0) + 1;
+
+  // FIX 2: inclui campos oportunísticos no prompt de extração
   const extractPrompt = `
 Analise esta mensagem e extraia informações pessoais mencionadas.
 Retorne APENAS um JSON válido, sem explicações.
@@ -93,7 +97,7 @@ Retorne APENAS um JSON válido, sem explicações.
 MENSAGEM DO USUÁRIO: "${userMessage}"
 RESPOSTA DO ASSISTENTE: "${aiReply}"
 
-CAMPOS QUE ESTAMOS COLETANDO: ${state.pending.join(', ')}
+CAMPOS QUE ESTAMOS COLETANDO: ${[...state.pending, ...OPPORTUNISTIC_FIELDS].join(', ')}
 
 Extraia APENAS o que foi mencionado explicitamente. Retorne:
 {
@@ -106,7 +110,10 @@ Extraia APENAS o que foi mencionado explicitamente. Retorne:
     "fe": "...",
     "familia_origem": "...",
     "rotina": "...",
-    "objetivos": "..."
+    "objetivos": "...",
+    "cabelo": "...",
+    "pele": "...",
+    "saude": "..."
   },
   "campos_coletados": ["filhos"]
 }
@@ -120,11 +127,22 @@ Se nenhum campo foi mencionado, retorne: {"extraido": {}, "campos_coletados": []
     const clean = raw.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
 
-    if (!parsed.campos_coletados?.length) return state;
+    if (!parsed.campos_coletados?.length) {
+      // Mesmo sem coletar nada, avança o contador
+      await supabase
+        .from('onboarding_progress')
+        .update({ interruptions: newInterruptions, updated_at: new Date().toISOString() })
+        .eq('user_id', userId);
+      return { ...state, interruptions: newInterruptions };
+    }
 
-    // Atualiza o estado com o que foi coletado
-    const newCollected = [...new Set([...state.collected, ...parsed.campos_coletados])];
-    const newPending = state.pending.filter(f => !newCollected.includes(f));
+    // Campos oportunísticos não entram na fila de collected (nunca estiveram em pending)
+    const mainCollected = parsed.campos_coletados.filter(
+      (f: string) => !OPPORTUNISTIC_FIELDS.includes(f)
+    );
+
+    const newCollected = [...new Set([...state.collected, ...mainCollected])];
+    const newPending = state.pending.filter((f) => !newCollected.includes(f));
     const newData = { ...state.collected_data, ...parsed.extraido };
 
     const updatedState: OnboardingState = {
@@ -133,7 +151,8 @@ Se nenhum campo foi mencionado, retorne: {"extraido": {}, "campos_coletados": []
       pending: newPending,
       next_field: newPending[0] || null,
       collected_data: newData,
-      status: newPending.length === 0 ? 'completed' : 'in_progress'
+      interruptions: newInterruptions, // FIX 3
+      status: newPending.length === 0 ? 'completed' : 'in_progress',
     };
 
     // Salva no banco
@@ -144,48 +163,52 @@ Se nenhum campo foi mencionado, retorne: {"extraido": {}, "campos_coletados": []
         pending: updatedState.pending,
         next_field: updatedState.next_field,
         collected_data: updatedState.collected_data,
+        interruptions: updatedState.interruptions,
         status: updatedState.status,
         updated_at: new Date().toISOString(),
         ...(updatedState.status === 'completed'
           ? { completed_at: new Date().toISOString() }
-          : {})
+          : {}),
       })
       .eq('user_id', userId);
 
-    // Se coletou algo, salva no user_profiles e atualiza L3 imediatamente
     if (parsed.campos_coletados.length > 0) {
       await syncToUserProfile(userId, parsed.extraido);
-      await patchL3WithNewFacts(userId, parsed.extraido); // atualiza L3 na hora
+      await patchL3WithNewFacts(userId, parsed.extraido);
     }
 
-    // Se completou, consolida dossiê completo no L3
+    // FIX 4: passa collected_data completo (inclui oportunísticos) para o dossiê
     if (updatedState.status === 'completed') {
       await consolidateOnboardingToDossie(userId, updatedState.collected_data);
     }
 
-    console.log(`[Onboarding] Coletou: ${parsed.campos_coletados.join(', ')} | Falta: ${newPending.join(', ')}`);
+    console.log(
+      `[Onboarding] Coletou: ${parsed.campos_coletados.join(', ')} | Falta: ${newPending.join(', ')} | Msgs: ${newInterruptions}`
+    );
     return updatedState;
-
   } catch (e) {
     console.error('[Onboarding] Erro ao extrair:', e);
-    return state;
+    return { ...state, interruptions: newInterruptions };
   }
 }
 
 // ============================================================
 // Gera o bloco de onboarding para o prompt do webhook
-// Instrui o Lev a aproveitar deixas naturais
+// FIX 1: aguarda 2 trocas antes de começar a perguntar
 // ============================================================
 export function buildOnboardingBlock(state: OnboardingState): string {
   if (state.status === 'completed' || state.status === 'skipped') return '';
 
-  const collected = state.collected.length > 0
-    ? `Já sei: ${state.collected.join(', ')}`
-    : 'Ainda não coletei nenhuma informação';
+  // FIX 1: não injeta nas primeiras 2 mensagens — deixa a pessoa se ambientar
+  if ((state.interruptions ?? 0) < 2) return '';
 
-  const pending = state.pending.length > 0
-    ? `Ainda preciso saber: ${state.pending.join(', ')}`
-    : '';
+  const collected =
+    state.collected.length > 0
+      ? `Já sei: ${state.collected.join(', ')}`
+      : 'Ainda não coletei nenhuma informação';
+
+  const pending =
+    state.pending.length > 0 ? `Ainda preciso saber: ${state.pending.join(', ')}` : '';
 
   const nextHint = getNextFieldHint(state.next_field);
 
@@ -212,30 +235,22 @@ REGRAS DO ONBOARDING:
 // ============================================================
 function getNextFieldHint(field: string | null): string {
   const hints: Record<string, string> = {
-    'nome':
-      'Se ainda não sei o nome, apresente-se e pergunte como a pessoa quer ser chamada.',
-    'cidade':
-      'Se surgir contexto geográfico (clima, trânsito, lugar), pergunte onde mora.',
-    'nascimento':
-      'Se falar de idade, aniversário ou memória de infância, pergunte quando nasceu.',
-    'filhos':
-      'Se mencionar crianças, escola, brincadeiras — pergunte se tem filhos e quantos.',
-    'familia_origem':
-      'Se falar de família, pais, infância — pergunte de onde é a família.',
-    'profissao':
-      'Se falar de trabalho, rotina, dinheiro — pergunte o que faz.',
-    'rotina':
-      'Após saber a profissão, pergunte como é o dia a dia.',
-    'fe':
-      'No final da entrevista, pergunte suavemente: "Fé faz parte da sua vida de alguma forma?"',
-    'objetivos':
-      'Se falar de planos, sonhos, futuro — pergunte o que quer conquistar.',
+    nome: 'Se ainda não sei o nome, apresente-se e pergunte como a pessoa quer ser chamada.',
+    cidade: 'Se surgir contexto geográfico (clima, trânsito, lugar), pergunte onde mora.',
+    nascimento: 'Se falar de idade, aniversário ou memória de infância, pergunte quando nasceu.',
+    filhos: 'Se mencionar crianças, escola, brincadeiras — pergunte se tem filhos e quantos.',
+    familia_origem: 'Se falar de família, pais, infância — pergunte de onde é a família.',
+    profissao: 'Se falar de trabalho, rotina, dinheiro — pergunte o que faz.',
+    rotina: 'Após saber a profissão, pergunte como é o dia a dia.',
+    fe: 'No final da entrevista, pergunte suavemente: "Fé faz parte da sua vida de alguma forma?"',
+    objetivos: 'Se falar de planos, sonhos, futuro — pergunte o que quer conquistar.',
   };
-  return field ? (hints[field] || '') : '';
+  return field ? hints[field] || '' : '';
 }
 
 // ============================================================
 // Atualiza L3 imediatamente com fatos novos (sem esperar compactação)
+// FIX 2: adicionados campos cabelo, pele e saude
 // ============================================================
 async function patchL3WithNewFacts(userId: string, data: Record<string, any>) {
   try {
@@ -247,7 +262,6 @@ async function patchL3WithNewFacts(userId: string, data: Record<string, any>) {
 
     const context = user?.current_context || '';
 
-    // Mapeamento de campos para texto legível
     const patches: string[] = [];
     if (data.cidade)         patches.push(`Cidade: ${data.cidade}`);
     if (data.nascimento)     patches.push(`Nascimento: ${data.nascimento}`);
@@ -256,25 +270,28 @@ async function patchL3WithNewFacts(userId: string, data: Record<string, any>) {
     if (data.rotina)         patches.push(`Rotina: ${data.rotina}`);
     if (data.objetivos)      patches.push(`Objetivos: ${data.objetivos}`);
     if (data.fe)             patches.push(`Fé: ${data.fe}`);
+    if (data.cabelo)         patches.push(`Cabelo: ${data.cabelo}`); // FIX 2
+    if (data.pele)           patches.push(`Pele: ${data.pele}`);     // FIX 2
+    if (data.saude)          patches.push(`Saúde: ${data.saude}`);   // FIX 2
     if (data.filhos && Array.isArray(data.filhos)) {
-      const filhosStr = data.filhos.map((f: any) =>
-        f.nome ? `${f.nome}${f.idade ? ` (${f.idade} anos)` : ''}` : `filho(a)`
-      ).join(', ');
+      const filhosStr = data.filhos
+        .map((f: any) =>
+          f.nome ? `${f.nome}${f.idade ? ` (${f.idade} anos)` : ''}` : `filho(a)`
+        )
+        .join(', ');
       patches.push(`Filhos: ${filhosStr}`);
     }
 
     if (!patches.length) return;
 
-    // Aplica patches no contexto existente (substitui se já existir, adiciona se não)
     let updated = context;
     for (const patch of patches) {
       const key = patch.split(':')[0];
       const keyRegex = new RegExp(`${key}:.*`, 'i');
       if (keyRegex.test(updated)) {
-        updated = updated.replace(keyRegex, patch); // atualiza linha existente
+        updated = updated.replace(keyRegex, patch);
       } else {
-        updated = updated + `
-${patch}`; // adiciona nova linha
+        updated = updated + `\n${patch}`;
       }
     }
 
@@ -310,13 +327,10 @@ async function syncToUserProfile(userId: string, data: Record<string, any>) {
     .upsert({ user_id: userId, ...profileUpdate })
     .eq('user_id', userId);
 
-  // Salva filhos se mencionados
   if (data.filhos && Array.isArray(data.filhos)) {
     for (const filho of data.filhos) {
       if (!filho.nome && !filho.idade) continue;
-
       const lifePhase = getLifePhase(filho.idade);
-
       await supabase.from('children').upsert({
         parent_id: userId,
         name: filho.nome || 'Filho(a)',
@@ -324,7 +338,7 @@ async function syncToUserProfile(userId: string, data: Record<string, any>) {
           ? new Date(new Date().getFullYear() - filho.idade, 0, 1).toISOString().split('T')[0]
           : null,
         life_phase: lifePhase,
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       });
     }
   }
@@ -332,20 +346,35 @@ async function syncToUserProfile(userId: string, data: Record<string, any>) {
 
 // ============================================================
 // Consolida dados do onboarding no dossiê L3 ao completar
+// FIX 4: preserva campos oportunísticos já patchados no contexto existente
 // ============================================================
 async function consolidateOnboardingToDossie(
   userId: string,
   data: Record<string, any>
 ) {
+  // FIX 4: lê current_context existente para não perder campos oportunísticos
+  // (cabelo, pele, saúde) que foram salvos via patchL3 mas podem não estar em data
+  const { data: user } = await supabase
+    .from('users')
+    .select('current_context')
+    .eq('id', userId)
+    .single();
+
+  const existingContext = user?.current_context || '';
+
   const prompt = `
 Você é o assistente Lev. Com base nas informações coletadas durante o onboarding,
 escreva um dossiê pessoal completo e natural sobre o usuário.
 
 Use 3ª pessoa. Seja descritivo mas conciso. Máximo 500 palavras.
 Inclua: quem é, família, trabalho, rotina, valores e objetivos.
+Se houver informações sobre cabelo, pele ou saúde, inclua também — são úteis para personalizar recomendações futuras.
 
 DADOS COLETADOS:
 ${JSON.stringify(data, null, 2)}
+
+CONTEXTO EXISTENTE (preserve informações não cobertas pelos dados acima):
+${existingContext}
 
 Retorne APENAS o texto do dossiê, sem título, sem explicações.
 `;
@@ -356,7 +385,7 @@ Retorne APENAS o texto do dossiê, sem título, sem explicações.
     .from('users')
     .update({
       current_context: dossie,
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     })
     .eq('id', userId);
 
@@ -368,8 +397,11 @@ Retorne APENAS o texto do dossiê, sem título, sem explicações.
 // ============================================================
 function parseFaithProfile(fe: string): string {
   const f = fe.toLowerCase();
-  if (f.includes('cristão') || f.includes('cristã') || f.includes('evangélico') ||
-      f.includes('católico') || f.includes('jesus') || f.includes('igreja')) {
+  if (
+    f.includes('cristão') || f.includes('cristã') ||
+    f.includes('evangélico') || f.includes('católico') ||
+    f.includes('jesus') || f.includes('igreja')
+  ) {
     return 'christian_declared';
   }
   if (f.includes('não') || f.includes('nenhuma') || f.includes('ateu')) {
@@ -379,7 +411,7 @@ function parseFaithProfile(fe: string): string {
 }
 
 function getLifePhase(age: number | null): string {
-  if (!age) return 'child';
+  if (!age)  return 'child';
   if (age <= 3)  return 'baby';
   if (age <= 11) return 'child';
   if (age <= 17) return 'teen';
