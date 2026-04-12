@@ -52,6 +52,7 @@ import { tools } from '@/lib/chat/tools-def';
 import { executeTool } from '@/lib/chat/tools-executor';
 import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
 import { transcribeAudio, extractAudioBuffer } from '@/lib/services/transcription';
+import { synthesizeSpeech } from '@/lib/services/tts';
 import { computeEmotionalScore } from '@/lib/chat/emotional-router';
 import { getUpcomingHolidays } from '@/lib/holidays';
 import { Redis } from '@upstash/redis';
@@ -191,6 +192,7 @@ export async function POST(req: NextRequest) {
     let clientSessionId: string | null = null;
     let userFirstName = 'Usuário';
     let location: { latitude: number; longitude: number } | null = null;
+    let isAudioInput = false;
 
     // ── [NOVO] Dados de clima enviados pelo app ──────────────────────────────
     // O app que já exibe o card de clima deve incluir estes dados no request.
@@ -240,6 +242,7 @@ export async function POST(req: NextRequest) {
         }
 
         messageText = result.text || '';
+        isAudioInput = true;
       } else {
         messageText = (formData.get('message') as string) || (formData.get('text') as string) || '';
       }
@@ -1004,12 +1007,13 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     });
 
     // max_tokens dinâmico
-    let maxTokens = 350;
-    if (isLikelyNoise) maxTokens = 150;
-    else if (detectedContexts.includes('emocao')) maxTokens = 600;
-    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias') || detectedContexts.includes('clima')) maxTokens = 800;
-    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 500;
-    else if (detectedContexts.includes('casual')) maxTokens = 250;
+    // Modo voz: respostas mais curtas (fala longa cansa)
+    let maxTokens = isAudioInput ? 200 : 350;
+    if (isLikelyNoise) maxTokens = isAudioInput ? 80 : 150;
+    else if (detectedContexts.includes('emocao')) maxTokens = isAudioInput ? 300 : 600;
+    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias') || detectedContexts.includes('clima')) maxTokens = isAudioInput ? 400 : 800;
+    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = isAudioInput ? 250 : 500;
+    else if (detectedContexts.includes('casual')) maxTokens = isAudioInput ? 120 : 250;
 
     // ReAct Loop
 let finalResponse = '';
@@ -1081,32 +1085,40 @@ while (attempts < 5) {
 
     if (pendingQuestion) clearPendingQuestion(numericUserIdStr).catch((e) => console.error('[PendingQ]', e));
 
-    // Persistência
-    const { error: insertError } = await supabase.from('brain').insert([{
-      content: messageText,
-      category,
-      user_id: numericUserIdStr,
-      session_id: sessionId,
-      project_tag: 'geral',
-      embedding: queryEmbedding ?? undefined,
-      metadata: {
-        ai_reply: finalResponse,
-        user: authorName,
-        horizon: weights.horizon,
-        pending_resolved: !!pendingQuestion,
-        model_used: modelRoute.model,
-        model_label: modelRoute.label,
-        temperature_used: temperature,
-        contexts_detected: detectedContexts,
-        forced_search_used: !!forcedSearchResult,
-        emotional_score: emotional.score,
-        emotional_triggers: emotional.triggers,
-        emotional_trajectory: emotional.trajectory,
-      },
-    }]);
-
-    if (insertError) console.error('BRAIN INSERT ERRO:', insertError);
-    else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'model:', modelRoute.label);
+    // ── TTS: gerado em paralelo com a persistência ──────────────────────────
+    // Se a mensagem veio por áudio, sintetizamos a resposta também em áudio.
+    const [ttsResult] = await Promise.all([
+      isAudioInput
+        ? synthesizeSpeech(finalResponse)
+        : Promise.resolve(null),
+      // Persistência
+      supabase.from('brain').insert([{
+        content: messageText,
+        category,
+        user_id: numericUserIdStr,
+        session_id: sessionId,
+        project_tag: 'geral',
+        embedding: queryEmbedding ?? undefined,
+        metadata: {
+          ai_reply: finalResponse,
+          user: authorName,
+          horizon: weights.horizon,
+          pending_resolved: !!pendingQuestion,
+          model_used: modelRoute.model,
+          model_label: modelRoute.label,
+          temperature_used: temperature,
+          contexts_detected: detectedContexts,
+          forced_search_used: !!forcedSearchResult,
+          emotional_score: emotional.score,
+          emotional_triggers: emotional.triggers,
+          emotional_trajectory: emotional.trajectory,
+          is_audio_input: isAudioInput,
+        },
+      }]).then(({ error }) => {
+        if (error) console.error('BRAIN INSERT ERRO:', error);
+        else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'model:', modelRoute.label);
+      }),
+    ]);
 
     if (!isLikelyNoise) {
       import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
@@ -1141,7 +1153,21 @@ while (attempts < 5) {
     ]).catch((e) => console.error('[Background]', e));
 
     console.timeEnd('[Performance] total');
-    return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
+    return NextResponse.json({
+      reply: finalResponse,
+      sessionId,
+      assistantName,
+      authorName,
+      ok: true,
+      // Modo voz: retorna áudio base64 se TTS foi gerado com sucesso
+      ...(ttsResult?.success && ttsResult.audioBase64
+        ? {
+            audio: ttsResult.audioBase64,
+            audio_format: 'mp3',
+            audio_duration_ms: ttsResult.durationEstimateMs,
+          }
+        : {}),
+    });
     }
 
   // ── FIX 4: Não expor error.message em produção ──
