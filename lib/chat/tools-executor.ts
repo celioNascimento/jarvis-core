@@ -10,12 +10,17 @@ import { upsertEvent } from '@/lib/extractor-jobs';
 import { extractDiary } from '@/lib/diary';
 import { updateGoalProgress } from '@/lib/diary';
 import { getCachedEmbedding } from './embedding-cache';
-import { assertNumericUserId } from './guards';
 import { createReminderTool } from './tools/reminder-tool';
 
 // ===================== INSIGHTS =====================
 // Import dinâmico para evitar erro de módulo não encontrado em produção
 // ====================================================
+
+function assertNumericUserId(id: string, context: string): void {
+  if (!/^\d+$/.test(id)) {
+    throw new Error(`[${context}] userId invalido: esperado numerico, recebido "${id}"`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helper para obter a última localização salva do usuário
