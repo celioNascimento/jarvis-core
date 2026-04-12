@@ -691,7 +691,10 @@ topicEmotionalDimension = topicEmotionalDimValue;
     // ========== 10. Pesquisa forçada ==========
     // ── [MODIFICADO] Pesquisa de clima só é forçada se o app NÃO enviou dados ──
     // Se weatherData veio no request, não buscamos clima — usamos o dado local.
-    const shouldSearch = shouldForceSearch(messageText, detectedContexts);
+    const isProductRecommendation = /qual(quer)?\s+(cor|tinta|coloraç|produto|marca|remédio|medicamento|creme|shampoo|xampu|esmalte|batom|perfume|suplemento|vitamina|proteína|modelo|aparelho|celular|notebook|app|aplicativo)/i.test(messageText)
+      || /me indica|me recomenda|qual (devo|posso|seria|é o melhor|usar|comprar|tomar)/i.test(messageText);
+
+    const shouldSearch = shouldForceSearch(messageText, detectedContexts) || isProductRecommendation;
     const isClimaQuery = detectedContexts.includes('clima');
     const skipSearchForWeather = isClimaQuery && !!weatherData;
 
@@ -955,6 +958,7 @@ ${principlesText ? `[BÚSSOLA]\n${principlesText}` : ''}
 REGRAS OPERACIONAIS:
 FOCO: Responda o que foi perguntado. Nunca repita sugestão já rejeitada.
 DIRETIVIDADE: Quando o usuário pedir uma recomendação ("qual me indica?", "o que é melhor?"), dê UMA resposta direta. Não liste opções genéricas nem peça mais contexto antes de responder — use o que já sabe. Ressalvas ficam em uma linha no final, nunca antes.
+RECOMENDAÇÃO DE PRODUTO: Se [PESQUISA AUTOMÁTICA REALIZADA] estiver presente e a pergunta for sobre produto (tinta, cor, remédio, aparelho etc.), cite o produto pelo nome/número específico encontrado na pesquisa. NUNCA diga "pesquise na internet" ou "quer que eu busque?" — a busca já foi feita, use o resultado.
 ONBOARDING: Nunca interrompa uma resposta útil com perguntas de perfil (profissão, cidade, etc.). Só pergunte se a informação for estritamente necessária para responder o que foi perguntado agora. Se o usuário já revelou contexto na conversa (nome, cidade, profissão), registre silenciosamente — não confirme em voz alta.
 PROIBIDO: "Anota aí", "Anotado!", "Registrado!". Se salvou via ferramenta: "Feito." ou "Tá na agenda."
 MEMÓRIA: Use as memórias naturalmente, como quem se lembra — nunca diga "Tenho uma nota aqui que diz...".
