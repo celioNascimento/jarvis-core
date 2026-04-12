@@ -5,7 +5,7 @@ export type ContextType =
   | 'agenda' | 'projeto' | 'familia' | 'emocao' | 'diario'
   | 'meta' | 'saude' | 'recomendacao' | 'evento' | 'rotina'
   | 'preferencia' | 'alias' | 'email' | 'casual' | 'esporte'
-  | 'noticias' | 'clima'
+  | 'noticias' | 'clima' | 'financas' | 'compras'
   | 'math' | 'trivial';
 
 // Normaliza uma string removendo acentos (idêntico ao que classifyContextRegex faz com o input)
@@ -33,6 +33,8 @@ const RAW_RULES: Array<[string, ContextType]> = [
   [norm('jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo|escalação'), 'esporte'],
   [norm('noticia|notícias|últimas|recente|aconteceu|hoje no|manchete|jornal|portal|g1|globo|folha|estadão'), 'noticias'],
   [norm('clima|tempo|temperatura|chuva|frio|calor|previsão|amanhecer|entardecer|umidade|vento|chover|chuvoso|vai chover|como esta o tempo|como esta o clima'), 'clima'],
+  [norm('compra|compras|mercado|supermercado|feira|lista de compras|item|itens|precisamos de|falta em casa|acabou o|acabou a'), 'compras'],
+  [norm('dinheiro|grana|salario|salário|conta|contas|pagar|pagamento|divida|dívida|boleto|cartao|cartão|credito|crédito|debito|débito|investimento|poupanca|poupança|saldo|extrato|despesa|gasto|orcamento|orçamento|financ'), 'financas'],
 ];
 
 // Regras que NÃO passam por normalização de acento (math/trivial operam sobre o texto original)
@@ -99,11 +101,17 @@ export function routeModel(
   if (emotionalScore > 0.7) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
   if (topicEmotionalDimension && topicEmotionalDimension > 0.7) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
 
-  const flashFriendly: ContextType[] = ['esporte', 'noticias', 'clima', 'casual', 'rotina', 'alias', 'preferencia', 'recomendacao', 'math', 'trivial'];
+  const flashFriendly: ContextType[] = [
+    'esporte', 'noticias', 'clima', 'casual', 'rotina',
+    'alias', 'preferencia', 'recomendacao', 'math', 'trivial', 'compras',
+  ];
   if (contexts.includes('agenda') && emotionalScore < 0.4) return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
   if (contexts.some(c => flashFriendly.includes(c))) return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
 
-  const complex: ContextType[] = ['agenda', 'projeto', 'familia', 'emocao', 'diario', 'meta', 'saude', 'evento'];
+  const complex: ContextType[] = [
+    'agenda', 'projeto', 'familia', 'emocao', 'diario',
+    'meta', 'saude', 'evento', 'financas',
+  ];
   if (contexts.some(c => complex.includes(c)) && emotionalScore >= 0.4) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet' };
 
   return { model: 'google/gemini-2.0-flash-001', label: 'flash' };
@@ -112,31 +120,39 @@ export function routeModel(
 export function getTemperature(contexts: ContextType[]): number {
   if (contexts.some((c) => ['emocao', 'diario'].includes(c))) return 0.9;
   if (contexts.some((c) => ['casual', 'projeto', 'familia', 'meta', 'esporte', 'trivial'].includes(c))) return 0.7;
-  if (contexts.some((c) => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima', 'math'].includes(c))) return 0.5;
-  if (contexts.some((c) => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
+  if (contexts.some((c) => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima', 'math', 'compras'].includes(c))) return 0.5;
+  if (contexts.some((c) => ['agenda', 'evento', 'email', 'saude', 'financas'].includes(c))) return 0.3;
   return 0.7;
 }
 
 export function planContextualBlocks(contexts: ContextType[]) {
-  const hasEmotional = contexts.includes('emocao');
-  const hasSearch = contexts.includes('esporte') || contexts.includes('noticias') || contexts.includes('clima');
-  const hasPlanning = contexts.includes('agenda') || contexts.includes('evento') || contexts.includes('meta') || contexts.includes('projeto');
-  const isCasualOnly = contexts.length === 1 && contexts[0] === 'casual';
-  const isTrivial = contexts.includes('math') || contexts.includes('trivial');
-  const needsMemory = hasEmotional || contexts.includes('diario') || contexts.includes('familia') || contexts.includes('saude');
-  const needsLongTerm = contexts.includes('diario') || contexts.includes('emocao');
+  const hasEmotional   = contexts.includes('emocao');
+  const hasSearch      = contexts.includes('esporte') || contexts.includes('noticias') || contexts.includes('clima');
+  const hasPlanning    = contexts.includes('agenda') || contexts.includes('evento') || contexts.includes('meta') || contexts.includes('projeto');
+  const hasFinancial   = contexts.includes('financas');
+  const hasShopping    = contexts.includes('compras');
+  const isCasualOnly   = contexts.length === 1 && contexts[0] === 'casual';
+  const isTrivial      = contexts.includes('math') || contexts.includes('trivial');
+  const needsMemory    = hasEmotional || contexts.includes('diario') || contexts.includes('familia') || contexts.includes('saude') || hasFinancial;
+  const needsLongTerm  = contexts.includes('diario') || contexts.includes('emocao');
 
   return {
     loadTopics: contexts.some((c) =>
-      ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia', 'esporte', 'noticias', 'clima'].includes(c)
+      ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia',
+       'esporte', 'noticias', 'clima', 'compras'].includes(c)
     ) && !isTrivial,
-    loadDiary: contexts.some((c) => ['diario', 'meta', 'emocao', 'casual'].includes(c)) && !isTrivial,
+    loadDiary:           contexts.some((c) => ['diario', 'meta', 'emocao', 'casual'].includes(c)) && !isTrivial,
     loadRecommendations: contexts.some((c) => ['recomendacao', 'casual'].includes(c)) && !isTrivial,
-    loadCalendar: contexts.some((c) => ['agenda', 'evento', 'familia'].includes(c)) && !isTrivial,
-    loadEmail: contexts.some((c) => ['email'].includes(c)) && !isTrivial,
-    loadL3: !isTrivial && (hasPlanning || hasEmotional || contexts.includes('familia') || contexts.includes('saude') || contexts.includes('projeto')),
-    loadHD: needsMemory && !isTrivial && !isCasualOnly,
-    loadAshes: needsLongTerm && !isTrivial && (contexts.includes('diario') || contexts.includes('emocao')),
-    loadGaps: (hasPlanning || hasEmotional) && !isTrivial,
+    loadCalendar:        contexts.some((c) => ['agenda', 'evento', 'familia'].includes(c)) && !isTrivial,
+    loadEmail:           contexts.includes('email') && !isTrivial,
+    loadL3: !isTrivial && (
+      hasPlanning || hasEmotional || hasFinancial ||
+      contexts.includes('familia') || contexts.includes('saude') || contexts.includes('projeto')
+    ),
+    loadHD:       needsMemory && !isTrivial && !isCasualOnly,
+    loadAshes:    needsLongTerm && !isTrivial && (contexts.includes('diario') || contexts.includes('emocao')),
+    loadGaps:     (hasPlanning || hasEmotional || hasFinancial) && !isTrivial,
+    loadFinances: hasFinancial && !isTrivial,
+    loadShopping: hasShopping && !isTrivial,
   };
 }
