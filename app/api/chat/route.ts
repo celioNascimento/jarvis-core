@@ -55,6 +55,7 @@ import { transcribeAudio, extractAudioBuffer } from '@/lib/services/transcriptio
 import { computeEmotionalScore } from '@/lib/chat/emotional-router';
 import { getUpcomingHolidays } from '@/lib/holidays';
 import { Redis } from '@upstash/redis';
+import { buildSharedContextBlock } from '@/lib/chat/shared-context';
 
 // ── [NOVO] Personalidade isolada ──────────────────────────────────────────────
 // Para ajustar tom, voz ou regras de comportamento do assistente,
@@ -558,124 +559,128 @@ if (!location) {
 
     // ========== 8. Cargas contextuais condicionais + topicEmotionalDimension ==========
     const [
-      events,
-      ashes,
-      principles,
-      childrenData,
-      personNotesData,
-      onboardingState,
-      topicEmotionalDimValue,
-    ] = await Promise.all([
-      (async () => {
-        const key = `events_${numericUserIdStr}`;
-        const cached = await cache.get<any[]>(key);
-        if (cached) return cached;
-        const { data } = await supabase
-          .from('events')
-          .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
-          .eq('user_id', numericUserIdStr)
-          .order('relevance_score', { ascending: false });
-        const val = data || [];
-        await cache.set(key, val);
-        return val;
-      })(),
-      (async () => {
-        const key = `ashes_${numericUserIdStr}`;
-        const cached = await cache.get<any[]>(key);
-        if (cached) return cached;
-        const { data } = await supabase
-          .from('memory_ashes')
-          .select('ash_summary, period_start, period_end')
-          .eq('user_id', numericUserIdStr)
-          .order('period_end', { ascending: false })
-          .limit(5);
-        const val = data || [];
-        await cache.set(key, val);
-        return val;
-      })(),
-      (async () => {
-        const key = `principles_${numericUserIdStr}`;
-        const cached = await cache.get<{ global: any[]; individual: any[] }>(key);
-        if (cached) return cached;
-
-        const [globalRes, userRes] = await Promise.all([
-          supabase
-            .schema('jarvis')
-            .from('principles')
-            .select('content, category')
-            .is('user_id', null)
-            .order('created_at', { ascending: true }),
-          supabase
-            .schema('jarvis')
-            .from('principles')
-            .select('content, category')
-            .eq('user_id', numericUserIdStr)
-            .order('created_at', { ascending: true }),
-        ]);
-
-        if (globalRes.error) console.error('[Principles] Erro global:', globalRes.error);
-        if (userRes.error) console.error('[Principles] Erro individual:', userRes.error);
-
-        const val = {
-          global: globalRes.data || [],
-          individual: userRes.data || [],
-        };
-        await cache.set(key, val, 60000);
-        return val;
-      })(),
-      (async () => {
-        const key = `children_${numericUserIdStr}`;
-        const cached = await cache.get<any[]>(key);
-        if (cached) return cached;
-        const { data } = await supabase
-          .from('children')
-          .select('name, nickname, lev_notes')
-          .eq('parent_id', numericUserIdStr)
-          .not('lev_notes', 'is', null);
-        const val = data || [];
-        await cache.set(key, val);
-        return val;
-      })(),
-      (async () => {
-        const key = `person_notes_${numericUserIdStr}`;
-        const cached = await cache.get<any[]>(key);
-        if (cached) return cached;
-        const { data } = await supabase
-          .from('person_notes')
-          .select('person_name, person_type, note, noted_at')
-          .eq('user_id', numericUserIdStr)
-          .order('noted_at', { ascending: false })
-          .limit(20);
-        const val = data || [];
-        await cache.set(key, val);
-        return val;
-      })(),
-      (async () => {
-        const key = `onboarding_${numericUserIdStr}`;
-        const cached = await cache.get(key);
-        if (cached) return cached;
-        const { data } = await supabase
-          .from('onboarding_progress')
-          .select('*')
-          .eq('user_id', numericUserIdStr)
-          .maybeSingle();
-        let state = data || await getOrCreateOnboardingStatePersistent(numericUserIdStr);
-        await cache.set(key, state, 60000);
-        return state;
-      })(),
-      (async () => {
-        if (!detectedContexts.length) return undefined;
-        const { data } = await supabase
-          .from('topic_index')
-          .select('emotional_dimension')
-          .eq('user_id', numericUserIdStr)
-          .eq('topic', detectedContexts[0])
-          .maybeSingle();
-        return data?.emotional_dimension ?? undefined;
-      })(),
+  events,
+  ashes,
+  principles,
+  childrenData,
+  personNotesData,
+  onboardingState,
+  topicEmotionalDimValue,
+  sharedContextResult,           // ← novo
+] = await Promise.all([
+  // ── events (inalterado) ───────────────────────────────────
+  (async () => {
+    const key = `events_${numericUserIdStr}`;
+    const cached = await cache.get<any[]>(key);
+    if (cached) return cached;
+    const { data } = await supabase
+      .from('events')
+      .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
+      .eq('user_id', numericUserIdStr)
+      .order('relevance_score', { ascending: false });
+    const val = data || [];
+    await cache.set(key, val);
+    return val;
+  })(),
+  // ── ashes (inalterado) ────────────────────────────────────
+  (async () => {
+    const key = `ashes_${numericUserIdStr}`;
+    const cached = await cache.get<any[]>(key);
+    if (cached) return cached;
+    const { data } = await supabase
+      .from('memory_ashes')
+      .select('ash_summary, period_start, period_end')
+      .eq('user_id', numericUserIdStr)
+      .order('period_end', { ascending: false })
+      .limit(5);
+    const val = data || [];
+    await cache.set(key, val);
+    return val;
+  })(),
+  // ── principles (inalterado) ───────────────────────────────
+  (async () => {
+    const key = `principles_${numericUserIdStr}`;
+    const cached = await cache.get<{ global: any[]; individual: any[] }>(key);
+    if (cached) return cached;
+    const [globalRes, userRes] = await Promise.all([
+      supabase.schema('jarvis').from('principles').select('content, category').is('user_id', null).order('created_at', { ascending: true }),
+      supabase.schema('jarvis').from('principles').select('content, category').eq('user_id', numericUserIdStr).order('created_at', { ascending: true }),
     ]);
-
-    topicEmotionalDimension = topicEmotionalDimValue;
+    const val = { global: globalRes.data || [], individual: userRes.data || [] };
+    await cache.set(key, val, 60000);
+    return val;
+  })(),
+  // ── childrenData (inalterado) ─────────────────────────────
+  (async () => {
+    const key = `children_${numericUserIdStr}`;
+    const cached = await cache.get<any[]>(key);
+    if (cached) return cached;
+    const { data } = await supabase
+      .from('children')
+      .select('name, nickname, lev_notes')
+      .eq('parent_id', numericUserIdStr)
+      .not('lev_notes', 'is', null);
+    const val = data || [];
+    await cache.set(key, val);
+    return val;
+  })(),
+  // ── personNotesData (inalterado) ──────────────────────────
+  (async () => {
+    const key = `person_notes_${numericUserIdStr}`;
+    const cached = await cache.get<any[]>(key);
+    if (cached) return cached;
+    const { data } = await supabase
+      .from('person_notes')
+      .select('person_name, person_type, note, noted_at')
+      .eq('user_id', numericUserIdStr)
+      .order('noted_at', { ascending: false })
+      .limit(20);
+    const val = data || [];
+    await cache.set(key, val);
+    return val;
+  })(),
+  // ── onboardingState (inalterado) ──────────────────────────
+  (async () => {
+    const key = `onboarding_${numericUserIdStr}`;
+    const cached = await cache.get(key);
+    if (cached) return cached;
+    const { data } = await supabase
+      .from('onboarding_progress')
+      .select('*')
+      .eq('user_id', numericUserIdStr)
+      .maybeSingle();
+    let state = data || await getOrCreateOnboardingStatePersistent(numericUserIdStr);
+    await cache.set(key, state, 60000);
+    return state;
+  })(),
+  // ── topicEmotionalDimValue (inalterado) ───────────────────
+  (async () => {
+    if (!detectedContexts.length) return undefined;
+    const { data } = await supabase
+      .from('topic_index')
+      .select('emotional_dimension')
+      .eq('user_id', numericUserIdStr)
+      .eq('topic', detectedContexts[0])
+      .maybeSingle();
+    return data?.emotional_dimension ?? undefined;
+  })(),
+  // ── sharedContextResult (NOVO) ────────────────────────────
+  (async () => {
+    const key = `shared_ctx_${numericUserIdStr}_${detectedContexts.slice(0, 3).join('_')}`;
+    const cached = await cache.get<{ block: string; hasData: boolean }>(key);
+    if (cached) return cached;
+    const result = await buildSharedContextBlock(
+      authUserId!,
+      numericUserIdStr,
+      detectedContexts,
+      authorName,
+    );
+    await cache.set(key, result, 20000); // 20s — dados de relacionamento mudam pouco
+    return result;
+  })(),
+]);
+ 
+topicEmotionalDimension = topicEmotionalDimValue;
 
     // ========== 9. Roteamento e blockPlan ==========
     const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
@@ -933,6 +938,7 @@ ${blockPlan.loadCalendar && googleCtx ? `[AGENDA GOOGLE]\n${googleCtx}` : ''}
 ${blockPlan.loadCalendar && msCtx ? `[AGENDA OUTLOOK]\n${msCtx}` : ''}
 ${blockPlan.loadEmail && emailBlock ? `[EMAILS RECENTES]\n${emailBlock}` : ''}
 ${locationContext ? `\n${locationContext}` : ''}
+${sharedContextResult.hasData ? `\n${sharedContextResult.block}` : ''}
 ${relatedTopicsBlock}
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${truncatedL3}` : ''}
 ${personNotesBlock}
@@ -954,11 +960,14 @@ FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 LOCALIZAÇÃO: Mencione apenas bairro e cidade de forma natural. Nunca exponha coordenadas numéricas na resposta.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
 LEMBRETES: Sempre que o usuário usar "me lembra", "lembrar", "avisa", "não esquecer", "me avisa", "não deixa eu esquecer" com tempo ou local — chame OBRIGATORIAMENTE a tool create_reminder antes de responder. Nunca apenas confirme sem chamar a tool.
+DADOS COMPARTILHADOS: Use informações de [CONTEXTO COMPARTILHADO] naturalmente, DADOS COMPARTILHADOS: Use informações de [CONTEXTO COMPARTILHADO] naturalmente,
+ Se o aniversário do cônjuge estiver próximo, mencione proativamente quando relevante.
 Ao agendar, considere:
 - Se o scheduled_time cair em feriado nacional ou municipal (ver [FERIADOS NACIONAIS PRÓXIMOS]) ou fim de semana (sábado/domingo), avise e pergunte se confirma ou prefere o próximo dia útil.
 - Se [CLIMA ATUAL] indicar chuva forte, tempestade ou condição adversa no dia/horário do lembrete, mencione proativamente ao confirmar (ex: "Agendado! Mas a previsão indica chuva — leva guarda-chuva.").
 - Para lembretes recorrentes escolares (buscar filho, reunião escolar), ignore fins de semana automaticamente — não pergunte, apenas confirme que será nos dias úteis.
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
+
 
     // ========== Histórico de mensagens ==========
     const conversationMessages: any[] = [
