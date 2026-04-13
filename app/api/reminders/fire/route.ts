@@ -35,16 +35,16 @@ async function handler(req: NextRequest) {
       return NextResponse.json({ ok: true, skipped: true, reason: reminder.status });
     }
 
-    // 2. Busca dados de notificação do usuário
+    // 2. Busca dados de notificação — schema jarvis + coluna push_token
     const { data: userRecord } = await supabase
+      .schema('jarvis')
       .from('users')
-      .select('expo_push_token, telegram_chat_id, nickname')
+      .select('push_token, telegram_chat_id, nickname')
       .eq('id', Number(userId))
       .maybeSingle();
 
     if (!userRecord) {
       console.error('[reminders/fire] Usuário não encontrado:', userId);
-      // Marca como failed para não ficar preso
       await supabase
         .schema('jarvis')
         .from('reminders')
@@ -57,24 +57,25 @@ async function handler(req: NextRequest) {
     let notified = false;
 
     // 3a. Notificação via Expo Push
-    if (userRecord.expo_push_token) {
+    if (userRecord.push_token) {
       try {
         const expoPushRes = await fetch('https://exp.host/--/api/v2/push/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            to: userRecord.expo_push_token,
+            to: userRecord.push_token,
             title: '⏰ Lembrete',
             body: reminderText,
             data: { reminderId },
             sound: 'default',
           }),
         });
-        if (expoPushRes.ok) {
+        const expoJson = await expoPushRes.json();
+        console.log('[reminders/fire] Expo response:', JSON.stringify(expoJson));
+        if (expoJson?.data?.status === 'ok') {
           notified = true;
-          console.log('[reminders/fire] Push Expo enviado');
         } else {
-          console.error('[reminders/fire] Falha no push Expo:', await expoPushRes.text());
+          console.error('[reminders/fire] Expo erro:', expoJson?.data?.message);
         }
       } catch (err) {
         console.error('[reminders/fire] Erro no push Expo:', err);
@@ -101,8 +102,6 @@ async function handler(req: NextRequest) {
           if (telegramRes.ok) {
             notified = true;
             console.log('[reminders/fire] Telegram enviado');
-          } else {
-            console.error('[reminders/fire] Falha no Telegram:', await telegramRes.text());
           }
         } catch (err) {
           console.error('[reminders/fire] Erro no Telegram:', err);
