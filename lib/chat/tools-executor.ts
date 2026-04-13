@@ -10,11 +10,7 @@ import { upsertEvent } from '@/lib/extractor-jobs';
 import { extractDiary } from '@/lib/diary';
 import { updateGoalProgress } from '@/lib/diary';
 import { getCachedEmbedding } from './embedding-cache';
-import { createReminderTool } from './tools/reminder-tool';
-
-// ===================== INSIGHTS =====================
-// Import dinâmico para evitar erro de módulo não encontrado em produção
-// ====================================================
+import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
 
 function assertNumericUserId(id: string, context: string): void {
   if (!/^\d+$/.test(id)) {
@@ -22,9 +18,6 @@ function assertNumericUserId(id: string, context: string): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helper para obter a última localização salva do usuário
-// ---------------------------------------------------------------------------
 async function getUserLastLocation(numericUserIdStr: string): Promise<{ lat: number; lng: number } | null> {
   const { data: locData } = await supabase
     .from('config')
@@ -36,12 +29,9 @@ async function getUserLastLocation(numericUserIdStr: string): Promise<{ lat: num
 
   try {
     const parsed = JSON.parse(locData.value);
-    // Compatibilidade: aceita tanto latitude/longitude quanto lat_approx/lng_approx
     const lat = parsed.latitude ?? parsed.lat_approx;
     const lng = parsed.longitude ?? parsed.lng_approx;
-    if (typeof lat === 'number' && typeof lng === 'number') {
-      return { lat, lng };
-    }
+    if (typeof lat === 'number' && typeof lng === 'number') return { lat, lng };
     return null;
   } catch {
     return null;
@@ -74,6 +64,7 @@ export async function executeTool(
   }
 
   switch (name) {
+
     case 'buscar_memoria_longa': {
       const emb = await getCachedEmbedding(p.query);
       const { data: mems } = await supabase.rpc('match_memories', {
@@ -111,9 +102,135 @@ export async function executeTool(
       return `Evento "${p.titulo}" salvo.`;
     }
 
-    // ===================== FERRAMENTA DE LEMBRETES =====================
-    case 'create_reminder':
-      return await createReminderTool(p, numericUserIdStr, authUserId);
+    // ===================== LEMBRETES =====================
+
+    case 'create_reminder': {
+      const title: string = p.message || p.title;
+      const scheduled_time: string | undefined = p.scheduled_time;
+      const frequency: string | undefined = p.recurrence || p.frequency;
+      const location_trigger: string | undefined = p.location_trigger;
+
+      // Determina o tipo baseado nos parâmetros
+      let type: 'temporary' | 'agenda' | 'recurring' | 'location' = 'temporary';
+      if (location_trigger) type = 'location';
+      else if (frequency) type = 'recurring';
+      else if (scheduled_time) type = 'agenda';
+
+      const { data: reminder, error } = await supabase
+        .schema('jarvis')
+        .from('reminders')
+        .insert({
+          user_id: Number(numericUserIdStr),
+          title,
+          type,
+          scheduled_time: scheduled_time || null,
+          frequency: frequency || null,
+          location_trigger: location_trigger || null,
+          status: 'pending',
+          metadata: { auth_user_id: authUserId },
+        })
+        .select('id')
+        .single();
+
+      if (error || !reminder) {
+        console.error('[create_reminder] Erro ao inserir:', error);
+        return JSON.stringify({ success: false, error: 'Falha ao salvar lembrete.' });
+      }
+
+      // Agenda no QStash apenas para lembretes pontuais com horário definido
+      if (scheduled_time && type !== 'recurring' && type !== 'location') {
+        const qstashMessageId = await scheduleReminderOnQStash({
+          reminderId: String(reminder.id),
+          userId: numericUserIdStr,
+          authUserId,
+          message: title,
+          scheduledTime: scheduled_time,
+        });
+
+        if (qstashMessageId) {
+          await supabase
+            .schema('jarvis')
+            .from('reminders')
+            .update({ metadata: { auth_user_id: authUserId, qstash_message_id: qstashMessageId } })
+            .eq('id', reminder.id);
+        }
+      }
+
+      const formatted = scheduled_time
+        ? new Date(scheduled_time).toLocaleString('pt-BR', {
+            timeZone: 'America/Sao_Paulo',
+            day: '2-digit', month: '2-digit',
+            hour: '2-digit', minute: '2-digit',
+          })
+        : location_trigger
+        ? `quando chegar em ${location_trigger}`
+        : 'recorrente';
+
+      return JSON.stringify({
+        success: true,
+        message: `Lembrete criado para ${formatted}${frequency ? ` (${frequency})` : ''}.`,
+        reminderId: reminder.id,
+      });
+    }
+
+    case 'cancel_reminder': {
+      const reminderId: string = p.reminder_id || p.reminderId;
+
+      if (!reminderId) {
+        return JSON.stringify({ success: false, error: 'reminder_id não informado.' });
+      }
+
+      const { data: reminder } = await supabase
+        .schema('jarvis')
+        .from('reminders')
+        .select('metadata')
+        .eq('id', reminderId)
+        .eq('user_id', Number(numericUserIdStr))
+        .maybeSingle();
+
+      // Cancela no QStash se tiver messageId salvo no metadata
+      const qstashMessageId = reminder?.metadata?.qstash_message_id;
+      if (qstashMessageId) {
+        await cancelReminderOnQStash(qstashMessageId);
+      }
+
+      await supabase
+        .schema('jarvis')
+        .from('reminders')
+        .update({ status: 'cancelled' })
+        .eq('id', reminderId)
+        .eq('user_id', Number(numericUserIdStr));
+
+      return JSON.stringify({ success: true, message: 'Lembrete cancelado.' });
+    }
+
+    case 'list_reminders': {
+      const { data: reminders } = await supabase
+        .schema('jarvis')
+        .from('reminders')
+        .select('id, title, scheduled_time, frequency, type, status')
+        .eq('user_id', Number(numericUserIdStr))
+        .eq('status', 'pending')
+        .order('scheduled_time', { ascending: true, nullsFirst: false })
+        .limit(10);
+
+      if (!reminders?.length) return 'Nenhum lembrete ativo.';
+
+      const lines = reminders.map((r: any) => {
+        const dt = r.scheduled_time
+          ? new Date(r.scheduled_time).toLocaleString('pt-BR', {
+              timeZone: 'America/Sao_Paulo',
+              day: '2-digit', month: '2-digit',
+              hour: '2-digit', minute: '2-digit',
+            })
+          : r.frequency || r.type;
+        return `• [${r.id}] ${r.title} — ${dt}`;
+      });
+
+      return lines.join('\n');
+    }
+
+    // ===================== METAS E DIÁRIO =====================
 
     case 'atualizar_meta':
       return await updateGoalProgress(numericUserIdStr, p.titulo_parcial, p.progresso, p.etapa_concluida);
@@ -121,6 +238,8 @@ export async function executeTool(
     case 'registrar_no_diario':
       await extractDiary(numericUserIdStr, p.texto, p.categoria || 'anytime');
       return 'Entrada registrada no diário.';
+
+    // ===================== PESQUISA =====================
 
     case 'pesquisar_internet':
     case 'searchWeb': {
@@ -132,6 +251,8 @@ export async function executeTool(
 
     case 'getWeatherForecast':
       return await getWeatherForecast(p.lat, p.lng);
+
+    // ===================== LUGARES E LISTAS =====================
 
     case 'salvar_lugar': {
       const { error } = await supabase.from('favorite_places').upsert(
@@ -165,14 +286,24 @@ export async function executeTool(
     case 'marcar_feito': {
       const pid = await getPlaceId(p.lugar);
       if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
-      await supabase.from('shopping_items').update({ done: true }).eq('user_id', authUserId).ilike('item', p.item.trim()).eq('place_id', pid);
+      await supabase
+        .from('shopping_items')
+        .update({ done: true })
+        .eq('user_id', authUserId)
+        .ilike('item', p.item.trim())
+        .eq('place_id', pid);
       return `"${p.item}" marcado como comprado.`;
     }
 
     case 'remover_item_lista': {
       const pid = await getPlaceId(p.lugar);
       if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
-      await supabase.from('shopping_items').delete().eq('user_id', authUserId).ilike('item', p.item.trim()).eq('place_id', pid);
+      await supabase
+        .from('shopping_items')
+        .delete()
+        .eq('user_id', authUserId)
+        .ilike('item', p.item.trim())
+        .eq('place_id', pid);
       return `"${p.item}" removido.`;
     }
 
@@ -189,24 +320,19 @@ export async function executeTool(
       return `Lista de ${p.lugar}:\n${itens.map((i: any) => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
     }
 
-    // ===================== FERRAMENTAS DE INSIGHT =====================
+    // ===================== INSIGHTS =====================
+
     case 'get_weather_insights': {
       const location = await getUserLastLocation(numericUserIdStr);
-      if (!location) {
-        return 'Compartilhe sua localização para eu poder dar dicas do clima. 📍';
-      }
+      if (!location) return 'Compartilhe sua localização para eu poder dar dicas do clima. 📍';
       try {
-        // Import dinâmico para evitar erro de módulo caso o arquivo não exista em produção
         const { getWeatherInsight } = await import('@/lib/insights/weather-insights');
-        // Obtém o nome do usuário para personalização
-        let userName = '';
         const { data: userData } = await supabase
           .from('users')
           .select('nickname')
           .eq('id', numericUserIdStr)
           .single();
-        if (userData?.nickname) userName = userData.nickname;
-        return await getWeatherInsight(location.lat, location.lng, userName);
+        return await getWeatherInsight(location.lat, location.lng, userData?.nickname || '');
       } catch (err) {
         console.error('[WeatherInsight] Erro ao carregar módulo:', err);
         return 'Funcionalidade de insights climáticos em desenvolvimento. Em breve! 🌤️';
