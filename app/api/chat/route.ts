@@ -573,8 +573,30 @@ export async function POST(req: NextRequest) {
     // ========== 9. Roteamento e blockPlan ==========
     const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
     const temperature = getTemperature(detectedContexts);
-    const blockPlan = planContextualBlocks(detectedContexts);
-    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| blockPlan:', blockPlan);
+
+    function classifyIntent(message: string): string {
+      const m = message.toLowerCase();
+      if (/agenda|reunião|compromisso|semana|calendário/.test(m)) return 'calendar';
+      if (/email|mensagem|caixa|inbox|respondeu/.test(m)) return 'email';
+      if (/lembra|me avisa|não esquecer|lembrete|avisa/.test(m)) return 'reminder';
+      if (/como fazer|o que é|diferença|explica|qual é|por que|como funciona/.test(m)) return 'factual';
+      if (/me sinto|tô |estou |foi difícil|desabafar|cansado|ansioso/.test(m)) return 'personal';
+      if (/faz|cria|gera|escreve|monta|lista|resume/.test(m)) return 'task';
+      return 'personal';
+    }
+
+    const intent = classifyIntent(messageText);
+    const blockPlan = {
+      ...planContextualBlocks(detectedContexts),
+      loadDiary:           intent === 'personal',
+      loadGaps:            intent === 'personal',
+      loadRecommendations: intent === 'personal',
+      loadEmail:           intent === 'email',
+      loadCalendar:        ['calendar', 'reminder'].includes(intent),
+      loadTopics:          !['factual', 'task'].includes(intent),
+    };
+    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| blockPlan:', blockPlan);
+    
 
     // ========== 10. Pesquisa forçada ==========
     const shouldSearch = shouldForceSearch(messageText, detectedContexts);
