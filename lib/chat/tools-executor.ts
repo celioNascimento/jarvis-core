@@ -105,16 +105,22 @@ export async function executeTool(
     // ===================== LEMBRETES =====================
 
     case 'create_reminder': {
-      const title: string = p.message || p.title;
-      const scheduled_time: string | undefined = p.scheduled_time;
-      const frequency: string | undefined = p.recurrence || p.frequency;
+      const title: string = p.title || p.message;
+      const frequency: string | undefined = p.frequency || p.recurrence;
       const location_trigger: string | undefined = p.location_trigger;
+      const type: 'temporary' | 'agenda' | 'recurring' | 'location' = p.type || 'temporary';
 
-      // Determina o tipo baseado nos parâmetros
-      let type: 'temporary' | 'agenda' | 'recurring' | 'location' = 'temporary';
-      if (location_trigger) type = 'location';
-      else if (frequency) type = 'recurring';
-      else if (scheduled_time) type = 'agenda';
+      // Converte delay_minutes em scheduled_time absoluto
+      let scheduled_time: string | undefined = p.scheduled_time;
+      if (!scheduled_time && p.delay_minutes) {
+        const fireAt = new Date(Date.now() + p.delay_minutes * 60 * 1000);
+        scheduled_time = fireAt.toISOString();
+        console.log(`[create_reminder] delay_minutes=${p.delay_minutes} → scheduled_time=${scheduled_time}`);
+      }
+
+      if (!title) {
+        return JSON.stringify({ success: false, error: 'title é obrigatório.' });
+      }
 
       const { data: reminder, error } = await supabase
         .schema('jarvis')
@@ -137,7 +143,9 @@ export async function executeTool(
         return JSON.stringify({ success: false, error: 'Falha ao salvar lembrete.' });
       }
 
-      // Agenda no QStash apenas para lembretes pontuais com horário definido
+      console.log('[create_reminder] Inserido:', reminder.id, '| type:', type, '| scheduled_time:', scheduled_time);
+
+      // Agenda no QStash para lembretes com horário definido (temporary e agenda)
       if (scheduled_time && type !== 'recurring' && type !== 'location') {
         const qstashMessageId = await scheduleReminderOnQStash({
           reminderId: String(reminder.id),
@@ -153,6 +161,9 @@ export async function executeTool(
             .from('reminders')
             .update({ metadata: { auth_user_id: authUserId, qstash_message_id: qstashMessageId } })
             .eq('id', reminder.id);
+          console.log('[create_reminder] QStash messageId:', qstashMessageId);
+        } else {
+          console.error('[create_reminder] QStash retornou null — lembrete não agendado!');
         }
       }
 
@@ -164,7 +175,7 @@ export async function executeTool(
           })
         : location_trigger
         ? `quando chegar em ${location_trigger}`
-        : 'recorrente';
+        : frequency || 'recorrente';
 
       return JSON.stringify({
         success: true,
@@ -188,7 +199,6 @@ export async function executeTool(
         .eq('user_id', Number(numericUserIdStr))
         .maybeSingle();
 
-      // Cancela no QStash se tiver messageId salvo no metadata
       const qstashMessageId = reminder?.metadata?.qstash_message_id;
       if (qstashMessageId) {
         await cancelReminderOnQStash(qstashMessageId);
