@@ -55,4 +55,4 @@ export async function cancelReminderOnQStash(qstashMessageId: string): Promise<v
   } catch (err) {
     console.error('[QStash] Erro ao cancelar:', err);
   }
-}
+} 
