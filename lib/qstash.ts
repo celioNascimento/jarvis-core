@@ -10,13 +10,9 @@ export interface ScheduleReminderPayload {
   userId: string;
   authUserId: string;
   message: string;
-  scheduledTime: string; // ISO string
+  scheduledTime: string;
 }
 
-/**
- * Agenda um lembrete no QStash para disparar no horário exato.
- * Retorna o messageId do QStash para cancelamento posterior.
- */
 export async function scheduleReminderOnQStash(
   payload: ScheduleReminderPayload
 ): Promise<string | null> {
@@ -28,9 +24,14 @@ export async function scheduleReminderOnQStash(
     console.warn('[QStash] Lembrete no passado — disparando imediatamente');
   }
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+  // Bug corrigido: parênteses garantem precedência correta
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+    ? process.env.NEXT_PUBLIC_APP_URL
+    : process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
     : 'http://localhost:3000';
+
+  console.log('[QStash] Usando baseUrl:', baseUrl);
 
   try {
     const res = await qstash.publishJSON({
@@ -47,9 +48,6 @@ export async function scheduleReminderOnQStash(
   }
 }
 
-/**
- * Cancela um lembrete agendado pelo messageId do QStash.
- */
 export async function cancelReminderOnQStash(qstashMessageId: string): Promise<void> {
   try {
     await qstash.messages.delete(qstashMessageId);
