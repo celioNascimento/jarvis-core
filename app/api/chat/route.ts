@@ -1,5 +1,6 @@
+
 // app/api/chat/route.ts
-// Motor V8.9.9 — Redis cache (Upstash) + OpenRouter prompt caching
+// Motor V8.10.0 — Memória completa: profile block unificado + todas as camadas
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -27,7 +28,6 @@ import {
 } from '@/lib/extractor-jobs';
 import { extractDiary, extractGoal, buildDiaryGoalsBlock } from '@/lib/diary';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
-// import { ensureMemoryHealth } from '@/lib/chat/event-relevance';
 import {
   classifyContextWithL4,
   routeModel,
@@ -52,16 +52,12 @@ import { tools } from '@/lib/chat/tools-def';
 import { executeTool } from '@/lib/chat/tools-executor';
 import { callOpenRouterWithTools, withRetry } from '@/lib/chat/openrouter';
 import { transcribeAudio, extractAudioBuffer } from '@/lib/services/transcription';
-import { synthesizeSpeech } from '@/lib/services/tts';
 import { computeEmotionalScore } from '@/lib/chat/emotional-router';
 import { getUpcomingHolidays } from '@/lib/holidays';
 import { Redis } from '@upstash/redis';
 import { buildSharedContextBlock } from '@/lib/chat/shared-context';
-
-// ── [NOVO] Personalidade isolada ──────────────────────────────────────────────
-// Para ajustar tom, voz ou regras de comportamento do assistente,
-// edite lib/chat/personality.ts — não mexa aqui.
 import { buildPersonalityBlock } from '@/lib/chat/personality';
+import { buildProfileBlock } from '@/lib/chat/profile-block'; // ← NOVO
 
 export const maxDuration = 60;
 
@@ -77,11 +73,10 @@ const cache = {
       const val = await redis.get<T>(key);
       return val ?? null;
     } catch (e) {
-      console.warn('[Cache] Redis GET falhou, continuando sem cache:', (e as Error).message);
+      console.warn('[Cache] Redis GET falhou:', (e as Error).message);
       return null;
     }
   },
-
   async set<T>(key: string, value: T, ttlMs = 30000): Promise<void> {
     try {
       const ttlSec = Math.max(1, Math.floor(ttlMs / 1000));
@@ -120,16 +115,10 @@ function buildDateTimeBlock(timezone: string): string {
   const now = new Date();
   const locale = 'pt-BR';
   const dateStr = now.toLocaleDateString(locale, {
-    timeZone: timezone,
-    weekday: 'long',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
+    timeZone: timezone, weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
   });
   const timeStr = now.toLocaleTimeString(locale, {
-    timeZone: timezone,
-    hour: '2-digit',
-    minute: '2-digit',
+    timeZone: timezone, hour: '2-digit', minute: '2-digit',
   });
   return `${dateStr} às ${timeStr} (${timezone})`;
 }
@@ -137,10 +126,7 @@ function buildDateTimeBlock(timezone: string): string {
 function getCurrentDateParts(timezone: string): { day: number; month: number; year: number } {
   const now = new Date();
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    day: 'numeric',
-    month: 'numeric',
-    year: 'numeric',
+    timeZone: timezone, day: 'numeric', month: 'numeric', year: 'numeric',
   }).formatToParts(now);
   const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? '0', 10);
   return { day: get('day'), month: get('month'), year: get('year') };
@@ -165,25 +151,21 @@ function trimAssistantReply(reply: string, maxChars = 300): string {
   return cleaned.length > maxChars ? cleaned.slice(0, maxChars) + '…' : cleaned;
 }
 
-// ── [NOVO] Monta o bloco de clima a partir dos dados enviados pelo app ────────
-// O app (React Native) já tem os dados do card de clima.
-// Basta enviá-los no body do request e este helper formata para o prompt.
-// Todos os campos são opcionais — se não vier nada, retorna string vazia.
 function buildWeatherBlock(weather: Record<string, any> | null | undefined): string {
   if (!weather) return '';
   const parts: string[] = [];
-  if (weather.city)        parts.push(weather.city);
-  if (weather.temp != null) parts.push(`${Math.round(weather.temp)}°C`);
-  if (weather.condition)   parts.push(weather.condition);
+  if (weather.city)             parts.push(weather.city);
+  if (weather.temp != null)     parts.push(`${Math.round(weather.temp)}°C`);
+  if (weather.condition)        parts.push(weather.condition);
   if (weather.humidity != null) parts.push(`Umidade ${weather.humidity}%`);
   if (weather.wind != null)     parts.push(`Vento ${weather.wind} km/h`);
   if (weather.feelsLike != null) parts.push(`Sensação ${Math.round(weather.feelsLike)}°C`);
-  if (weather.forecast)    parts.push(`Previsão: ${weather.forecast}`);
+  if (weather.forecast)         parts.push(`Previsão: ${weather.forecast}`);
   return parts.join(' · ');
 }
 
 export async function POST(req: NextRequest) {
-  console.log('[chat] Iniciando — V8.9.9 (Redis cache + prompt caching)');
+  console.log('[chat] Iniciando — V8.10.0 (memória completa)');
   try {
     console.time('[Performance] total');
     let messageText = '';
@@ -192,13 +174,6 @@ export async function POST(req: NextRequest) {
     let clientSessionId: string | null = null;
     let userFirstName = 'Usuário';
     let location: { latitude: number; longitude: number } | null = null;
-    let isAudioInput = false;
-
-    // ── [NOVO] Dados de clima enviados pelo app ──────────────────────────────
-    // O app que já exibe o card de clima deve incluir estes dados no request.
-    // Exemplo (no mobile, ao montar o body da chamada):
-    //   weather: { city: "São Paulo", temp: 24, condition: "Parcialmente nublado",
-    //              humidity: 68, wind: 12, feelsLike: 23 }
     let weatherData: Record<string, any> | null = null;
 
     // --- Parsing do request ---
@@ -207,32 +182,26 @@ export async function POST(req: NextRequest) {
       const formData = await req.formData();
       const audioFile = formData.get('audio') as File | null;
 
-      userEmail = (formData.get('userEmail') as string) || (formData.get('email') as string) || '';
-      tempUserId = (formData.get('userId') as string) || (formData.get('user_id') as string) || '';
+      userEmail    = (formData.get('userEmail') as string) || (formData.get('email') as string) || '';
+      tempUserId   = (formData.get('userId') as string) || (formData.get('user_id') as string) || '';
       clientSessionId = formData.get('sessionId') as string | null;
-      userFirstName = (formData.get('userFirstName') as string) || 'Usuário';
+      userFirstName   = (formData.get('userFirstName') as string) || 'Usuário';
 
       const latField = formData.get('latitude') as string | null;
       const lngField = formData.get('longitude') as string | null;
-      if (latField && lngField)
-        location = { latitude: parseFloat(latField), longitude: parseFloat(lngField) };
+      if (latField && lngField) location = { latitude: parseFloat(latField), longitude: parseFloat(lngField) };
 
-      // Clima via form-data (campo JSON serializado)
       const weatherField = formData.get('weather') as string | null;
-      if (weatherField) {
-        try { weatherData = JSON.parse(weatherField); } catch { /* ignora */ }
-      }
+      if (weatherField) { try { weatherData = JSON.parse(weatherField); } catch { /* ignora */ } }
 
-      if (!audioFile && !formData.get('message') && !formData.get('text')) {
+      if (!audioFile && !formData.get('message') && !formData.get('text'))
         return NextResponse.json({ error: 'Áudio ou texto obrigatório' }, { status: 400 });
-      }
 
       if (audioFile) {
         console.time('[Transcription] whisper');
         const buffer = await extractAudioBuffer(audioFile);
         const result = await transcribeAudio(buffer, { language: 'pt' });
         console.timeEnd('[Transcription] whisper');
-
         if (!result.success) {
           console.error('[Chat] Transcrição falhou:', result.error);
           return NextResponse.json(
@@ -240,34 +209,23 @@ export async function POST(req: NextRequest) {
             { status: result.error?.includes('Autenticação') ? 401 : 500 }
           );
         }
-
         messageText = result.text || '';
-        isAudioInput = true;
       } else {
         messageText = (formData.get('message') as string) || (formData.get('text') as string) || '';
       }
     } else {
       const body = await req.json();
-      messageText = body.message || body.text || '';
-      userEmail = body.userEmail || body.email || '';
-      tempUserId = body.userId || body.user_id || '';
+      messageText     = body.message || body.text || '';
+      userEmail       = body.userEmail || body.email || '';
+      tempUserId      = body.userId || body.user_id || '';
       clientSessionId = body.sessionId || null;
-      userFirstName = body.userFirstName || body.user_first_name || 'Usuário';
-
-      if (body.location?.latitude != null && body.location?.longitude != null) {
+      userFirstName   = body.userFirstName || body.user_first_name || 'Usuário';
+      if (body.location?.latitude != null && body.location?.longitude != null)
         location = { latitude: body.location.latitude, longitude: body.location.longitude };
-      }
-
-      // Clima via JSON body
-      if (body.weather && typeof body.weather === 'object') {
-        weatherData = body.weather;
-      }
+      if (body.weather && typeof body.weather === 'object') weatherData = body.weather;
     }
 
-    // ── FIX 1: Sanitizar input ANTES de qualquer log ou persistência ──
-    if (messageText) {
-      messageText = sanitizeSensitiveData(messageText);
-    }
+    if (messageText) messageText = sanitizeSensitiveData(messageText);
 
     if (!messageText && !location)
       return NextResponse.json({ error: 'message obrigatório' }, { status: 400 });
@@ -278,87 +236,58 @@ export async function POST(req: NextRequest) {
     let userRecord: any = null;
 
     if (userEmail) {
-      console.log('[chat] Buscando usuário por email:', userEmail);
       const { data, error } = await supabase
         .from('users')
         .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context, auth_user_id')
         .eq('email', userEmail)
         .maybeSingle();
-
       if (error) console.error('[chat] Erro na busca por email:', error);
-      if (data) console.log('[chat] Usuário encontrado por email, id:', data.id);
       userRecord = data;
     }
 
     if (!userRecord && tempUserId) {
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
-
       if (isUUID) {
-        console.log('[chat] Buscando usuário por auth_user_id (UUID):', tempUserId);
         const { data, error } = await supabase
           .from('users')
           .select('id, nickname, current_context, assistant_name, timezone, pending_question, pending_context, auth_user_id')
           .eq('auth_user_id', tempUserId)
           .maybeSingle();
-
         if (error) console.error('[chat] Erro na busca por auth_user_id:', error);
-        if (data) console.log('[chat] Usuário encontrado por UUID, id:', data.id);
         userRecord = data;
-      } else {
-        console.warn('[chat] tempUserId não é UUID válido:', tempUserId);
       }
     }
 
-    // ── FIX 2: Não expor PII no response 404 em produção ──
     if (!userRecord) {
       console.error('[chat] USUÁRIO NÃO ENCONTRADO! email:', userEmail, 'userId:', tempUserId);
-      if (process.env.NODE_ENV === 'development') {
-        return NextResponse.json({
-          error: 'Usuário não encontrado. Faça login novamente.',
-          debug: { email: userEmail, userId: tempUserId },
-        }, { status: 404 });
-      }
-      return NextResponse.json(
-        { error: 'Usuário não encontrado. Faça login novamente.' },
-        { status: 404 }
-      );
+      if (process.env.NODE_ENV === 'development')
+        return NextResponse.json({ error: 'Usuário não encontrado.', debug: { email: userEmail, userId: tempUserId } }, { status: 404 });
+      return NextResponse.json({ error: 'Usuário não encontrado. Faça login novamente.' }, { status: 404 });
     }
 
     const numericUserIdStr = String(userRecord.id);
-    if (!numericUserIdStr || isNaN(Number(numericUserIdStr))) {
-      throw new Error('Invalid numeric user ID');
-    }
+    if (!numericUserIdStr || isNaN(Number(numericUserIdStr))) throw new Error('Invalid numeric user ID');
 
     let authUserId: string | null = userRecord.auth_user_id || null;
-
     if (!authUserId && tempUserId) {
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tempUserId);
-      if (isUUID) {
-        authUserId = tempUserId;
-        console.log('[chat] authUserId via tempUserId UUID:', authUserId);
-      }
+      if (isUUID) authUserId = tempUserId;
     }
-
     if (!authUserId) {
-      console.warn('[chat] authUserId não resolvido — operações de Auth podem falhar');
+      console.warn('[chat] authUserId não resolvido');
       authUserId = numericUserIdStr;
     }
 
-    console.log('[chat] numericUserIdStr:', numericUserIdStr, 'authUserId:', authUserId);
-
-    const authorName = userRecord.nickname || userFirstName;
-    const assistantName = userRecord.assistant_name || 'Lev';
-    const userTimezone = userRecord.timezone || 'America/Sao_Paulo';
-    const currentContextL3 = userRecord.current_context || 'Sem dossiê ainda.';
-    const pendingQuestion = userRecord.pending_question || null;
-
-    // ensureMemoryHealth(numericUserIdStr).catch((e) => console.error('[Health]', e));
+    const authorName        = userRecord.nickname || userFirstName;
+    const assistantName     = userRecord.assistant_name || 'Lev';
+    const userTimezone      = userRecord.timezone || 'America/Sao_Paulo';
+    const currentContextL3  = userRecord.current_context || 'Sem dossiê ainda.';
+    const pendingQuestion   = userRecord.pending_question || null;
 
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
 
-    // Data/hora canônica
     const canonicalDateTimeBlock = buildDateTimeBlock(userTimezone);
-    const { day, month, year } = getCurrentDateParts(userTimezone);
+    const { day, month, year }   = getCurrentDateParts(userTimezone);
     const canonicalDateISO = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
     // Localização
@@ -370,49 +299,33 @@ export async function POST(req: NextRequest) {
 
       let lastKnownLocation: { city: string; state: string } | null = null;
 
-if (!location) {
-  // Sem coordenadas no request — tenta recuperar última posição salva
-  const { data: savedLoc } = await supabase
-    .from('user_locations')
-    .select('city, state, latitude, longitude, last_updated')
-    .eq('user_id', numericUserIdStr)
-    .maybeSingle();
-
-  if (savedLoc?.city) {
-    lastKnownLocation = { city: savedLoc.city, state: savedLoc.state };
-    const hoursAgo = Math.round(
-      (Date.now() - new Date(savedLoc.last_updated).getTime()) / 3600000
-    );
-    locationContext = `[LOCALIZAÇÃO ANTERIOR]\n📍 ${savedLoc.city}, ${savedLoc.state}\n(última atualização: há ~${hoursAgo}h)`;
-    console.log('[chat] Localização resgatada da tabela:', savedLoc.city);
-  }
-}
+      if (!location) {
+        const { data: savedLoc } = await supabase
+          .from('user_locations')
+          .select('city, state, latitude, longitude, last_updated')
+          .eq('user_id', numericUserIdStr)
+          .maybeSingle();
+        if (savedLoc?.city) {
+          lastKnownLocation = { city: savedLoc.city, state: savedLoc.state };
+          const hoursAgo = Math.round((Date.now() - new Date(savedLoc.last_updated).getTime()) / 3600000);
+          locationContext = `[LOCALIZAÇÃO ANTERIOR]\n📍 ${savedLoc.city}, ${savedLoc.state}\n(última atualização: há ~${hoursAgo}h)`;
+        }
+      }
 
       const endereco = await checkProximidade(latitude, longitude, numericUserIdStr);
       locationContext = endereco;
 
-      await supabase
-        .from('config')
-        .upsert(
-          {
-            key: `last_location_${numericUserIdStr}`,
-            value: JSON.stringify({
-              lat_approx: latMasked,
-              lng_approx: lngMasked,
-              endereco,
-              ts: Date.now(),
-            }),
-          },
-          { onConflict: 'key' }
-        );
+      await supabase.from('config').upsert(
+        { key: `last_location_${numericUserIdStr}`, value: JSON.stringify({ lat_approx: latMasked, lng_approx: lngMasked, endereco, ts: Date.now() }) },
+        { onConflict: 'key' }
+      );
 
       const alertaGeo = await verificarAlertasDeProximidade(authUserId, latitude, longitude);
-      if (alertaGeo.temAlerta)
-        return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
+      if (alertaGeo.temAlerta) return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
       if (!messageText) messageText = '[Enviou Localização]';
     }
 
-    // ========== 1. Classificação rápida para decidir se precisa de embedding ==========
+    // ========== 1. Classificação rápida ==========
     const quickContexts = classifyContextRegex(messageText);
     const isTrivialEarly = quickContexts.includes('math') || quickContexts.includes('trivial');
 
@@ -431,17 +344,15 @@ if (!location) {
             match_count: 8,
           })) as { data: any[] | null; error?: any };
 
-          if (error) {
-            console.error('[Memória HD] Erro na RPC:', error);
-          } else if (search?.length) {
+          if (error) console.error('[Memória HD] Erro na RPC:', error);
+          else if (search?.length) {
             hdSearchResults = search.map((r: any) => ({
               similarity: r.similarity,
               emotional_weight: r.emotional_weight ?? 0.5,
               summary: r.summary,
               id: r.id,
             }));
-            hdBlock = hdSearchResults.filter(r => !r.summary?.startsWith('[CINZA]'))
-              .map(r => r.summary).join('\n---\n');
+            hdBlock = hdSearchResults.filter(r => !r.summary?.startsWith('[CINZA]')).map(r => r.summary).join('\n---\n');
             hdMemoryIds = hdSearchResults.map(r => r.id);
           }
         }
@@ -460,13 +371,10 @@ if (!location) {
     }
     console.timeEnd('[Performance] context_classification');
 
-    // ========== 3. Detecção de shift (condicional para triviais) ==========
-    const shiftDetected = !isTrivialEarly
-      ? await detectTopicShiftWithL4(numericUserIdStr, detectedContexts)
-      : false;
-    console.log('[Shift] detectado:', shiftDetected);
+    // ========== 3. Detecção de shift ==========
+    const shiftDetected = !isTrivialEarly ? await detectTopicShiftWithL4(numericUserIdStr, detectedContexts) : false;
 
-    // ========== 4. Construção do histórico ==========
+    // ========== 4. Histórico ==========
     const { data: historySession } = await supabase
       .from('brain')
       .select('content, metadata')
@@ -478,27 +386,17 @@ if (!location) {
 
     let ramBlock = '';
     let recentPairs: any[] = [];
-
     const hasEnoughHistory = historySession && historySession.length >= 2;
 
     if (hasEnoughHistory) {
-      const pairsToUse = shiftDetected
-        ? historySession.slice(0, 1)
-        : historySession.slice(0, 4);
-
+      const pairsToUse = shiftDetected ? historySession.slice(0, 1) : historySession.slice(0, 4);
       recentPairs = [...pairsToUse].reverse().flatMap((h: any) => [
         { role: 'user' as const, content: h.content },
         { role: 'assistant' as const, content: trimAssistantReply(h.metadata?.ai_reply || '') },
       ]);
-
-      if (shiftDetected && historySession && historySession.length > 1) {
+      if (shiftDetected && historySession.length > 1) {
         const validHistory = historySession.filter(h => h.metadata?.ai_reply);
-        if (validHistory.length > 1) {
-          const summary = compressToSummary(validHistory.slice(1));
-          ramBlock = `[CONTEXTO ANTERIOR RESUMIDO]\n${summary}`;
-        } else {
-          ramBlock = '';
-        }
+        if (validHistory.length > 1) ramBlock = `[CONTEXTO ANTERIOR RESUMIDO]\n${compressToSummary(validHistory.slice(1))}`;
       }
     } else {
       if (historySession && historySession.length > 0) {
@@ -506,184 +404,171 @@ if (!location) {
           (h: any) => `${authorName}: ${h.content}\n${assistantName}: ${trimAssistantReply(h.metadata?.ai_reply || '')}`
         ).join('\n\n');
       } else {
-        const semanticBlock = await semanticRamCompression(
-          historySession || [],
-          numericUserIdStr,
-          messageText,
-          queryEmbedding ?? undefined
-        );
+        const semanticBlock = await semanticRamCompression(historySession || [], numericUserIdStr, messageText, queryEmbedding ?? undefined);
         ramBlock = semanticBlock || (hdBlock ? `[Contexto anterior consolidado]\n${hdBlock}` : ' ');
       }
       if (ramBlock.length > RAM_MAX_CHARS) ramBlock = ramBlock.slice(-RAM_MAX_CHARS);
     }
 
     // ========== 5. Emotional Score ==========
-    const emotional = await computeEmotionalScore(
-      messageText,
-      numericUserIdStr,
-      hdSearchResults,
-      ramBlock
-    );
+    const emotional = await computeEmotionalScore(messageText, numericUserIdStr, hdSearchResults, ramBlock);
     console.log('[Emotional] Score:', emotional.score, 'Traj:', emotional.trajectory);
 
     // ========== 6. Segunda busca HD condicional ==========
     if (emotional.score > 0.6 && queryEmbedding && hdSearchResults.length < 6) {
       try {
         const { data: extraSearch } = (await supabase.rpc('match_memories', {
-          query_embedding: queryEmbedding,
-          match_threshold: 0.12,
-          match_count: 12,
-        })) as { data: any[] | null; error?: any };
-
+          query_embedding: queryEmbedding, match_threshold: 0.12, match_count: 12,
+        })) as { data: any[] | null };
         if (extraSearch?.length) {
           const existingIds = new Set(hdMemoryIds);
           const extras = extraSearch.filter((r: any) => !existingIds.has(r.id));
           if (extras.length) {
-            const newResults = extras.map((r: any) => ({
-              similarity: r.similarity,
-              emotional_weight: r.emotional_weight ?? 0.5,
-              summary: r.summary,
-              id: r.id,
-            }));
-            hdSearchResults.push(...newResults);
-            hdBlock = hdSearchResults.filter(r => !r.summary?.startsWith('[CINZA]'))
-              .map(r => r.summary).join('\n---\n');
+            hdSearchResults.push(...extras.map((r: any) => ({ similarity: r.similarity, emotional_weight: r.emotional_weight ?? 0.5, summary: r.summary, id: r.id })));
+            hdBlock = hdSearchResults.filter(r => !r.summary?.startsWith('[CINZA]')).map(r => r.summary).join('\n---\n');
             hdMemoryIds = hdSearchResults.map(r => r.id);
-            console.log('[Memória HD] Segunda busca adicionou', extras.length, 'memórias emocionais');
           }
         }
-      } catch (err) {
-        console.error('[Memória HD] Erro na segunda busca:', err);
-      }
+      } catch (err) { console.error('[Memória HD] Erro na segunda busca:', err); }
     }
 
-    // ========== 7. Tópico emocional (paralelizado no Promise.all) ==========
+    // ========== 7. Tópico emocional ==========
     let topicEmotionalDimension: number | undefined;
 
-    // ========== 8. Cargas contextuais condicionais + topicEmotionalDimension ==========
+    // ========== 8. Cargas contextuais + profileBlock ==========
     const [
-  events,
-  ashes,
-  principles,
-  childrenData,
-  personNotesData,
-  onboardingState,
-  topicEmotionalDimValue,
-  sharedContextResult,           // ← novo
-] = await Promise.all([
-  // ── events (inalterado) ───────────────────────────────────
-  (async () => {
-    const key = `events_${numericUserIdStr}`;
-    const cached = await cache.get<any[]>(key);
-    if (cached) return cached;
-    const { data } = await supabase
-      .from('events')
-      .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
-      .eq('user_id', numericUserIdStr)
-      .order('relevance_score', { ascending: false });
-    const val = data || [];
-    await cache.set(key, val);
-    return val;
-  })(),
-  // ── ashes (inalterado) ────────────────────────────────────
-  (async () => {
-    const key = `ashes_${numericUserIdStr}`;
-    const cached = await cache.get<any[]>(key);
-    if (cached) return cached;
-    const { data } = await supabase
-      .from('memory_ashes')
-      .select('ash_summary, period_start, period_end')
-      .eq('user_id', numericUserIdStr)
-      .order('period_end', { ascending: false })
-      .limit(5);
-    const val = data || [];
-    await cache.set(key, val);
-    return val;
-  })(),
-  // ── principles (inalterado) ───────────────────────────────
-  (async () => {
-    const key = `principles_${numericUserIdStr}`;
-    const cached = await cache.get<{ global: any[]; individual: any[] }>(key);
-    if (cached) return cached;
-    const [globalRes, userRes] = await Promise.all([
-      supabase.schema('jarvis').from('principles').select('content, category').is('user_id', null).order('created_at', { ascending: true }),
-      supabase.schema('jarvis').from('principles').select('content, category').eq('user_id', numericUserIdStr).order('created_at', { ascending: true }),
+      events,
+      ashes,
+      principles,
+      childrenData,
+      personNotesData,
+      onboardingState,
+      topicEmotionalDimValue,
+      sharedContextResult,
+      profileBlock,           // ← NOVO: bloco unificado de perfil
+    ] = await Promise.all([
+      // ── events ────────────────────────────────────────────────
+      (async () => {
+        const key = `events_${numericUserIdStr}`;
+        const cached = await cache.get<any[]>(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('events')
+          .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
+          .eq('user_id', numericUserIdStr)
+          .order('relevance_score', { ascending: false });
+        const val = data || [];
+        await cache.set(key, val);
+        return val;
+      })(),
+      // ── ashes ─────────────────────────────────────────────────
+      (async () => {
+        const key = `ashes_${numericUserIdStr}`;
+        const cached = await cache.get<any[]>(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('memory_ashes')
+          .select('ash_summary, period_start, period_end')
+          .eq('user_id', numericUserIdStr)
+          .order('period_end', { ascending: false })
+          .limit(5);
+        const val = data || [];
+        await cache.set(key, val);
+        return val;
+      })(),
+      // ── principles ────────────────────────────────────────────
+      (async () => {
+        const key = `principles_${numericUserIdStr}`;
+        const cached = await cache.get<{ global: any[]; individual: any[] }>(key);
+        if (cached) return cached;
+        const [globalRes, userRes] = await Promise.all([
+          supabase.schema('jarvis').from('principles').select('content, category').is('user_id', null).order('created_at', { ascending: true }),
+          supabase.schema('jarvis').from('principles').select('content, category').eq('user_id', numericUserIdStr).order('created_at', { ascending: true }),
+        ]);
+        const val = { global: globalRes.data || [], individual: userRes.data || [] };
+        await cache.set(key, val, 60000);
+        return val;
+      })(),
+      // ── childrenData — mantido para o filtro de personNotesBlock ──
+      (async () => {
+        const key = `children_${numericUserIdStr}`;
+        const cached = await cache.get<any[]>(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('children')
+          .select('name, nickname, lev_notes')
+          .eq('parent_id', numericUserIdStr);
+        const val = data || [];
+        await cache.set(key, val);
+        return val;
+      })(),
+      // ── personNotesData ───────────────────────────────────────
+      (async () => {
+        const key = `person_notes_${numericUserIdStr}`;
+        const cached = await cache.get<any[]>(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('person_notes')
+          .select('person_name, person_type, note, noted_at')
+          .eq('user_id', numericUserIdStr)
+          .order('noted_at', { ascending: false })
+          .limit(20);
+        const val = data || [];
+        await cache.set(key, val);
+        return val;
+      })(),
+      // ── onboardingState ───────────────────────────────────────
+      (async () => {
+        const key = `onboarding_${numericUserIdStr}`;
+        const cached = await cache.get(key);
+        if (cached) return cached;
+        const { data } = await supabase
+          .from('onboarding_progress')
+          .select('*')
+          .eq('user_id', numericUserIdStr)
+          .maybeSingle();
+        const state = data || await getOrCreateOnboardingStatePersistent(numericUserIdStr);
+        await cache.set(key, state, 60000);
+        return state;
+      })(),
+      // ── topicEmotionalDimValue ────────────────────────────────
+      (async () => {
+        if (!detectedContexts.length) return undefined;
+        const { data } = await supabase
+          .from('topic_index')
+          .select('emotional_dimension')
+          .eq('user_id', numericUserIdStr)
+          .eq('topic', detectedContexts[0])
+          .maybeSingle();
+        return data?.emotional_dimension ?? undefined;
+      })(),
+      // ── sharedContextResult ───────────────────────────────────
+      (async () => {
+        const key = `shared_ctx_${numericUserIdStr}_${detectedContexts.slice(0, 3).join('_')}`;
+        const cached = await cache.get<{ block: string; hasData: boolean }>(key);
+        if (cached) return cached;
+        const result = await buildSharedContextBlock(authUserId!, numericUserIdStr, detectedContexts, authorName);
+        await cache.set(key, result, 20000);
+        return result;
+      })(),
+      // ── profileBlock — NOVO: todas as camadas de memória estruturada ──
+      (async () => {
+        // Cache de 60s — dados de perfil mudam pouco entre mensagens
+        const key = `profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`;
+        const cached = await cache.get<string>(key);
+        if (cached) return cached;
+        const block = await buildProfileBlock({
+          userId: Number(numericUserIdStr),
+          authUserId: authUserId!,
+          authorName,
+          contexts: detectedContexts,
+        });
+        await cache.set(key, block, 60000);
+        return block;
+      })(),
     ]);
-    const val = { global: globalRes.data || [], individual: userRes.data || [] };
-    await cache.set(key, val, 60000);
-    return val;
-  })(),
-  // ── childrenData (inalterado) ─────────────────────────────
-  (async () => {
-    const key = `children_${numericUserIdStr}`;
-    const cached = await cache.get<any[]>(key);
-    if (cached) return cached;
-    const { data } = await supabase
-      .from('children')
-      .select('name, nickname, lev_notes')
-      .eq('parent_id', numericUserIdStr)
-      .not('lev_notes', 'is', null);
-    const val = data || [];
-    await cache.set(key, val);
-    return val;
-  })(),
-  // ── personNotesData (inalterado) ──────────────────────────
-  (async () => {
-    const key = `person_notes_${numericUserIdStr}`;
-    const cached = await cache.get<any[]>(key);
-    if (cached) return cached;
-    const { data } = await supabase
-      .from('person_notes')
-      .select('person_name, person_type, note, noted_at')
-      .eq('user_id', numericUserIdStr)
-      .order('noted_at', { ascending: false })
-      .limit(20);
-    const val = data || [];
-    await cache.set(key, val);
-    return val;
-  })(),
-  // ── onboardingState (inalterado) ──────────────────────────
-  (async () => {
-    const key = `onboarding_${numericUserIdStr}`;
-    const cached = await cache.get(key);
-    if (cached) return cached;
-    const { data } = await supabase
-      .from('onboarding_progress')
-      .select('*')
-      .eq('user_id', numericUserIdStr)
-      .maybeSingle();
-    let state = data || await getOrCreateOnboardingStatePersistent(numericUserIdStr);
-    await cache.set(key, state, 60000);
-    return state;
-  })(),
-  // ── topicEmotionalDimValue (inalterado) ───────────────────
-  (async () => {
-    if (!detectedContexts.length) return undefined;
-    const { data } = await supabase
-      .from('topic_index')
-      .select('emotional_dimension')
-      .eq('user_id', numericUserIdStr)
-      .eq('topic', detectedContexts[0])
-      .maybeSingle();
-    return data?.emotional_dimension ?? undefined;
-  })(),
-  // ── sharedContextResult (NOVO) ────────────────────────────
-  (async () => {
-    const key = `shared_ctx_${numericUserIdStr}_${detectedContexts.slice(0, 3).join('_')}`;
-    const cached = await cache.get<{ block: string; hasData: boolean }>(key);
-    if (cached) return cached;
-    const result = await buildSharedContextBlock(
-      authUserId!,
-      numericUserIdStr,
-      detectedContexts,
-      authorName,
-    );
-    await cache.set(key, result, 20000); // 20s — dados de relacionamento mudam pouco
-    return result;
-  })(),
-]);
- 
-topicEmotionalDimension = topicEmotionalDimValue;
+
+    topicEmotionalDimension = topicEmotionalDimValue;
 
     // ========== 9. Roteamento e blockPlan ==========
     const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
@@ -692,12 +577,7 @@ topicEmotionalDimension = topicEmotionalDimValue;
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| blockPlan:', blockPlan);
 
     // ========== 10. Pesquisa forçada ==========
-    // ── [MODIFICADO] Pesquisa de clima só é forçada se o app NÃO enviou dados ──
-    // Se weatherData veio no request, não buscamos clima — usamos o dado local.
-    const isProductRecommendation = /qual(quer)?\s+(cor|tinta|coloraç|produto|marca|remédio|medicamento|creme|shampoo|xampu|esmalte|batom|perfume|suplemento|vitamina|proteína|modelo|aparelho|celular|notebook|app|aplicativo)/i.test(messageText)
-      || /me indica|me recomenda|qual (devo|posso|seria|é o melhor|usar|comprar|tomar)/i.test(messageText);
-
-    const shouldSearch = shouldForceSearch(messageText, detectedContexts) || isProductRecommendation;
+    const shouldSearch = shouldForceSearch(messageText, detectedContexts);
     const isClimaQuery = detectedContexts.includes('clima');
     const skipSearchForWeather = isClimaQuery && !!weatherData;
 
@@ -712,52 +592,36 @@ topicEmotionalDimension = topicEmotionalDimValue;
       }
     }
 
-    // ========== 11. Blocos condicionais + relatedTopics com cache ==========
+    // ========== 11. Blocos condicionais ==========
     const [gapsBlock, topicBlock, diaryBlock, recsBlock, relatedTopicsBlock] = await Promise.all([
       blockPlan.loadGaps
         ? (async () => {
             const key = `gaps_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
             let val = await cache.get<string>(key);
-            if (!val) {
-              val = await buildGapsBlock(numericUserIdStr, messageText);
-              await cache.set(key, val, 60000);
-            }
+            if (!val) { val = await buildGapsBlock(numericUserIdStr, messageText); await cache.set(key, val, 60000); }
             return val;
-          })()
-        : Promise.resolve(''),
+          })() : Promise.resolve(''),
       blockPlan.loadTopics
         ? (async () => {
             const key = `topic_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
             let val = await cache.get<string>(key);
-            if (!val) {
-              val = await buildTopicBlock(numericUserIdStr, messageText).catch(() => '');
-              await cache.set(key, val, 60000);
-            }
+            if (!val) { val = await buildTopicBlock(numericUserIdStr, messageText).catch(() => ''); await cache.set(key, val, 60000); }
             return val;
-          })()
-        : Promise.resolve(''),
+          })() : Promise.resolve(''),
       blockPlan.loadDiary
         ? (async () => {
             const key = `diary_${numericUserIdStr}`;
             let val = await cache.get<string>(key);
-            if (!val) {
-              val = await buildDiaryGoalsBlock(numericUserIdStr).catch(() => '');
-              await cache.set(key, val, 60000);
-            }
+            if (!val) { val = await buildDiaryGoalsBlock(numericUserIdStr).catch(() => ''); await cache.set(key, val, 60000); }
             return val;
-          })()
-        : Promise.resolve(''),
+          })() : Promise.resolve(''),
       blockPlan.loadRecommendations
         ? (async () => {
             const key = `recs_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
             let val = await cache.get<string>(key);
-            if (!val) {
-              val = await buildRecommendationsBlock(numericUserIdStr, messageText).catch(() => '');
-              await cache.set(key, val, 60000);
-            }
+            if (!val) { val = await buildRecommendationsBlock(numericUserIdStr, messageText).catch(() => ''); await cache.set(key, val, 60000); }
             return val;
-          })()
-        : Promise.resolve(''),
+          })() : Promise.resolve(''),
       blockPlan.loadTopics
         ? (async () => {
             const key = `related_${numericUserIdStr}_${detectedContexts[0] || 'casual'}`;
@@ -766,8 +630,7 @@ topicEmotionalDimension = topicEmotionalDimValue;
             const val = await getRelatedTopics(numericUserIdStr, detectedContexts[0] || 'casual');
             await cache.set(key, val, 30000);
             return val;
-          })()
-        : Promise.resolve(''),
+          })() : Promise.resolve(''),
     ]);
 
     // ========== 12. Calendários e emails ==========
@@ -776,14 +639,9 @@ topicEmotionalDimension = topicEmotionalDimValue;
     if (blockPlan.loadCalendar) {
       const calendarCacheKey = `calendar_${authUserId}`;
       const cached = await cache.get<{ google: any; ms: any }>(calendarCacheKey);
-      if (cached) {
-        googleCtx = cached.google;
-        msCtx = cached.ms;
-      } else {
-        [googleCtx, msCtx] = await Promise.all([
-          getGoogleContext().catch(() => null),
-          getMicrosoftCalendarContext().catch(() => null),
-        ]);
+      if (cached) { googleCtx = cached.google; msCtx = cached.ms; }
+      else {
+        [googleCtx, msCtx] = await Promise.all([getGoogleContext().catch(() => null), getMicrosoftCalendarContext().catch(() => null)]);
         await cache.set(calendarCacheKey, { google: googleCtx, ms: msCtx }, 30000);
       }
     }
@@ -792,32 +650,23 @@ topicEmotionalDimension = topicEmotionalDimValue;
     if (blockPlan.loadEmail) {
       const emailCacheKey = `emails_${authUserId}`;
       emailBlock = await cache.get(emailCacheKey);
-      if (!emailBlock) {
-        emailBlock = await getRecentEmails(undefined, 3, false).catch(() => null);
-        await cache.set(emailCacheKey, emailBlock, 30000);
-      }
+      if (!emailBlock) { emailBlock = await getRecentEmails(undefined, 3, false).catch(() => null); await cache.set(emailCacheKey, emailBlock, 30000); }
     }
 
-    // Feriados condicionais com cache
+    // Feriados condicionais
     let holidaysBlock = '';
     const needsHolidays = detectedContexts.includes('agenda') || detectedContexts.includes('evento') || detectedContexts.includes('familia');
     if (needsHolidays) {
       try {
-        const holidaysCacheKey = `holidays_${canonicalDateISO}`;
-        let holidays = await cache.get<any[]>(holidaysCacheKey);
-        if (!holidays) {
-          holidays = await getUpcomingHolidays(10);
-          await cache.set(holidaysCacheKey, holidays, 3600000);
-        }
-        if (holidays.length > 0) {
+        const key = `holidays_${canonicalDateISO}`;
+        let holidays = await cache.get<any[]>(key);
+        if (!holidays) { holidays = await getUpcomingHolidays(10); await cache.set(key, holidays, 3600000); }
+        if (holidays.length > 0)
           holidaysBlock = `\n[FERIADOS NACIONAIS PRÓXIMOS]\n${holidays.map(h => `- ${h.name}: ${new Date(h.date).toLocaleDateString('pt-BR')}`).join('\n')}`;
-        }
-      } catch (err) {
-        console.error('[Holidays] Erro ao buscar feriados:', err);
-      }
+      } catch (err) { console.error('[Holidays] Erro:', err); }
     }
 
-    // Montar blocos de eventos
+    // Montar bloco de eventos (tabela events — datas importantes)
     const hoje = new Date();
     hoje.setHours(0, 0, 0, 0);
     const sortedEvents = [...events].sort(
@@ -831,17 +680,16 @@ topicEmotionalDimension = topicEmotionalDimValue;
     const activeEvents = sortedEvents.filter(
       (e) => new Date(e.event_date) >= hoje || (e.decay_type === 'permanent' && new Date(e.event_date) < hoje)
     );
-    const eventsBlock =
-      activeEvents.length > 0
-        ? [
-            upcomingEvents.length > 0 ? `🔴 NOS PRÓXIMOS DIAS:\n${upcomingEvents.map((e) => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}` : null,
-            highRelevanceEvents.length > 0 ? `🟡 IMPORTANTES:\n${highRelevanceEvents.map((e) => `  - ${e.title}: ${e.event_date}`).join('\n')}` : null,
-          ].filter(Boolean).join('\n\n')
-        : 'Nenhum evento cadastrado.';
+    const eventsBlock = activeEvents.length > 0
+      ? [
+          upcomingEvents.length > 0 ? `🔴 NOS PRÓXIMOS DIAS:\n${upcomingEvents.map((e) => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}` : null,
+          highRelevanceEvents.length > 0 ? `🟡 IMPORTANTES:\n${highRelevanceEvents.map((e) => `  - ${e.title}: ${e.event_date}`).join('\n')}` : null,
+        ].filter(Boolean).join('\n\n')
+      : 'Nenhum evento cadastrado.';
 
     const ashesBlockRaw = ashes.length > 0 ? ashes.map((a: any) => a.ash_summary).join('\n') : null;
 
-    // Notas de pessoas
+    // Notas de pessoas mencionadas na mensagem (filtro por nome)
     let personNotesBlock = '';
     const msgLower = messageText.toLowerCase();
     const childNotes = childrenData.filter(
@@ -860,9 +708,9 @@ topicEmotionalDimension = topicEmotionalDimValue;
     // Truncagem por peso temporal
     const cleanRamForWeights = ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
     const weights = classifyTemporalHorizon(messageText, cleanRamForWeights, pendingQuestion);
-    const truncatedL3 = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, 6000) : '';
-    const truncatedHd = blockPlan.loadHD ? truncateByWeight(hdBlock, weights.hd, 6000) : '';
-    const truncatedAshes = (blockPlan.loadAshes && ashesBlockRaw) ? truncateByWeight(ashesBlockRaw, weights.ashes, 6000) : null;
+    const truncatedL3     = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, 6000) : '';
+    const truncatedHd     = blockPlan.loadHD ? truncateByWeight(hdBlock, weights.hd, 6000) : '';
+    const truncatedAshes  = (blockPlan.loadAshes && ashesBlockRaw) ? truncateByWeight(ashesBlockRaw, weights.ashes, 6000) : null;
     const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
 
     const isFemale = currentContextL3.toLowerCase().includes('feminino') || currentContextL3.toLowerCase().includes('mulher');
@@ -878,10 +726,7 @@ topicEmotionalDimension = topicEmotionalDimValue;
 
     // ========== System Prompt ==========
     const { global: globalPrinciples, individual: individualPrinciples } = principles as { global: any[]; individual: any[] };
-
-    const formatPrinciples = (list: any[]) =>
-      list.map((p: any) => `- [${p.category || 'Geral'}] ${p.content}`).join('\n');
-
+    const formatPrinciples = (list: any[]) => list.map((p: any) => `- [${p.category || 'Geral'}] ${p.content}`).join('\n');
     const principlesText = (() => {
       const parts: string[] = [];
       if (globalPrinciples.length > 0)
@@ -903,19 +748,12 @@ topicEmotionalDimension = topicEmotionalDimValue;
       ? `⚠️ ATENÇÃO EMOCIONAL: Esta mensagem tem peso emocional (score ${emotional.score.toFixed(2)}${emotional.triggers.length ? `, gatilhos: ${emotional.triggers.join(', ')}` : ''}). Acolha antes de resolver — presença primeiro, solução depois.`
       : '';
 
-    // ── [NOVO] Monta o bloco de clima para injetar na personalidade ───────────
     const weatherBlock = buildWeatherBlock(weatherData);
-    if (weatherBlock) console.log('[chat] weatherBlock injetado no prompt:', weatherBlock);
+    if (weatherBlock) console.log('[chat] weatherBlock injetado:', weatherBlock);
 
-    // ── [MODIFICADO] Personalidade agora vem de personality.ts ───────────────
     const personalityBlock = buildPersonalityBlock({
-      assistantName,
-      authorName,
-      informalAddress,
-      brevityInstruction,
-      emotionalAttentionNote,
-      canonicalDateTimeBlock,
-      canonicalDateISO,
+      assistantName, authorName, informalAddress, brevityInstruction,
+      emotionalAttentionNote, canonicalDateTimeBlock, canonicalDateISO,
       weatherBlock: weatherBlock || undefined,
     });
 
@@ -923,20 +761,16 @@ topicEmotionalDimension = topicEmotionalDimValue;
 
 🚨 INTEGRIDADE FACTUAL — OBRIGATÓRIA 🚨
 
-1. DATAS: Qualquer informação temporal (jogos, eventos, notícias) DEVE ser coerente com a data canônica acima.
-   - Se um resultado de busca contiver uma data diferente da canônica, avise e refaça a busca.
-   - NUNCA confirme uma data informada pelo usuário apenas porque ele afirmou com convicção. Verifique primeiro.
+1. DATAS: Qualquer informação temporal DEVE ser coerente com a data canônica acima.
+   - Nunca confirme uma data informada pelo usuário sem verificar.
 
-2. ANTI-SYCOPHANCY: Se o usuário disser "você errou" ou "está errado" sobre um fato:
+2. ANTI-SYCOPHANCY: Se o usuário disser "você errou":
    - NÃO concorde imediatamente.
-   - Refaça a busca (searchWeb) com a data canônica como âncora.
+   - Refaça a busca com a data canônica como âncora.
    - Só corrija se os novos resultados confirmarem o erro.
-   - Se confirmarem sua resposta anterior, mantenha-a com segurança: "Verifiquei novamente e os dados confirmam o que disse antes."
 
-3. PESQUISA: Para QUALQUER pergunta sobre jogos, resultados esportivos, datas de eventos, notícias, cotações, clima em outras cidades — chame searchWeb ANTES de responder.
-   - Se "[PESQUISA AUTOMÁTICA REALIZADA]" estiver presente, use como fonte principal.
-   - Ao citar resultados, confirme que a data do evento bate com a data canônica.
-   - CLIMA DA CIDADE DO USUÁRIO: Se "[CLIMA ATUAL]" estiver presente no prompt, USE esses dados — não busque na web.
+3. PESQUISA: Para jogos, resultados, datas, notícias, cotações, clima em outras cidades — chame searchWeb ANTES de responder.
+   - CLIMA DA CIDADE DO USUÁRIO: Se "[CLIMA ATUAL]" estiver presente, USE esses dados.
 
 ${forcedSearchResult}
 ${holidaysBlock}
@@ -947,6 +781,7 @@ ${locationContext ? `\n${locationContext}` : ''}
 ${sharedContextResult.hasData ? `\n${sharedContextResult.block}` : ''}
 ${relatedTopicsBlock}
 ${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${truncatedL3}` : ''}
+${profileBlock}
 ${personNotesBlock}
 ${recsBlock}
 ${topicBlock}
@@ -954,40 +789,32 @@ ${isMeaningfulDiaryBlock(diaryBlock) ? diaryBlock : ''}
 ${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]\n${truncatedHd}` : ''}
 ${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao citar]\n${truncatedAshes}` : ''}
 [EVENTOS]\n${truncatedEvents}
-${onboardingState?.status !== 'completed' && !messageText.match(/\?$|como|qual|onde|quando|quem|me explica|me indica|me recomenda/i) ? buildOnboardingBlock(onboardingState) : ''}
+${onboardingState?.status !== 'completed' ? buildOnboardingBlock(onboardingState) : ''}
 ${gapsBlock}
 ${principlesText ? `[BÚSSOLA]\n${principlesText}` : ''}
 
 REGRAS OPERACIONAIS:
 FOCO: Responda o que foi perguntado. Nunca repita sugestão já rejeitada.
-DIRETIVIDADE: Quando o usuário pedir uma recomendação ("qual me indica?", "o que é melhor?"), dê UMA resposta direta. Não liste opções genéricas nem peça mais contexto antes de responder — use o que já sabe. Ressalvas ficam em uma linha no final, nunca antes.
-RECOMENDAÇÃO DE PRODUTO: Se [PESQUISA AUTOMÁTICA REALIZADA] estiver presente e a pergunta for sobre produto (tinta, cor, remédio, aparelho etc.), cite o produto pelo nome/número específico encontrado na pesquisa. NUNCA diga "pesquise na internet" ou "quer que eu busque?" — a busca já foi feita, use o resultado.
-ONBOARDING: Nunca interrompa uma resposta útil com perguntas de perfil (profissão, cidade, etc.). Só pergunte se a informação for estritamente necessária para responder o que foi perguntado agora. Se o usuário já revelou contexto na conversa (nome, cidade, profissão), registre silenciosamente — não confirme em voz alta.
 PROIBIDO: "Anota aí", "Anotado!", "Registrado!". Se salvou via ferramenta: "Feito." ou "Tá na agenda."
-MEMÓRIA: Use as memórias naturalmente, como quem se lembra — nunca diga "Tenho uma nota aqui que diz...".
+MEMÓRIA: Use as memórias naturalmente — nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
-LOCALIZAÇÃO: Mencione apenas bairro e cidade de forma natural. Nunca exponha coordenadas numéricas na resposta.
+FILHOS: A lista canônica de filhos está em [FILHOS DE ${authorName.toUpperCase()}]. Nunca cite filhos além dos listados. Se indicar "Nenhum filho cadastrado", não invente.
+LEMBRETES: Se o usuário usar "me lembra", "me avisa", "não esquecer" com tempo ou local — chame OBRIGATORIAMENTE a tool create_reminder. Nunca apenas confirme sem chamar a tool.
+LOCALIZAÇÃO: Mencione apenas bairro e cidade. Nunca exponha coordenadas.
+DOCUMENTOS: Se algum documento estiver com ⚠️ VENCIDO ou vencendo em breve, mencione proativamente quando relevante.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
-LEMBRETES: Sempre que o usuário usar "me lembra", "lembrar", "avisa", "não esquecer", "me avisa", "não deixa eu esquecer" com tempo ou local — chame OBRIGATORIAMENTE a tool create_reminder antes de responder. Nunca apenas confirme sem chamar a tool.
-DADOS COMPARTILHADOS: Use informações de [CONTEXTO COMPARTILHADO] naturalmente. Se o aniversário do cônjuge estiver próximo, mencione proativamente quando relevante.
-AGENDAMENTO: Ao criar lembrete ou evento, considere:
-- Se cair em feriado (ver [FERIADOS NACIONAIS PRÓXIMOS]) ou fim de semana, avise e pergunte se confirma ou prefere o próximo dia útil.
-- Se [CLIMA ATUAL] indicar chuva forte ou tempestade no dia/horário, mencione ao confirmar.
-- Para lembretes recorrentes escolares, ignore fins de semana automaticamente — não pergunte, apenas confirme os dias úteis.
+DADOS COMPARTILHADOS: Use informações de [CONTEXTO COMPARTILHADO] naturalmente. Se o aniversário do cônjuge estiver próximo, mencione proativamente.
+Ao agendar:
+- Se cair em feriado ou fim de semana, avise e pergunte se confirma ou prefere próximo dia útil.
+- Se [CLIMA ATUAL] indicar chuva forte no dia/horário do lembrete, mencione ao confirmar.
+- Para lembretes escolares recorrentes, ignore fins de semana automaticamente.
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
-
 
     // ========== Histórico de mensagens ==========
     const conversationMessages: any[] = [
       {
         role: 'system',
-        content: [
-          {
-            type: 'text',
-            text: systemPrompt,
-            cache_control: { type: 'ephemeral' },
-          },
-        ],
+        content: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       },
       ...(ramBlock && ramBlock.trim() !== '' && ramBlock !== ' ' ? [{ role: 'system', content: ramBlock }] : []),
       ...recentPairs,
@@ -1007,71 +834,45 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     });
 
     // max_tokens dinâmico
-    // Modo voz: respostas mais curtas (fala longa cansa)
-    let maxTokens = isAudioInput ? 200 : 350;
-    if (isLikelyNoise) maxTokens = isAudioInput ? 80 : 150;
-    else if (detectedContexts.includes('emocao')) maxTokens = isAudioInput ? 300 : 600;
-    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias') || detectedContexts.includes('clima')) maxTokens = isAudioInput ? 400 : 800;
-    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = isAudioInput ? 250 : 500;
-    else if (detectedContexts.includes('casual')) maxTokens = isAudioInput ? 120 : 250;
+    let maxTokens = 350;
+    if (isLikelyNoise) maxTokens = 150;
+    else if (detectedContexts.includes('emocao')) maxTokens = 600;
+    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias') || detectedContexts.includes('clima')) maxTokens = 800;
+    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 500;
+    else if (detectedContexts.includes('casual')) maxTokens = 250;
 
     // ReAct Loop
-let finalResponse = '';
-let attempts = 0;
-let forcedToolChoice: any = isReminderIntent
-  ? { type: 'function', function: { name: 'create_reminder' } }
-  : 'auto';
+    let finalResponse = '';
+    let attempts = 0;
+    let forcedToolChoice: any = isReminderIntent ? { type: 'function', function: { name: 'create_reminder' } } : 'auto';
 
-while (attempts < 5) {
-  const response = await callOpenRouterWithTools(
-    conversationMessages,
-    tools,
-    modelRoute.model,
-    temperature,
-    25000,
-    maxTokens,
-    forcedToolChoice,
-  );
-  const { content, toolCalls } = response;
-
-  if (!toolCalls || toolCalls.length === 0) {
-    finalResponse = content;
-    break;
-  }
-
-  // Após primeira tool call, libera para auto
-  forcedToolChoice = 'auto';
-
-  conversationMessages.push({ role: 'assistant', content: null, tool_calls: toolCalls });
-
-  for (const toolCall of toolCalls) {
-    const result = await executeTool(toolCall, authUserId, numericUserIdStr);
-    conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
-  }
-  attempts++;
-}
-
-   if (!finalResponse) {
-  const lastToolMessage = conversationMessages
-    .filter((m: any) => m.role === 'tool')
-    .pop();
-  if (lastToolMessage) {
-    try {
-      const toolResult = JSON.parse(lastToolMessage.content);
-      finalResponse = toolResult.message || 'Feito.';
-    } catch {
-      finalResponse = 'Feito.';
+    while (attempts < 5) {
+      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, temperature, 25000, maxTokens, forcedToolChoice);
+      const { content, toolCalls } = response;
+      if (!toolCalls || toolCalls.length === 0) { finalResponse = content; break; }
+      forcedToolChoice = 'auto';
+      conversationMessages.push({ role: 'assistant', content: null, tool_calls: toolCalls });
+      for (const toolCall of toolCalls) {
+        const result = await executeTool(toolCall, authUserId, numericUserIdStr);
+        conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
+      }
+      attempts++;
     }
-  } else {
-    finalResponse = 'Ops, não consegui processar. Pode repetir?';
-  }
-}
+
+    if (!finalResponse) {
+      const lastToolMessage = conversationMessages.filter((m: any) => m.role === 'tool').pop();
+      if (lastToolMessage) {
+        try { finalResponse = JSON.parse(lastToolMessage.content).message || 'Feito.'; }
+        catch { finalResponse = 'Feito.'; }
+      } else {
+        finalResponse = 'Ops, não consegui processar. Pode repetir?';
+      }
+    }
 
     let category = 'info';
     const categoryMatch = finalResponse.match(/\[CLASSE:\s*(\w+)\]/i);
     if (categoryMatch) category = categoryMatch[1].toLowerCase();
     finalResponse = finalResponse.replace(/\[CLASSE:\s*\w+\]/gi, '').trim();
-
     finalResponse = finalResponse.replace(/\[INTERNO:.*?\]/gi, '');
     finalResponse = finalResponse.replace(/\[DEBUG:.*?\]/gi, '');
     finalResponse = finalResponse.replace(/\[ERROR:.*?\]/gi, '');
@@ -1085,101 +886,68 @@ while (attempts < 5) {
 
     if (pendingQuestion) clearPendingQuestion(numericUserIdStr).catch((e) => console.error('[PendingQ]', e));
 
-    // ── TTS: gerado em paralelo com a persistência ──────────────────────────
-    // Se a mensagem veio por áudio, sintetizamos a resposta também em áudio.
-    const [ttsResult] = await Promise.all([
-      isAudioInput
-        ? synthesizeSpeech(finalResponse)
-        : Promise.resolve(null),
-      // Persistência
-      supabase.from('brain').insert([{
-        content: messageText,
-        category,
-        user_id: numericUserIdStr,
-        session_id: sessionId,
-        project_tag: 'geral',
-        embedding: queryEmbedding ?? undefined,
-        metadata: {
-          ai_reply: finalResponse,
-          user: authorName,
-          horizon: weights.horizon,
-          pending_resolved: !!pendingQuestion,
-          model_used: modelRoute.model,
-          model_label: modelRoute.label,
-          temperature_used: temperature,
-          contexts_detected: detectedContexts,
-          forced_search_used: !!forcedSearchResult,
-          emotional_score: emotional.score,
-          emotional_triggers: emotional.triggers,
-          emotional_trajectory: emotional.trajectory,
-          is_audio_input: isAudioInput,
-        },
-      }]).then(({ error }) => {
-        if (error) console.error('BRAIN INSERT ERRO:', error);
-        else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'model:', modelRoute.label);
-      }),
-    ]);
+    // Persistência
+    const { error: insertError } = await supabase.from('brain').insert([{
+      content: messageText,
+      category,
+      user_id: numericUserIdStr,
+      session_id: sessionId,
+      project_tag: 'geral',
+      embedding: queryEmbedding ?? undefined,
+      metadata: {
+        ai_reply: finalResponse,
+        user: authorName,
+        horizon: weights.horizon,
+        pending_resolved: !!pendingQuestion,
+        model_used: modelRoute.model,
+        model_label: modelRoute.label,
+        temperature_used: temperature,
+        contexts_detected: detectedContexts,
+        forced_search_used: !!forcedSearchResult,
+        emotional_score: emotional.score,
+        emotional_triggers: emotional.triggers,
+        emotional_trajectory: emotional.trajectory,
+      },
+    }]);
+    if (insertError) console.error('BRAIN INSERT ERRO:', insertError);
+    else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'model:', modelRoute.label);
 
     if (!isLikelyNoise) {
       import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
         extractProfileFromConversation(parseInt(numericUserIdStr), messageText, finalResponse).catch(console.error);
+        // Invalida cache do profileBlock após extração para garantir dados frescos na próxima mensagem
+        redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => {});
       });
 
-    // Background tasks
-    const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
-    backgroundTasks.push(
-      updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score)
-        .catch(e => console.error('[TopicIndex]', e))
-    );
-    if (onboardingState?.status === 'in_progress') {
-      backgroundTasks.push(
-        withRetry(() => processOnboardingFromMessage(numericUserIdStr, messageText, finalResponse, onboardingState)).catch((e) => console.error('[Onboarding]', e))
-      );
-    }
-    if (!isLikelyNoise) {
-      backgroundTasks.push(
-        withRetry(() => extractAndSummarize(numericUserIdStr, authorName, messageText)).catch((e) => console.error('[extrator]', e))
-      );
-      backgroundTasks.push(withRetry(() => extractRecomendacao(numericUserIdStr, messageText, finalResponse)).catch((e) => console.error('[recomendacao]', e)));
-      backgroundTasks.push(withRetry(() => extractDiary(numericUserIdStr, messageText, 'anytime')).catch((e) => console.error('[diary]', e)));
-      backgroundTasks.push(withRetry(() => extractGoal(numericUserIdStr, messageText)).catch((e) => console.error('[goals]', e)));
-    }
+      const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
+      backgroundTasks.push(updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score).catch(e => console.error('[TopicIndex]', e)));
 
-    Promise.all([
-      ...backgroundTasks,
-      supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', numericUserIdStr).eq('category', 'info').then(({ count }) => {
-        if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
-      }),
-    ]).catch((e) => console.error('[Background]', e));
+      if (onboardingState?.status === 'in_progress')
+        backgroundTasks.push(withRetry(() => processOnboardingFromMessage(numericUserIdStr, messageText, finalResponse, onboardingState)).catch(e => console.error('[Onboarding]', e)));
+
+      if (!isLikelyNoise) {
+        backgroundTasks.push(withRetry(() => extractAndSummarize(numericUserIdStr, authorName, messageText)).catch(e => console.error('[extrator]', e)));
+        backgroundTasks.push(withRetry(() => extractRecomendacao(numericUserIdStr, messageText, finalResponse)).catch(e => console.error('[recomendacao]', e)));
+        backgroundTasks.push(withRetry(() => extractDiary(numericUserIdStr, messageText, 'anytime')).catch(e => console.error('[diary]', e)));
+        backgroundTasks.push(withRetry(() => extractGoal(numericUserIdStr, messageText)).catch(e => console.error('[goals]', e)));
+      }
+
+      Promise.all([
+        ...backgroundTasks,
+        supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', numericUserIdStr).eq('category', 'info').then(({ count }) => {
+          if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
+        }),
+      ]).catch(e => console.error('[Background]', e));
+    }
 
     console.timeEnd('[Performance] total');
-    return NextResponse.json({
-      reply: finalResponse,
-      sessionId,
-      assistantName,
-      authorName,
-      ok: true,
-      // Modo voz: retorna áudio base64 se TTS foi gerado com sucesso
-      ...(ttsResult?.success && ttsResult.audioBase64
-        ? {
-            audio: ttsResult.audioBase64,
-            audio_format: 'mp3',
-            audio_duration_ms: ttsResult.durationEstimateMs,
-          }
-        : {}),
-    });
-    }
+    return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
 
-  // ── FIX 4: Não expor error.message em produção ──
   } catch (error: any) {
     const safeMessage = sanitizeSensitiveData(error?.message ?? 'Erro desconhecido');
     console.error('[chat] ERRO:', safeMessage);
     return NextResponse.json(
-      {
-        error: process.env.NODE_ENV === 'development'
-          ? safeMessage
-          : 'Erro interno. Tente novamente.',
-      },
+      { error: process.env.NODE_ENV === 'development' ? safeMessage : 'Erro interno. Tente novamente.' },
       { status: 500 }
     );
   }
