@@ -8,14 +8,11 @@ export type ContextType =
   | 'noticias' | 'clima' | 'financas' | 'compras'
   | 'math' | 'trivial';
 
-// Normaliza uma string removendo acentos (idêntico ao que classifyContextRegex faz com o input)
+// Normaliza uma string removendo acentos
 function norm(s: string): string {
   return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
-// Compila as regexes já normalizadas UMA VEZ no load do módulo.
-// Assim não há custo de normalização por request, e as regexes batem
-// corretamente com o texto do usuário que também é normalizado.
 const RAW_RULES: Array<[string, ContextType]> = [
   [norm('diario|diário|hoje foi|hoje ta|hoje está|acordei|dormi|dormir|meu dia|como foi meu|reflexao|refletindo|gratid'), 'diario'],
   [norm('meta|objetivo|quero (conseguir|fazer|terminar|lancar|comecar)|prazo|progresso|etapa|concluir|finalizar'), 'meta'],
@@ -37,31 +34,26 @@ const RAW_RULES: Array<[string, ContextType]> = [
   [norm('dinheiro|grana|salario|salário|conta|contas|pagar|pagamento|divida|dívida|boleto|cartao|cartão|credito|crédito|debito|débito|investimento|poupanca|poupança|saldo|extrato|despesa|gasto|orcamento|orçamento|financ'), 'financas'],
 ];
 
-// Regras que NÃO passam por normalização de acento (math/trivial operam sobre o texto original)
 const RAW_RULES_VERBATIM: Array<[RegExp, ContextType]> = [
   [/^[0-9+\-*/%() ]+$/, 'math'],
   [/quanto [eé]|quanto d[aá]|calcule|soma|subtraia|multiplique|divida|raiz|pot[eê]ncia|^[0-9]+ (mais|vezes|dividido por|menos) [0-9]+/i, 'math'],
   [/^(ok|oi|ol[aá]|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i, 'trivial'],
 ];
 
-// Compilado uma vez — zero custo em runtime
 const RULES: Array<[RegExp, ContextType]> = [
   ...RAW_RULES.map(([src, ctx]) => [new RegExp(src, 'i'), ctx] as [RegExp, ContextType]),
   ...RAW_RULES_VERBATIM,
 ];
 
 export function classifyContextRegex(text: string): ContextType[] {
-  // Normalização feita uma única vez para todas as regras acento-normalizadas
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const detected: ContextType[] = [];
 
   for (const [rx, ctx] of RULES) {
-    // math/trivial testam o texto original para preservar símbolos como ^, +, etc.
     const target = (ctx === 'math' || ctx === 'trivial') ? text.toLowerCase() : t;
     if (rx.test(target)) detected.push(ctx);
   }
 
-  // Remove duplicatas mantendo ordem (Set preserva insertion order)
   return detected.length > 0 ? [...new Set(detected)] : ['casual'];
 }
 
@@ -126,33 +118,38 @@ export function getTemperature(contexts: ContextType[]): number {
 }
 
 export function planContextualBlocks(contexts: ContextType[]) {
-  const hasEmotional   = contexts.includes('emocao');
-  const hasSearch      = contexts.includes('esporte') || contexts.includes('noticias') || contexts.includes('clima');
-  const hasPlanning    = contexts.includes('agenda') || contexts.includes('evento') || contexts.includes('meta') || contexts.includes('projeto');
-  const hasFinancial   = contexts.includes('financas');
-  const hasShopping    = contexts.includes('compras');
-  const isCasualOnly   = contexts.length === 1 && contexts[0] === 'casual';
-  const isTrivial      = contexts.includes('math') || contexts.includes('trivial');
-  const needsMemory    = hasEmotional || contexts.includes('diario') || contexts.includes('familia') || contexts.includes('saude') || hasFinancial;
-  const needsLongTerm  = contexts.includes('diario') || contexts.includes('emocao');
+  const has = (...ctxs: ContextType[]) => ctxs.some(c => contexts.includes(c));
+  const isTrivial = has('math', 'trivial');
+  const isCasualOnly = contexts.length === 1 && contexts[0] === 'casual';
+
+  const hasEmotional     = has('emocao');
+  const hasPlanning      = has('agenda', 'evento', 'meta', 'projeto');
+  const hasFinancial     = has('financas');
+  const hasShopping      = has('compras');
+  const hasProject       = has('projeto');
+  const needsMemory      = hasEmotional || has('diario', 'familia', 'saude') || hasFinancial;
+  const needsLongTerm    = has('diario', 'emocao');
 
   return {
-    loadTopics: contexts.some((c) =>
-      ['saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia',
-       'esporte', 'noticias', 'clima', 'compras'].includes(c)
-    ) && !isTrivial,
-    loadDiary:           contexts.some((c) => ['diario', 'meta', 'emocao', 'casual'].includes(c)) && !isTrivial,
-    loadRecommendations: contexts.some((c) => ['recomendacao', 'casual'].includes(c)) && !isTrivial,
-    loadCalendar:        contexts.some((c) => ['agenda', 'evento', 'familia'].includes(c)) && !isTrivial,
-    loadEmail:           contexts.includes('email') && !isTrivial,
-    loadL3: !isTrivial && (
-      hasPlanning || hasEmotional || hasFinancial ||
-      contexts.includes('familia') || contexts.includes('saude') || contexts.includes('projeto')
-    ),
-    loadHD:       needsMemory && !isTrivial && !isCasualOnly,
-    loadAshes:    needsLongTerm && !isTrivial && (contexts.includes('diario') || contexts.includes('emocao')),
-    loadGaps:     (hasPlanning || hasEmotional || hasFinancial) && !isTrivial,
-    loadFinances: hasFinancial && !isTrivial,
-    loadShopping: hasShopping && !isTrivial,
+    // ── Blocos de conteúdo externo ──────────────────────────────
+    loadCalendar:        has('agenda', 'evento', 'familia') && !isTrivial,
+    loadEmail:           has('email') && !isTrivial,
+
+    // ── Blocos do dossiê e memória ──────────────────────────────
+    loadL3:              !isTrivial && (hasPlanning || hasEmotional || hasFinancial || has('familia', 'saude', 'projeto')),
+    loadHD:              needsMemory && !isTrivial && !isCasualOnly,
+    loadAshes:           needsLongTerm && !isTrivial,
+
+    // ── Blocos gerados ──────────────────────────────────────────
+    loadTopics:          has('saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia', 'esporte', 'noticias', 'clima', 'compras') && !isTrivial,
+    loadDiary:           has('diario', 'meta', 'emocao', 'casual') && !isTrivial,
+    loadRecommendations: has('recomendacao', 'casual') && !isTrivial,
+    loadGaps:            (hasPlanning || hasEmotional || hasFinancial) && !isTrivial,
+
+    // ── Condicionais novos — alimentam o buildProfileBlock ──────
+    loadFinances:        hasFinancial && !isTrivial,   // sectionFinancas()
+    loadProjects:        hasProject && !isTrivial,     // sectionProjetos()
+    loadShopping:        hasShopping && !isTrivial,    // sectionCompras() já é fixo, mas sinaliza
+    loadPlaces:          (hasShopping || has('rotina', 'recomendacao')) && !isTrivial, // sectionLugaresPreferidos()
   };
 }
