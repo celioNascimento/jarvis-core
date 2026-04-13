@@ -13,8 +13,9 @@ export async function POST(req: NextRequest) {
     const { userId, message } = body;
 
     const { data: userRecord } = await supabase
+      .schema('jarvis')
       .from('users')
-      .select('expo_push_token, telegram_chat_id, nickname')
+      .select('push_token, telegram_chat_id, nickname')
       .eq('id', Number(userId))
       .maybeSingle();
 
@@ -25,17 +26,17 @@ export async function POST(req: NextRequest) {
     const result: any = {
       ok: true,
       user: userRecord.nickname,
-      expo_push_token: userRecord.expo_push_token ? '✅ presente' : '❌ ausente',
+      expo_push_token: userRecord.push_token ? '✅ presente' : '❌ ausente',
       telegram_chat_id: userRecord.telegram_chat_id ? '✅ presente' : '❌ ausente',
     };
 
     // Tenta Expo
-    if (userRecord.expo_push_token) {
+    if (userRecord.push_token) {
       const res = await fetch('https://exp.host/--/api/v2/push/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          to: userRecord.expo_push_token,
+          to: userRecord.push_token,
           title: '⏰ Teste',
           body: message || 'Notificação de teste',
           sound: 'default',
