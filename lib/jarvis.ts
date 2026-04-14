@@ -21,7 +21,7 @@ type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 export async function callOpenRouter(
   input: string | ChatMessage[],
-  model: string = "google/gemini-2.0-flash-001",
+  model: string = "google/gemini-2.0-flash-001",  
   temperature: number = 0.7
 ): Promise<string> {
   try {
