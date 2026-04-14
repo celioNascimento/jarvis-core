@@ -5,7 +5,8 @@
 
 import { supabase } from '@/lib/jarvis';
 import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
-import { getGoogleContext, searchWeb, getWeatherForecast } from '@/lib/google';
+// NOTA: Adicionamos createGoogleEvent e trashGoogleEmail aqui no import
+import { getGoogleContext, searchWeb, getWeatherForecast, createGoogleEvent, trashGoogleEmail } from '@/lib/google';
 import { upsertEvent } from '@/lib/extractor-jobs';
 import { extractDiary } from '@/lib/diary';
 import { updateGoalProgress } from '@/lib/diary';
@@ -84,6 +85,20 @@ export async function executeTool(
       const [g, o] = await Promise.all([getGoogleContext(), getMicrosoftCalendarContext()]);
       return `Google Calendar:\n${g}\n\nOutlook:\n${o}`;
     }
+
+    // ===================== NOVOS: AGENDA E GMAIL =====================
+    
+    case 'criar_evento_agenda': {
+      // Chama a função que você já tinha no google.ts
+      return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
+    }
+
+    case 'excluir_email': {
+      // Chama a nova função para deletar email
+      return await trashGoogleEmail(p.messageId);
+    }
+
+    // =================================================================
 
     case 'listar_emails_recentes':
       return await getRecentEmails(p.filtro, 5, true);
