@@ -1,57 +1,56 @@
-"use client"
-// src/hooks/useUserProfile.ts
-import { useEffect, useState } from 'react';
+// app/api/user/profile/route.ts
+import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
+import { getUserFromToken } from '@/lib/auth';
 
-const storage = {
-  getItem: (key: string): string | null => {
-    try { return localStorage.getItem(key); } catch { return null; }
-  },
-  setItem: (key: string, value: string): void => {
-    try { localStorage.setItem(key, value); } catch {}
-  },
-};
+export async function GET(req: NextRequest) {
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  const numericUserId = await getUserFromToken(token);
+  if (!numericUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-export function useUserProfile(userId: string) {
-  const [assistantName, setAssistantName] = useState('Lev');
-  const [preferredName, setPreferredName] = useState('');
-  const [loading, setLoading] = useState(true);
+  // Busca dados do user
+  const { data: user, error: userErr } = await supabase
+    .from('users')
+    .select('id, assistant_name, preferred_name, timezone, nickname, notification_hour')
+    .eq('id', numericUserId)
+    .single();
+  if (userErr) return NextResponse.json({ error: userErr.message }, { status: 500 });
 
-  useEffect(() => {
-    if (!userId) return;
+  // Busca dados do perfil
+  const { data: profile, error: profileErr } = await supabase
+    .from('user_profiles')
+    .select('city, state, profession, birth_date, phone')
+    .eq('user_id', numericUserId)
+    .maybeSingle();
 
-    async function fetchProfile() {
-      // 1. Carrega cache local imediatamente (evita flash)
-      const cachedAssistant = storage.getItem('lev_assistant_name');
-      const cachedName = storage.getItem('lev_preferred_name');
-      if (cachedAssistant) setAssistantName(cachedAssistant);
-      if (cachedName) setPreferredName(cachedName);
+  if (profileErr) return NextResponse.json({ error: profileErr.message }, { status: 500 });
 
-      // 2. Busca do banco e atualiza cache
-      const { data, error } = await (supabase as any)
-        .schema('jarvis')
-        .from('users')
-        .select('assistant_name, preferred_name')
-        .eq('auth_user_id', userId)
-        .single();
+  return NextResponse.json({ user, profile });
+}
 
-      if (error) {
-        console.warn('[useUserProfile] erro:', error.message);
-      } else if (data) {
-        if (data.assistant_name) {
-          setAssistantName(data.assistant_name);
-          storage.setItem('lev_assistant_name', data.assistant_name);
-        }
-        if (data.preferred_name) {
-          setPreferredName(data.preferred_name);
-          storage.setItem('lev_preferred_name', data.preferred_name);
-        }
-      }
-      setLoading(false);
-    }
+export async function PATCH(req: NextRequest) {
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  const numericUserId = await getUserFromToken(token);
+  if (!numericUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    fetchProfile();
-  }, [userId]);
+  const body = await req.json();
+  const { userFields, profileFields } = body;
 
-  return { assistantName, preferredName, loading };
+  if (userFields && Object.keys(userFields).length) {
+    const { error: updateUserErr } = await supabase
+      .from('users')
+      .update(userFields)
+      .eq('id', numericUserId);
+    if (updateUserErr) return NextResponse.json({ error: updateUserErr.message }, { status: 500 });
+  }
+
+  if (profileFields && Object.keys(profileFields).length) {
+    // Atualiza ou insere
+    const { error: upsertErr } = await supabase
+      .from('user_profiles')
+      .upsert({ user_id: numericUserId, ...profileFields }, { onConflict: 'user_id' });
+    if (upsertErr) return NextResponse.json({ error: upsertErr.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true });
 }
