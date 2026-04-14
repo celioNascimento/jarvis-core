@@ -1,3 +1,4 @@
+"use client"
 // src/hooks/useUserProfile.ts
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/jarvis';
