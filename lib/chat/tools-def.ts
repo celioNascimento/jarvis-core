@@ -263,4 +263,34 @@ export const tools = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'criar_evento_agenda',
+      description: 'Cria um evento diretamente na agenda do Google Calendar do usuário.',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'Título do evento' },
+          startTime: { type: 'string', description: 'Data e hora de início no formato ISO (ex: 2026-04-15T15:00:00)' },
+          reminderMinutes: { type: 'integer', description: 'Minutos antes para o alarme tocar (padrão 30)' }
+        },
+        required: ['summary', 'startTime']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'excluir_email',
+      description: 'Move um email específico para a lixeira do Gmail. Requer o ID da mensagem (messageId).',
+      parameters: {
+        type: 'object',
+        properties: {
+          messageId: { type: 'string', description: 'O ID da mensagem do Gmail a ser excluída' }
+        },
+        required: ['messageId']
+      }
+    }
+  },
 ];
