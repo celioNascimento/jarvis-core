@@ -174,3 +174,21 @@ export async function deleteGoogleEvent(searchTerm: string) {
     return "Erro interno ao deletar.";
   }
   }
+
+  // --- 8. MOVER EMAIL PARA LIXEIRA (GMAIL) ---
+export async function trashGoogleEmail(messageId: string) {
+  try {
+    const token = await getGoogleAccessToken();
+    if (!token) return "Erro de token.";
+
+    // Chama a API do Gmail para mandar a mensagem para a lixeira
+    const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/trash`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    return res.ok ? `Email enviado para a lixeira com sucesso.` : "Falha ao apagar email. Verifique as permissões.";
+  } catch (err) {
+    return "Erro interno ao apagar email.";
+  }
+}
