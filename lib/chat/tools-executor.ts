@@ -108,20 +108,32 @@ export async function executeTool(
       const title: string = p.title || p.message;
       const frequency: string | undefined = p.frequency || p.recurrence;
       const location_trigger: string | undefined = p.location_trigger;
-      const type: 'temporary' | 'agenda' | 'recurring' | 'location' = p.type || 'temporary';
+      let type: 'temporary' | 'agenda' | 'recurring' | 'location' = p.type || 'temporary';
 
-      // Converte delay_minutes em scheduled_time absoluto
+      // 1. Tenta pegar a data que a IA mandou
       let scheduled_time: string | undefined = p.scheduled_time;
+      
+      // 2. Se ela mandou em minutos (ex: "em 10 min"), converte para data real
       if (!scheduled_time && p.delay_minutes) {
         const fireAt = new Date(Date.now() + p.delay_minutes * 60 * 1000);
         scheduled_time = fireAt.toISOString();
-        console.log(`[create_reminder] delay_minutes=${p.delay_minutes} → scheduled_time=${scheduled_time}`);
+      }
+
+      // 3. SEGURANÇA: Se não tem data e não é um lembrete de lugar/repetição...
+      let isFallbackTime = false;
+      if (!scheduled_time && type !== 'location' && type !== 'recurring') {
+          console.warn(`[create_reminder] IA falhou no tempo. Forçando 5 minutos.`);
+          const fireAt = new Date(Date.now() + 5 * 60 * 1000); // Daqui a 5 minutos
+          scheduled_time = fireAt.toISOString();
+          isFallbackTime = true;
+          type = 'temporary'; 
       }
 
       if (!title) {
-        return JSON.stringify({ success: false, error: 'title é obrigatório.' });
+        return JSON.stringify({ success: false, error: 'Título é obrigatório.' });
       }
 
+      // 4. Salva no banco (Agora garantimos que scheduled_time não será NULL por erro)
       const { data: reminder, error } = await supabase
         .schema('jarvis')
         .from('reminders')
@@ -139,13 +151,10 @@ export async function executeTool(
         .single();
 
       if (error || !reminder) {
-        console.error('[create_reminder] Erro ao inserir:', error);
-        return JSON.stringify({ success: false, error: 'Falha ao salvar lembrete.' });
+        return JSON.stringify({ success: false, error: 'Falha ao salvar no banco.' });
       }
 
-      console.log('[create_reminder] Inserido:', reminder.id, '| type:', type, '| scheduled_time:', scheduled_time);
-
-      // Agenda no QStash para lembretes com horário definido (temporary e agenda)
+      // 5. Envia para o QStash (O serviço que vai "acordar" o celular na hora certa)
       if (scheduled_time && type !== 'recurring' && type !== 'location') {
         const qstashMessageId = await scheduleReminderOnQStash({
           reminderId: String(reminder.id),
@@ -161,29 +170,26 @@ export async function executeTool(
             .from('reminders')
             .update({ metadata: { auth_user_id: authUserId, qstash_message_id: qstashMessageId } })
             .eq('id', reminder.id);
-          console.log('[create_reminder] QStash messageId:', qstashMessageId);
-        } else {
-          console.error('[create_reminder] QStash retornou null — lembrete não agendado!');
         }
       }
 
       const formatted = scheduled_time
         ? new Date(scheduled_time).toLocaleString('pt-BR', {
             timeZone: 'America/Sao_Paulo',
-            day: '2-digit', month: '2-digit',
             hour: '2-digit', minute: '2-digit',
           })
-        : location_trigger
-        ? `quando chegar em ${location_trigger}`
-        : frequency || 'recorrente';
+        : "quando solicitado";
+
+      // Mensagem que o Assistente vai ler para você
+      const avisoIA = isFallbackTime ? " (Agendei para daqui a 5 min porque a data não ficou clara)." : "";
 
       return JSON.stringify({
         success: true,
-        message: `Lembrete criado para ${formatted}${frequency ? ` (${frequency})` : ''}.`,
+        message: `Lembrete "${title}" criado para às ${formatted}.${avisoIA}`,
         reminderId: reminder.id,
       });
     }
-
+    
     case 'cancel_reminder': {
       const reminderId: string = p.reminder_id || p.reminderId;
 
