@@ -1,8 +1,14 @@
+// lib/google.ts
 import { supabase } from './jarvis';
 
 // --- 1. AUTENTICAÇÃO ---
 export async function getGoogleAccessToken() {
   const { data } = await supabase.from('config').select('value').eq('key', 'google_refresh_token').single();
+
+  if (!data?.value) {
+    console.error('[Google] Erro: google_refresh_token não encontrado na tabela config.');
+    return null;
+  }
 
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
@@ -10,19 +16,22 @@ export async function getGoogleAccessToken() {
     body: JSON.stringify({ 
       client_id:     process.env.GOOGLE_CLIENT_ID, 
       client_secret: process.env.GOOGLE_CLIENT_SECRET, 
-      refresh_token: data?.value, 
+      refresh_token: data.value, 
       grant_type:    'refresh_token' 
     }),
   });
+  
   const json = await res.json();
 
-  if (!json.access_token) {
-    console.error('[Google] Erro ao obter token:', JSON.stringify(json));
+  if (json.error) {
+    console.error('[Google] Erro na renovação:', json.error, json.error_description);
+    return null;
   }
+
   return json.access_token || null;
 }
 
-// --- 2. BUSCA NA WEB (SERPER.DEV) - Substitui a Custom Search bloqueada ---
+// --- 2. BUSCA NA WEB (SERPER.DEV) ---
 export async function searchWeb(query: string) {
   try {
     const apiKey = process.env.SERPER_API_KEY;
@@ -49,10 +58,9 @@ export async function searchWeb(query: string) {
   }
 }
 
-// --- 3. CLIMA PRECISO (OPEN-METEO) - Para o Card de 5 dias no Vista Bela ---
+// --- 3. CLIMA PRECISO (OPEN-METEO) ---
 export async function getWeatherForecast(lat: number = -23.2701, lng: number = -51.2044) {
   try {
-    // Consulta previsão de 5 dias com temperaturas max/min e códigos de clima
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=America%2FSao_Paulo&forecast_days=5`;
     
     const res = await fetch(url);
@@ -173,15 +181,14 @@ export async function deleteGoogleEvent(searchTerm: string) {
   } catch (err) {
     return "Erro interno ao deletar.";
   }
-  }
+}
 
-  // --- 8. MOVER EMAIL PARA LIXEIRA (GMAIL) ---
+// --- 8. MOVER EMAIL PARA LIXEIRA (GMAIL) ---
 export async function trashGoogleEmail(messageId: string) {
   try {
     const token = await getGoogleAccessToken();
     if (!token) return "Erro de token.";
 
-    // Chama a API do Gmail para mandar a mensagem para a lixeira
     const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/trash`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` }
