@@ -701,7 +701,7 @@ export async function POST(req: NextRequest) {
     ]);
 
     // ========== 12. Calendários e emails ==========
-         let googleCtx = null;
+    let googleCtx = null;
     let msCtx = null;
     
     if (blockPlan.loadCalendar) {
@@ -715,15 +715,20 @@ export async function POST(req: NextRequest) {
         // 1. Busca Microsoft silenciosamente
         msCtx = await getMicrosoftCalendarContext().catch(() => null);
         
-        // 2. Busca Google com detecção de queda de token
+                // 2. Busca Google com detecção de queda de token
         try {
           googleCtx = await getGoogleContext();
         } catch (error: any) {
           if (error.message === 'GOOGLE_AUTH_EXPIRED') {
             const authUrl = `${process.env.NEXT_PUBLIC_BASE_URL || 'https://jarvis-core-three.vercel.app'}/api/auth/google?secret=${process.env.GOOGLE_AUTH_SECRET}`;
             
-            // Injeta o alerta direto na resposta final
-            finalResponse += `\n\n⚠️ **Conexão com Google Expirada:** [Clique aqui para renovar o acesso](${authUrl}) e garantir que eu possa ler sua agenda.`;
+            // Retorna o aviso na mesma hora para o aplicativo e aborta o resto da rota
+            return NextResponse.json({ 
+              reply: `⚠️ **Conexão com o Google Expirada:** Não consegui ler sua agenda.\n\n[Clique aqui para renovar o acesso](${authUrl}) e depois repita sua solicitação.`, 
+              sessionId, 
+              assistantName: "Jarvis", 
+              ok: true 
+            });
             
           } else {
             console.error('[Google Cache Error]:', error);
@@ -731,20 +736,6 @@ export async function POST(req: NextRequest) {
           googleCtx = null;
         }
 
-        // 3. Salva no cache o que conseguiu recuperar
-        await cache.set(calendarCacheKey, { google: googleCtx, ms: msCtx }, 30000);
-      }
-    }
-
-    let emailBlock = null;
-    if (blockPlan.loadEmail) {
-      const emailCacheKey = `emails_${authUserId}`;
-      emailBlock = await cache.get(emailCacheKey);
-      if (!emailBlock) { 
-        emailBlock = await getRecentEmails(undefined, 3, false).catch(() => null); 
-        await cache.set(emailCacheKey, emailBlock, 30000); 
-      }
-    }
     
     
     // Feriados condicionais
