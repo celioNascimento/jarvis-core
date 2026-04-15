@@ -1219,7 +1219,7 @@ Responda APENAS com JSON válido, sem markdown:
         }),
       ]).catch(e => console.error('[Background]', e));
     }
-    // Injetar notificação de promoção de padrão (se houver, gerada na sessão anterior)
+        // Injetar notificação de promoção de padrão (se houver, gerada na sessão anterior)
     const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
     try {
       const pendingNotif = await redis.get<string>(pendingNotifKey);
@@ -1241,5 +1241,4 @@ Responda APENAS com JSON válido, sem markdown:
     );
   }
     }
-    
     
