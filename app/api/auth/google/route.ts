@@ -4,9 +4,11 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 
-const SCOPES = [
+const scopes = [
   'https://www.googleapis.com/auth/calendar',
-  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/gmail.modify', // se usa Gmail
+  'email',
+  'profile',
 ].join(' ');
 
 export async function GET(req: NextRequest) {
