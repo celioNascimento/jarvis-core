@@ -701,14 +701,37 @@ export async function POST(req: NextRequest) {
     ]);
 
     // ========== 12. Calendários e emails ==========
-    let googleCtx = null;
+         let googleCtx = null;
     let msCtx = null;
+    
     if (blockPlan.loadCalendar) {
       const calendarCacheKey = `calendar_${authUserId}`;
       const cached = await cache.get<{ google: any; ms: any }>(calendarCacheKey);
-      if (cached) { googleCtx = cached.google; msCtx = cached.ms; }
-      else {
-        [googleCtx, msCtx] = await Promise.all([getGoogleContext().catch(() => null), getMicrosoftCalendarContext().catch(() => null)]);
+      
+      if (cached) { 
+        googleCtx = cached.google; 
+        msCtx = cached.ms; 
+      } else {
+        // 1. Busca Microsoft silenciosamente
+        msCtx = await getMicrosoftCalendarContext().catch(() => null);
+        
+        // 2. Busca Google com detecção de queda de token
+        try {
+          googleCtx = await getGoogleContext();
+        } catch (error: any) {
+          if (error.message === 'GOOGLE_AUTH_EXPIRED') {
+            const authUrl = `${process.env.NEXT_PUBLIC_BASE_URL || 'https://jarvis-core-three.vercel.app'}/api/auth/google?secret=${process.env.GOOGLE_AUTH_SECRET}`;
+            
+            // Injeta o alerta direto na resposta final
+            finalResponse += `\n\n⚠️ **Conexão com Google Expirada:** [Clique aqui para renovar o acesso](${authUrl}) e garantir que eu possa ler sua agenda.`;
+            
+          } else {
+            console.error('[Google Cache Error]:', error);
+          }
+          googleCtx = null;
+        }
+
+        // 3. Salva no cache o que conseguiu recuperar
         await cache.set(calendarCacheKey, { google: googleCtx, ms: msCtx }, 30000);
       }
     }
@@ -717,9 +740,13 @@ export async function POST(req: NextRequest) {
     if (blockPlan.loadEmail) {
       const emailCacheKey = `emails_${authUserId}`;
       emailBlock = await cache.get(emailCacheKey);
-      if (!emailBlock) { emailBlock = await getRecentEmails(undefined, 3, false).catch(() => null); await cache.set(emailCacheKey, emailBlock, 30000); }
+      if (!emailBlock) { 
+        emailBlock = await getRecentEmails(undefined, 3, false).catch(() => null); 
+        await cache.set(emailCacheKey, emailBlock, 30000); 
+      }
     }
-
+    
+    
     // Feriados condicionais
     let holidaysBlock = '';
     const needsHolidays = detectedContexts.includes('agenda') || detectedContexts.includes('evento') || detectedContexts.includes('familia');
