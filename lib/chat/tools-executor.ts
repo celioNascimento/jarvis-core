@@ -98,6 +98,23 @@ export async function executeTool(
       return await trashGoogleEmail(p.messageId);
     }
 
+    // ===================== GESTÃO DE DIRETRIZES DINÂMICAS =====================
+    
+    case 'adicionar_diretriz_dinamica': {
+      const { error } = await supabase.rpc('upsert_dynamic_guideline', {
+        p_user_id: Number(numericUserIdStr),
+        p_content: p.content,
+        p_scope: p.scope || 'personal'
+      });
+      
+      if (error) {
+        console.error('[Tools] Erro ao adicionar diretriz:', error);
+        return `Erro ao salvar a diretriz: ${error.message}`;
+      }
+      
+      return `Diretriz "${p.content}" salva com sucesso na base de dados. O comportamento será ajustado.`;
+    }
+
     // =================================================================
 
     case 'listar_emails_recentes':
