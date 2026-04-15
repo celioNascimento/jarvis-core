@@ -293,4 +293,20 @@ export const tools = [
       }
     }
   },
+  // ✅ NOVA TOOL: Gestão Dinâmica de Diretrizes / Prompt
+  {
+    type: 'function',
+    function: {
+      name: 'adicionar_diretriz_dinamica',
+      description: "Adiciona uma nova regra, princípio ou diretriz ao prompt do assistente. Use OBRIGATORIAMENTE quando o usuário pedir para 'ajustar o prompt', 'nunca mais fazer X', 'sempre agir assim' ou 'adicionar uma regra'.",
+      parameters: {
+        type: 'object',
+        properties: {
+          content: { type: 'string', description: 'O texto da diretriz ou regra a ser seguida' },
+          scope: { type: 'string', enum: ['personal', 'global'], description: "Padrão 'personal'. Use 'global' apenas se explicitamente solicitado." }
+        },
+        required: ['content']
+      }
+    }
+  }
 ];
