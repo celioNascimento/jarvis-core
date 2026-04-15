@@ -20,7 +20,7 @@ interface PromotablePattern {
 }
 
 interface PendingNotification {
-  id: number;
+  id: string; // <-- CORREÇÃO: Ajustado para string (UUID) para bater com a tabela principles
   content: string;
   category: string;
 }
@@ -45,7 +45,7 @@ export async function promotePatternToPrinciple(
       .rpc('detect_promotable_patterns', {
         p_user_id:         userId,
         p_min_occurrences: 3,
-        p_min_confidence:  0.70,
+        p_score_ceiling:   0.70, // <-- CORREÇÃO: Sincronizado com o novo nome no SQL
         p_lookback_days:   30,
       }) as { data: PromotablePattern[] | null; error: any };
 
@@ -187,7 +187,7 @@ async function buildNotificationMessage(
     // Notifica apenas a primeira promoção de forma natural
     const first = pending[0];
 
-    // Marca como notificado
+    // Marca como notificado usando schema jarvis explícito
     await supabase
       .schema('jarvis')
       .from('principles')
