@@ -1133,17 +1133,17 @@ Responda APENAS com JSON válido, sem markdown:
   "note": "<observação curta em português, máx 20 palavras>"
 }`;
 
-          const criticResponse = await withRetry(() =>
-            callOpenRouterWithTools(
-              [{ role: 'user', content: criticPrompt }],
-              [],
-              'google/gemini-flash-1.5',
-              0.1,
-              4000,
-              200,
-              'none',
-            )
-          );
+  const criticResponse = await withRetry(() =>
+  callOpenRouterWithTools(
+    [{ role: 'user', content: criticPrompt }],
+    [],
+    'google/gemini-2.0-flash-001',   // ✅ modelo válido
+    0.1,
+    4000,
+    200,
+    'none',
+  )
+);
           if (!criticResponse) return;
           const raw = criticResponse.content?.trim().replace(/```json|```/g, '').trim();
           if (!raw) return;
