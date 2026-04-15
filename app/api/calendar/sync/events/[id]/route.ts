@@ -55,16 +55,18 @@ async function cancelPendingReminders(eventId: string) {
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   const authUserId = req.headers.get('x-user-id');
   if (!authUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const { id } = await params;
 
   const { data: event, error } = await supabase
     .schema('jarvis')
     .from('events')
     .select('*')
-    .eq('id', params.id)
+    .eq('id', id)
     .single();
 
   if (error || !event) return NextResponse.json({ error: 'Not found' }, { status: 404 });
@@ -75,7 +77,7 @@ export async function GET(
 
 export async function PUT(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   const authUserId = req.headers.get('x-user-id');
   if (!authUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -83,10 +85,10 @@ export async function PUT(
   const userId = await resolveUserId(authUserId);
   if (!userId) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
-  const body = await req.json();
+  const [{ id }, body] = await Promise.all([params, req.json()]);
 
   // Cancela lembretes antigos antes de recriar
-  await cancelPendingReminders(params.id);
+  await cancelPendingReminders(id);
 
   const { data: event, error } = await supabase
     .schema('jarvis')
@@ -95,7 +97,7 @@ export async function PUT(
       ...body,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', params.id)
+    .eq('id', id)
     .eq('user_id', userId)
     .select()
     .single();
@@ -136,7 +138,7 @@ export async function PUT(
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   const authUserId = req.headers.get('x-user-id');
   if (!authUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -144,14 +146,16 @@ export async function DELETE(
   const userId = await resolveUserId(authUserId);
   if (!userId) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
+  const { id } = await params;
+
   // Cancela lembretes pendentes no QStash
-  await cancelPendingReminders(params.id);
+  await cancelPendingReminders(id);
 
   const { error } = await supabase
     .schema('jarvis')
     .from('events')
     .delete()
-    .eq('id', params.id)
+    .eq('id', id)
     .eq('user_id', userId);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
