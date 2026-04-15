@@ -1,12 +1,8 @@
-/**
- * Inicia o fluxo OAuth Google.
- * Acesse no browser: /api/auth/google?secret=SUA_GOOGLE_AUTH_SECRET
- */
 import { NextRequest, NextResponse } from 'next/server';
 
 const scopes = [
   'https://www.googleapis.com/auth/calendar',
-  'https://www.googleapis.com/auth/gmail.modify', // se usa Gmail
+  'https://www.googleapis.com/auth/gmail.modify',
   'email',
   'profile',
 ].join(' ');
@@ -20,11 +16,11 @@ export async function GET(req: NextRequest) {
 
   const params = new URLSearchParams({
     client_id:     process.env.GOOGLE_CLIENT_ID!,
-    redirect_uri:  process.env.GOOGLE_REDIRECT_URI!,
+    redirect_uri:  process.env.GOOGLE_REDIRECT_URI!, // DEVE SER: https://seudominio.com/api/auth/google/callback
     response_type: 'code',
     scope:         scopes,
-    access_type:   'offline',  // garante emissão do refresh_token
-    prompt:        'consent',  // força reemissão mesmo se já autorizado antes
+    access_type:   'offline',
+    prompt:        'consent',
   });
 
   return NextResponse.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
