@@ -23,26 +23,17 @@ export async function GET(req: Request) {
     const data = await response.json();
 
     if (data.error) {
-      return NextResponse.json({ 
-        stage: "Erro na troca do Token no Google", 
-        error: data.error, 
-        description: data.error_description 
-      });
+      return NextResponse.json({ stage: "Erro no Google", error: data.error });
     }
 
-    if (!data.refresh_token) {
-      return NextResponse.json({ 
-        success: false, 
-        message: "O Google não enviou um novo Refresh Token. Acesse /api/auth/google?secret=" + process.env.GOOGLE_AUTH_SECRET + " para refazer o fluxo com prompt=consent." 
-      });
-    }
-
+    // O Supabase precisa estar aqui dentro para garantir o schema 'jarvis'
     const supabase = createClient(
       process.env.SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
       { db: { schema: 'jarvis' } }
     );
 
+    // PERSISTÊNCIA: Aqui salvamos o refresh_token para uso eterno do Jarvis
     const { error: supaError } = await supabase
       .from('config')
       .upsert({ 
@@ -51,16 +42,14 @@ export async function GET(req: Request) {
         updated_at: new Date().toISOString() 
       }, { onConflict: 'key' });
 
-    if (supaError) {
-      return NextResponse.json({ stage: "Erro ao gravar no Supabase", error: supaError.message });
-    }
+    if (supaError) return NextResponse.json({ error: supaError.message });
 
     return NextResponse.json({ 
       success: true, 
-      message: "Conexão estabelecida! O Jarvis agora tem acesso à sua agenda (Data: " + new Date().toLocaleString('pt-BR') + ")"
+      message: "Conexão estabelecida! O Jarvis agora tem acesso total." 
     });
 
   } catch (error: any) {
-    return NextResponse.json({ stage: "Erro Crítico no Servidor", message: error.message });
+    return NextResponse.json({ error: error.message });
   }
 }
