@@ -15,7 +15,7 @@ export async function GET(req: Request) {
         code,
         client_id:     process.env.GOOGLE_CLIENT_ID,
         client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        redirect_uri:  process.env.GOOGLE_REDIRECT_URI, // ← via env, não hardcoded
+        redirect_uri:  process.env.GOOGLE_REDIRECT_URI,
         grant_type:    'authorization_code',
       }),
     });
@@ -33,7 +33,7 @@ export async function GET(req: Request) {
     if (!data.refresh_token) {
       return NextResponse.json({ 
         success: false, 
-        message: "O Google não enviou um novo Refresh Token. Acesse /api/auth/google?secret=... para refazer o fluxo com prompt=consent." 
+        message: "O Google não enviou um novo Refresh Token. Acesse /api/auth/google?secret=" + process.env.GOOGLE_AUTH_SECRET + " para refazer o fluxo com prompt=consent." 
       });
     }
 
