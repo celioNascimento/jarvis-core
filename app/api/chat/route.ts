@@ -1,6 +1,6 @@
 
 // app/api/chat/route.ts
-// Motor V8.10.0 — Memória completa: profile block unificado + todas as camadas
+// Motor V8.11.0 — Self-discovery + Meta-cognição (critic assíncrono + ajuste adaptativo)
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -299,17 +299,14 @@ export async function POST(req: NextRequest) {
 
       let lastKnownLocation: { city: string; state: string } | null = null;
 
-      if (!location) {
-        const { data: savedLoc } = await supabase
-          .from('user_locations')
-          .select('city, state, latitude, longitude, last_updated')
-          .eq('user_id', numericUserIdStr)
-          .maybeSingle();
-        if (savedLoc?.city) {
-          lastKnownLocation = { city: savedLoc.city, state: savedLoc.state };
-          const hoursAgo = Math.round((Date.now() - new Date(savedLoc.last_updated).getTime()) / 3600000);
-          locationContext = `[LOCALIZAÇÃO ANTERIOR]\n📍 ${savedLoc.city}, ${savedLoc.state}\n(última atualização: há ~${hoursAgo}h)`;
-        }
+      // Bug fix: estava dentro de if(location) que nunca executava
+      const { data: savedLoc } = await supabase
+        .from('user_locations')
+        .select('city, state, latitude, longitude, last_updated')
+        .eq('user_id', numericUserIdStr)
+        .maybeSingle();
+      if (savedLoc?.city) {
+        lastKnownLocation = { city: savedLoc.city, state: savedLoc.state };
       }
 
       const endereco = await checkProximidade(latitude, longitude, numericUserIdStr);
@@ -596,6 +593,36 @@ export async function POST(req: NextRequest) {
       loadTopics:          !['factual', 'task'].includes(intent),
     };
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| blockPlan:', blockPlan);
+
+    // ========== Ajuste adaptativo baseado no histórico do critic ==========
+    let adaptiveTemperatureOffset = 0;
+    let adaptiveMaxTokensMultiplier = 1.0;
+    try {
+      const criticHistoryKey = `critic_history_${numericUserIdStr}`;
+      const criticHistory = await redis.get<any[]>(criticHistoryKey) ?? [];
+      if (criticHistory.length >= 3) {
+        const recent = criticHistory.slice(-5);
+        const avgOverall   = recent.reduce((s, c) => s + (c.overall ?? 0.7), 0) / recent.length;
+        const flagCounts   = recent.reduce((acc: Record<string,number>, c) => { acc[c.flag] = (acc[c.flag] || 0) + 1; return acc; }, {});
+        const dominantFlag = Object.entries(flagCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+        // Se frequentemente verbose → reduz tokens; se cold → aumenta temperatura
+        if (dominantFlag === 'verbose')       adaptiveMaxTokensMultiplier = 0.8;
+        else if (dominantFlag === 'cold')     adaptiveTemperatureOffset   = 0.15;
+        else if (dominantFlag === 'missed_emotion') adaptiveTemperatureOffset = 0.1;
+        else if (dominantFlag === 'off_topic') adaptiveMaxTokensMultiplier = 0.9;
+
+        // Score baixo → aumenta temperatura ligeiramente para mais variedade
+        if (avgOverall < 0.5) adaptiveTemperatureOffset = Math.max(adaptiveTemperatureOffset, 0.1);
+
+        if (adaptiveTemperatureOffset !== 0 || adaptiveMaxTokensMultiplier !== 1.0)
+          console.log('[AdaptiveCritic] offset_temp:', adaptiveTemperatureOffset, '| tokens_mult:', adaptiveMaxTokensMultiplier, '| dominant_flag:', dominantFlag);
+      }
+    } catch (e) {
+      // silencioso — não bloqueia
+    }
+
+
     
 
     // ========== 10. Pesquisa forçada ==========
@@ -816,9 +843,7 @@ ${gapsBlock}
 ${principlesText ? `[BÚSSOLA]\n${principlesText}` : ''}
 
 REGRAS OPERACIONAIS:
-<<<<<<< Updated upstream
 FOCO: Responda o que foi perguntado. Nunca repita sugestão já rejeitada.
-=======
 MODO DE RESPOSTA:
 - Pergunta factual/procedural ("como fazer X", "o que é Y", "diferença entre A e B"):
   Responda imediatamente com a resposta. Sem preâmbulo, sem recap da pergunta.
@@ -826,7 +851,7 @@ MODO DE RESPOSTA:
   Contexto pessoal entra naturalmente se relevante — nunca anunciado.
 - Pergunta técnica: começa pela solução, explica o porquê só se necessário.
 - Pergunta pessoal/reflexiva: usa memórias naturalmente, tom próximo.
-Desabafo/observação sem pedido implícito ("acho que vai doer", "tô cansado", "que dia pesado"):
+- Desabafo/observação sem pedido implícito ("acho que vai doer", "tô cansado", "que dia pesado"):
   Acolha em 1 frase. Não pergunte nada, não ofereça ação.
   Ex: "Torço pra correr tudo bem." — não: "Quer que eu te lembre de algo?"
 - Pergunta ambígua: resolve pela interpretação mais provável. Se interpretou diferente, menciona ao final em uma linha — não antes de responder.
@@ -839,7 +864,6 @@ PROIBIDO em qualquer resposta:
 CONTEXTO PESSOAL: Se uma memória for relevante para a resposta, use-a como parte da resposta,
 não como introdução. Ex: em vez de "Lembro que você trabalha com equipamentos médicos — 
 então..." diga direto "No caso de concentrador de oxigênio isso seria..." assumindo o contexto.
->>>>>>> Stashed changes
 PROIBIDO: "Anota aí", "Anotado!", "Registrado!". Se salvou via ferramenta: "Feito." ou "Tá na agenda."
 MEMÓRIA: Use as memórias naturalmente — nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
@@ -892,13 +916,70 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 500;
     else if (detectedContexts.includes('casual')) maxTokens = 250;
 
+
+    // ========== Self-Discovery: injetar contexto do assistente quando solicitado ==========
+    const isSelfDiscoveryQuery = /o que (você|vc) (sabe|conhece|tem|lembra)|quais (são|sao) suas (capacidades|funções|funcoes|ferramentas)|me fala sobre você|o que você pode|você (tem|sabe) algo sobre mim|minhas informações|meu perfil/i.test(messageText);
+
+    if (isSelfDiscoveryQuery) {
+      const activeIntegrations: string[] = [];
+      if (googleCtx)  activeIntegrations.push('Google Agenda');
+      if (msCtx)      activeIntegrations.push('Outlook/Teams');
+      if (emailBlock) activeIntegrations.push('E-mail');
+      if (location)   activeIntegrations.push('Localização GPS');
+      if (weatherData) activeIntegrations.push('Clima em tempo real');
+
+      const selfContext = JSON.stringify({
+        assistant_name: assistantName,
+        user_name: authorName,
+        active_integrations: activeIntegrations,
+        memory_layers: {
+          short_term_ram: !!ramBlock,
+          long_term_hd: hdSearchResults.length,
+          profile_block: !!profileBlock,
+          ashes: ashes.length,
+          events: events.length,
+          shared_context: sharedContextResult.hasData,
+        },
+        detected_contexts: detectedContexts,
+        emotional_state: { score: emotional.score, trajectory: emotional.trajectory, triggers: emotional.triggers },
+        model_routing: { model: modelRoute.model, label: modelRoute.label, temperature },
+        onboarding_status: onboardingState?.status || 'unknown',
+        capabilities: [
+          'Resposta em linguagem natural',
+          'Busca na web em tempo real',
+          'Criação de lembretes e eventos',
+          'Memória semântica de longo prazo',
+          'Roteamento emocional adaptativo',
+          'Extração de diário e metas',
+          'Compressão e consolidação de memórias',
+          ...(activeIntegrations.length ? [`Integrações ativas: ${activeIntegrations.join(', ')}`] : []),
+        ],
+      }, null, 2);
+
+      conversationMessages.push({
+        role: 'system',
+        content: `[AUTO-DESCOBERTA — visível apenas para você]
+Este é seu estado atual nesta sessão:
+\`\`\`json
+${selfContext}
+\`\`\`
+Use essas informações para responder à pergunta do usuário de forma natural, sem expor JSON. Fale como se soubesse isso intuitivamente.`,
+      });
+
+      console.log('[SelfDiscovery] Contexto injetado — integrações ativas:', activeIntegrations);
+    }
+
     // ReAct Loop
     let finalResponse = '';
     let attempts = 0;
     let forcedToolChoice: any = isReminderIntent ? { type: 'function', function: { name: 'create_reminder' } } : 'auto';
 
+    // Aplica ajustes adaptativos do critic
+    const effectiveTemperature = Math.min(1.0, Math.max(0.0, temperature + adaptiveTemperatureOffset));
+    const effectiveMaxTokens   = Math.round(maxTokens * adaptiveMaxTokensMultiplier);
+
     while (attempts < 5) {
-      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, temperature, 25000, maxTokens, forcedToolChoice);
+      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, effectiveTemperature, 25000, effectiveMaxTokens, forcedToolChoice);
       const { content, toolCalls } = response;
       if (!toolCalls || toolCalls.length === 0) { finalResponse = content; break; }
       forcedToolChoice = 'auto';
@@ -958,6 +1039,10 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         emotional_score: emotional.score,
         emotional_triggers: emotional.triggers,
         emotional_trajectory: emotional.trajectory,
+        self_discovery_triggered: isSelfDiscoveryQuery,
+        effective_temperature: effectiveTemperature,
+        effective_max_tokens: effectiveMaxTokens,
+        adaptive_offset: adaptiveTemperatureOffset,
       },
     }]);
     if (insertError) console.error('BRAIN INSERT ERRO:', insertError);
@@ -982,6 +1067,79 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         backgroundTasks.push(withRetry(() => extractDiary(numericUserIdStr, messageText, 'anytime')).catch(e => console.error('[diary]', e)));
         backgroundTasks.push(withRetry(() => extractGoal(numericUserIdStr, messageText)).catch(e => console.error('[goals]', e)));
       }
+
+
+      // ── Meta-cognição: critic assíncrono ──────────────────────────────────────
+      // Avalia a própria resposta em background e persiste score para ajuste futuro
+      backgroundTasks.push((async () => {
+        try {
+          const criticPrompt = `Você é um avaliador interno de qualidade de um assistente de IA pessoal chamado ${assistantName}.
+Avalie a resposta do assistente abaixo em 3 dimensões (0.0 a 1.0 cada):
+
+MENSAGEM DO USUÁRIO: "${messageText.slice(0, 300)}"
+
+RESPOSTA DO ASSISTENTE: "${finalResponse.slice(0, 500)}"
+
+CONTEXTO EMOCIONAL: score=${emotional.score.toFixed(2)}, trajetória=${emotional.trajectory}
+
+Responda APENAS com JSON válido, sem markdown:
+{
+  "relevance": <0.0-1.0>,
+  "emotional_fit": <0.0-1.0>,
+  "conciseness": <0.0-1.0>,
+  "overall": <0.0-1.0>,
+  "flag": <"ok"|"verbose"|"cold"|"off_topic"|"missed_emotion">,
+  "note": "<observação curta em português, máx 20 palavras>"
+}`;
+
+          const criticResponse = await withRetry(() =>
+            callOpenRouterWithTools(
+              [{ role: 'user', content: criticPrompt }],
+              [],
+              'google/gemini-flash-1.5',
+              0.1,
+              4000,
+              200,
+              'none',
+            )
+          );
+
+          const raw = criticResponse.content?.trim().replace(/```json|```/g, '').trim();
+          if (!raw) return;
+
+          const criticScore = JSON.parse(raw);
+          criticScore.evaluated_at = new Date().toISOString();
+          criticScore.model_used = modelRoute.model;
+          criticScore.contexts = detectedContexts;
+
+          // Persiste no brain entry mais recente desta sessão
+          const { data: lastEntry } = await supabase
+            .from('brain')
+            .select('id, metadata')
+            .eq('user_id', numericUserIdStr)
+            .eq('session_id', sessionId)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (lastEntry) {
+            await supabase
+              .from('brain')
+              .update({ metadata: { ...lastEntry.metadata, critic_score: criticScore } })
+              .eq('id', lastEntry.id);
+          }
+
+          // Acumula histórico de critic no Redis (últimas 10 avaliações) para ajuste adaptativo
+          const criticHistoryKey = `critic_history_${numericUserIdStr}`;
+          const existingHistory = await redis.get<any[]>(criticHistoryKey) ?? [];
+          const updatedHistory = [...existingHistory, criticScore].slice(-10);
+          await redis.set(criticHistoryKey, updatedHistory, { ex: 86400 }); // 24h TTL
+
+          console.log('[Critic] Score:', criticScore.overall?.toFixed(2), '| Flag:', criticScore.flag, '| Note:', criticScore.note);
+        } catch (e) {
+          console.error('[Critic] Falhou silenciosamente:', (e as Error).message);
+        }
+      })());
 
       Promise.all([
         ...backgroundTasks,
