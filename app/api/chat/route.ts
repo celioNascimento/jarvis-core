@@ -715,7 +715,7 @@ export async function POST(req: NextRequest) {
         // 1. Busca Microsoft silenciosamente
         msCtx = await getMicrosoftCalendarContext().catch(() => null);
         
-                // 2. Busca Google com detecção de queda de token
+        // 2. Busca Google com detecção de queda de token
         try {
           googleCtx = await getGoogleContext();
         } catch (error: any) {
@@ -729,14 +729,18 @@ export async function POST(req: NextRequest) {
               assistantName: "Jarvis", 
               ok: true 
             });
-            
           } else {
             console.error('[Google Cache Error]:', error);
           }
           googleCtx = null;
         }
 
-    
+        // 3. Salva no cache o que conseguiu recuperar
+        await cache.set(calendarCacheKey, { google: googleCtx, ms: msCtx }, 30000);
+      }
+    }
+
+    let emailBlock = null;
     
     // Feriados condicionais
     let holidaysBlock = '';
