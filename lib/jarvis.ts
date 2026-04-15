@@ -13,7 +13,6 @@ export const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
 );
-
 // ============================================================
 // 2. MOTOR DE IA (via OpenRouter)
 // ============================================================
@@ -25,6 +24,12 @@ export async function callOpenRouter(
   temperature: number = 0.7
 ): Promise<string> {
   try {
+    // MAPEAMENTO DINÂMICO DE MODELOS
+    let finalModel = model;
+    if (model === "flash") finalModel = "google/gemini-2.0-flash-001";
+    else if (model === "pro") finalModel = "google/gemini-2.5-pro"; // Atualize se usar outra versão
+    else if (model === "haiku") finalModel = "anthropic/claude-3-5-haiku";
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000);
 
@@ -36,43 +41,27 @@ export async function callOpenRouter(
       method: "POST",
       signal: controller.signal,
       headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
-        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model,
-        max_tokens: 800,
-        temperature,
-        messages
+        model: finalModel, // Usa o modelo mapeado corretamente
+        messages,
+        temperature
       })
     });
 
     clearTimeout(timeout);
 
     if (!res.ok) {
-      const errorText = await res.text();
-      console.error(`[OpenRouter] HTTP ${res.status}:`, errorText);
-      return `❌ Erro na conexão com a IA: ${res.status}`;
+      throw new Error(`OpenRouter error: ${res.status}`);
     }
 
     const data = await res.json();
-
-    if (data.error) {
-      console.error("[OpenRouter] Erro na resposta:", JSON.stringify(data.error));
-      return data.error.message || "❌ Erro IA.";
-    }
-
-    return data.choices?.[0]?.message?.content || "❌ Erro IA.";
-
-  } catch (e: any) {
-    if (e.name === 'AbortError') {
-      console.error("[OpenRouter] Timeout após 12s");
-      return "Timeout — tenta de novo em instantes.";
-    }
-    console.error("[OpenRouter] Exceção:", e?.message || e);
-    return "❌ Erro na conexão com a IA.";
+    return data.choices?.[0]?.message?.content || "";
+  } catch (error) {
+    console.error("[OpenRouter] Erro na chamada:", error);
+    throw error;
   }
 }
 
