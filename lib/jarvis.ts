@@ -13,6 +13,7 @@ export const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
 );
+
 // ============================================================
 // 2. MOTOR DE IA (via OpenRouter)
 // ============================================================
@@ -27,7 +28,7 @@ export async function callOpenRouter(
     // MAPEAMENTO DINÂMICO DE MODELOS
     let finalModel = model;
     if (model === "flash") finalModel = "google/gemini-2.0-flash-001";
-    else if (model === "pro") finalModel = "google/gemini-2.5-pro"; // Atualize se usar outra versão
+    else if (model === "pro") finalModel = "google/gemini-2.5-pro";
     else if (model === "haiku") finalModel = "anthropic/claude-3-5-haiku";
 
     const controller = new AbortController();
@@ -45,7 +46,7 @@ export async function callOpenRouter(
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: finalModel, // Usa o modelo mapeado corretamente
+        model: finalModel,
         messages,
         temperature
       })
@@ -64,6 +65,8 @@ export async function callOpenRouter(
     throw error;
   }
 }
+
+
 
 // ============================================================
 // 3. MOTOR VETORIAL (Embeddings via OpenRouter)
