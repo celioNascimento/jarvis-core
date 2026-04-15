@@ -1219,7 +1219,6 @@ Responda APENAS com JSON válido, sem markdown:
         }),
       ]).catch(e => console.error('[Background]', e));
     }
-
     // Injetar notificação de promoção de padrão (se houver, gerada na sessão anterior)
     const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
     try {
@@ -1237,8 +1236,9 @@ Responda APENAS com JSON válido, sem markdown:
     const safeMessage = sanitizeSensitiveData(error?.message ?? 'Erro desconhecido');
     console.error('[chat] ERRO:', safeMessage);
     return NextResponse.json(
-      { error: process.env.NODE_ENV === 'development' ? safeMessage : 'Erro interno. Tente novamente.' },
+      { error: process.env.NODE_ENV === 'development' ? safeMessage : 'Erro interno.' },
       { status: 500 }
     );
   }
-}
+    }
+    
