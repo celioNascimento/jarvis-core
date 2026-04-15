@@ -23,6 +23,10 @@ export async function getGoogleAccessToken() {
   
   const json = await res.json();
 
+  if (json.error === 'invalid_grant') {
+    throw new Error('GOOGLE_AUTH_EXPIRED');
+  }
+
   if (json.error) {
     console.error('[Google] Erro na renovação:', json.error, json.error_description);
     return null;
