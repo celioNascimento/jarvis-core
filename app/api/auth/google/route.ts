@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
     client_id:     process.env.GOOGLE_CLIENT_ID!,
     redirect_uri:  process.env.GOOGLE_REDIRECT_URI!,
     response_type: 'code',
-    scope:         SCOPES,
+    scope:         scopes,
     access_type:   'offline',  // garante emissão do refresh_token
     prompt:        'consent',  // força reemissão mesmo se já autorizado antes
   });
