@@ -1,6 +1,5 @@
-
 // app/api/chat/route.ts
-// Motor V8.11.0 — Self-discovery + Meta-cognição (critic assíncrono + ajuste adaptativo)
+// Motor V8.12.0 — Self-discovery + Meta-cognição + Promoção automática de padrões (Constitutional Learning)
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -57,7 +56,8 @@ import { getUpcomingHolidays } from '@/lib/holidays';
 import { Redis } from '@upstash/redis';
 import { buildSharedContextBlock } from '@/lib/chat/shared-context';
 import { buildPersonalityBlock } from '@/lib/chat/personality';
-import { buildProfileBlock } from '@/lib/chat/profile-block'; // ← NOVO
+import { buildProfileBlock } from '@/lib/chat/profile-block';
+import { promotePatternToPrinciple } from '@/lib/chat/pattern-promoter';
 
 export const maxDuration = 60;
 
@@ -165,7 +165,7 @@ function buildWeatherBlock(weather: Record<string, any> | null | undefined): str
 }
 
 export async function POST(req: NextRequest) {
-  console.log('[chat] Iniciando — V8.10.0 (memória completa)');
+  console.log('[chat] Iniciando — V8.12.0 (memória completa com dynamic guidelines)');
   try {
     console.time('[Performance] total');
     let messageText = '';
@@ -373,6 +373,7 @@ export async function POST(req: NextRequest) {
 
     // ========== 4. Histórico ==========
     const { data: historySession } = await supabase
+      .schema('jarvis')
       .from('brain')
       .select('content, metadata')
       .eq('user_id', numericUserIdStr)
@@ -442,7 +443,8 @@ export async function POST(req: NextRequest) {
       onboardingState,
       topicEmotionalDimValue,
       sharedContextResult,
-      profileBlock,           // ← NOVO: bloco unificado de perfil
+      profileBlock,
+      dynamicGuidelines,
     ] = await Promise.all([
       // ── events ────────────────────────────────────────────────
       (async () => {
@@ -548,9 +550,8 @@ export async function POST(req: NextRequest) {
         await cache.set(key, result, 20000);
         return result;
       })(),
-      // ── profileBlock — NOVO: todas as camadas de memória estruturada ──
+      // ── profileBlock ──────────────────────────────────────────
       (async () => {
-        // Cache de 60s — dados de perfil mudam pouco entre mensagens
         const key = `profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`;
         const cached = await cache.get<string>(key);
         if (cached) return cached;
@@ -562,6 +563,25 @@ export async function POST(req: NextRequest) {
         });
         await cache.set(key, block, 60000);
         return block;
+      })(),
+      // ── dynamicGuidelines ─────────────────────────────────
+      (async () => {
+        const key = `dynamic_guidelines_${numericUserIdStr}`;
+        const cached = await cache.get<string>(key);
+        if (cached !== null) return cached;
+        const { data } = await supabase
+          .schema('jarvis')
+          .from('dynamic_guidelines')
+          .select('content')
+          .eq('active', true)
+          .or(`user_id.eq.${numericUserIdStr},scope.eq.global`)
+          .order('created_at', { ascending: false })
+          .limit(10);
+        const val = data?.length
+          ? data.map((g: any) => `- ${g.content}`).join('\n')
+          : '';
+        await cache.set(key, val, 60000); // 60s
+        return val;
       })(),
     ]);
 
@@ -622,8 +642,6 @@ export async function POST(req: NextRequest) {
       // silencioso — não bloqueia
     }
 
-
-    
 
     // ========== 10. Pesquisa forçada ==========
     const shouldSearch = shouldForceSearch(messageText, detectedContexts);
@@ -841,6 +859,7 @@ ${truncatedAshes ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao ci
 ${onboardingState?.status !== 'completed' ? buildOnboardingBlock(onboardingState) : ''}
 ${gapsBlock}
 ${principlesText ? `[BÚSSOLA]\n${principlesText}` : ''}
+${dynamicGuidelines ? `[DIRETRIZES DA INSTÂNCIA ATIVA]\n${dynamicGuidelines}` : ''}
 
 REGRAS OPERACIONAIS:
 FOCO: Responda o que foi perguntado. Nunca repita sugestão já rejeitada.
@@ -898,8 +917,8 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
 
     // Comandos especiais
     if (/ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|delete isso/i.test(messageText)) {
-      const { data: lastEntry } = await supabase.from('brain').select('id').eq('user_id', numericUserIdStr).order('created_at', { ascending: false }).limit(1).single();
-      if (lastEntry) await supabase.from('brain').delete().eq('id', lastEntry.id);
+      const { data: lastEntry } = await supabase.schema('jarvis').from('brain').select('id').eq('user_id', numericUserIdStr).order('created_at', { ascending: false }).limit(1).single();
+      if (lastEntry) await supabase.schema('jarvis').from('brain').delete().eq('id', lastEntry.id);
       return NextResponse.json({ reply: 'Feito — apaguei o que foi dito antes. 🗑️', sessionId, ok: true });
     }
 
@@ -1019,7 +1038,7 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     if (pendingQuestion) clearPendingQuestion(numericUserIdStr).catch((e) => console.error('[PendingQ]', e));
 
     // Persistência
-    const { error: insertError } = await supabase.from('brain').insert([{
+    const { error: insertError } = await supabase.schema('jarvis').from('brain').insert([{
       content: messageText,
       category,
       user_id: numericUserIdStr,
@@ -1104,6 +1123,7 @@ Responda APENAS com JSON válido, sem markdown:
             )
           );
 
+          if (!criticResponse) return;
           const raw = criticResponse.content?.trim().replace(/```json|```/g, '').trim();
           if (!raw) return;
 
@@ -1114,6 +1134,7 @@ Responda APENAS com JSON válido, sem markdown:
 
           // Persiste no brain entry mais recente desta sessão
           const { data: lastEntry } = await supabase
+            .schema('jarvis')
             .from('brain')
             .select('id, metadata')
             .eq('user_id', numericUserIdStr)
@@ -1124,6 +1145,7 @@ Responda APENAS com JSON válido, sem markdown:
 
           if (lastEntry) {
             await supabase
+              .schema('jarvis')
               .from('brain')
               .update({ metadata: { ...lastEntry.metadata, critic_score: criticScore } })
               .eq('id', lastEntry.id);
@@ -1141,13 +1163,54 @@ Responda APENAS com JSON válido, sem markdown:
         }
       })());
 
+
+      // ── Promoção de padrões para princípios (a cada ~10 mensagens, probabilístico) ──
+      // Roda ~10% das vezes para não sobrecarregar — a RPC é leve mas o Gemini tem custo
+      if (Math.random() < 0.10) {
+        backgroundTasks.push((async () => {
+          try {
+            const promoteResult = await promotePatternToPrinciple(
+              parseInt(numericUserIdStr),
+              authorName,
+              assistantName,
+            );
+
+            if (promoteResult.promoted > 0) {
+              console.log(`[PatternPromoter] ${promoteResult.promoted} princípio(s) promovido(s).`);
+            }
+
+            // Se há notificação, salva no Redis para ser injetada na PRÓXIMA resposta
+            // (esta já foi enviada ao cliente — não modifica finalResponse)
+            if (promoteResult.notification) {
+              await redis.set(
+                `pending_notification_${numericUserIdStr}`,
+                promoteResult.notification,
+                { ex: 86400 }, // 24h — janela maior para entregar a notificação
+              );
+            }
+          } catch (e) {
+            console.error('[PatternPromoter] Background error:', (e as Error).message);
+          }
+        })());
+      }
+
       Promise.all([
         ...backgroundTasks,
-        supabase.from('brain').select('*', { count: 'exact', head: true }).eq('user_id', numericUserIdStr).eq('category', 'info').then(({ count }) => {
+        supabase.schema('jarvis').from('brain').select('*', { count: 'exact', head: true }).eq('user_id', numericUserIdStr).eq('category', 'info').then(({ count }) => {
           if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
         }),
       ]).catch(e => console.error('[Background]', e));
     }
+
+    // Injetar notificação de promoção de padrão (se houver, gerada na sessão anterior)
+    const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
+    try {
+      const pendingNotif = await redis.get<string>(pendingNotifKey);
+      if (pendingNotif && !isLikelyNoise) {
+        finalResponse = finalResponse.trimEnd() + '\n\n' + pendingNotif;
+        await redis.del(pendingNotifKey);
+      }
+    } catch { /* silencioso */ }
 
     console.timeEnd('[Performance] total');
     return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
