@@ -1242,3 +1242,4 @@ Responda APENAS com JSON válido, sem markdown:
   }
     }
     
+    
