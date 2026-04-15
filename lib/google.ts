@@ -203,3 +203,70 @@ export async function trashGoogleEmail(messageId: string) {
     return "Erro interno ao apagar email.";
   }
 }
+
+// --- 9. SINCRONIZAÇÃO HÍBRIDA (GOOGLE -> LEV) ---
+export async function syncGoogleCalendarToLev(userId: bigint) {
+  try {
+    const token = await getGoogleAccessToken();
+    if (!token) {
+      console.warn('[Sync] Falha: Token do Google não encontrado ou expirado.');
+      return false;
+    }
+
+    const timeMin = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const timeMax = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&orderBy=startTime`;
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    if (!res.ok) throw new Error(`Google API falhou com status ${res.status}`);
+
+    const data = await res.json();
+    const items = data.items || [];
+
+    if (items.length === 0) return true;
+
+    const payload = items.map((item: any) => {
+      const isAllDay = !!item.start.date;
+      const startAt = item.start.dateTime || `${item.start.date}T00:00:00Z`;
+      const endAt = item.end.dateTime || `${item.end.date}T00:00:00Z`;
+
+      return {
+        user_id: userId,
+        title: item.summary || 'Evento Sem Título',
+        description: item.description || null,
+        location: item.location || null,
+        start_at: startAt,
+        end_at: endAt,
+        all_day: isAllDay,
+        source: 'google',
+        external_id: item.id,
+        category: 'personal',
+        synced_at: new Date().toISOString()
+      };
+    });
+
+    const { error } = await supabase
+      .schema('jarvis')
+      .from('events')
+      .upsert(payload, { 
+        onConflict: 'user_id, source, external_id', 
+        ignoreDuplicates: false 
+      });
+
+    if (error) {
+      console.error('[Sync] Erro no Upsert do Supabase:', error.message);
+      return false;
+    }
+
+    console.log(`[Sync] Sucesso: ${payload.length} eventos do Google injetados no Lev.`);
+    return true;
+
+  } catch (err: any) {
+    console.error('[Sync] Erro Crítico:', err.message);
+    return false;
+  }
+}

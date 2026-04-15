@@ -701,44 +701,38 @@ export async function POST(req: NextRequest) {
     ]);
 
     // ========== 12. Calendários e emails ==========
-        let googleCtx = null;
-    let msCtx = null;
+    // --- BLOCO DE AGENDA HÍBRIDA V8.13.0 ---
+    // --- INICIALIZAÇÃO DE TAREFAS (CORREÇÃO TS2454) ---
+    const backgroundTasks: Promise<any>[] = [];
+
+    let googleCtx: string | null = null;
+    let msCtx: any = null; 
     
     if (blockPlan.loadCalendar) {
-      const calendarCacheKey = `calendar_${authUserId}`;
-      const cached = await cache.get<{ google: any; ms: any }>(calendarCacheKey);
-      
-      if (cached) { 
-        googleCtx = cached.google; 
-        msCtx = cached.ms; 
-      } else {
-        // 1. Busca Microsoft silenciosamente
-        msCtx = await getMicrosoftCalendarContext().catch(() => null);
-        
-        // 2. Busca Google com Gerador de Link Dinâmico
-        try {
-          googleCtx = await getGoogleContext();
-        } catch (error: any) {
-          if (error.message === 'GOOGLE_AUTH_EXPIRED') {
-            // GERAÇÃO DINÂMICA DA URL DE CURA
-            const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://jarvis-core-three.vercel.app';
-            const authUrl = `${baseUrl}/api/auth/google?secret=${process.env.GOOGLE_AUTH_SECRET}&prompt=consent`;
-            
-            return NextResponse.json({ 
-              reply: `⚠️ **Acesso ao Google Expirado**\n\nMinha autorização para gerenciar sua Agenda e E-mail caiu. Para eu voltar a te ajudar com isso, clique no link abaixo e autorize novamente:\n\n👉 [Renovar Acesso Agora](${authUrl})\n\n*(Após autorizar, você pode repetir sua última solicitação)*`, 
-              sessionId, 
-              assistantName, 
-              ok: true 
-            });
-          }
-          console.error('[Google Context Error]:', error);
-          googleCtx = null;
-        }
+      // 1. LEITURA INSTANTÂNEA DA NOVA TABELA (V8.13.0)
+      const { data: dbContext, error: dbError } = await supabase.rpc('get_calendar_context_for_jarvis', {
+        p_user_id: parseInt(numericUserIdStr),
+        p_days: 7
+      });
 
-        await cache.set(calendarCacheKey, { google: googleCtx, ms: msCtx }, 30000);
+      if (!dbError && dbContext) {
+        googleCtx = dbContext; 
+      } else if (dbError) {
+        console.error('[Calendar DB Error]:', dbError.message);
       }
+
+      // 2. SINCRONIZAÇÃO EM BACKGROUND
+      backgroundTasks.push(
+        (async () => {
+          try {
+            const { syncGoogleCalendarToLev } = await import('@/lib/google'); 
+            await syncGoogleCalendarToLev(BigInt(numericUserIdStr));
+          } catch (e: any) {
+            console.error('[Sync Background Error]:', e.message);
+          }
+        })()
+      );
     }
-    
 
     let emailBlock = null;
     
