@@ -1,128 +1,112 @@
+// ============================================================
 // app/api/reminders/fire/route.ts
+// Motor V8.13.0 — Disparo de Lembretes Híbridos com Segurança QStash
+// ============================================================
+
 import { NextRequest, NextResponse } from 'next/server';
 import { verifySignatureAppRouter } from '@upstash/qstash/nextjs';
-import { supabase } from '@/lib/jarvis';
+import { createClient } from '@supabase/supabase-js';
+
+// Usamos o service_role para garantir que o webhook consiga atualizar 
+// a tabela mesmo sem o token de autenticação do front-end
+const supabaseFire = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 async function handler(req: NextRequest) {
   try {
-    const body = await req.json() as {
-      reminderId: string;
-      userId: string;
-      authUserId: string;
-      message: string;
-      scheduledTime: string;
-    };
+    const payload = await req.json();
+    const { reminderId, userId, message } = payload;
 
-    const { reminderId, userId, message } = body;
     console.log('[reminders/fire] Recebido:', reminderId, '— user:', userId);
 
-    // 1. Confirma que o lembrete existe e ainda está pendente
-    const { data: reminder, error } = await supabase
+    // 1. Marca como disparado na nova tabela da V8.13.0
+    const { error: updateError } = await supabaseFire
       .schema('jarvis')
-      .from('reminders')
-      .select('id, title, status')
-      .eq('id', reminderId)
-      .eq('user_id', Number(userId))
-      .maybeSingle();
+      .from('event_reminders')
+      .update({ status: 'fired', fired_at: new Date().toISOString() })
+      .eq('id', reminderId);
 
-    if (error || !reminder) {
-      console.warn('[reminders/fire] Lembrete não encontrado:', reminderId);
-      return NextResponse.json({ ok: true, skipped: true, reason: 'not_found' });
+    if (updateError) {
+      console.error('[reminders/fire] Erro ao atualizar status no BD:', updateError.message);
     }
 
-    if (reminder.status !== 'pending') {
-      console.warn('[reminders/fire] Lembrete não está pendente:', reminder.status);
-      return NextResponse.json({ ok: true, skipped: true, reason: reminder.status });
-    }
-
-    // 2. Busca dados de notificação — schema jarvis + coluna push_token
-    const { data: userRecord } = await supabase
+    // 2. Busca os tokens do usuário (Cobre a nomenclatura antiga e a nova)
+    const { data: userRow } = await supabaseFire
       .schema('jarvis')
       .from('users')
-      .select('push_token, telegram_chat_id, nickname')
-      .eq('id', Number(userId))
-      .maybeSingle();
+      .select('expo_push_token, push_token, telegram_chat_id')
+      .eq('id', userId)
+      .single();
 
-    if (!userRecord) {
+    if (!userRow) {
       console.error('[reminders/fire] Usuário não encontrado:', userId);
-      await supabase
-        .schema('jarvis')
-        .from('reminders')
-        .update({ status: 'failed' })
-        .eq('id', reminderId);
       return NextResponse.json({ ok: false, error: 'user_not_found' }, { status: 404 });
     }
 
-    const reminderText = reminder.title || message;
     let notified = false;
+    const activePushToken = userRow.expo_push_token || userRow.push_token;
 
-    // 3a. Notificação via Expo Push
-    if (userRecord.push_token) {
+    // 3a. Disparo via Expo Push
+    if (activePushToken) {
       try {
         const expoPushRes = await fetch('https://exp.host/--/api/v2/push/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            to: userRecord.push_token,
-            title: '⏰ Lembrete',
-            body: reminderText,
-            data: { reminderId },
+            to: activePushToken,
+            title: '📅 Lembrete',
+            body: message,
+            data: { reminderId, type: 'event_reminder' },
             sound: 'default',
           }),
         });
         const expoJson = await expoPushRes.json();
-        console.log('[reminders/fire] Expo response:', JSON.stringify(expoJson));
+        
         if (expoJson?.data?.status === 'ok') {
           notified = true;
+          console.log('[reminders/fire] Push Expo enviado.');
         } else {
-          console.error('[reminders/fire] Expo erro:', expoJson?.data?.message);
+          console.error('[reminders/fire] Erro retornado pelo Expo:', expoJson?.data?.message);
         }
       } catch (err) {
-        console.error('[reminders/fire] Erro no push Expo:', err);
+        console.error('[reminders/fire] Falha de rede no push Expo:', err);
       }
     }
 
-    // 3b. Fallback via Telegram
-    if (!notified && userRecord.telegram_chat_id) {
+    // 3b. Fallback via Telegram (Se o Push falhar ou não existir)
+    if (!notified && userRow.telegram_chat_id) {
       const botToken = process.env.TELEGRAM_BOT_TOKEN;
       if (botToken) {
         try {
-          const telegramRes = await fetch(
-            `https://api.telegram.org/bot${botToken}/sendMessage`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                chat_id: userRecord.telegram_chat_id,
-                text: `⏰ *Lembrete*\n${reminderText}`,
-                parse_mode: 'Markdown',
-              }),
-            }
-          );
+          const telegramRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: userRow.telegram_chat_id,
+              text: `📅 *Lembrete*\n${message}`,
+              parse_mode: 'Markdown',
+            }),
+          });
+          
           if (telegramRes.ok) {
             notified = true;
-            console.log('[reminders/fire] Telegram enviado');
+            console.log('[reminders/fire] Telegram enviado com sucesso.');
           }
         } catch (err) {
-          console.error('[reminders/fire] Erro no Telegram:', err);
+          console.error('[reminders/fire] Erro no disparo Telegram:', err);
         }
       }
     }
 
-    // 4. Atualiza status
-    await supabase
-      .schema('jarvis')
-      .from('reminders')
-      .update({ status: notified ? 'triggered' : 'failed' })
-      .eq('id', reminderId);
-
-    console.log('[reminders/fire] Concluído — status:', notified ? 'triggered' : 'failed');
-    return NextResponse.json({ ok: true, notified, status: notified ? 'triggered' : 'failed' });
+    return NextResponse.json({ ok: true, notified });
 
   } catch (err) {
-    console.error('[reminders/fire] Erro interno:', err);
+    console.error('[reminders/fire] Erro crítico interno:', err);
     return NextResponse.json({ ok: false, error: 'internal_error' }, { status: 500 });
   }
 }
 
+// O QStash exige que a função seja encapsulada para validar a assinatura e bloquear invasores
 export const POST = verifySignatureAppRouter(handler);
