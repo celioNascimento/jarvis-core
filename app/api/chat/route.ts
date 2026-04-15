@@ -1095,8 +1095,8 @@ Use essas informações para responder à pergunta do usuário de forma natural,
         // Invalida cache do profileBlock após extração para garantir dados frescos na próxima mensagem
         redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => {});
       });
-
-      const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
+  
+           const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
       backgroundTasks.push(updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score).catch(e => console.error('[TopicIndex]', e)));
 
       if (onboardingState?.status === 'in_progress')
@@ -1144,7 +1144,6 @@ Responda APENAS com JSON válido, sem markdown:
               'none',
             )
           );
-
           if (!criticResponse) return;
           const raw = criticResponse.content?.trim().replace(/```json|```/g, '').trim();
           if (!raw) return;
@@ -1223,7 +1222,8 @@ Responda APENAS com JSON válido, sem markdown:
         }),
       ]).catch(e => console.error('[Background]', e));
     }
-        // Injetar notificação de promoção de padrão (se houver, gerada na sessão anterior)
+
+    // Injetar notificação de promoção de padrão (se houver, gerada na sessão anterior)
     const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
     try {
       const pendingNotif = await redis.get<string>(pendingNotifKey);
@@ -1244,5 +1244,8 @@ Responda APENAS com JSON válido, sem markdown:
       { status: 500 }
     );
   }
-    }
+}
+
+  
+    
     
