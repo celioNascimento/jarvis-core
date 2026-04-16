@@ -4,6 +4,8 @@
 // Retorna bloco de texto formatado para injeção no prompt do Jarvis
 // ============================================================
  
+// Salvar como: app/api/calendar/context/route.ts
+ 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
  
@@ -12,7 +14,7 @@ const supabaseCtx = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
  
-export async function GET(req: NextRequest) {
+export async function GET_CONTEXT(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const authUserId = req.headers.get('x-user-id');
   if (!authUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

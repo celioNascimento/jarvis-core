@@ -715,7 +715,7 @@ export async function POST(req: NextRequest) {
     if (blockPlan.loadCalendar) {
       // 1. LEITURA INSTANTÂNEA DA NOVA TABELA (V8.13.0)
       const { data: dbContext, error: dbError } = await supabase.rpc('get_calendar_context_for_jarvis', {
-        p_user_id: parseInt(numericUserIdStr),
+        p_user_id: Number(numericUserIdStr),
         p_days: 7
       });
 
@@ -726,16 +726,18 @@ export async function POST(req: NextRequest) {
       }
 
       // 2. SINCRONIZAÇÃO EM BACKGROUND
-      backgroundTasks.push(
-        (async () => {
-          try {
-            const { syncGoogleCalendarToLev } = await import('@/lib/google'); 
-            await syncGoogleCalendarToLev(BigInt(numericUserIdStr));
-          } catch (e: any) {
-            console.error('[Sync Background Error]:', e.message);
-          }
-        })()
-      );
+     backgroundTasks.push(
+  (async () => {
+    try {
+      const mod = await import('@/lib/google');
+      if (typeof mod.syncGoogleCalendarToLev === 'function') {
+        await mod.syncGoogleCalendarToLev(BigInt(numericUserIdStr));
+      }
+    } catch (e: any) {
+      console.warn('[Sync Background] função não disponível:', e.message);
+    }
+  })()
+);
     }
 
     let emailBlock = null;
