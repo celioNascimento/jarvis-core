@@ -591,8 +591,10 @@ export async function POST(req: NextRequest) {
     const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
     const temperature = getTemperature(detectedContexts);
 
-    function classifyIntent(message: string): string {
+        function classifyIntent(message: string): string {
       const m = message.toLowerCase();
+      // ✅ 1. Nova linha para detectar Foco/TDAH
+      if (/foco|tdah|sobrecarregado|procrastinando|travado|paralisado|por onde começo|quebrar tarefa/.test(m)) return 'focus';
       if (/agenda|reunião|compromisso|semana|calendário/.test(m)) return 'calendar';
       if (/email|mensagem|caixa|inbox|respondeu/.test(m)) return 'email';
       if (/lembra|me avisa|não esquecer|lembrete|avisa/.test(m)) return 'reminder';
@@ -605,15 +607,17 @@ export async function POST(req: NextRequest) {
     const intent = classifyIntent(messageText);
     const blockPlan = {
       ...planContextualBlocks(detectedContexts),
-      loadDiary:           intent === 'personal',
+      // ✅ 2. Ajustes para lidar com o novo intent 'focus'
+      loadDiary:           intent === 'personal' || intent === 'focus',
       loadGaps:            intent === 'personal',
       loadRecommendations: intent === 'personal',
       loadEmail:           intent === 'email',
       loadCalendar:        ['calendar', 'reminder'].includes(intent),
-      loadTopics:          !['factual', 'task'].includes(intent),
+      loadTopics:          !['factual', 'task', 'focus'].includes(intent), // Esconde ruído extra no modo foco
     };
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| blockPlan:', blockPlan);
 
+    
     // ========== Ajuste adaptativo baseado no histórico do critic ==========
     let adaptiveTemperatureOffset = 0;
     let adaptiveMaxTokensMultiplier = 1.0;
@@ -876,6 +880,8 @@ ${onboardingState?.status !== 'completed' ? buildOnboardingBlock(onboardingState
 ${gapsBlock}
 ${principlesText ? `[BÚSSOLA]\n${principlesText}` : ''}
 ${dynamicGuidelines ? `[DIRETRIZES DA INSTÂNCIA ATIVA]\n${dynamicGuidelines}` : ''}
+${intent === 'focus' ? `\n[MODO SUPORTE EXECUTIVO ATIVADO]\nO usuário demonstrou sinais de paralisia, TDAH ou sobrecarga. SEJA EXTREMAMENTE DIRETIVO. Sem preâmbulos. Fale frases curtas. Dê apenas o PRÓXIMO PASSO IMEDIATO. Sugira a ferramenta 'quebrar_tarefa' se for algo complexo.` : ''}
+
 
 REGRAS OPERACIONAIS:
 FOCO: Responda o que foi perguntado. Nunca repita sugestão já rejeitada.
