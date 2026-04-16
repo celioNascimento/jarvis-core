@@ -1,3 +1,9 @@
+// ============================================================
+// app/api/calendar/upcoming/route.ts
+// GET /api/calendar/upcoming?days=7&category=
+// Usado pelo Jarvis no contexto e pelo DashboardScreen
+// ============================================================
+ 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
  
