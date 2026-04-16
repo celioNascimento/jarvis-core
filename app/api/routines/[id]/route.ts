@@ -27,13 +27,13 @@ async function getUserId(req: NextRequest): Promise<number | null> {
 // ── DELETE /api/routines/[id] ─────────────────────────────────────────────────
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { id } = params;
+    const { id } = await params;
 
     // Soft delete — mantém histórico de checkins
     const { error } = await supabase
@@ -55,13 +55,13 @@ export async function DELETE(
 // Para editar campos: anchor, action, period, goal_tag, sort_order, is_active
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { id } = params;
+    const { id } = await params;
     const body = await req.json();
 
     const allowed = ['anchor', 'action', 'period', 'goal_tag', 'sort_order', 'is_active'];
