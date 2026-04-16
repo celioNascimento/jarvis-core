@@ -418,6 +418,29 @@ export async function executeTool(
         return 'Funcionalidade de insights climáticos em desenvolvimento. Em breve! 🌤️';
       }
     }
+          case 'criar_rotina': {
+      assertNumericUserId(numericUserIdStr, 'criar_rotina');
+      
+      const anchor = args.anchor;
+      const action = args.action;
+      const period = args.period || 'anytime';
+      
+      const { error } = await supabase.schema('jarvis').from('routines').insert([{
+        user_id: Number(numericUserIdStr),
+        anchor,
+        action,
+        period,
+        is_active: true
+      }]);
+
+      if (error) {
+        console.error('[ToolsExecutor] Erro ao criar rotina:', error);
+        return 'Houve um erro técnico ao tentar guardar a rotina no repositório. Peça desculpa e sugira tentar novamente.';
+      }
+
+      return `A rotina "${action}" ancorada em "${anchor}" no período ${period} foi criada com sucesso! Confirme ao utilizador de forma curta, elegante e encorajadora.`;
+          }
+      
 
     default:
       return `Ferramenta ${name} não implementada.`;
