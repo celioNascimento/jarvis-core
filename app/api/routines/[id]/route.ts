@@ -4,12 +4,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
+// Inicialização "lazy" para evitar crash durante a avaliação estática do build na Vercel
+const getSupabase = () => createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!,
 );
 
 async function getUserId(req: NextRequest): Promise<number | null> {
+  const supabase = getSupabase();
   const auth  = req.headers.get('authorization') ?? '';
   const token = auth.replace('Bearer ', '');
   if (!token) return null;
@@ -30,6 +32,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    const supabase = getSupabase();
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -58,6 +61,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    const supabase = getSupabase();
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -90,4 +94,3 @@ export async function PATCH(
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
- 
