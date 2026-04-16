@@ -330,5 +330,22 @@ export const tools = [
         required: ['tarefa_principal', 'estado_cognitivo']
       }
     }
-  }
-];
+  },
+    {
+    type: 'function',
+    function: {
+      name: 'criar_rotina',
+      description: 'Cria uma nova rotina estruturada. Usado quando o utilizador define um gatilho (anchor), uma ação e um período através da interface híbrida. Vital para ajudar na previsibilidade (TDAH).',
+      parameters: {
+        type: 'object',
+        properties: {
+          anchor: { type: 'string', description: 'O gatilho que inicia a rotina (ex: "Ao acordar", "Depois do almoço")' },
+          action: { type: 'string', description: 'A ação a ser realizada (ex: "Beber água com limão", "Ler 10 páginas")' },
+          period: { type: 'string', enum: ['morning', 'afternoon', 'evening', 'anytime'], description: 'O período do dia correspondente' },
+        },
+        required: ['anchor', 'action', 'period'],
+      },
+    },
+  },
+
+];  
