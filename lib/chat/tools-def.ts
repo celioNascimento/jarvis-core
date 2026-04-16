@@ -308,8 +308,8 @@ export const tools = [
         required: ['content']
       }
     }
-  }
-    {
+  }, 
+  {
     type: 'function',
     function: {
       name: 'quebrar_tarefa',
@@ -330,5 +330,5 @@ export const tools = [
         required: ['tarefa_principal', 'estado_cognitivo']
       }
     }
-}
+  }
 ];
