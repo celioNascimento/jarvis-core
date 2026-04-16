@@ -309,4 +309,26 @@ export const tools = [
       }
     }
   }
+    {
+    type: 'function',
+    function: {
+      name: 'quebrar_tarefa',
+      description: "Decompõe uma tarefa complexa, esmagadora ou vaga em micro-passos acionáveis. Use OBRIGATORIAMENTE quando o usuário estiver paralisado (TDAH), disser que 'não sabe por onde começar' ou pedir ajuda com o foco.",
+      parameters: {
+        type: 'object',
+        properties: {
+          tarefa_principal: { 
+            type: 'string', 
+            description: "A tarefa macro que precisa ser feita (ex: 'Limpar a cozinha', 'Fazer o imposto de renda')" 
+          },
+          estado_cognitivo: { 
+            type: 'string', 
+            enum: ['sobrecarregado', 'sem_energia', 'neutro'], 
+            description: "Avaliação do estado do usuário. Se estiver 'sobrecarregado', quebre em passos ridículos de fáceis (<2min)." 
+          }
+        },
+        required: ['tarefa_principal', 'estado_cognitivo']
+      }
+    }
+}
 ];
