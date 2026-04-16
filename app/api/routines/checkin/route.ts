@@ -4,12 +4,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
+const getSupabase = () => createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!,
 );
 
 async function getUserId(req: NextRequest): Promise<number | null> {
+  const supabase = getSupabase();
   const auth = req.headers.get('authorization') ?? '';
   const token = auth.replace('Bearer ', '');
   if (!token) return null;
@@ -27,6 +28,7 @@ async function getUserId(req: NextRequest): Promise<number | null> {
 // ── GET /api/routines/checkins?date=YYYY-MM-DD ────────────────────────────────
 export async function GET(req: NextRequest) {
   try {
+    const supabase = getSupabase();
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -52,6 +54,7 @@ export async function GET(req: NextRequest) {
 // status: 'done' | 'skipped' | null (null = remover)
 export async function POST(req: NextRequest) {
   try {
+    const supabase = getSupabase();
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
