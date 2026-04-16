@@ -367,6 +367,38 @@ export async function executeTool(
       if (!itens?.length) return `Lista de ${p.lugar} está vazia.`;
       return `Lista de ${p.lugar}:\n${itens.map((i: any) => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
     }
+        // ===================== SUPORTE EXECUTIVO (TDAH) =====================
+
+    case 'quebrar_tarefa': {
+      const tarefa = p.tarefa_principal;
+      const estado = p.estado_cognitivo || 'neutro';
+      
+      // Aqui o ideal seria salvar o início na focus_sessions, mas como o LLM que vai 
+      // gerar os passos a partir dessa requisição, a tool apenas instrui o modelo
+      // sobre COMO responder, forçando o formato.
+      
+      let instrucao_modelo = `A tarefa do usuário é "${tarefa}". O estado cognitivo detectado é "${estado}".\n\n`;
+      instrucao_modelo += `REGRA DE RESPOSTA (Módulo TDAH ativado):\n`;
+      instrucao_modelo += `1. Não dê preâmbulos motivacionais.\n`;
+      instrucao_modelo += `2. Quebre a tarefa em 3 a 5 micro-passos sequenciais.\n`;
+      
+      if (estado === 'sobrecarregado' || estado === 'sem_energia') {
+        instrucao_modelo += `3. O Passo 1 deve ser absurdamente fácil (ex: 'Levantar da cadeira' ou 'Pegar o pano').\n`;
+      }
+      
+      instrucao_modelo += `4. Peça para o usuário responder "feito" apenas para o Passo 1 antes de mostrar os outros.`;
+
+      // Registramos na memória L3 que o usuário iniciou um processo focado
+      await supabase.schema('jarvis').from('brain').insert([{
+        user_id: Number(numericUserIdStr),
+        category: 'Nota',
+        content: `Usuário iniciou quebra de tarefa: ${tarefa} (Estado: ${estado})`,
+        project_tag: 'foco'
+      }]);
+
+      return instrucao_modelo;
+    }
+      
 
     // ===================== INSIGHTS =====================
 
