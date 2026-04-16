@@ -251,30 +251,33 @@ export async function checkProximidade(
         console.error('[Geo] Erro ao buscar pontos de interesse:', e);
       }
     }
+    // ✅ SALVAMENTO COM TRATAMENTO DE STRING (Proteção contra erro 22001)
+if (numericUserId && cidade && estado) {
+  const sanitizedState = estado.length > 2 
+    ? estado.substring(0, 2).toUpperCase() // Corta se for nome longo (ex: "Paraná" -> "PA")
+    : estado.trim().toUpperCase();
 
-        // ✅ SALVAMENTO AUTOMÁTICO NO SCHEMA JARVIS
-    if (numericUserId && cidade && estado) {
-      supabase
-        .schema('jarvis') // <--- PROTEÇÃO DE SCHEMA INJETADA AQUI
-        .from('user_locations')
-        .upsert(
-          {
-            user_id: numericUserId,
-            latitude: parseFloat(lat.toFixed(6)),
-            longitude: parseFloat(lng.toFixed(6)),
-            city: cidade.trim(),
-            state: estado.trim(),
-            country: pais,
-            last_updated: new Date().toISOString(),
-          },
-          { onConflict: 'user_id' }
-        )
-        .then(
-          ({ error }) => { if (error) console.error('[Geo] Upsert localização:', error); },
-          (e) => console.error('[Geo] Upsert localização:', e)
-        );
-    }
-    
+  supabase
+    .schema('jarvis')
+    .from('user_locations') // Tabela que disparou o erro no log
+    .upsert(
+      {
+        user_id: numericUserId,
+        latitude: parseFloat(lat.toFixed(6)),
+        longitude: parseFloat(lng.toFixed(6)),
+        city: cidade.trim(),
+        state: sanitizedState, // Agora garantido com max 2 chars
+        country: pais.substring(0, 2).toUpperCase(),
+        last_updated: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' }
+    )
+    .then(
+      ({ error }) => { if (error) console.error('[Geo] Upsert localização:', error); },
+      (e) => console.error('[Geo] Upsert localização:', e)
+    );
+}
+
 
     // === 6. MONTAGEM DO CONTEXTO FINAL (sem coordenadas) ===
     let contextString = `[LOCALIZAÇÃO]\n📍 ${locationLabel}`;
