@@ -252,9 +252,10 @@ export async function checkProximidade(
       }
     }
 
-    // ✅ SALVAMENTO AUTOMÁTICO NO SCHEMA JARVIS
+        // ✅ SALVAMENTO AUTOMÁTICO NO SCHEMA JARVIS
     if (numericUserId && cidade && estado) {
       supabase
+        .schema('jarvis') // <--- PROTEÇÃO DE SCHEMA INJETADA AQUI
         .from('user_locations')
         .upsert(
           {
@@ -273,6 +274,7 @@ export async function checkProximidade(
           (e) => console.error('[Geo] Upsert localização:', e)
         );
     }
+    
 
     // === 6. MONTAGEM DO CONTEXTO FINAL (sem coordenadas) ===
     let contextString = `[LOCALIZAÇÃO]\n📍 ${locationLabel}`;
