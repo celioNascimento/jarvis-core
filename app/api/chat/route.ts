@@ -164,6 +164,37 @@ function buildWeatherBlock(weather: Record<string, any> | null | undefined): str
   return parts.join(' · ');
 }
 
+export function buildAgendaBlock(
+  loadCalendar: boolean,
+  googleCtx: string | null,
+  msCtx: any,
+  numericUserId: string,
+): string {
+  const parts: string[] = [];
+ 
+  if (loadCalendar && googleCtx) {
+    // Agenda do Google (sincronizada — leitura)
+    parts.push(`[AGENDA GOOGLE — somente leitura]\n${googleCtx}`);
+  }
+ 
+  if (loadCalendar && msCtx) {
+    parts.push(`[AGENDA OUTLOOK — somente leitura]\n${msCtx}`);
+  }
+ 
+  // Instrução explícita para o modelo saber onde salvar
+  if (loadCalendar) {
+    parts.push(
+      `[INSTRUÇÃO DE AGENDA]\n` +
+      `A agenda PRÓPRIA do Lev é a jarvis.agenda. ` +
+      `Ao salvar compromissos, use SEMPRE salvar_evento (jarvis.agenda). ` +
+      `Os dados acima são apenas para consulta/leitura do Google/Outlook. ` +
+      `NÃO confunda leitura de agenda com local de escrita.`
+    );
+  }
+ 
+  return parts.join('\n\n');
+}
+
 export async function POST(req: NextRequest) {
   console.log('[chat] Iniciando — V8.12.0 (memória completa com dynamic guidelines)');
   try {
@@ -863,8 +894,7 @@ export async function POST(req: NextRequest) {
 
 ${forcedSearchResult}
 ${holidaysBlock}
-${blockPlan.loadCalendar && googleCtx ? `[AGENDA GOOGLE]\n${googleCtx}` : ''}
-${blockPlan.loadCalendar && msCtx ? `[AGENDA OUTLOOK]\n${msCtx}` : ''}
+${buildAgendaBlock(blockPlan.loadCalendar, googleCtx, msCtx, numericUserIdStr)}
 ${blockPlan.loadEmail && emailBlock ? `[EMAILS RECENTES]\n${emailBlock}` : ''}
 ${locationContext ? `\n${locationContext}` : ''}
 ${sharedContextResult.hasData ? `\n${sharedContextResult.block}` : ''}
@@ -912,12 +942,24 @@ MEMÓRIA: Use as memórias naturalmente — nunca diga "Tenho uma nota aqui que 
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 FILHOS: A lista canônica de filhos está em [FILHOS DE ${authorName.toUpperCase()}]. Nunca cite filhos além dos listados. Se indicar "Nenhum filho cadastrado", não invente.
 LEMBRETES: Se o usuário usar "me lembra", "me avisa", "não esquecer" com tempo ou local — chame OBRIGATORIAMENTE a tool create_reminder. Nunca apenas confirme sem chamar a tool.
-COMPROMISSOS: Quando o usuário informar um compromisso com horário (consulta, reunião, evento),
-chame DUAS tools em sequência:
-1. salvar_evento — para registrar a data
-2. create_reminder — para agendar notificação 30 minutos antes, type: 'agenda',
-   scheduled_time no horário do compromisso menos 30 minutos.
-Nunca salve um compromisso com hora sem criar o lembrete correspondente.
+COMPROMISSOS: Quando o usuário informar um compromisso com horário específico
+(consulta, reunião, evento, aula, viagem, voo, etc.):
+1. OBRIGATORIAMENTE chame salvar_evento com:
+   - title: nome do compromisso
+   - event_date: data + hora no formato ISO "YYYY-MM-DDTHH:mm:00"
+   - category: tipo apropriado ("Saúde", "Trabalho", "Pessoal", "Família", etc.)
+   Esta tool salva na AGENDA PRÓPRIA DO LEV (jarvis.agenda). NÃO no Google Calendar.
+   NÃO pergunte se o usuário quer salvar no Google. Salve direto.
+2. OBRIGATORIAMENTE chame create_reminder com:
+   - scheduled_time: horário do compromisso menos 30 minutos (ISO completo)
+   - message: "Lembrete: [nome do compromisso] em 30 minutos"
+   - type: "agenda"
+Nunca confirme um compromisso com hora sem chamar AMBAS as tools.
+Nunca direcione para Google Calendar a não ser que o usuário peça explicitamente
+com "no Google" ou "no Google Agenda".
+DATAS SEM HORA (aniversários, feriados pessoais, datas comemorativas):
+  Chame apenas salvar_evento — sem create_reminder — será salvo automaticamente
+  como data importante em jarvis.events.
 LOCALIZAÇÃO: Mencione apenas bairro e cidade. Nunca exponha coordenadas.
 DOCUMENTOS: Se algum documento estiver com ⚠️ VENCIDO ou vencendo em breve, mencione proativamente quando relevante.
 PERGUNTA PENDENTE: ${pendingQuestion ? `Você fez esta pergunta: "${pendingQuestion}". A mensagem atual é a resposta — processe e limpe a pendência.` : 'Nenhuma.'}
