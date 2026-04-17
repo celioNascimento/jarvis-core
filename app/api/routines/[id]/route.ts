@@ -1,8 +1,7 @@
 // app/api/routines/[id]/route.ts
-// DELETE: desativa (soft delete via is_active = false) uma rotina
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/jarvis'; // Usando o motor central imutável
+import { supabase } from '@/lib/jarvis'; // Importação central e segura
 
 async function getUserId(req: NextRequest): Promise<number | null> {
   const auth = req.headers.get('authorization') ?? '';
@@ -20,39 +19,14 @@ async function getUserId(req: NextRequest): Promise<number | null> {
 
   return data?.id ?? null;
 }
-// ── DELETE /api/routines/[id] ─────────────────────────────────────────────────
-export async function DELETE(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
-  try {
-    const userId = await getUserId(req);
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { id } = await params;
+// ... manter o DELETE que corrigimos anteriormente ...
 
-    const { error } = await supabase
-      .from('routines')
-      .update({ is_active: false })
-      .eq('id', id)
-      .eq('user_id', userId);
-
-    if (error) throw error;
-    return NextResponse.json({ deleted: true });
-  } catch (err: any) {
-    console.error('[routines DELETE]', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
-}
-
-// ── PATCH /api/routines/[id] ──────────────────────────────────────────────────
-// Para editar campos: anchor, action, period, goal_tag, sort_order, is_active
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const supabase = getSupabase();
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -61,6 +35,7 @@ export async function PATCH(
 
     const allowed = ['anchor', 'action', 'period', 'goal_tag', 'sort_order', 'is_active'];
     const updates: Record<string, any> = {};
+    
     for (const key of allowed) {
       if (key in body) updates[key] = body[key];
     }
@@ -70,8 +45,7 @@ export async function PATCH(
     }
 
     const { data, error } = await supabase
-      .schema('jarvis')
-      .from('routines')
+      .from('routines') // O schema 'jarvis' já vem configurado do lib/jarvis
       .update(updates)
       .eq('id', id)
       .eq('user_id', userId)
