@@ -2,49 +2,40 @@
 // DELETE: desativa (soft delete via is_active = false) uma rotina
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-// Inicialização "lazy" para evitar crash durante a avaliação estática do build na Vercel
-const getSupabase = () => createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!,
-);
+import { supabase } from '@/lib/jarvis'; // Usando o motor central imutável
 
 async function getUserId(req: NextRequest): Promise<number | null> {
-  const supabase = getSupabase();
-  const auth  = req.headers.get('authorization') ?? '';
+  const auth = req.headers.get('authorization') ?? '';
   const token = auth.replace('Bearer ', '');
   if (!token) return null;
+
   const { data: { user }, error } = await supabase.auth.getUser(token);
   if (error || !user) return null;
+
   const { data } = await supabase
-    .schema('jarvis')
     .from('users')
     .select('id')
     .eq('auth_user_id', user.id)
     .single();
+
   return data?.id ?? null;
 }
-
 // ── DELETE /api/routines/[id] ─────────────────────────────────────────────────
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const supabase = getSupabase();
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const { id } = await params;
 
-    // Soft delete — mantém histórico de checkins
     const { error } = await supabase
-      .schema('jarvis')
       .from('routines')
       .update({ is_active: false })
       .eq('id', id)
-      .eq('user_id', userId); // segurança: só o dono pode deletar
+      .eq('user_id', userId);
 
     if (error) throw error;
     return NextResponse.json({ deleted: true });
