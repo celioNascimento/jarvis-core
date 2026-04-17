@@ -12,6 +12,7 @@ import { extractDiary } from '@/lib/diary';
 import { updateGoalProgress } from '@/lib/diary';
 import { getCachedEmbedding } from './embedding-cache';
 import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
+import { handleSalvarEvento } from './tools-executor-agenda-patch';
 
 function assertNumericUserId(id: string, context: string): void {
   if (!/^\d+$/.test(id)) {
@@ -121,17 +122,7 @@ export async function executeTool(
       return await getRecentEmails(p.filtro, 5, true);
 
     case 'salvar_evento': {
-      const cat = p.titulo.toLowerCase().includes('aniversario') ? 'family' : 'personal';
-      await upsertEvent(numericUserIdStr, {
-        title: p.titulo,
-        event_date: p.data,
-        priority: p.prioridade,
-        is_recurring: p.recorrente,
-        decay_type: p.tipo,
-        category: cat,
-        emotional_weight: p.prioridade === 'alta' ? 0.9 : p.prioridade === 'media' ? 0.6 : 0.3,
-      });
-      return `Evento "${p.titulo}" salvo.`;
+      return handleSalvarEvento(args, authUserId, numericUserIdStr);
     }
 
     // ===================== LEMBRETES =====================
