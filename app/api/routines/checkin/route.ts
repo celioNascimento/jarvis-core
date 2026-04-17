@@ -1,34 +1,26 @@
 // app/api/routines/checkin/route.ts
-// POST: registra ou remove um checkin do dia
-
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const getSupabase = () => createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!,
-);
+import { supabase } from '@/lib/jarvis';
 
 async function getUserId(req: NextRequest): Promise<number | null> {
-  const supabase = getSupabase();
   const auth = req.headers.get('authorization') ?? '';
   const token = auth.replace('Bearer ', '');
   if (!token) return null;
+
   const { data: { user }, error } = await supabase.auth.getUser(token);
   if (error || !user) return null;
+
   const { data } = await supabase
-    .schema('jarvis')
     .from('users')
     .select('id')
     .eq('auth_user_id', user.id)
     .single();
+
   return data?.id ?? null;
 }
 
-// ── GET /api/routines/checkins?date=YYYY-MM-DD ────────────────────────────────
 export async function GET(req: NextRequest) {
   try {
-    const supabase = getSupabase();
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -36,7 +28,6 @@ export async function GET(req: NextRequest) {
     const date = searchParams.get('date') ?? new Date().toISOString().split('T')[0];
 
     const { data, error } = await supabase
-      .schema('jarvis')
       .from('routine_checkins')
       .select('routine_id, status, note')
       .eq('user_id', userId)
@@ -50,11 +41,8 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// ── POST /api/routines/checkin ────────────────────────────────────────────────
-// status: 'done' | 'skipped' | null (null = remover)
 export async function POST(req: NextRequest) {
   try {
-    const supabase = getSupabase();
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -67,10 +55,8 @@ export async function POST(req: NextRequest) {
 
     const checkinDate = date ?? new Date().toISOString().split('T')[0];
 
-    // null = toggle off (remover checkin do dia)
     if (status === null) {
       const { error } = await supabase
-        .schema('jarvis')
         .from('routine_checkins')
         .delete()
         .eq('routine_id', routine_id)
@@ -85,9 +71,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'status inválido' }, { status: 400 });
     }
 
-    // Upsert por causa do constraint UNIQUE (routine_id, user_id, date)
     const { data, error } = await supabase
-      .schema('jarvis')
       .from('routine_checkins')
       .upsert(
         { routine_id, user_id: userId, date: checkinDate, status, note: note ?? null },

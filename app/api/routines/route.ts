@@ -1,38 +1,30 @@
 // app/api/routines/route.ts
-// CRUD de rotinas — GET lista + POST nova rotina
-
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const getSupabase = () => createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!,
-);
+import { supabase } from '@/lib/jarvis';
 
 async function getUserId(req: NextRequest): Promise<number | null> {
-  const supabase = getSupabase();
   const auth = req.headers.get('authorization') ?? '';
   const token = auth.replace('Bearer ', '');
   if (!token) return null;
+
   const { data: { user }, error } = await supabase.auth.getUser(token);
   if (error || !user) return null;
+
   const { data } = await supabase
-    .from('jarvis.users')
+    .from('users')
     .select('id')
     .eq('auth_user_id', user.id)
     .single();
+
   return data?.id ?? null;
 }
 
-// ── GET /api/routines ─────────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   try {
-    const supabase = getSupabase();
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const { data, error } = await supabase
-      .schema('jarvis')
       .from('routines')
       .select('*')
       .eq('user_id', userId)
@@ -43,15 +35,13 @@ export async function GET(req: NextRequest) {
     if (error) throw error;
     return NextResponse.json({ routines: data ?? [] });
   } catch (err: any) {
-    console.error('[routines GET]', err);
+    console.error('[routines GET] Error:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
 
-// ── POST /api/routines ────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
-    const supabase = getSupabase();
     const userId = await getUserId(req);
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -67,9 +57,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'period inválido' }, { status: 400 });
     }
 
-    // Sort order = max atual + 1
     const { data: existing } = await supabase
-      .schema('jarvis')
       .from('routines')
       .select('sort_order')
       .eq('user_id', userId)
@@ -79,7 +67,6 @@ export async function POST(req: NextRequest) {
     const nextOrder = (existing?.[0]?.sort_order ?? 0) + 1;
 
     const { data, error } = await supabase
-      .schema('jarvis')
       .from('routines')
       .insert({
         user_id: userId,
@@ -96,7 +83,7 @@ export async function POST(req: NextRequest) {
     if (error) throw error;
     return NextResponse.json({ routine: data }, { status: 201 });
   } catch (err: any) {
-    console.error('[routines POST]', err);
+    console.error('[routines POST] Error:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
