@@ -15,7 +15,7 @@ function extractToken(req: Request): string | undefined {
 
 export async function POST(
   req: Request,
-  { params }: { params: { id: string; action: string } }
+  { params }: { params: Promise<{ id: string; action: string }> }
 ) {
   const token = extractToken(req);
   const userId = await getUserFromToken(token);
@@ -23,7 +23,7 @@ export async function POST(
     return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
   }
 
-  const { id: relationshipId, action } = params;
+  const { id: relationshipId, action } = await params;
 
   if (!['accept', 'reject'].includes(action)) {
     return NextResponse.json({ error: `Ação inválida: ${action}` }, { status: 400 });
