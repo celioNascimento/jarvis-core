@@ -2,12 +2,13 @@ import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
 
 // ============================================================
-// /api/relationships/invites/accept
+// /api/relationships/invite
 //
-// POST → aceita convite via token (vindo do deep link jarvis://invite/{token})
-// Body: { token: string }
-// Não requer autenticação prévia — o token é o mecanismo de segurança
-// Mas se o usuário estiver logado, valida que é ele o destinatário
+// POST → cria convite com token único + envia push + retorna link
+//
+// Retorna:
+//   inviteLink  → jarvis://invite/{token}  (deep link direto para o app)
+//   pushSent    → boolean indicando se a push foi enviada
 // ============================================================
 
 function extractToken(req: Request): string | undefined {
@@ -21,113 +22,170 @@ async function getAuthUUID(token: string | undefined): Promise<string | null> {
   return user.id;
 }
 
+async function sendPushNotification(
+  pushToken: string,
+  title: string,
+  body: string,
+  data?: object,
+) {
+  try {
+    await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: pushToken, title, body, data, sound: 'default' }),
+    });
+  } catch (e) {
+    console.warn('[Push] Falha ao enviar notificação:', e);
+  }
+}
+
 export async function POST(req: Request) {
-  const authToken = extractToken(req);
-  const authUUID  = await getAuthUUID(authToken); // pode ser null se não logado ainda
+  const token = extractToken(req);
+  const authUUID = await getAuthUUID(token);
+  if (!authUUID) {
+    return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+  }
 
   try {
-    const { token } = await req.json();
+    const { contact, contactType, relationshipType } = await req.json();
 
-    if (!token) {
-      return NextResponse.json({ error: 'token é obrigatório' }, { status: 400 });
-    }
-
-    // Busca o convite pelo token
-    const { data: invite, error: inviteError } = await supabase
-      .from('relationship_invites')
-      .select('id, token, relationship_id, invited_by, invited_email, expires_at, accepted_at')
-      .eq('token', token)
-      .maybeSingle();
-
-    if (inviteError || !invite) {
-      return NextResponse.json({ error: 'Convite inválido ou não encontrado.' }, { status: 404 });
-    }
-
-    if (invite.accepted_at) {
-      return NextResponse.json({ error: 'Este convite já foi aceito.' }, { status: 409 });
-    }
-
-    if (new Date(invite.expires_at) < new Date()) {
-      return NextResponse.json({ error: 'Este convite expirou.' }, { status: 410 });
-    }
-
-    // Busca o vínculo
-    const { data: rel, error: relError } = await supabase
-      .from('relationships')
-      .select('id, user_id_a, user_id_b, status')
-      .eq('id', invite.relationship_id)
-      .single();
-
-    if (relError || !rel) {
-      return NextResponse.json({ error: 'Vínculo não encontrado.' }, { status: 404 });
-    }
-
-    if (rel.status !== 'pending') {
-      return NextResponse.json({ error: 'Este vínculo não está mais pendente.' }, { status: 409 });
-    }
-
-    // Se o usuário está logado, valida que é ele o destinatário
-    if (authUUID && rel.user_id_b !== authUUID) {
+    if (!contact || !contactType || !relationshipType) {
       return NextResponse.json(
-        { error: 'Este convite não é para você.' },
-        { status: 403 }
+        { error: 'contact, contactType e relationshipType são obrigatórios' },
+        { status: 400 }
       );
     }
 
-    const now = new Date().toISOString();
+    const contactTrimmed = contact.trim();
 
-    // Ativa o vínculo
-    const { data: updatedRel, error: updateRelError } = await supabase
+    // Busca quem está convidando (para nome na notificação)
+    const { data: inviter } = await supabase
+      .schema('jarvis')
+      .from('users')
+      .select('id, name, preferred_name, nickname')
+      .eq('auth_user_id', authUUID)
+      .maybeSingle();
+
+    const inviterName =
+      inviter?.preferred_name ?? inviter?.nickname ?? inviter?.name ?? 'Alguém';
+
+    // Tenta encontrar o usuário alvo pelo email
+    let targetUser: {
+      id: number;
+      auth_user_id: string;
+      name: string;
+      preferred_name: string | null;
+      nickname: string | null;
+      push_token: string | null;
+    } | null = null;
+
+    if (contactType === 'email') {
+      const { data } = await supabase
+        .schema('jarvis')
+        .from('users')
+        .select('id, auth_user_id, name, preferred_name, nickname, push_token')
+        .eq('email', contactTrimmed)
+        .maybeSingle();
+      targetUser = data;
+    }
+
+    const userIdB    = targetUser?.auth_user_id ?? contactTrimmed;
+    const isExternal = !targetUser;
+
+    // Impede auto-convite
+    if (userIdB === authUUID) {
+      return NextResponse.json({ error: 'Você não pode se convidar.' }, { status: 400 });
+    }
+
+    // Verifica duplicata ativa ou pendente
+    const { data: existing } = await supabase
+      .schema('jarvis')
       .from('relationships')
-      .update({ status: 'active', connected_at: now })
-      .eq('id', rel.id)
+      .select('id, status')
+      .or(
+        `and(user_id_a.eq.${authUUID},user_id_b.eq.${userIdB}),` +
+        `and(user_id_a.eq.${userIdB},user_id_b.eq.${authUUID})`
+      )
+      .maybeSingle();
+
+    if (existing?.status === 'active') {
+      return NextResponse.json({ error: 'Já existe um vínculo ativo com essa pessoa.' }, { status: 409 });
+    }
+    if (existing?.status === 'pending') {
+      return NextResponse.json({ error: 'Já existe um convite pendente com essa pessoa.' }, { status: 409 });
+    }
+
+    // Nome a exibir no card de vínculo
+    const resolvedName = isExternal
+      ? contactTrimmed
+      : (targetUser?.preferred_name ?? targetUser?.nickname ?? targetUser?.name ?? contactTrimmed);
+
+    // Cria o vínculo
+    const { data: rel, error: relError } = await supabase
+      .schema('jarvis')
+      .from('relationships')
+      .insert({
+        user_id_a:         authUUID,
+        user_id_b:         userIdB,
+        relationship_type: relationshipType,
+        type_a:            relationshipType,
+        type_b:            relationshipType,
+        status:            isExternal ? 'active' : 'pending',
+        initiated_by:      authUUID,
+        is_external:       isExternal,
+        contact_name:      resolvedName,
+      })
       .select()
       .single();
 
-    if (updateRelError) throw updateRelError;
+    if (relError) throw relError;
 
-    // Marca o convite como aceito
-    const { error: updateInviteError } = await supabase
-      .from('relationship_invites')
-      .update({ accepted_at: now })
-      .eq('id', invite.id);
+    // Para usuários internos, cria o token de convite na tabela relationship_invites
+    if (!isExternal) {
+      const { data: invite, error: inviteError } = await supabase
+        .schema('jarvis')
+        .from('relationship_invites')
+        .insert({
+          relationship_id: rel.id,
+          invited_by:      authUUID,
+          invited_email:   contactTrimmed,
+        })
+        .select('token')
+        .single();
 
-    if (updateInviteError) throw updateInviteError;
+      if (inviteError) throw inviteError;
 
-    // Notifica quem enviou o convite
-    const { data: inviter } = await supabase
-      .from('users')
-      .select('push_token, preferred_name, nickname, name')
-      .eq('auth_user_id', invite.invited_by)
-      .maybeSingle();
+      // Deep link que o app consegue processar via useInviteDeepLink
+      const deepLink = `jarvis://invite/${invite.token}`;
 
-    // Busca nome de quem aceitou
-    let acceptorName = 'A pessoa convidada';
-    if (authUUID) {
-      const { data: acceptor } = await supabase
-        .from('users')
-        .select('preferred_name, nickname, name')
-        .eq('auth_user_id', authUUID)
-        .maybeSingle();
-      acceptorName =
-        acceptor?.preferred_name ?? acceptor?.nickname ?? acceptor?.name ?? acceptorName;
+      // Envia push se o alvo tem token registrado
+      let pushSent = false;
+      if (targetUser?.push_token) {
+        await sendPushNotification(
+          targetUser.push_token,
+          '🔗 Novo convite de vínculo',
+          `${inviterName} quer se vincular com você no Lev.`,
+          {
+            screen:   'Vinculos',
+            token:    invite.token,
+            // deepLink no payload é o que o App.tsx usa ao detectar o tap na notificação
+            deepLink,
+          }
+        );
+        pushSent = true;
+      }
+
+      return NextResponse.json({
+        ok:           true,
+        relationship: rel,
+        inviteLink:   deepLink,  // retornado ao frontend para exibir/compartilhar
+        pushSent,
+      }, { status: 201 });
     }
 
-    if (inviter?.push_token) {
-      await fetch('https://exp.host/--/api/v2/push/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to:    inviter.push_token,
-          title: '🎉 Convite aceito!',
-          body:  `${acceptorName} aceitou seu convite de vínculo.`,
-          data:  { screen: 'Vinculos' },
-          sound: 'default',
-        }),
-      });
-    }
+    // Externo — vínculo já ativo, sem token de convite
+    return NextResponse.json({ ok: true, relationship: rel }, { status: 201 });
 
-    return NextResponse.json({ ok: true, relationship: updatedRel });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
