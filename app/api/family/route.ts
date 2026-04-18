@@ -5,44 +5,32 @@ import { getUserFromToken } from '@/lib/auth';
 // ============================================================
 // /api/family
 //
-// GET    → retorna a família do usuário autenticado
-// POST   → cria uma nova família (usuário vira owner)
+// GET  → retorna a família do usuário autenticado
+// POST → cria uma nova família (usuário vira owner)
+//
+// NOTA: getUserFromToken() já retorna o id BIGINT de jarvis.users
 // ============================================================
 
 function extractToken(req: Request): string | undefined {
   return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
 }
 
-// Resolve auth_user_id (UUID) → jarvis.users.id (bigint)
-async function resolveNumericUserId(authUserId: string): Promise<number | null> {
-  const { data } = await supabase
-    .from('users')
-    .select('id, family_id')
-    .eq('auth_user_id', authUserId)
-    .maybeSingle();
-  return data?.id ?? null;
-}
-
-async function resolveUserRow(authUserId: string) {
-  const { data } = await supabase
-    .from('users')
-    .select('id, family_id')
-    .eq('auth_user_id', authUserId)
-    .maybeSingle();
-  return data ?? null;
-}
-
 // ── GET /api/family ──────────────────────────────────────────
-// Retorna { family } ou { family: null } se não tiver família
 export async function GET(req: Request) {
   const token = extractToken(req);
-  const authUserId = await getUserFromToken(token);
-  if (!authUserId) {
+  const userId = await getUserFromToken(token); // já é o bigint numérico
+  if (!userId) {
     return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
   }
 
   try {
-    const user = await resolveUserRow(String(authUserId));
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, family_id')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (userError) throw userError;
     if (!user) {
       return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
     }
@@ -51,13 +39,13 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: true, family: null });
     }
 
-    const { data: family, error } = await supabase
+    const { data: family, error: familyError } = await supabase
       .from('families')
       .select('id, name, owner_id, plan, plan_started_at, plan_expires_at, created_at')
       .eq('id', user.family_id)
       .single();
 
-    if (error) throw error;
+    if (familyError) throw familyError;
 
     return NextResponse.json({ ok: true, family });
   } catch (e: any) {
@@ -67,11 +55,10 @@ export async function GET(req: Request) {
 
 // ── POST /api/family ─────────────────────────────────────────
 // Body: { name: string }
-// Cria família e vincula o usuário como owner
 export async function POST(req: Request) {
   const token = extractToken(req);
-  const authUserId = await getUserFromToken(token);
-  if (!authUserId) {
+  const userId = await getUserFromToken(token); // já é o bigint numérico
+  if (!userId) {
     return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
   }
 
@@ -83,7 +70,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'name é obrigatório' }, { status: 400 });
     }
 
-    const user = await resolveUserRow(String(authUserId));
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, family_id')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (userError) throw userError;
     if (!user) {
       return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
     }
@@ -95,20 +88,19 @@ export async function POST(req: Request) {
       );
     }
 
-    // Cria a família com o owner_id numérico
+    // owner_id é o id numérico direto — sem conversão
     const { data: family, error: createError } = await supabase
       .from('families')
-      .insert({ name, owner_id: user.id, plan: 'free' })
+      .insert({ name, owner_id: userId, plan: 'free' })
       .select('id, name, owner_id, plan, plan_started_at, plan_expires_at, created_at')
       .single();
 
     if (createError) throw createError;
 
-    // Vincula o usuário à família criada
     const { error: updateError } = await supabase
       .from('users')
       .update({ family_id: family.id })
-      .eq('id', user.id);
+      .eq('id', userId);
 
     if (updateError) throw updateError;
 
