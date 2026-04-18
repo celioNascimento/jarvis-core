@@ -1,16 +1,21 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
-import { getUserFromToken } from '@/lib/auth';
 
 // ============================================================
 // /api/relationships/[id]/[action]
-//
-// POST /api/relationships/:id/accept  → aceita convite pendente
-// POST /api/relationships/:id/reject  → recusa ou cancela convite
+// POST /api/relationships/:id/accept  → aceita convite
+// POST /api/relationships/:id/reject  → recusa ou cancela
 // ============================================================
 
 function extractToken(req: Request): string | undefined {
   return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
+}
+
+async function getAuthUUID(token: string | undefined): Promise<string | null> {
+  if (!token) return null;
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  if (error || !user) return null;
+  return user.id;
 }
 
 export async function POST(
@@ -18,8 +23,8 @@ export async function POST(
   { params }: { params: Promise<{ id: string; action: string }> }
 ) {
   const token = extractToken(req);
-  const userId = await getUserFromToken(token);
-  if (!userId) {
+  const authUUID = await getAuthUUID(token);
+  if (!authUUID) {
     return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
   }
 
@@ -30,8 +35,6 @@ export async function POST(
   }
 
   try {
-    const authUserIdStr = String(userId);
-
     const { data: rel } = await supabase
       .from('relationships')
       .select('id, user_id_a, user_id_b, status, initiated_by')
@@ -42,7 +45,7 @@ export async function POST(
       return NextResponse.json({ error: 'Vínculo não encontrado' }, { status: 404 });
     }
 
-    if (rel.user_id_a !== authUserIdStr && rel.user_id_b !== authUserIdStr) {
+    if (rel.user_id_a !== authUUID && rel.user_id_b !== authUUID) {
       return NextResponse.json({ error: 'Acesso negado' }, { status: 403 });
     }
 
@@ -50,9 +53,7 @@ export async function POST(
       return NextResponse.json({ error: 'Vínculo não está pendente' }, { status: 409 });
     }
 
-    // Accept: só quem recebeu o convite (não quem iniciou)
-    // Reject/cancel: qualquer um dos dois pode
-    if (action === 'accept' && rel.initiated_by === authUserIdStr) {
+    if (action === 'accept' && rel.initiated_by === authUUID) {
       return NextResponse.json(
         { error: 'Quem enviou o convite não pode aceitá-lo.' },
         { status: 403 }

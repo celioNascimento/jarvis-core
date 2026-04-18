@@ -4,47 +4,99 @@ import { supabase } from '@/lib/jarvis';
 // ============================================================
 // /api/relationships/permissions
 //
-// GET    → lista permissões de um vínculo
-// POST   → concede uma permissão
-// DELETE → revoga uma permissão
+// Todos os campos granted_by / granted_to e user_id_a / user_id_b
+// são TEXT com o auth_user_id (UUID). Usamos supabase.auth.getUser()
+// diretamente para obter o UUID correto.
+//
+// GET    → lista permissões ativas + itens ocultos do vínculo
+// POST   → concede uma permissão (upsert)
+// PATCH  → ativa ou desativa uma permissão existente
+// DELETE → revoga (is_active = false)
 // ============================================================
 
+function extractToken(req: Request): string | undefined {
+  return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
+}
+
+async function getAuthUUID(token: string | undefined): Promise<string | null> {
+  if (!token) return null;
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  if (error || !user) return null;
+  return user.id;
+}
+
+// ── GET /api/relationships/permissions?relationshipId=xxx ────
 export async function GET(req: Request) {
+  const token = extractToken(req);
+  const authUUID = await getAuthUUID(token);
+  if (!authUUID) {
+    return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+  }
+
   const { searchParams } = new URL(req.url);
   const relationshipId = searchParams.get('relationshipId');
-  const userId = searchParams.get('userId');
 
-  if (!relationshipId || !userId) {
-    return NextResponse.json({ error: 'relationshipId e userId obrigatórios' }, { status: 400 });
+  if (!relationshipId) {
+    return NextResponse.json({ error: 'relationshipId obrigatório' }, { status: 400 });
+  }
+
+  const { data: rel, error: relError } = await supabase
+    .from('relationships')
+    .select('user_id_a, user_id_b, status')
+    .eq('id', relationshipId)
+    .single();
+
+  if (relError || !rel) {
+    return NextResponse.json({ error: 'Vínculo não encontrado' }, { status: 404 });
+  }
+
+  if (rel.user_id_a !== authUUID && rel.user_id_b !== authUUID) {
+    return NextResponse.json({ error: 'Acesso negado' }, { status: 403 });
   }
 
   try {
-    const { data, error } = await supabase
+    const { data: permissions, error: permError } = await supabase
       .from('relationship_permissions')
-      .select('*')
+      .select('id, granted_by, granted_to, permission, is_active, granted_at')
+      .eq('relationship_id', relationshipId);
+
+    if (permError) throw permError;
+
+    const granted  = permissions?.filter(p => p.granted_by === authUUID) ?? [];
+    const received = permissions?.filter(p => p.granted_to === authUUID) ?? [];
+
+    const { data: hidden, error: hiddenError } = await supabase
+      .from('relationship_privacy_choices')
+      .select('id, resource, hidden_item_id, created_at')
       .eq('relationship_id', relationshipId)
-      .eq('is_active', true);
+      .eq('owner_id', authUUID);
 
-    if (error) throw error;
+    const hiddenList = hiddenError ? [] : (hidden ?? []);
 
-    // Separa o que EU concedi e o que recebi
-    const uid = parseInt(userId);
-    const granted  = data?.filter(p => p.granted_by === uid) || [];
-    const received = data?.filter(p => p.granted_to === uid) || [];
-
-    return NextResponse.json({ ok: true, granted, received });
-
+    return NextResponse.json({ ok: true, granted, received, hidden: hiddenList });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 
-
+// ── POST /api/relationships/permissions ──────────────────────
 export async function POST(req: Request) {
-  try {
-    const { relationshipId, grantedBy, grantedTo, permission } = await req.json();
+  const token = extractToken(req);
+  const authUUID = await getAuthUUID(token);
+  if (!authUUID) {
+    return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+  }
 
-    // Verifica se o usuário faz parte do vínculo
+  try {
+    const { relationshipId, grantedTo, permission } = await req.json();
+
+    if (!relationshipId || !grantedTo || !permission) {
+      return NextResponse.json(
+        { error: 'relationshipId, grantedTo e permission são obrigatórios' },
+        { status: 400 }
+      );
+    }
+
     const { data: rel } = await supabase
       .from('relationships')
       .select('user_id_a, user_id_b, status')
@@ -55,48 +107,108 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Vínculo não encontrado ou inativo' }, { status: 404 });
     }
 
-    if (rel.user_id_a !== grantedBy && rel.user_id_b !== grantedBy) {
-      return NextResponse.json({ error: 'Usuário não pertence a esse vínculo' }, { status: 403 });
+    if (rel.user_id_a !== authUUID && rel.user_id_b !== authUUID) {
+      return NextResponse.json({ error: 'Você não pertence a esse vínculo' }, { status: 403 });
+    }
+
+    if (rel.user_id_a !== grantedTo && rel.user_id_b !== grantedTo) {
+      return NextResponse.json({ error: 'Destinatário não pertence a esse vínculo' }, { status: 403 });
     }
 
     const { data, error } = await supabase
       .from('relationship_permissions')
-      .upsert({
-        relationship_id: relationshipId,
-        granted_by: grantedBy,
-        granted_to: grantedTo,
-        permission,
-        is_active: true,
-        granted_at: new Date().toISOString()
-      }, { onConflict: 'relationship_id,granted_by,permission' })
+      .upsert(
+        {
+          relationship_id: relationshipId,
+          granted_by:      authUUID,
+          granted_to:      grantedTo,
+          permission,
+          is_active:       true,
+          granted_at:      new Date().toISOString(),
+        },
+        { onConflict: 'relationship_id,granted_by,permission' }
+      )
       .select()
       .single();
 
     if (error) throw error;
 
-    return NextResponse.json({ ok: true, permission: data });
-
+    return NextResponse.json({ ok: true, permission: data }, { status: 201 });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 
+// ── PATCH /api/relationships/permissions ─────────────────────
+export async function PATCH(req: Request) {
+  const token = extractToken(req);
+  const authUUID = await getAuthUUID(token);
+  if (!authUUID) {
+    return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+  }
 
-export async function DELETE(req: Request) {
   try {
-    const { relationshipId, grantedBy, permission } = await req.json();
+    const { relationshipId, permission, isActive } = await req.json();
+
+    if (!relationshipId || !permission || typeof isActive !== 'boolean') {
+      return NextResponse.json(
+        { error: 'relationshipId, permission e isActive (boolean) são obrigatórios' },
+        { status: 400 }
+      );
+    }
+
+    const { data, error } = await supabase
+      .from('relationship_permissions')
+      .update({ is_active: isActive })
+      .eq('relationship_id', relationshipId)
+      .eq('granted_by', authUUID)
+      .eq('permission', permission)
+      .select()
+      .single();
+
+    if (error) throw error;
+    if (!data) {
+      return NextResponse.json({ error: 'Permissão não encontrada' }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      ok: true,
+      permission: data,
+      message: `Permissão '${permission}' ${isActive ? 'ativada' : 'desativada'}.`,
+    });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
+
+// ── DELETE /api/relationships/permissions ────────────────────
+export async function DELETE(req: Request) {
+  const token = extractToken(req);
+  const authUUID = await getAuthUUID(token);
+  if (!authUUID) {
+    return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+  }
+
+  try {
+    const { relationshipId, permission } = await req.json();
+
+    if (!relationshipId || !permission) {
+      return NextResponse.json(
+        { error: 'relationshipId e permission são obrigatórios' },
+        { status: 400 }
+      );
+    }
 
     const { error } = await supabase
       .from('relationship_permissions')
       .update({ is_active: false })
       .eq('relationship_id', relationshipId)
-      .eq('granted_by', grantedBy)
+      .eq('granted_by', authUUID)
       .eq('permission', permission);
 
     if (error) throw error;
 
     return NextResponse.json({ ok: true, message: `Permissão '${permission}' revogada.` });
-
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
