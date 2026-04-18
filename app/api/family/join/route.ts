@@ -4,20 +4,18 @@ import { getUserFromToken } from '@/lib/auth';
 
 // ============================================================
 // /api/family/join
-//
-// POST → entra em uma família usando o ID (UUID) como código
+// POST → entra em uma família usando o UUID da família como código
+// NOTA: getUserFromToken() já retorna o id BIGINT de jarvis.users
 // ============================================================
 
 function extractToken(req: Request): string | undefined {
   return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
 }
 
-// ── POST /api/family/join ────────────────────────────────────
-// Body: { inviteCode: string }  — o inviteCode é o UUID da família
 export async function POST(req: Request) {
   const token = extractToken(req);
-  const authUserId = await getUserFromToken(token);
-  if (!authUserId) {
+  const userId = await getUserFromToken(token);
+  if (!userId) {
     return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
   }
 
@@ -29,13 +27,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'inviteCode é obrigatório' }, { status: 400 });
     }
 
-    // Busca usuário
-    const { data: user } = await supabase
+    const { data: user, error: userError } = await supabase
       .from('users')
       .select('id, family_id')
-      .eq('auth_user_id', String(authUserId))
+      .eq('id', userId)
       .maybeSingle();
 
+    if (userError) throw userError;
     if (!user) {
       return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
     }
@@ -47,7 +45,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // Valida se a família existe com esse UUID
     const { data: family, error: familyError } = await supabase
       .from('families')
       .select('id, name, plan')
@@ -79,11 +76,10 @@ export async function POST(req: Request) {
       );
     }
 
-    // Vincula o usuário à família
     const { error: updateError } = await supabase
       .from('users')
       .update({ family_id: family.id })
-      .eq('id', user.id);
+      .eq('id', userId);
 
     if (updateError) throw updateError;
 
