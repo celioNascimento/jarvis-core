@@ -1,34 +1,33 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
-import { getUserFromToken } from '@/lib/auth';
 
 // ============================================================
 // /api/relationships/invite
 // POST → cria convite (vínculo pendente) por email ou telefone
 //
-// user_id_a / user_id_b são TEXT e guardam o auth_user_id (UUID)
-// getUserFromToken retorna o id BIGINT — precisamos do auth UUID
-// separadamente via supabase.auth.getUser()
+// - Usuário interno (encontrado no banco): status = 'pending', 
+//   contact_name = nome dele, user_id_b = auth_user_id (UUID)
+// - Contato externo (não encontrado): status = 'active',
+//   contact_name = email/telefone digitado
 // ============================================================
 
 function extractToken(req: Request): string | undefined {
   return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
 }
 
+async function getAuthUUID(token: string | undefined): Promise<string | null> {
+  if (!token) return null;
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  if (error || !user) return null;
+  return user.id;
+}
+
 export async function POST(req: Request) {
   const token = extractToken(req);
-  if (!token) {
+  const authUUID = await getAuthUUID(token);
+  if (!authUUID) {
     return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
   }
-
-  // Precisamos do auth UUID (para gravar em relationships)
-  // e do id numérico (para verificar duplicatas via jarvis.users se necessário)
-  const { data: { user: authUser }, error: authError } = await supabase.auth.getUser(token);
-  if (authError || !authUser) {
-    return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
-  }
-
-  const authUUID = authUser.id; // UUID do Supabase Auth — vai para user_id_a
 
   try {
     const { contact, contactType, relationshipType } = await req.json();
@@ -40,23 +39,45 @@ export async function POST(req: Request) {
       );
     }
 
-    // Impede auto-convite
-    if (contact.trim() === authUUID) {
-      return NextResponse.json({ error: 'Você não pode se convidar.' }, { status: 400 });
+    const contactTrimmed = contact.trim();
+
+    // Tenta encontrar o usuário — email ou telefone (testa ambos os campos)
+    let targetUser: { id: number; auth_user_id: string; name: string; preferred_name: string | null; nickname: string | null } | null = null;
+
+    if (contactType === 'email') {
+      const { data } = await supabase
+        .from('users')
+        .select('id, auth_user_id, name, preferred_name, nickname')
+        .eq('email', contactTrimmed)
+        .maybeSingle();
+      targetUser = data;
+    } else {
+      // Tenta whatsapp primeiro, depois phone
+      const { data: byWhatsapp } = await supabase
+        .from('users')
+        .select('id, auth_user_id, name, preferred_name, nickname')
+        .eq('whatsapp', contactTrimmed)
+        .maybeSingle();
+
+      if (byWhatsapp) {
+        targetUser = byWhatsapp;
+      } else {
+        const { data: byPhone } = await supabase
+          .from('users')
+          .select('id, auth_user_id, name, preferred_name, nickname')
+          .eq('phone', contactTrimmed)
+          .maybeSingle();
+        targetUser = byPhone;
+      }
     }
 
-    // Resolve o usuário alvo pelo email ou telefone
-    const lookupField = contactType === 'email' ? 'email' : 'whatsapp';
-    const { data: targetUser } = await supabase
-      .from('users')
-      .select('id, auth_user_id, name, preferred_name')
-      .eq(lookupField, contact.trim())
-      .maybeSingle();
-
-    // user_id_b: se encontrou na plataforma usa o auth_user_id (UUID),
-    // se não encontrou (externo) usa o contato como texto
-    const userIdB    = targetUser?.auth_user_id ?? contact.trim();
+    const userIdB    = targetUser?.auth_user_id ?? contactTrimmed;
     const isExternal = !targetUser;
+
+    // Impede auto-convite
+    if (userIdB === authUUID) {
+      return NextResponse.json({ error: 'Você não pode se convidar.' }, { status: 400 });
+    }
 
     // Verifica duplicata
     const { data: existing } = await supabase
@@ -75,6 +96,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Já existe um convite pendente com essa pessoa.' }, { status: 409 });
     }
 
+    // Nome a exibir: preferido > nickname > nome > contato digitado
+    const resolvedName = isExternal
+      ? contactTrimmed
+      : (targetUser?.preferred_name ?? targetUser?.nickname ?? targetUser?.name ?? contactTrimmed);
+
     const { data: rel, error } = await supabase
       .from('relationships')
       .insert({
@@ -83,13 +109,10 @@ export async function POST(req: Request) {
         relationship_type: relationshipType,
         type_a:            relationshipType,
         type_b:            relationshipType,
-        // externo vai direto como ativo; interno fica pendente até aceitar
         status:            isExternal ? 'active' : 'pending',
         initiated_by:      authUUID,
         is_external:       isExternal,
-        contact_name:      isExternal
-          ? contact.trim()
-          : (targetUser?.preferred_name ?? targetUser?.name ?? null),
+        contact_name:      resolvedName,
       })
       .select()
       .single();

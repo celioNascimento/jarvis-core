@@ -3,31 +3,27 @@ import { supabase } from '@/lib/jarvis';
 
 // ============================================================
 // /api/relationships
-//
-// user_id_a / user_id_b são TEXT e guardam o auth_user_id (UUID)
-// Usamos supabase.auth.getUser() diretamente para obter o UUID
-//
-// GET  → lista todos os vínculos do usuário
-// POST → cria vínculo (use /invite para convites por email/telefone)
+// GET → lista vínculos do usuário, sempre com nome resolvido
 // ============================================================
 
 function extractToken(req: Request): string | undefined {
   return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
 }
 
+async function getAuthUUID(token: string | undefined): Promise<string | null> {
+  if (!token) return null;
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  if (error || !user) return null;
+  return user.id;
+}
+
 // ── GET /api/relationships ───────────────────────────────────
 export async function GET(req: Request) {
   const token = extractToken(req);
-  if (!token) {
+  const authUUID = await getAuthUUID(token);
+  if (!authUUID) {
     return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
   }
-
-  const { data: { user: authUser }, error: authError } = await supabase.auth.getUser(token);
-  if (authError || !authUser) {
-    return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
-  }
-
-  const authUUID = authUser.id;
 
   try {
     const { data: asA, error: errA } = await supabase
@@ -55,12 +51,15 @@ export async function GET(req: Request) {
       return true;
     });
 
-    // Resolve nome do parceiro quando é usuário interno
+    // Enriquece o nome do parceiro para vínculos internos (não externos)
+    // Sempre tenta resolver pelo auth_user_id para ter o nome mais atualizado
     const enriched = await Promise.all(
       unique.map(async rel => {
         const partnerUUID = rel.user_id_a === authUUID ? rel.user_id_b : rel.user_id_a;
-        const isUuid = /^[0-9a-f-]{36}$/i.test(partnerUUID);
-        if (!isUuid) return rel;
+
+        // Só busca se parece UUID (usuário interno da plataforma)
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(partnerUUID);
+        if (!isUUID) return rel; // externo — mantém contact_name como está (email/telefone)
 
         const { data: partner } = await supabase
           .from('users')
@@ -70,15 +69,14 @@ export async function GET(req: Request) {
 
         if (!partner) return rel;
 
-        return {
-          ...rel,
-          contact_name:
-            partner.preferred_name ||
-            partner.nickname ||
-            partner.full_name ||
-            partner.name ||
-            rel.contact_name,
-        };
+        const resolvedName =
+          partner.preferred_name ||
+          partner.nickname ||
+          partner.full_name ||
+          partner.name ||
+          rel.contact_name;
+
+        return { ...rel, contact_name: resolvedName };
       })
     );
 
