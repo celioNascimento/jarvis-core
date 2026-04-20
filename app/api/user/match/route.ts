@@ -4,10 +4,9 @@ import { supabase } from '@/lib/jarvis';
 // ============================================================
 // POST /api/users/match
 //
-// Recebe lista de emails/telefones da agenda do celular e
-// retorna quais já têm conta no Lev.
-// Devolve `matched_identifier` (o identificador original que
-// bateu) para o frontend conseguir resolver o nome da agenda.
+// Recebe lista de { identifier, name } da agenda do celular e
+// retorna quais já têm conta no Lev, com contact_name resolvido.
+// Compatível também com string[] (formato legado).
 // ============================================================
 
 function extractToken(req: Request): string | undefined {
@@ -31,6 +30,8 @@ function normalizePhone(phone: string): string {
   return phone.replace(/\D/g, '');
 }
 
+type IdentifierInput = string | { identifier: string; name: string };
+
 export async function POST(req: Request) {
   const token = extractToken(req);
   const authUUID = await getAuthUUID(token);
@@ -39,87 +40,110 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { identifiers } = await req.json() as { identifiers: string[] };
+    const body = await req.json() as { identifiers: IdentifierInput[] };
 
-    if (!Array.isArray(identifiers) || identifiers.length === 0) {
+    if (!Array.isArray(body.identifiers) || body.identifiers.length === 0) {
       return NextResponse.json({ matched: [] });
     }
 
-    const emails = identifiers.filter(id => id.includes('@')).map(e => e.toLowerCase());
-    const phones = identifiers.filter(id => !id.includes('@')).map(normalizePhone);
+    // ── Normaliza entrada e monta nameMap ────────────────────
+    // Suporta string[] (legado) e { identifier, name }[] (novo)
+    const nameMap: Record<string, string> = {};
+
+    const rawIds: string[] = body.identifiers.map(item => {
+      if (typeof item === 'string') return item;
+      const id = item.identifier.trim();
+      const normalized = id.includes('@')
+        ? id.toLowerCase()
+        : normalizePhone(id);
+      if (item.name) nameMap[normalized] = item.name;
+      return id;
+    });
+
+    const emails = rawIds
+      .filter(id => id.includes('@'))
+      .map(e => e.toLowerCase());
+
+    const phones = rawIds
+      .filter(id => !id.includes('@'))
+      .map(normalizePhone)
+      .filter(Boolean);
 
     const seen = new Set<string>();
     const results: Array<{
-      auth_user_id:       string;
-      display_name:       string;
-      email_hint:         string | null;
-      avatar_url:         string | null;
-      matched_identifier: string; // identificador original que fez o match
+      auth_user_id:  string;
+      display_name:  string;
+      contact_name:  string | null;
+      email_hint:    string | null;
+      avatar_url:    string | null;
     }> = [];
 
     // ── Busca por email ──────────────────────────────────────
     if (emails.length > 0) {
       const { data: byEmail } = await supabase
-        .schema('jarvis')
         .from('users')
         .select('auth_user_id, name, preferred_name, nickname, avatar_url, email')
         .in('email', emails)
         .neq('auth_user_id', authUUID);
 
       (byEmail ?? []).forEach(u => {
-        if (seen.has(u.auth_user_id)) return;
+        if (!u.auth_user_id || seen.has(u.auth_user_id)) return;
         seen.add(u.auth_user_id);
+        const emailKey = (u.email ?? '').toLowerCase();
         results.push({
-          auth_user_id:       u.auth_user_id,
-          display_name:       u.preferred_name ?? u.nickname ?? u.name,
-          email_hint:         u.email ? maskEmail(u.email) : null,
-          avatar_url:         u.avatar_url ?? null,
-          matched_identifier: u.email.toLowerCase(), // email original para lookup no nameMap
+          auth_user_id: u.auth_user_id,
+          display_name: u.preferred_name ?? u.nickname ?? u.name,
+          contact_name: nameMap[emailKey] ?? null,
+          email_hint:   u.email ? maskEmail(u.email) : null,
+          avatar_url:   u.avatar_url ?? null,
         });
       });
     }
 
-    // ── Busca por telefone (duas queries separadas) ──────────
+    // ── Busca por telefone (duas queries — sem FK explícita) ─
     if (phones.length > 0) {
-      // 1) Busca os user_ids que têm o telefone
       const phoneConditions = phones
         .map(p => `whatsapp.ilike.%${p}%,phone.ilike.%${p}%`)
         .join(',');
 
       const { data: profileRows } = await supabase
-        .schema('jarvis')
         .from('user_profiles')
         .select('user_id, whatsapp, phone')
         .or(phoneConditions);
 
       if (profileRows && profileRows.length > 0) {
-        // Monta mapa phone → matched_identifier original
-        const phoneToIdentifier: Record<string, string> = {};
+        // Monta mapa user_id → phone identifier original
+        const userIdToPhone: Record<string, string> = {};
         profileRows.forEach(row => {
-          const normalized = normalizePhone(row.whatsapp ?? row.phone ?? '');
-          const match = phones.find(p => normalized.includes(p) || p.includes(normalized));
-          if (match) phoneToIdentifier[String(row.user_id)] = match;
+          const wp = normalizePhone(row.whatsapp ?? '');
+          const ph = normalizePhone(row.phone ?? '');
+          const matched = phones.find(p =>
+            (wp && (wp.includes(p) || p.includes(wp))) ||
+            (ph && (ph.includes(p) || p.includes(ph)))
+          );
+          if (matched) userIdToPhone[String(row.user_id)] = matched;
         });
 
-        const userIds = profileRows.map(r => r.user_id).filter(Boolean);
+        const userIds = profileRows
+          .map(r => r.user_id)
+          .filter(Boolean);
 
-        // 2) Busca os dados dos usuários
         const { data: userRows } = await supabase
-          .schema('jarvis')
           .from('users')
           .select('id, auth_user_id, name, preferred_name, nickname, avatar_url, email')
           .in('id', userIds)
           .neq('auth_user_id', authUUID);
 
         (userRows ?? []).forEach(u => {
-          if (seen.has(u.auth_user_id)) return;
+          if (!u.auth_user_id || seen.has(u.auth_user_id)) return;
           seen.add(u.auth_user_id);
+          const phoneKey = userIdToPhone[String(u.id)] ?? '';
           results.push({
-            auth_user_id:       u.auth_user_id,
-            display_name:       u.preferred_name ?? u.nickname ?? u.name,
-            email_hint:         u.email ? maskEmail(u.email) : null,
-            avatar_url:         u.avatar_url ?? null,
-            matched_identifier: phoneToIdentifier[String(u.id)] ?? '',
+            auth_user_id: u.auth_user_id,
+            display_name: u.preferred_name ?? u.nickname ?? u.name,
+            contact_name: nameMap[phoneKey] ?? null,
+            email_hint:   u.email ? maskEmail(u.email) : null,
+            avatar_url:   u.avatar_url ?? null,
           });
         });
       }
