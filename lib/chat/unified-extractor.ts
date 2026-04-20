@@ -5,7 +5,7 @@
 
 import { callOpenRouter } from '@/lib/jarvis';
 import { extractDiary, extractGoal } from '@/lib/diary';
-import { extractAndSummarize, } from '@/lib/extractor';
+import { extractAndSummarize } from '@/lib/extractor';
 import { extractRecomendacao } from '@/lib/extractor-jobs';
 
 interface UnifiedExtractResult {
@@ -18,6 +18,22 @@ interface UnifiedExtractResult {
 const EMPTY: UnifiedExtractResult = {
   diary: null, goal: null, recommendation: null, summary: null,
 };
+
+/**
+ * Mapeia a categoria do LLM para o tipo esperado pela função extractDiary.
+ */
+function mapDiaryCategory(cat: string): 'morning' | 'evening' | 'anytime' | undefined {
+  switch (cat) {
+    case 'reflexao':
+    case 'acontecimento':
+    case 'gratidao':
+      return 'anytime';  // sem horário específico
+    case 'qualquer':
+      return undefined;   // genérico, não usar categoria
+    default:
+      return 'anytime';
+  }
+}
 
 /**
  * Detecta se a mensagem tem substância suficiente para valer uma extração.
@@ -100,8 +116,9 @@ export async function runUnifiedExtractor(
   const tasks: Promise<any>[] = [];
 
   if (data.diary) {
+    const mappedCategory = mapDiaryCategory(data.diary.categoria);
     tasks.push(
-      extractDiary(userId, data.diary.texto, data.diary.categoria)
+      extractDiary(userId, data.diary.texto, mappedCategory)
         .catch(e => console.error('[UnifiedExtractor] diary:', e)),
     );
   }
