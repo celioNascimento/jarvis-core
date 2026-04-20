@@ -1133,42 +1133,38 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'model:', modelRoute.label);
 
     if (!isLikelyNoise) {
-      import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
-        // MUDANÇA 4: Aplicar no arquivo lib/chat/profile-extractor.ts conforme o patch:
-        // Adicionar no início da função extractProfileFromConversation:
-        //   const hasProfileHint = /\b(moro|trabalho|nasci|profiss|cidade|estado|me chamo|apelido|telefone|sou de|meu nome)\b/i
-        //     .test(userMessage + ' ' + assistantReply);
-        //   if (!hasProfileHint || userMessage.trim().length < 30) return;
-        extractProfileFromConversation(parseInt(numericUserIdStr), messageText, finalResponse).catch(console.error);
-        // Invalida cache do profileBlock após extração para garantir dados frescos na próxima mensagem
-        redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => {});
-      });
-  
-      const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
-      backgroundTasks.push(updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score).catch(e => console.error('[TopicIndex]', e)));
+  import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
+    // A mudança 4 (pré-filtro) deve ser aplicada DENTRO do arquivo lib/chat/profile-extractor.ts
+    // conforme descrito no patch. O código abaixo apenas chama a função normalmente.
+    extractProfileFromConversation(parseInt(numericUserIdStr), messageText, finalResponse).catch(console.error);
+    // Invalida cache do profileBlock após extração para garantir dados frescos na próxima mensagem
+    redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => {});
+  });
 
-      if (onboardingState?.status === 'in_progress')
-        backgroundTasks.push(withRetry(() => processOnboardingFromMessage(numericUserIdStr, messageText, finalResponse, onboardingState)).catch(e => console.error('[Onboarding]', e)));
+  // Adiciona as tasks de reforço de memória na array global (já declarada antes)
+  backgroundTasks.push(...hdMemoryIds.map((id) => reinforceMemory(id)));
+  backgroundTasks.push(updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score).catch(e => console.error('[TopicIndex]', e)));
 
-      // ── MUDANÇA 2: Substituir as 4 chamadas individuais por 1 chamada unificada ──
-      if (!isLikelyNoise) {
-        backgroundTasks.push(
-          withRetry(() =>
-            runUnifiedExtractor(numericUserIdStr, authorName, messageText, finalResponse)
-          ).catch(e => console.error('[UnifiedExtractor]', e))
-        );
-      }
-      // Fim da mudança 2
+  if (onboardingState?.status === 'in_progress')
+    backgroundTasks.push(withRetry(() => processOnboardingFromMessage(numericUserIdStr, messageText, finalResponse, onboardingState)).catch(e => console.error('[Onboarding]', e)));
 
-      // ── Meta-cognição: critic assíncrono ──────────────────────────────────────
-      // Avalia a própria resposta em background e persiste score para ajuste futuro
-      backgroundTasks.push((async () => {
-        try {
-          // ── MUDANÇA 3: Tornar o critic probabilístico (30% das chamadas) ──
-          if (Math.random() > 0.30) return;  // Roda em ~30% das mensagens
-          // Fim da mudança 3
+  // ── MUDANÇA 2: Substituir as 4 chamadas individuais por 1 chamada unificada ──
+  // (sem if redundante, pois já estamos dentro do if (!isLikelyNoise))
+  backgroundTasks.push(
+    withRetry(() =>
+      runUnifiedExtractor(numericUserIdStr, authorName, messageText, finalResponse)
+    ).catch(e => console.error('[UnifiedExtractor]', e))
+  );
+  // Fim da mudança 2
 
-          const criticPrompt = `Você é um avaliador interno de qualidade de um assistente de IA pessoal chamado ${assistantName}.
+  // ── Meta-cognição: critic assíncrono ──────────────────────────────────────
+  backgroundTasks.push((async () => {
+    try {
+      // ── MUDANÇA 3: Tornar o critic probabilístico (30% das chamadas) ──
+      if (Math.random() > 0.30) return;  // Roda em ~30% das mensagens
+      // Fim da mudança 3
+
+      const criticPrompt = `Você é um avaliador interno de qualidade de um assistente de IA pessoal chamado ${assistantName}.
 Avalie a resposta do assistente abaixo em 3 dimensões (0.0 a 1.0 cada):
 
 MENSAGEM DO USUÁRIO: "${messageText.slice(0, 300)}"
@@ -1187,95 +1183,91 @@ Responda APENAS com JSON válido, sem markdown:
   "note": "<observação curta em português, máx 20 palavras>"
 }`;
 
-          const criticResponse = await withRetry(() =>
-            callOpenRouterWithTools(
-              [{ role: 'user', content: criticPrompt }],
-              [],
-              'google/gemini-2.0-flash-001',   // ✅ modelo válido
-              0.1,
-              4000,
-              200,
-              'none',
-            )
-          );
-          if (!criticResponse) return;
-          const raw = criticResponse.content?.trim().replace(/```json|```/g, '').trim();
-          if (!raw) return;
+      const criticResponse = await withRetry(() =>
+        callOpenRouterWithTools(
+          [{ role: 'user', content: criticPrompt }],
+          [],
+          'google/gemini-2.0-flash-001',   // ✅ modelo válido
+          0.1,
+          4000,
+          200,
+          'none',
+        )
+      );
+      if (!criticResponse) return;
+      const raw = criticResponse.content?.trim().replace(/```json|```/g, '').trim();
+      if (!raw) return;
 
-          const criticScore = JSON.parse(raw);
-          criticScore.evaluated_at = new Date().toISOString();
-          criticScore.model_used = modelRoute.model;
-          criticScore.contexts = detectedContexts;
+      const criticScore = JSON.parse(raw);
+      criticScore.evaluated_at = new Date().toISOString();
+      criticScore.model_used = modelRoute.model;
+      criticScore.contexts = detectedContexts;
 
-          // Persiste no brain entry mais recente desta sessão
-          const { data: lastEntry } = await supabase
-            .schema('jarvis')
-            .from('brain')
-            .select('id, metadata')
-            .eq('user_id', numericUserIdStr)
-            .eq('session_id', sessionId)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
+      // Persiste no brain entry mais recente desta sessão
+      const { data: lastEntry } = await supabase
+        .schema('jarvis')
+        .from('brain')
+        .select('id, metadata')
+        .eq('user_id', numericUserIdStr)
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-          if (lastEntry) {
-            await supabase
-              .schema('jarvis')
-              .from('brain')
-              .update({ metadata: { ...lastEntry.metadata, critic_score: criticScore } })
-              .eq('id', lastEntry.id);
-          }
-
-          // Acumula histórico de critic no Redis (últimas 10 avaliações) para ajuste adaptativo
-          const criticHistoryKey = `critic_history_${numericUserIdStr}`;
-          const existingHistory = await redis.get<any[]>(criticHistoryKey) ?? [];
-          const updatedHistory = [...existingHistory, criticScore].slice(-10);
-          await redis.set(criticHistoryKey, updatedHistory, { ex: 86400 }); // 24h TTL
-
-          console.log('[Critic] Score:', criticScore.overall?.toFixed(2), '| Flag:', criticScore.flag, '| Note:', criticScore.note);
-        } catch (e) {
-          console.error('[Critic] Falhou silenciosamente:', (e as Error).message);
-        }
-      })());
-
-
-      // ── Promoção de padrões para princípios (a cada ~10 mensagens, probabilístico) ──
-      // Roda ~10% das vezes para não sobrecarregar — a RPC é leve mas o Gemini tem custo
-      if (Math.random() < 0.10) {
-        backgroundTasks.push((async () => {
-          try {
-            const promoteResult = await promotePatternToPrinciple(
-              parseInt(numericUserIdStr),
-              authorName,
-              assistantName,
-            );
-
-            if (promoteResult.promoted > 0) {
-              console.log(`[PatternPromoter] ${promoteResult.promoted} princípio(s) promovido(s).`);
-            }
-
-            // Se há notificação, salva no Redis para ser injetada na PRÓXIMA resposta
-            // (esta já foi enviada ao cliente — não modifica finalResponse)
-            if (promoteResult.notification) {
-              await redis.set(
-                `pending_notification_${numericUserIdStr}`,
-                promoteResult.notification,
-                { ex: 86400 }, // 24h — janela maior para entregar a notificação
-              );
-            }
-          } catch (e) {
-            console.error('[PatternPromoter] Background error:', (e as Error).message);
-          }
-        })());
+      if (lastEntry) {
+        await supabase
+          .schema('jarvis')
+          .from('brain')
+          .update({ metadata: { ...lastEntry.metadata, critic_score: criticScore } })
+          .eq('id', lastEntry.id);
       }
 
-      Promise.all([
-        ...backgroundTasks,
-        supabase.schema('jarvis').from('brain').select('*', { count: 'exact', head: true }).eq('user_id', numericUserIdStr).eq('category', 'info').then(({ count }) => {
-          if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
-        }),
-      ]).catch(e => console.error('[Background]', e));
+      // Acumula histórico de critic no Redis (últimas 10 avaliações) para ajuste adaptativo
+      const criticHistoryKey = `critic_history_${numericUserIdStr}`;
+      const existingHistory = await redis.get<any[]>(criticHistoryKey) ?? [];
+      const updatedHistory = [...existingHistory, criticScore].slice(-10);
+      await redis.set(criticHistoryKey, updatedHistory, { ex: 86400 }); // 24h TTL
+
+      console.log('[Critic] Score:', criticScore.overall?.toFixed(2), '| Flag:', criticScore.flag, '| Note:', criticScore.note);
+    } catch (e) {
+      console.error('[Critic] Falhou silenciosamente:', (e as Error).message);
     }
+  })());
+
+  // ── Promoção de padrões para princípios (a cada ~10 mensagens, probabilístico) ──
+  if (Math.random() < 0.10) {
+    backgroundTasks.push((async () => {
+      try {
+        const promoteResult = await promotePatternToPrinciple(
+          parseInt(numericUserIdStr),
+          authorName,
+          assistantName,
+        );
+
+        if (promoteResult.promoted > 0) {
+          console.log(`[PatternPromoter] ${promoteResult.promoted} princípio(s) promovido(s).`);
+        }
+
+        if (promoteResult.notification) {
+          await redis.set(
+            `pending_notification_${numericUserIdStr}`,
+            promoteResult.notification,
+            { ex: 86400 },
+          );
+        }
+      } catch (e) {
+        console.error('[PatternPromoter] Background error:', (e as Error).message);
+      }
+    })());
+  }
+
+  Promise.all([
+    ...backgroundTasks,
+    supabase.schema('jarvis').from('brain').select('*', { count: 'exact', head: true }).eq('user_id', numericUserIdStr).eq('category', 'info').then(({ count }) => {
+      if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
+    }),
+  ]).catch(e => console.error('[Background]', e));
+}
 
     // Injetar notificação de promoção de padrão (se houver, gerada na sessão anterior)
     const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
