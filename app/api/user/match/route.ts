@@ -46,10 +46,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ matched: [] });
     }
 
-    // ── Normaliza entrada e monta nameMap ────────────────────
-    // Suporta string[] (legado) e { identifier, name }[] (novo)
     const nameMap: Record<string, string> = {};
-
     const rawIds: string[] = body.identifiers.map(item => {
       if (typeof item === 'string') return item;
       const id = item.identifier.trim();
@@ -71,14 +68,15 @@ export async function POST(req: Request) {
 
     const seen = new Set<string>();
     const results: Array<{
-      auth_user_id:  string;
-      display_name:  string;
-      contact_name:  string | null;
-      email_hint:    string | null;
-      avatar_url:    string | null;
+      auth_user_id:      string;
+      display_name:      string;
+      contact_name:      string | null;
+      email_hint:        string | null;
+      avatar_url:        string | null;
+      matched_identifier: string;   // ✅ ADICIONADO
     }> = [];
 
-    // ── Busca por email ──────────────────────────────────────
+    // ─── Busca por email ──────────────────────────────────────
     if (emails.length > 0) {
       const { data: byEmail } = await supabase
         .from('users')
@@ -96,11 +94,12 @@ export async function POST(req: Request) {
           contact_name: nameMap[emailKey] ?? null,
           email_hint:   u.email ? maskEmail(u.email) : null,
           avatar_url:   u.avatar_url ?? null,
+          matched_identifier: emailKey,   // ✅ ADICIONADO
         });
       });
     }
 
-    // ── Busca por telefone (duas queries — sem FK explícita) ─
+    // ─── Busca por telefone ───────────────────────────────────
     if (phones.length > 0) {
       const phoneConditions = phones
         .map(p => `whatsapp.ilike.%${p}%,phone.ilike.%${p}%`)
@@ -112,7 +111,6 @@ export async function POST(req: Request) {
         .or(phoneConditions);
 
       if (profileRows && profileRows.length > 0) {
-        // Monta mapa user_id → phone identifier original
         const userIdToPhone: Record<string, string> = {};
         profileRows.forEach(row => {
           const wp = normalizePhone(row.whatsapp ?? '');
@@ -124,10 +122,7 @@ export async function POST(req: Request) {
           if (matched) userIdToPhone[String(row.user_id)] = matched;
         });
 
-        const userIds = profileRows
-          .map(r => r.user_id)
-          .filter(Boolean);
-
+        const userIds = profileRows.map(r => r.user_id).filter(Boolean);
         const { data: userRows } = await supabase
           .from('users')
           .select('id, auth_user_id, name, preferred_name, nickname, avatar_url, email')
@@ -144,6 +139,7 @@ export async function POST(req: Request) {
             contact_name: nameMap[phoneKey] ?? null,
             email_hint:   u.email ? maskEmail(u.email) : null,
             avatar_url:   u.avatar_url ?? null,
+            matched_identifier: phoneKey,   // ✅ ADICIONADO
           });
         });
       }
