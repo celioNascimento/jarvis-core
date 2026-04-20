@@ -6,6 +6,11 @@ export async function extractProfileFromConversation(
   userMessage: string,
   assistantReply: string
 ) {
+  
+  const hasProfileHint = /\b(moro|trabalho|nasci|profiss|cidade|estado|me chamo|apelido|telefone|sou de|meu nome)\b/i
+    .test(userMessage + ' ' + assistantReply);
+  if (!hasProfileHint || userMessage.trim().length < 30) return;
+
   const prompt = `
 Você é um assistente que aprende sobre o usuário. Extraia do diálogo abaixo informações que possam preencher o perfil do usuário no Lev.
 
