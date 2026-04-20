@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
+import { createClient } from '@supabase/supabase-js';
 
 // ============================================================
 // POST /api/users/match
@@ -8,6 +9,13 @@ import { supabase } from '@/lib/jarvis';
 // retorna quais já têm conta no Lev, com contact_name resolvido.
 // Compatível também com string[] (formato legado).
 // ============================================================
+
+// Cliente público separado — user_profiles fica em public, não em jarvis
+const supabasePublic = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+  // sem { db: { schema: 'jarvis' } }
+);
 
 function extractToken(req: Request): string | undefined {
   return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
@@ -105,7 +113,7 @@ export async function POST(req: Request) {
         .map(p => `whatsapp.ilike.%${p}%,phone.ilike.%${p}%`)
         .join(',');
 
-      const { data: profileRows } = await supabase
+      const { data: profileRows } = await supabasePublic
         .from('user_profiles')
         .select('user_id, whatsapp, phone')
         .or(phoneConditions);
