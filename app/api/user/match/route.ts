@@ -4,10 +4,10 @@ import { supabase } from '@/lib/jarvis';
 // ============================================================
 // POST /api/users/match
 //
-// Recebe uma lista de emails e telefones dos contatos do celular
-// e retorna quais deles já têm conta no Lev.
-// Usado pelo InviteModal para mostrar "seus contatos no app".
-// Não expõe o email completo — apenas email_hint mascarado.
+// Recebe lista de emails/telefones da agenda do celular e
+// retorna quais já têm conta no Lev.
+// Devolve `matched_identifier` (o identificador original que
+// bateu) para o frontend conseguir resolver o nome da agenda.
 // ============================================================
 
 function extractToken(req: Request): string | undefined {
@@ -27,7 +27,6 @@ function maskEmail(email: string): string {
   return `${local.slice(0, 2)}***@${domain}`;
 }
 
-// Normaliza telefone: remove tudo que não é dígito
 function normalizePhone(phone: string): string {
   return phone.replace(/\D/g, '');
 }
@@ -46,18 +45,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ matched: [] });
     }
 
-    // Separa emails de telefones
     const emails = identifiers.filter(id => id.includes('@')).map(e => e.toLowerCase());
     const phones = identifiers.filter(id => !id.includes('@')).map(normalizePhone);
 
+    const seen = new Set<string>();
     const results: Array<{
-      auth_user_id: string;
-      display_name: string;
-      email_hint: string | null;
-      avatar_url: string | null;
+      auth_user_id:       string;
+      display_name:       string;
+      email_hint:         string | null;
+      avatar_url:         string | null;
+      matched_identifier: string; // identificador original que fez o match
     }> = [];
 
-    // Busca por email
+    // ── Busca por email ──────────────────────────────────────
     if (emails.length > 0) {
       const { data: byEmail } = await supabase
         .schema('jarvis')
@@ -67,35 +67,62 @@ export async function POST(req: Request) {
         .neq('auth_user_id', authUUID);
 
       (byEmail ?? []).forEach(u => {
+        if (seen.has(u.auth_user_id)) return;
+        seen.add(u.auth_user_id);
         results.push({
-          auth_user_id: u.auth_user_id,
-          display_name: u.preferred_name ?? u.nickname ?? u.name,
-          email_hint:   u.email ? maskEmail(u.email) : null,
-          avatar_url:   u.avatar_url ?? null,
+          auth_user_id:       u.auth_user_id,
+          display_name:       u.preferred_name ?? u.nickname ?? u.name,
+          email_hint:         u.email ? maskEmail(u.email) : null,
+          avatar_url:         u.avatar_url ?? null,
+          matched_identifier: u.email.toLowerCase(), // email original para lookup no nameMap
         });
       });
     }
 
-    // Busca por whatsapp/telefone (campo na user_profiles)
+    // ── Busca por telefone (duas queries separadas) ──────────
     if (phones.length > 0) {
-      const { data: byPhone } = await supabase
+      // 1) Busca os user_ids que têm o telefone
+      const phoneConditions = phones
+        .map(p => `whatsapp.ilike.%${p}%,phone.ilike.%${p}%`)
+        .join(',');
+
+      const { data: profileRows } = await supabase
         .schema('jarvis')
         .from('user_profiles')
-        .select('user_id, whatsapp, phone, users!inner(auth_user_id, name, preferred_name, nickname, avatar_url, email)')
-        .or(phones.map(p => `whatsapp.ilike.%${p}%,phone.ilike.%${p}%`).join(','));
+        .select('user_id, whatsapp, phone')
+        .or(phoneConditions);
 
-      (byPhone ?? []).forEach((row: any) => {
-        const u = row.users;
-        if (!u || u.auth_user_id === authUUID) return;
-        // Evita duplicata (pode já ter vindo pelo email)
-        if (results.some(r => r.auth_user_id === u.auth_user_id)) return;
-        results.push({
-          auth_user_id: u.auth_user_id,
-          display_name: u.preferred_name ?? u.nickname ?? u.name,
-          email_hint:   u.email ? maskEmail(u.email) : null,
-          avatar_url:   u.avatar_url ?? null,
+      if (profileRows && profileRows.length > 0) {
+        // Monta mapa phone → matched_identifier original
+        const phoneToIdentifier: Record<string, string> = {};
+        profileRows.forEach(row => {
+          const normalized = normalizePhone(row.whatsapp ?? row.phone ?? '');
+          const match = phones.find(p => normalized.includes(p) || p.includes(normalized));
+          if (match) phoneToIdentifier[String(row.user_id)] = match;
         });
-      });
+
+        const userIds = profileRows.map(r => r.user_id).filter(Boolean);
+
+        // 2) Busca os dados dos usuários
+        const { data: userRows } = await supabase
+          .schema('jarvis')
+          .from('users')
+          .select('id, auth_user_id, name, preferred_name, nickname, avatar_url, email')
+          .in('id', userIds)
+          .neq('auth_user_id', authUUID);
+
+        (userRows ?? []).forEach(u => {
+          if (seen.has(u.auth_user_id)) return;
+          seen.add(u.auth_user_id);
+          results.push({
+            auth_user_id:       u.auth_user_id,
+            display_name:       u.preferred_name ?? u.nickname ?? u.name,
+            email_hint:         u.email ? maskEmail(u.email) : null,
+            avatar_url:         u.avatar_url ?? null,
+            matched_identifier: phoneToIdentifier[String(u.id)] ?? '',
+          });
+        });
+      }
     }
 
     return NextResponse.json({ matched: results });
