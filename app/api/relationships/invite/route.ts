@@ -79,7 +79,6 @@ export async function POST(req: Request) {
 
     // ── 1. Quem está convidando ──────────────────────────────
     const { data: inviter } = await supabase
-      .schema('jarvis')
       .from('users')
       .select('id, name, preferred_name, nickname')
       .eq('auth_user_id', authUUID)
