@@ -19,13 +19,12 @@ import {
   processOnboardingFromMessage,
   buildOnboardingBlock,
 } from '@/lib/onboarding';
-import { extractAndSummarize, buildGapsBlock } from '@/lib/extractor';
-import {
-  buildRecommendationsBlock,
-  buildTopicBlock,
-  extractRecomendacao,
-} from '@/lib/extractor-jobs';
-import { extractDiary, extractGoal, buildDiaryGoalsBlock } from '@/lib/diary';
+// ── MUDANÇA 1: Trocar imports dos extractors individuais ────────────────────
+import { buildGapsBlock } from '@/lib/extractor';
+import { buildRecommendationsBlock, buildTopicBlock } from '@/lib/extractor-jobs';
+import { buildDiaryGoalsBlock } from '@/lib/diary';
+import { runUnifiedExtractor } from '@/lib/chat/unified-extractor';
+// Fim da mudança 1
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import {
   classifyContextWithL4,
@@ -1135,29 +1134,40 @@ Use essas informações para responder à pergunta do usuário de forma natural,
 
     if (!isLikelyNoise) {
       import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
+        // MUDANÇA 4: Aplicar no arquivo lib/chat/profile-extractor.ts conforme o patch:
+        // Adicionar no início da função extractProfileFromConversation:
+        //   const hasProfileHint = /\b(moro|trabalho|nasci|profiss|cidade|estado|me chamo|apelido|telefone|sou de|meu nome)\b/i
+        //     .test(userMessage + ' ' + assistantReply);
+        //   if (!hasProfileHint || userMessage.trim().length < 30) return;
         extractProfileFromConversation(parseInt(numericUserIdStr), messageText, finalResponse).catch(console.error);
         // Invalida cache do profileBlock após extração para garantir dados frescos na próxima mensagem
         redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => {});
       });
   
-           const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
+      const backgroundTasks: Promise<any>[] = hdMemoryIds.map((id) => reinforceMemory(id));
       backgroundTasks.push(updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score).catch(e => console.error('[TopicIndex]', e)));
 
       if (onboardingState?.status === 'in_progress')
         backgroundTasks.push(withRetry(() => processOnboardingFromMessage(numericUserIdStr, messageText, finalResponse, onboardingState)).catch(e => console.error('[Onboarding]', e)));
 
+      // ── MUDANÇA 2: Substituir as 4 chamadas individuais por 1 chamada unificada ──
       if (!isLikelyNoise) {
-        backgroundTasks.push(withRetry(() => extractAndSummarize(numericUserIdStr, authorName, messageText)).catch(e => console.error('[extrator]', e)));
-        backgroundTasks.push(withRetry(() => extractRecomendacao(numericUserIdStr, messageText, finalResponse)).catch(e => console.error('[recomendacao]', e)));
-        backgroundTasks.push(withRetry(() => extractDiary(numericUserIdStr, messageText, 'anytime')).catch(e => console.error('[diary]', e)));
-        backgroundTasks.push(withRetry(() => extractGoal(numericUserIdStr, messageText)).catch(e => console.error('[goals]', e)));
+        backgroundTasks.push(
+          withRetry(() =>
+            runUnifiedExtractor(numericUserIdStr, authorName, messageText, finalResponse)
+          ).catch(e => console.error('[UnifiedExtractor]', e))
+        );
       }
-
+      // Fim da mudança 2
 
       // ── Meta-cognição: critic assíncrono ──────────────────────────────────────
       // Avalia a própria resposta em background e persiste score para ajuste futuro
       backgroundTasks.push((async () => {
         try {
+          // ── MUDANÇA 3: Tornar o critic probabilístico (30% das chamadas) ──
+          if (Math.random() > 0.30) return;  // Roda em ~30% das mensagens
+          // Fim da mudança 3
+
           const criticPrompt = `Você é um avaliador interno de qualidade de um assistente de IA pessoal chamado ${assistantName}.
 Avalie a resposta do assistente abaixo em 3 dimensões (0.0 a 1.0 cada):
 
@@ -1177,17 +1187,17 @@ Responda APENAS com JSON válido, sem markdown:
   "note": "<observação curta em português, máx 20 palavras>"
 }`;
 
-  const criticResponse = await withRetry(() =>
-  callOpenRouterWithTools(
-    [{ role: 'user', content: criticPrompt }],
-    [],
-    'google/gemini-2.0-flash-001',   // ✅ modelo válido
-    0.1,
-    4000,
-    200,
-    'none',
-  )
-);
+          const criticResponse = await withRetry(() =>
+            callOpenRouterWithTools(
+              [{ role: 'user', content: criticPrompt }],
+              [],
+              'google/gemini-2.0-flash-001',   // ✅ modelo válido
+              0.1,
+              4000,
+              200,
+              'none',
+            )
+          );
           if (!criticResponse) return;
           const raw = criticResponse.content?.trim().replace(/```json|```/g, '').trim();
           if (!raw) return;
@@ -1289,7 +1299,3 @@ Responda APENAS com JSON válido, sem markdown:
     );
   }
 }
-
-  
-    
-    
