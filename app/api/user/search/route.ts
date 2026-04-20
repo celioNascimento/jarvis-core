@@ -44,7 +44,6 @@ export async function GET(req: Request) {
     // Busca por preferred_name, nickname, name ou email (parcial, case-insensitive)
     // Exclui o próprio usuário dos resultados
     const { data, error } = await supabase
-      .schema('jarvis')
       .from('users')
       .select('auth_user_id, name, preferred_name, nickname, avatar_url, email')
       .neq('auth_user_id', authUUID)
