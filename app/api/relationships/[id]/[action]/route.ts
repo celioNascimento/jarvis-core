@@ -36,8 +36,9 @@ export async function POST(
 
   try {
     const { data: rel } = await supabase
+      .schema('jarvis')
       .from('relationships')
-      .select('id, user_id_a, user_id_b, status, initiated_by')
+      .select('id, user_id_a, user_id_b, status, initiated_by, relationship_type')
       .eq('id', relationshipId)
       .single();
 
@@ -63,6 +64,7 @@ export async function POST(
     const isAccept = action === 'accept';
 
     const { data: updated, error } = await supabase
+      .schema('jarvis')
       .from('relationships')
       .update({
         status:       isAccept ? 'active' : 'ended',
@@ -74,6 +76,62 @@ export async function POST(
       .single();
 
     if (error) throw error;
+
+    // ── Auto-join família para vínculos familiares (apenas quando aceita) ──
+    if (isAccept) {
+      const FAMILY_TYPES = ['spouse', 'partner', 'parent', 'child'];
+      if (FAMILY_TYPES.includes(rel.relationship_type)) {
+        // Busca family_id dos dois pelo auth_uuid → id numérico
+        const { data: users } = await supabase
+          .schema('jarvis')
+          .from('users')
+          .select('id, auth_user_id, family_id')
+          .in('auth_user_id', [rel.user_id_a, rel.user_id_b]);
+
+        const userA = users?.find(u => u.auth_user_id === rel.user_id_a);
+        const userB = users?.find(u => u.auth_user_id === rel.user_id_b);
+
+        if (userA && userB) {
+          const aHasFamily = !!userA.family_id;
+          const bHasFamily = !!userB.family_id;
+
+          // Helper para validar limite e inserir na família
+          const checkAndJoinFamily = async (targetUserId: number, familyId: string) => {
+            const { count } = await supabase
+              .schema('jarvis')
+              .from('users')
+              .select('id', { count: 'exact', head: true })
+              .eq('family_id', familyId);
+
+            const { data: fam } = await supabase
+              .schema('jarvis')
+              .from('families')
+              .select('plan')
+              .eq('id', familyId)
+              .single();
+
+            const limits: Record<string, number> = {
+              free: 2, personal: 1, family: 6, family_plus: 12,
+            };
+            const max = limits[fam?.plan ?? 'free'] ?? 2;
+
+            if ((count ?? 0) < max) {
+              await supabase
+                .schema('jarvis')
+                .from('users')
+                .update({ family_id: familyId })
+                .eq('id', targetUserId);
+            }
+          };
+
+          if (aHasFamily && !bHasFamily) {
+            await checkAndJoinFamily(userB.id, userA.family_id);
+          } else if (!aHasFamily && bHasFamily) {
+            await checkAndJoinFamily(userA.id, userB.family_id);
+          }
+        }
+      }
+    }
 
     return NextResponse.json({ ok: true, relationship: updated });
   } catch (e: any) {
