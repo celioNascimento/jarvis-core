@@ -29,8 +29,11 @@ export async function POST(
   }
 
   const { id: relationshipId, action } = await params;
+  
+  // Adicionamos 'cancel' (cancelar convite enviado) e 'remove' (desfazer vínculo ativo)
+  const allowedActions = ['accept', 'reject', 'cancel', 'remove'];
 
-  if (!['accept', 'reject'].includes(action)) {
+  if (!allowedActions.includes(action)) {
     return NextResponse.json({ error: `Ação inválida: ${action}` }, { status: 400 });
   }
 
@@ -50,15 +53,38 @@ export async function POST(
       return NextResponse.json({ error: 'Acesso negado' }, { status: 403 });
     }
 
+    // ── LÓGICA DE CANCELAR (Quem enviou desiste) ──
+    if (action === 'cancel') {
+      if (rel.status !== 'pending') return NextResponse.json({ error: 'Não é possível cancelar. Vínculo não está pendente.' }, { status: 409 });
+      if (rel.initiated_by !== authUUID) return NextResponse.json({ error: 'Apenas quem enviou pode cancelar.' }, { status: 403 });
+      
+      const { data: updated } = await supabase.schema('jarvis').from('relationships')
+        .update({ status: 'ended', ended_at: new Date().toISOString() })
+        .eq('id', relationshipId).select().single();
+      
+      return NextResponse.json({ ok: true, relationship: updated });
+    }
+
+    // ── LÓGICA DE REMOVER (Desfazer vínculo ativo) ──
+    if (action === 'remove') {
+      if (rel.status !== 'active') return NextResponse.json({ error: 'Vínculo não está ativo.' }, { status: 409 });
+      
+      const { data: updated } = await supabase.schema('jarvis').from('relationships')
+        .update({ status: 'ended', ended_at: new Date().toISOString() })
+        .eq('id', relationshipId).select().single();
+
+      // Opcional: Aqui você pode adicionar lógica para remover o usuário da tabela 'families' se for o caso
+
+      return NextResponse.json({ ok: true, relationship: updated });
+    }
+
+    // ── LÓGICA DE ACEITAR / REJEITAR (Quem recebeu) ──
     if (rel.status !== 'pending') {
       return NextResponse.json({ error: 'Vínculo não está pendente' }, { status: 409 });
     }
 
     if (action === 'accept' && rel.initiated_by === authUUID) {
-      return NextResponse.json(
-        { error: 'Quem enviou o convite não pode aceitá-lo.' },
-        { status: 403 }
-      );
+      return NextResponse.json({ error: 'Quem enviou o convite não pode aceitá-lo.' }, { status: 403 });
     }
 
     const isAccept = action === 'accept';
