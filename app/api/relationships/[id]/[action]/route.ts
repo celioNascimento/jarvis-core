@@ -58,9 +58,16 @@ export async function POST(
       if (rel.status !== 'pending') return NextResponse.json({ error: 'Não é possível cancelar. Vínculo não está pendente.' }, { status: 409 });
       if (rel.initiated_by !== authUUID) return NextResponse.json({ error: 'Apenas quem enviou pode cancelar.' }, { status: 403 });
       
+      // 1. Marca o vínculo como encerrado
       const { data: updated } = await supabase.schema('jarvis').from('relationships')
         .update({ status: 'ended', ended_at: new Date().toISOString() })
         .eq('id', relationshipId).select().single();
+      
+      // 2. DELETA o convite da tabela de tokens. 
+      // Isso permite que a API de invite crie um novo do zero depois.
+      await supabase.schema('jarvis').from('relationship_invites')
+        .delete()
+        .eq('relationship_id', relationshipId);
       
       return NextResponse.json({ ok: true, relationship: updated });
     }
