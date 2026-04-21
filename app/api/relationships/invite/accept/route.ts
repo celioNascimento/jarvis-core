@@ -64,6 +64,9 @@ export async function POST(req: Request) {
     const now = new Date().toISOString();
     let relationshipId: string;
 
+    // ── Guarda o tipo de relacionamento uma única vez ─────────
+    const relationshipType = invite.relationship_type ?? 'other';
+
     // ── 2a. Invite JÁ tem relationship_id (convidado tinha conta) ──
     if (invite.relationship_id) {
       const { data: rel, error: relError } = await supabase
@@ -133,8 +136,6 @@ export async function POST(req: Request) {
       const acceptorName =
         acceptor?.preferred_name ?? acceptor?.nickname ?? acceptor?.name ?? invite.invited_email;
 
-      const relType = invite.relationship_type ?? 'other';
-
       // Cria o relationship agora, já como active
       const { data: rel, error: relError } = await supabase
         .schema('jarvis')
@@ -142,9 +143,9 @@ export async function POST(req: Request) {
         .insert({
           user_id_a:         invite.invited_by,  // quem convidou
           user_id_b:         authUUID,            // quem aceitou
-          relationship_type: relType,
-          type_a:            relType,
-          type_b:            relType,
+          relationship_type: relationshipType,
+          type_a:            relationshipType,
+          type_b:            relationshipType,
           status:            'active',
           initiated_by:      invite.invited_by,
           is_external:       false,
@@ -163,6 +164,59 @@ export async function POST(req: Request) {
         .from('relationship_invites')
         .update({ relationship_id: rel.id })
         .eq('id', invite.id);
+    }
+
+    // ── Auto-join família para vínculos familiares ────────────
+    const FAMILY_TYPES = ['spouse', 'partner', 'parent', 'child'];
+    if (FAMILY_TYPES.includes(relationshipType)) {
+      const { data: familyUsers } = await supabase
+        .schema('jarvis')
+        .from('users')
+        .select('id, auth_user_id, family_id')
+        .in('auth_user_id', [invite.invited_by, authUUID]);
+
+      const familyInviter = familyUsers?.find(u => u.auth_user_id === invite.invited_by);
+      const familyAcceptor = familyUsers?.find(u => u.auth_user_id === authUUID);
+
+      if (familyInviter && familyAcceptor) {
+        const inviterHasFamily  = !!familyInviter.family_id;
+        const acceptorHasFamily = !!familyAcceptor.family_id;
+
+        // Helper para validar limite e inserir na família
+        const checkAndJoinFamily = async (targetUserId: number, familyId: string) => {
+          const { count } = await supabase
+            .schema('jarvis')
+            .from('users')
+            .select('id', { count: 'exact', head: true })
+            .eq('family_id', familyId);
+
+          const { data: fam } = await supabase
+            .schema('jarvis')
+            .from('families')
+            .select('plan')
+            .eq('id', familyId)
+            .single();
+
+          const limits: Record<string, number> = {
+            free: 2, personal: 1, family: 6, family_plus: 12,
+          };
+          const max = limits[fam?.plan ?? 'free'] ?? 2;
+
+          if ((count ?? 0) < max) {
+            await supabase
+              .schema('jarvis')
+              .from('users')
+              .update({ family_id: familyId })
+              .eq('id', targetUserId);
+          }
+        };
+
+        if (inviterHasFamily && !acceptorHasFamily) {
+          await checkAndJoinFamily(familyAcceptor.id, familyInviter.family_id);
+        } else if (!inviterHasFamily && acceptorHasFamily) {
+          await checkAndJoinFamily(familyInviter.id, familyAcceptor.family_id);
+        }
+      }
     }
 
     // ── 3. Marca o convite como aceito ───────────────────────
@@ -187,7 +241,7 @@ export async function POST(req: Request) {
       .eq('auth_user_id', authUUID)
       .maybeSingle();
 
-    const acceptorName =
+    const acceptorNameForPush =
       acceptorUser?.preferred_name ?? acceptorUser?.nickname ?? acceptorUser?.name ?? 'A pessoa convidada';
 
     if (inviterUser?.push_token) {
@@ -197,7 +251,7 @@ export async function POST(req: Request) {
         body: JSON.stringify({
           to:    inviterUser.push_token,
           title: '🎉 Convite aceito!',
-          body:  `${acceptorName} aceitou seu convite de vínculo.`,
+          body:  `${acceptorNameForPush} aceitou seu convite de vínculo.`,
           data:  { screen: 'Vinculos' },
           sound: 'default',
         }),
