@@ -175,8 +175,7 @@ export async function POST(req: Request) {
         });
 
         const userIds = Object.keys(userIdToPhone).map(Number).filter(Boolean);
-        console.log('[MATCH:PHONE] user_ids para buscar em jarvis.users:', userIds);
-
+      
         if (userIds.length > 0) {
           const { data: userRows, error: userError } = await supabase
             .schema('jarvis')        // ← garante schema correto
@@ -212,14 +211,6 @@ export async function POST(req: Request) {
         }
       }
     }
-
-    console.log('[MATCH] ── Resultado final ──────────────────────');
-    console.log('[MATCH] Total matched:', results.length);
-    console.log('[MATCH] Matched:', results.map(r => ({
-      auth_user_id: r.auth_user_id,
-      display_name: r.display_name,
-      matched_identifier: r.matched_identifier,
-    })));
 
     return NextResponse.json({ matched: results });
 
