@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/jarvis';
+import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/jarvis'; // jarvis schema
 
-// ============================================================
-// GET /api/users/search?q={termo}
-// Busca usuários cadastrados por nome ou email parcial.
-// Retorna apenas dados públicos — email não é exposto.
-// ============================================================
+const supabasePublic = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 function extractToken(req: Request): string | undefined {
   return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
@@ -18,12 +18,18 @@ async function getAuthUUID(token: string | undefined): Promise<string | null> {
   return user.id;
 }
 
-// Mascara email: joao@gmail.com → jo***@gmail.com
 function maskEmail(email: string): string {
   const [local, domain] = email.split('@');
   if (!domain) return email;
-  const visible = local.slice(0, 2);
-  return `${visible}***@${domain}`;
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
+function normalizePhone(phone: string): string {
+  return phone.replace(/\D/g, '');
+}
+
+function isPhone(q: string): boolean {
+  return /^[\d\s\(\)\-\+]{7,}$/.test(q);
 }
 
 export async function GET(req: Request) {
@@ -41,8 +47,48 @@ export async function GET(req: Request) {
   }
 
   try {
-    // Busca por preferred_name, nickname, name ou email (parcial, case-insensitive)
-    // Exclui o próprio usuário dos resultados
+    // ── Busca por telefone ───────────────────────────────────
+    if (isPhone(q)) {
+      const phoneNorm = normalizePhone(q);
+
+      const { data: profileRows, error: profileError } = await supabasePublic
+        .from('user_profiles')
+        .select('user_id, whatsapp, phone')
+        .or(`whatsapp.ilike.%${phoneNorm}%,phone.ilike.%${phoneNorm}%`);
+
+      if (profileError) {
+        console.error('[SEARCH:PHONE] Erro:', profileError);
+        return NextResponse.json({ users: [] });
+      }
+
+      if (!profileRows || profileRows.length === 0) {
+        return NextResponse.json({ users: [] });
+      }
+
+      const userIds = profileRows.map(r => r.user_id).filter(Boolean);
+
+      const { data: userRows, error: userError } = await supabase
+        .from('users')
+        .select('id, auth_user_id, name, preferred_name, nickname, avatar_url, email')
+        .in('id', userIds)
+        .neq('auth_user_id', authUUID);
+
+      if (userError) {
+        console.error('[SEARCH:PHONE] Erro users:', userError);
+        return NextResponse.json({ users: [] });
+      }
+
+      const users = (userRows ?? []).map(u => ({
+        auth_user_id: u.auth_user_id,
+        display_name: u.preferred_name ?? u.nickname ?? u.name,
+        email_hint:   u.email ? maskEmail(u.email) : null,
+        avatar_url:   u.avatar_url ?? null,
+      }));
+
+      return NextResponse.json({ users });
+    }
+
+    // ── Busca por nome ou email ──────────────────────────────
     const { data, error } = await supabase
       .from('users')
       .select('auth_user_id, name, preferred_name, nickname, avatar_url, email')
@@ -57,18 +103,15 @@ export async function GET(req: Request) {
 
     if (error) throw error;
 
-    // Monta resultado sem expor email completo
     const users = (data ?? []).map(u => ({
       auth_user_id: u.auth_user_id,
       display_name: u.preferred_name ?? u.nickname ?? u.name,
-      // Mascara o email: joao@gmail.com → jo***@gmail.com
-      email_hint: u.email
-        ? maskEmail(u.email)
-        : null,
-      avatar_url: u.avatar_url ?? null,
+      email_hint:   u.email ? maskEmail(u.email) : null,
+      avatar_url:   u.avatar_url ?? null,
     }));
 
     return NextResponse.json({ users });
+
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
