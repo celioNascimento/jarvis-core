@@ -63,7 +63,7 @@ export async function POST(req: Request) {
 
     // ── 1. Quem está convidando ──────────────────────────────
     const { data: inviter } = await supabase
-      .schema('jarvis') // Adicionado schema para consistência
+      .schema('jarvis')
       .from('users')
       .select('id, name, preferred_name, nickname')
       .eq('auth_user_id', authUUID)
@@ -143,28 +143,27 @@ export async function POST(req: Request) {
 
     // ── 4a. Convidado TEM conta ──────────────────────────────
     if (targetUser) {
-      // Busca vínculo considerando que links "ended" (cancelados) devem ser ignorados.
+      // Busca vínculo (QUALQUER STATUS, não filtramos mais por active/pending para poder resgatar o 'ended')
       const { data: existing } = await supabase
         .schema('jarvis')
         .from('relationships')
-        .select('id, status, initiated_by') // initiated_by é vital aqui
+        .select('id, status, initiated_by')
         .or(
           `and(user_id_a.eq.${authUUID},user_id_b.eq.${targetUser.auth_user_id}),` +
           `and(user_id_a.eq.${targetUser.auth_user_id},user_id_b.eq.${authUUID})`
         )
-        .in('status', ['active', 'pending'])
         .maybeSingle();
 
       if (existing?.status === 'active') {
         return NextResponse.json({ error: 'Já existe um vínculo ativo com essa pessoa.' }, { status: 409 });
       }
       
-      // LOGÍCA DE CONVITE CRUZADO (A esposa tentou te convidar de volta)
+      // LÓGICA DE CONVITE CRUZADO
       if (existing?.status === 'pending') {
         if (existing.initiated_by === authUUID) {
           return NextResponse.json({ error: 'Você já enviou um convite para esta pessoa. Aguarde ela aceitar.' }, { status: 409 });
         } else {
-          // A outra pessoa já tinha enviado um convite! Vamos auto-aceitar.
+          // A outra pessoa já tinha enviado um convite! Auto-aceitar.
           const now = new Date().toISOString();
 
           await supabase.schema('jarvis')
@@ -177,7 +176,6 @@ export async function POST(req: Request) {
             .update({ accepted_at: now })
             .eq('relationship_id', existing.id);
 
-          // Retornamos um inviteLink em texto para o frontend não bugar e mostrar a tela verde de sucesso.
           return NextResponse.json({ 
             ok: true, 
             autoAccepted: true,
@@ -190,32 +188,64 @@ export async function POST(req: Request) {
       const targetName =
         targetUser.preferred_name ?? targetUser.nickname ?? targetUser.name ?? contactEmail ?? 'Contato';
 
-      // Cria relationship pending
-      const { data: rel, error: relError } = await supabase
-        .schema('jarvis')
-        .from('relationships')
-        .insert({
-          user_id_a:         authUUID,
-          user_id_b:         targetUser.auth_user_id,
-          relationship_type: relationshipType,
-          type_a:            relationshipType,
-          type_b:            relationshipType,
-          status:            'pending',
-          initiated_by:      authUUID,
-          is_external:       false,
-          contact_name:      targetName,
-        })
-        .select('id')
-        .single();
+      let relationshipId = existing?.id;
 
-      if (relError) throw relError;
+      // RECICLA O VÍNCULO SE FOR 'ENDED' OU CRIA UM NOVO SE NÃO EXISTIR
+      if (existing?.status === 'ended') {
+        const { error: updateError } = await supabase
+          .schema('jarvis')
+          .from('relationships')
+          .update({
+            status: 'pending',
+            initiated_by: authUUID,
+            relationship_type: relationshipType,
+            type_a: relationshipType,
+            type_b: relationshipType,
+            ended_at: null,
+            connected_at: null,
+            contact_name: targetName
+          })
+          .eq('id', existing.id);
+
+        if (updateError) throw updateError;
+      } else if (!existing) {
+        // Cria novo relationship
+        const { data: rel, error: relError } = await supabase
+          .schema('jarvis')
+          .from('relationships')
+          .insert({
+            user_id_a:         authUUID,
+            user_id_b:         targetUser.auth_user_id,
+            relationship_type: relationshipType,
+            type_a:            relationshipType,
+            type_b:            relationshipType,
+            status:            'pending',
+            initiated_by:      authUUID,
+            is_external:       false,
+            contact_name:      targetName,
+          })
+          .select('id')
+          .single();
+
+        if (relError) throw relError;
+        relationshipId = rel.id;
+      }
+
+      // GARANTIA: Deleta qualquer convite fantasma associado a esse relacionamento antes de criar o novo
+      if (relationshipId) {
+        await supabase
+          .schema('jarvis')
+          .from('relationship_invites')
+          .delete()
+          .eq('relationship_id', relationshipId);
+      }
 
       // Cria invite token
       const { data: invite, error: inviteError } = await supabase
         .schema('jarvis')
         .from('relationship_invites')
         .insert({
-          relationship_id:  rel.id,
+          relationship_id:  relationshipId,
           invited_by:       authUUID,
           invited_user_id:  targetUser.auth_user_id,
           invited_email:    targetUser.email ?? contactEmail,
