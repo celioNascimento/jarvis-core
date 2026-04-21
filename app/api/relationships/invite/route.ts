@@ -3,19 +3,6 @@ import { supabase } from '@/lib/jarvis';
 
 // ============================================================
 // POST /api/relationships/invite
-//
-// Aceita duas formas de body:
-//
-// A) Usuário encontrado pela busca (tem conta):
-//    { targetAuthUUID, relationshipType }
-//    → cria relationship(pending) + invite token + push
-//
-// B) Email manual (pode ou não ter conta):
-//    { contact, contactType: 'email', relationshipType }
-//    → busca por email; se achar, trata como A
-//    → se não achar, cria só invite token + envia email
-//
-// Retorna sempre: { inviteLink, pushSent, newUser?, reused? }
 // ============================================================
 
 function extractToken(req: Request): string | undefined {
@@ -42,9 +29,6 @@ async function sendPush(pushToken: string, title: string, body: string, data: ob
 }
 
 async function sendInviteEmail(toEmail: string, inviterName: string, inviteLink: string) {
-  // Usa o Supabase para enviar email transacional
-  // Se você tiver configurado um provider (Resend, Postmark etc.) use aqui
-  // Por ora, usa o endpoint de email do Supabase Auth como fallback simples
   try {
     await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/send-invite-email`, {
       method: 'POST',
@@ -79,6 +63,7 @@ export async function POST(req: Request) {
 
     // ── 1. Quem está convidando ──────────────────────────────
     const { data: inviter } = await supabase
+      .schema('jarvis') // Adicionado schema para consistência
       .from('users')
       .select('id, name, preferred_name, nickname')
       .eq('auth_user_id', authUUID)
@@ -103,7 +88,6 @@ export async function POST(req: Request) {
     let contactEmail: string | null = null;
 
     if (targetAuthUUID) {
-      // Veio da busca — busca direto pelo UUID
       const { data } = await supabase
         .schema('jarvis')
         .from('users')
@@ -113,7 +97,6 @@ export async function POST(req: Request) {
       targetUser = data;
       contactEmail = data?.email ?? null;
     } else if (contact && contactType === 'email') {
-      // Veio do input manual de email
       contactEmail = contact.trim().toLowerCase();
       const { data } = await supabase
         .schema('jarvis')
@@ -124,13 +107,11 @@ export async function POST(req: Request) {
       targetUser = data;
     }
 
-    // Impede auto-convite
     if (targetUser?.auth_user_id === authUUID) {
       return NextResponse.json({ error: 'Você não pode se convidar.' }, { status: 400 });
     }
 
-    // ── 3. Verifica convite pendente já existente ────────────
-    // Busca por auth_uuid (usuário com conta) ou por email (sem conta)
+    // ── 3. Verifica convite pendente já existente (Idêntico) ─
     const inviteQuery = supabase
       .schema('jarvis')
       .from('relationship_invites')
@@ -153,7 +134,6 @@ export async function POST(req: Request) {
           message:    'Convite já enviado. Compartilhe o link abaixo.',
         });
       }
-      // Expirado — deleta para criar novo
       await supabase
         .schema('jarvis')
         .from('relationship_invites')
@@ -163,11 +143,11 @@ export async function POST(req: Request) {
 
     // ── 4a. Convidado TEM conta ──────────────────────────────
     if (targetUser) {
-      // Verifica vínculo duplicado
+      // Busca vínculo considerando que links "ended" (cancelados) devem ser ignorados.
       const { data: existing } = await supabase
         .schema('jarvis')
         .from('relationships')
-        .select('id, status')
+        .select('id, status, initiated_by') // initiated_by é vital aqui
         .or(
           `and(user_id_a.eq.${authUUID},user_id_b.eq.${targetUser.auth_user_id}),` +
           `and(user_id_a.eq.${targetUser.auth_user_id},user_id_b.eq.${authUUID})`
@@ -178,8 +158,33 @@ export async function POST(req: Request) {
       if (existing?.status === 'active') {
         return NextResponse.json({ error: 'Já existe um vínculo ativo com essa pessoa.' }, { status: 409 });
       }
+      
+      // LOGÍCA DE CONVITE CRUZADO (A esposa tentou te convidar de volta)
       if (existing?.status === 'pending') {
-        return NextResponse.json({ error: 'Já existe um convite pendente com essa pessoa.' }, { status: 409 });
+        if (existing.initiated_by === authUUID) {
+          return NextResponse.json({ error: 'Você já enviou um convite para esta pessoa. Aguarde ela aceitar.' }, { status: 409 });
+        } else {
+          // A outra pessoa já tinha enviado um convite! Vamos auto-aceitar.
+          const now = new Date().toISOString();
+
+          await supabase.schema('jarvis')
+            .from('relationships')
+            .update({ status: 'active', connected_at: now })
+            .eq('id', existing.id);
+
+          await supabase.schema('jarvis')
+            .from('relationship_invites')
+            .update({ accepted_at: now })
+            .eq('relationship_id', existing.id);
+
+          // Retornamos um inviteLink em texto para o frontend não bugar e mostrar a tela verde de sucesso.
+          return NextResponse.json({ 
+            ok: true, 
+            autoAccepted: true,
+            inviteLink: 'Vínculo ativado automaticamente! Vocês já estão conectados.',
+            pushSent: false 
+          }, { status: 201 });
+        }
       }
 
       const targetName =
@@ -212,7 +217,7 @@ export async function POST(req: Request) {
         .insert({
           relationship_id:  rel.id,
           invited_by:       authUUID,
-          invited_user_id:  targetUser.auth_user_id,  // ← UUID direto, não email
+          invited_user_id:  targetUser.auth_user_id,
           invited_email:    targetUser.email ?? contactEmail,
           relationship_type: relationshipType,
         })
@@ -223,7 +228,6 @@ export async function POST(req: Request) {
 
       const deepLink = `jarvis://invite/${invite.token}`;
 
-      // Push notification
       let pushSent = false;
       if (targetUser.push_token) {
         await sendPush(
@@ -247,9 +251,9 @@ export async function POST(req: Request) {
       .schema('jarvis')
       .from('relationship_invites')
       .insert({
-        relationship_id:   null,          // criado quando ele aceitar
+        relationship_id:   null,
         invited_by:        authUUID,
-        invited_user_id:   null,          // não tem conta ainda
+        invited_user_id:   null,
         invited_email:     contactEmail,
         relationship_type: relationshipType,
       })
@@ -259,16 +263,14 @@ export async function POST(req: Request) {
     if (inviteError) throw inviteError;
 
     const deepLink = `jarvis://invite/${invite.token}`;
-    // Link web de fallback — funciona no browser e redireciona para o app
     const webLink  = `https://jarvis-core-three.vercel.app/invite/${invite.token}`;
 
-    // Envia email para quem não tem conta
     await sendInviteEmail(contactEmail, inviterName, webLink);
 
     return NextResponse.json({
       ok:         true,
-      inviteLink: webLink,   // link web para compartilhar (funciona sem app)
-      deepLink,              // deep link direto para o app
+      inviteLink: webLink,
+      deepLink,
       pushSent:   false,
       newUser:    true,
     }, { status: 201 });
