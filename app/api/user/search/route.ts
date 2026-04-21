@@ -1,11 +1,6 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { supabase } from '@/lib/jarvis'; // jarvis schema
 
-const supabasePublic = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 function extractToken(req: Request): string | undefined {
   return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
@@ -51,7 +46,7 @@ export async function GET(req: Request) {
     if (isPhone(q)) {
       const phoneNorm = normalizePhone(q);
 
-      const { data: profileRows, error: profileError } = await supabasePublic
+      const { data: profileRows, error: profileError } = await supabase
         .from('user_profiles')
         .select('user_id, whatsapp, phone')
         .or(`whatsapp.ilike.%${phoneNorm}%,phone.ilike.%${phoneNorm}%`);
