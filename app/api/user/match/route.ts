@@ -86,6 +86,7 @@ export async function POST(req: Request) {
       console.log('[MATCH:EMAIL] Buscando em jarvis.users por', emails.length, 'emails...');
 
       const { data: byEmail, error: emailError } = await supabase
+        .schema('jarvis')          // ← garante schema correto
         .from('users')
         .select('auth_user_id, name, preferred_name, nickname, avatar_url, email')
         .in('email', emails)
@@ -178,6 +179,7 @@ export async function POST(req: Request) {
 
         if (userIds.length > 0) {
           const { data: userRows, error: userError } = await supabase
+            .schema('jarvis')        // ← garante schema correto
             .from('users')
             .select('id, auth_user_id, name, preferred_name, nickname, avatar_url, email')
             .in('id', userIds)
