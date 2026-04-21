@@ -3,11 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { supabase } from '@/lib/jarvis'; // schema jarvis
 
 // ── Cliente público separado (user_profiles está em public, não em jarvis) ──
-const supabasePublic = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-  // sem db.schema — usa public por padrão
-);
+
 
 function extractToken(req: Request): string | undefined {
   return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
@@ -135,7 +131,7 @@ export async function POST(req: Request) {
 
       console.log('[MATCH:PHONE] Condição OR (parcial):', phoneConditions.slice(0, 200));
 
-      const { data: profileRows, error: profileError } = await supabasePublic
+      const { data: profileRows, error: profileError } = await supabase
         .from('user_profiles')
         .select('user_id, whatsapp, phone')
         .or(phoneConditions);
