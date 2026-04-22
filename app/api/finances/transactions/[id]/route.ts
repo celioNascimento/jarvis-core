@@ -32,13 +32,15 @@ async function resolveUser(req: NextRequest) {
 
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> } // <-- Tipagem corrigida para Promise
 ) {
   try {
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-    const id = parseInt(params.id, 10);
+    const resolvedParams = await params; // <-- Aguardando a Promise ser resolvida
+    const id = parseInt(resolvedParams.id, 10);
+    
     if (isNaN(id)) return NextResponse.json({ error: 'ID inválido' }, { status: 400 });
 
     const body = await req.json();
@@ -65,13 +67,15 @@ export async function PATCH(
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> } // <-- Tipagem corrigida para Promise
 ) {
   try {
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-    const id = parseInt(params.id, 10);
+    const resolvedParams = await params; // <-- Aguardando a Promise ser resolvida
+    const id = parseInt(resolvedParams.id, 10);
+    
     if (isNaN(id)) return NextResponse.json({ error: 'ID inválido' }, { status: 400 });
 
     // Verifica propriedade antes de deletar
