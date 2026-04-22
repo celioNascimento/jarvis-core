@@ -1,5 +1,5 @@
 // app/api/chat/route.ts
-// Motor V8.12.0 — Self-discovery + Meta-cognição + Promoção automática de padrões (Constitutional Learning)
+// Motor V8.13.1 — Self-discovery + Meta-cognição + Promoção automática de padrões + Finanças
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
@@ -19,12 +19,10 @@ import {
   processOnboardingFromMessage,
   buildOnboardingBlock,
 } from '@/lib/onboarding';
-// ── MUDANÇA 1: Trocar imports dos extractors individuais ────────────────────
 import { buildGapsBlock } from '@/lib/extractor';
 import { buildRecommendationsBlock, buildTopicBlock } from '@/lib/extractor-jobs';
 import { buildDiaryGoalsBlock } from '@/lib/diary';
 import { runUnifiedExtractor } from '@/lib/chat/unified-extractor';
-// Fim da mudança 1
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import {
   classifyContextWithL4,
@@ -57,6 +55,7 @@ import { buildSharedContextBlock } from '@/lib/chat/shared-context';
 import { buildPersonalityBlock } from '@/lib/chat/personality';
 import { buildProfileBlock } from '@/lib/chat/profile-block';
 import { promotePatternToPrinciple } from '@/lib/chat/pattern-promoter';
+import { buildFinanceBlock } from '@/lib/finances/db'; // ✅ PATCH 1
 
 export const maxDuration = 60;
 
@@ -172,7 +171,6 @@ export function buildAgendaBlock(
   const parts: string[] = [];
  
   if (loadCalendar && googleCtx) {
-    // Agenda do Google (sincronizada — leitura)
     parts.push(`[AGENDA GOOGLE — somente leitura]\n${googleCtx}`);
   }
  
@@ -180,7 +178,6 @@ export function buildAgendaBlock(
     parts.push(`[AGENDA OUTLOOK — somente leitura]\n${msCtx}`);
   }
  
-  // Instrução explícita para o modelo saber onde salvar
   if (loadCalendar) {
     parts.push(
       `[INSTRUÇÃO DE AGENDA]\n` +
@@ -195,7 +192,7 @@ export function buildAgendaBlock(
 }
 
 export async function POST(req: NextRequest) {
-  console.log('[chat] Iniciando — V8.12.0 (memória completa com dynamic guidelines)');
+  console.log('[chat] Iniciando — V8.13.1 (memória completa com dynamic guidelines e finanças)');
   try {
     console.time('[Performance] total');
     let messageText = '';
@@ -329,7 +326,6 @@ export async function POST(req: NextRequest) {
 
       let lastKnownLocation: { city: string; state: string } | null = null;
 
-      // Bug fix: estava dentro de if(location) que nunca executava
       const { data: savedLoc } = await supabase
         .from('user_locations')
         .select('city, state, latitude, longitude, last_updated')
@@ -463,7 +459,7 @@ export async function POST(req: NextRequest) {
     // ========== 7. Tópico emocional ==========
     let topicEmotionalDimension: number | undefined;
 
-    // ========== 8. Cargas contextuais + profileBlock ==========
+    // ========== 8. Cargas contextuais (sem financeBlock, que será buscado depois) ==========
     const [
       events,
       ashes,
@@ -610,7 +606,7 @@ export async function POST(req: NextRequest) {
         const val = data?.length
           ? data.map((g: any) => `- ${g.content}`).join('\n')
           : '';
-        await cache.set(key, val, 60000); // 60s
+        await cache.set(key, val, 60000);
         return val;
       })(),
     ]);
@@ -621,9 +617,8 @@ export async function POST(req: NextRequest) {
     const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
     const temperature = getTemperature(detectedContexts);
 
-        function classifyIntent(message: string): string {
+    function classifyIntent(message: string): string {
       const m = message.toLowerCase();
-      // ✅ 1. Nova linha para detectar Foco/TDAH
       if (/foco|tdah|sobrecarregado|procrastinando|travado|paralisado|por onde começo|quebrar tarefa/.test(m)) return 'focus';
       if (/agenda|reunião|compromisso|semana|calendário/.test(m)) return 'calendar';
       if (/email|mensagem|caixa|inbox|respondeu/.test(m)) return 'email';
@@ -637,17 +632,30 @@ export async function POST(req: NextRequest) {
     const intent = classifyIntent(messageText);
     const blockPlan = {
       ...planContextualBlocks(detectedContexts),
-      // ✅ 2. Ajustes para lidar com o novo intent 'focus'
       loadDiary:           intent === 'personal' || intent === 'focus',
       loadGaps:            intent === 'personal',
       loadRecommendations: intent === 'personal',
       loadEmail:           intent === 'email',
       loadCalendar:        ['calendar', 'reminder'].includes(intent),
-      loadTopics:          !['factual', 'task', 'focus'].includes(intent), // Esconde ruído extra no modo foco
+      loadTopics:          !['factual', 'task', 'focus'].includes(intent),
+      // ✅ PATCH 3: loadFinances
+      loadFinances: detectedContexts.includes('financas') || intent === 'personal',
     };
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| blockPlan:', blockPlan);
 
-    
+    // ✅ PATCH 2 (corrigido): busca do financeBlock depois de blockPlan definido
+    let financeBlock = '';
+    if (blockPlan.loadFinances) {
+      const key = `finance_block_${numericUserIdStr}`;
+      const cached = await cache.get<string>(key);
+      if (cached !== null) {
+        financeBlock = cached;
+      } else {
+        financeBlock = await buildFinanceBlock(Number(numericUserIdStr), authUserId!).catch(() => '');
+        await cache.set(key, financeBlock, 120000); // 2 min
+      }
+    }
+
     // ========== Ajuste adaptativo baseado no histórico do critic ==========
     let adaptiveTemperatureOffset = 0;
     let adaptiveMaxTokensMultiplier = 1.0;
@@ -660,22 +668,19 @@ export async function POST(req: NextRequest) {
         const flagCounts   = recent.reduce((acc: Record<string,number>, c) => { acc[c.flag] = (acc[c.flag] || 0) + 1; return acc; }, {});
         const dominantFlag = Object.entries(flagCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
 
-        // Se frequentemente verbose → reduz tokens; se cold → aumenta temperatura
         if (dominantFlag === 'verbose')       adaptiveMaxTokensMultiplier = 0.8;
         else if (dominantFlag === 'cold')     adaptiveTemperatureOffset   = 0.15;
         else if (dominantFlag === 'missed_emotion') adaptiveTemperatureOffset = 0.1;
         else if (dominantFlag === 'off_topic') adaptiveMaxTokensMultiplier = 0.9;
 
-        // Score baixo → aumenta temperatura ligeiramente para mais variedade
         if (avgOverall < 0.5) adaptiveTemperatureOffset = Math.max(adaptiveTemperatureOffset, 0.1);
 
         if (adaptiveTemperatureOffset !== 0 || adaptiveMaxTokensMultiplier !== 1.0)
           console.log('[AdaptiveCritic] offset_temp:', adaptiveTemperatureOffset, '| tokens_mult:', adaptiveMaxTokensMultiplier, '| dominant_flag:', dominantFlag);
       }
     } catch (e) {
-      // silencioso — não bloqueia
+      // silencioso
     }
-
 
     // ========== 10. Pesquisa forçada ==========
     const shouldSearch = shouldForceSearch(messageText, detectedContexts);
@@ -735,15 +740,12 @@ export async function POST(req: NextRequest) {
     ]);
 
     // ========== 12. Calendários e emails ==========
-    // --- BLOCO DE AGENDA HÍBRIDA V8.13.0 ---
-    // --- INICIALIZAÇÃO DE TAREFAS (CORREÇÃO TS2454) ---
     const backgroundTasks: Promise<any>[] = [];
 
     let googleCtx: string | null = null;
     let msCtx: any = null; 
     
     if (blockPlan.loadCalendar) {
-      // 1. LEITURA INSTANTÂNEA DA NOVA TABELA (V8.13.0)
       const { data: dbContext, error: dbError } = await supabase.rpc('get_calendar_context_for_jarvis', {
         p_user_id: Number(numericUserIdStr),
         p_days: 7
@@ -755,24 +757,22 @@ export async function POST(req: NextRequest) {
         console.error('[Calendar DB Error]:', dbError.message);
       }
 
-      // 2. SINCRONIZAÇÃO EM BACKGROUND
-     backgroundTasks.push(
-  (async () => {
-    try {
-      const mod = await import('@/lib/google');
-      if (typeof mod.syncGoogleCalendarToLev === 'function') {
-        await mod.syncGoogleCalendarToLev(BigInt(numericUserIdStr));
-      }
-    } catch (e: any) {
-      console.warn('[Sync Background] função não disponível:', e.message);
-    }
-  })()
-);
+      backgroundTasks.push(
+        (async () => {
+          try {
+            const mod = await import('@/lib/google');
+            if (typeof mod.syncGoogleCalendarToLev === 'function') {
+              await mod.syncGoogleCalendarToLev(BigInt(numericUserIdStr));
+            }
+          } catch (e: any) {
+            console.warn('[Sync Background] função não disponível:', e.message);
+          }
+        })()
+      );
     }
 
     let emailBlock = null;
     
-    // Feriados condicionais
     let holidaysBlock = '';
     const needsHolidays = detectedContexts.includes('agenda') || detectedContexts.includes('evento') || detectedContexts.includes('familia');
     if (needsHolidays) {
@@ -785,7 +785,6 @@ export async function POST(req: NextRequest) {
       } catch (err) { console.error('[Holidays] Erro:', err); }
     }
 
-    // Montar bloco de eventos (tabela events — datas importantes)
     const hoje = new Date();
     hoje.setHours(0, 0, 0, 0);
     const sortedEvents = [...events].sort(
@@ -808,7 +807,6 @@ export async function POST(req: NextRequest) {
 
     const ashesBlockRaw = ashes.length > 0 ? ashes.map((a: any) => a.ash_summary).join('\n') : null;
 
-    // Notas de pessoas mencionadas na mensagem (filtro por nome)
     let personNotesBlock = '';
     const msgLower = messageText.toLowerCase();
     const childNotes = childrenData.filter(
@@ -824,7 +822,6 @@ export async function POST(req: NextRequest) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
-    // Truncagem por peso temporal
     const cleanRamForWeights = ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
     const weights = classifyTemporalHorizon(messageText, cleanRamForWeights, pendingQuestion);
     const truncatedL3     = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, 6000) : '';
@@ -894,6 +891,7 @@ export async function POST(req: NextRequest) {
 ${forcedSearchResult}
 ${holidaysBlock}
 ${buildAgendaBlock(blockPlan.loadCalendar, googleCtx, msCtx, numericUserIdStr)}
+${blockPlan.loadFinances && financeBlock ? `[FINANÇAS]\n${financeBlock}` : ''}
 ${blockPlan.loadEmail && emailBlock ? `[EMAILS RECENTES]\n${emailBlock}` : ''}
 ${locationContext ? `\n${locationContext}` : ''}
 ${sharedContextResult.hasData ? `\n${sharedContextResult.block}` : ''}
@@ -941,6 +939,13 @@ MEMÓRIA: Use as memórias naturalmente — nunca diga "Tenho uma nota aqui que 
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 FILHOS: A lista canônica de filhos está em [FILHOS DE ${authorName.toUpperCase()}]. Nunca cite filhos além dos listados. Se indicar "Nenhum filho cadastrado", não invente.
 LEMBRETES: Se o usuário usar "me lembra", "me avisa", "não esquecer" com tempo ou local — chame OBRIGATORIAMENTE a tool create_reminder. Nunca apenas confirme sem chamar a tool.
+✅ PATCH 5: FINANÇAS: Quando o usuário mencionar valores monetários com verbos de ação (gastei, paguei, comprei, recebi, transferi):
+1. Chame OBRIGATORIAMENTE registrar_transacao com amount, type e description.
+2. Se mencionar categoria (mercado, combustível, academia etc.), passe em category_name.
+3. Após registrar, confirme em 1 frase: "Anotado — R$X em [categoria]."
+4. Para consultas ("quanto gastei", "como estão minhas finanças"), chame consultar_financas.
+5. Para criar limite ("quero gastar no máximo X em Y"), chame criar_orcamento.
+NUNCA confirme um gasto sem chamar a tool registrar_transacao.
 COMPROMISSOS: Quando o usuário informar um compromisso com horário específico
 (consulta, reunião, evento, aula, viagem, voo, etc.):
 1. OBRIGATORIAMENTE chame salvar_evento com:
@@ -980,7 +985,6 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       { role: 'user', content: messageText },
     ].filter(Boolean);
 
-    // Comandos especiais
     if (/ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|delete isso/i.test(messageText)) {
       const { data: lastEntry } = await supabase.schema('jarvis').from('brain').select('id').eq('user_id', numericUserIdStr).order('created_at', { ascending: false }).limit(1).single();
       if (lastEntry) await supabase.schema('jarvis').from('brain').delete().eq('id', lastEntry.id);
@@ -992,7 +996,6 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       content: `[INTERNO] Responda APENAS o que foi perguntado. NUNCA diga "Anota aí" ou "Anotado!".`,
     });
 
-    // max_tokens dinâmico
     let maxTokens = 350;
     if (isLikelyNoise) maxTokens = 150;
     else if (detectedContexts.includes('emocao')) maxTokens = 600;
@@ -1000,8 +1003,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 500;
     else if (detectedContexts.includes('casual')) maxTokens = 250;
 
-
-    // ========== Self-Discovery: injetar contexto do assistente quando solicitado ==========
+    // ========== Self-Discovery ==========
     const isSelfDiscoveryQuery = /o que (você|vc) (sabe|conhece|tem|lembra)|quais (são|sao) suas (capacidades|funções|funcoes|ferramentas)|me fala sobre você|o que você pode|você (tem|sabe) algo sobre mim|minhas informações|meu perfil/i.test(messageText);
 
     if (isSelfDiscoveryQuery) {
@@ -1058,7 +1060,6 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     let attempts = 0;
     let forcedToolChoice: any = isReminderIntent ? { type: 'function', function: { name: 'create_reminder' } } : 'auto';
 
-    // Aplica ajustes adaptativos do critic
     const effectiveTemperature = Math.min(1.0, Math.max(0.0, temperature + adaptiveTemperatureOffset));
     const effectiveMaxTokens   = Math.round(maxTokens * adaptiveMaxTokensMultiplier);
 
@@ -1102,7 +1103,6 @@ Use essas informações para responder à pergunta do usuário de forma natural,
 
     if (pendingQuestion) clearPendingQuestion(numericUserIdStr).catch((e) => console.error('[PendingQ]', e));
 
-    // Persistência
     const { error: insertError } = await supabase.schema('jarvis').from('brain').insert([{
       content: messageText,
       category,
@@ -1133,38 +1133,27 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'model:', modelRoute.label);
 
     if (!isLikelyNoise) {
-  import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
-    // A mudança 4 (pré-filtro) deve ser aplicada DENTRO do arquivo lib/chat/profile-extractor.ts
-    // conforme descrito no patch. O código abaixo apenas chama a função normalmente.
-    extractProfileFromConversation(parseInt(numericUserIdStr), messageText, finalResponse).catch(console.error);
-    // Invalida cache do profileBlock após extração para garantir dados frescos na próxima mensagem
-    redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => {});
-  });
+      import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
+        extractProfileFromConversation(parseInt(numericUserIdStr), messageText, finalResponse).catch(console.error);
+        redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => {});
+      });
 
-  // Adiciona as tasks de reforço de memória na array global (já declarada antes)
-  backgroundTasks.push(...hdMemoryIds.map((id) => reinforceMemory(id)));
-  backgroundTasks.push(updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score).catch(e => console.error('[TopicIndex]', e)));
+      backgroundTasks.push(...hdMemoryIds.map((id) => reinforceMemory(id)));
+      backgroundTasks.push(updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score).catch(e => console.error('[TopicIndex]', e)));
 
-  if (onboardingState?.status === 'in_progress')
-    backgroundTasks.push(withRetry(() => processOnboardingFromMessage(numericUserIdStr, messageText, finalResponse, onboardingState)).catch(e => console.error('[Onboarding]', e)));
+      if (onboardingState?.status === 'in_progress')
+        backgroundTasks.push(withRetry(() => processOnboardingFromMessage(numericUserIdStr, messageText, finalResponse, onboardingState)).catch(e => console.error('[Onboarding]', e)));
 
-  // ── MUDANÇA 2: Substituir as 4 chamadas individuais por 1 chamada unificada ──
-  // (sem if redundante, pois já estamos dentro do if (!isLikelyNoise))
-  backgroundTasks.push(
-    withRetry(() =>
-      runUnifiedExtractor(numericUserIdStr, authorName, messageText, finalResponse)
-    ).catch(e => console.error('[UnifiedExtractor]', e))
-  );
-  // Fim da mudança 2
+      backgroundTasks.push(
+        withRetry(() =>
+          runUnifiedExtractor(numericUserIdStr, authorName, messageText, finalResponse)
+        ).catch(e => console.error('[UnifiedExtractor]', e))
+      );
 
-  // ── Meta-cognição: critic assíncrono ──────────────────────────────────────
-  backgroundTasks.push((async () => {
-    try {
-      // ── MUDANÇA 3: Tornar o critic probabilístico (30% das chamadas) ──
-      if (Math.random() > 0.30) return;  // Roda em ~30% das mensagens
-      // Fim da mudança 3
-
-      const criticPrompt = `Você é um avaliador interno de qualidade de um assistente de IA pessoal chamado ${assistantName}.
+      backgroundTasks.push((async () => {
+        try {
+          if (Math.random() > 0.30) return;
+          const criticPrompt = `Você é um avaliador interno de qualidade de um assistente de IA pessoal chamado ${assistantName}.
 Avalie a resposta do assistente abaixo em 3 dimensões (0.0 a 1.0 cada):
 
 MENSAGEM DO USUÁRIO: "${messageText.slice(0, 300)}"
@@ -1182,94 +1171,86 @@ Responda APENAS com JSON válido, sem markdown:
   "flag": <"ok"|"verbose"|"cold"|"off_topic"|"missed_emotion">,
   "note": "<observação curta em português, máx 20 palavras>"
 }`;
-
-      const criticResponse = await withRetry(() =>
-        callOpenRouterWithTools(
-          [{ role: 'user', content: criticPrompt }],
-          [],
-          'google/gemini-2.0-flash-001',   // ✅ modelo válido
-          0.1,
-          4000,
-          200,
-          'none',
-        )
-      );
-      if (!criticResponse) return;
-      const raw = criticResponse.content?.trim().replace(/```json|```/g, '').trim();
-      if (!raw) return;
-
-      const criticScore = JSON.parse(raw);
-      criticScore.evaluated_at = new Date().toISOString();
-      criticScore.model_used = modelRoute.model;
-      criticScore.contexts = detectedContexts;
-
-      // Persiste no brain entry mais recente desta sessão
-      const { data: lastEntry } = await supabase
-        .schema('jarvis')
-        .from('brain')
-        .select('id, metadata')
-        .eq('user_id', numericUserIdStr)
-        .eq('session_id', sessionId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (lastEntry) {
-        await supabase
-          .schema('jarvis')
-          .from('brain')
-          .update({ metadata: { ...lastEntry.metadata, critic_score: criticScore } })
-          .eq('id', lastEntry.id);
-      }
-
-      // Acumula histórico de critic no Redis (últimas 10 avaliações) para ajuste adaptativo
-      const criticHistoryKey = `critic_history_${numericUserIdStr}`;
-      const existingHistory = await redis.get<any[]>(criticHistoryKey) ?? [];
-      const updatedHistory = [...existingHistory, criticScore].slice(-10);
-      await redis.set(criticHistoryKey, updatedHistory, { ex: 86400 }); // 24h TTL
-
-      console.log('[Critic] Score:', criticScore.overall?.toFixed(2), '| Flag:', criticScore.flag, '| Note:', criticScore.note);
-    } catch (e) {
-      console.error('[Critic] Falhou silenciosamente:', (e as Error).message);
-    }
-  })());
-
-  // ── Promoção de padrões para princípios (a cada ~10 mensagens, probabilístico) ──
-  if (Math.random() < 0.10) {
-    backgroundTasks.push((async () => {
-      try {
-        const promoteResult = await promotePatternToPrinciple(
-          parseInt(numericUserIdStr),
-          authorName,
-          assistantName,
-        );
-
-        if (promoteResult.promoted > 0) {
-          console.log(`[PatternPromoter] ${promoteResult.promoted} princípio(s) promovido(s).`);
-        }
-
-        if (promoteResult.notification) {
-          await redis.set(
-            `pending_notification_${numericUserIdStr}`,
-            promoteResult.notification,
-            { ex: 86400 },
+          const criticResponse = await withRetry(() =>
+            callOpenRouterWithTools(
+              [{ role: 'user', content: criticPrompt }],
+              [],
+              'google/gemini-2.0-flash-001',
+              0.1,
+              4000,
+              200,
+              'none',
+            )
           );
+          if (!criticResponse) return;
+          const raw = criticResponse.content?.trim().replace(/```json|```/g, '').trim();
+          if (!raw) return;
+          const criticScore = JSON.parse(raw);
+          criticScore.evaluated_at = new Date().toISOString();
+          criticScore.model_used = modelRoute.model;
+          criticScore.contexts = detectedContexts;
+
+          const { data: lastEntry } = await supabase
+            .schema('jarvis')
+            .from('brain')
+            .select('id, metadata')
+            .eq('user_id', numericUserIdStr)
+            .eq('session_id', sessionId)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (lastEntry) {
+            await supabase
+              .schema('jarvis')
+              .from('brain')
+              .update({ metadata: { ...lastEntry.metadata, critic_score: criticScore } })
+              .eq('id', lastEntry.id);
+          }
+
+          const criticHistoryKey = `critic_history_${numericUserIdStr}`;
+          const existingHistory = await redis.get<any[]>(criticHistoryKey) ?? [];
+          const updatedHistory = [...existingHistory, criticScore].slice(-10);
+          await redis.set(criticHistoryKey, updatedHistory, { ex: 86400 });
+
+          console.log('[Critic] Score:', criticScore.overall?.toFixed(2), '| Flag:', criticScore.flag, '| Note:', criticScore.note);
+        } catch (e) {
+          console.error('[Critic] Falhou silenciosamente:', (e as Error).message);
         }
-      } catch (e) {
-        console.error('[PatternPromoter] Background error:', (e as Error).message);
+      })());
+
+      if (Math.random() < 0.10) {
+        backgroundTasks.push((async () => {
+          try {
+            const promoteResult = await promotePatternToPrinciple(
+              parseInt(numericUserIdStr),
+              authorName,
+              assistantName,
+            );
+            if (promoteResult.promoted > 0) {
+              console.log(`[PatternPromoter] ${promoteResult.promoted} princípio(s) promovido(s).`);
+            }
+            if (promoteResult.notification) {
+              await redis.set(
+                `pending_notification_${numericUserIdStr}`,
+                promoteResult.notification,
+                { ex: 86400 },
+              );
+            }
+          } catch (e) {
+            console.error('[PatternPromoter] Background error:', (e as Error).message);
+          }
+        })());
       }
-    })());
-  }
 
-  Promise.all([
-    ...backgroundTasks,
-    supabase.schema('jarvis').from('brain').select('*', { count: 'exact', head: true }).eq('user_id', numericUserIdStr).eq('category', 'info').then(({ count }) => {
-      if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
-    }),
-  ]).catch(e => console.error('[Background]', e));
-}
+      Promise.all([
+        ...backgroundTasks,
+        supabase.schema('jarvis').from('brain').select('*', { count: 'exact', head: true }).eq('user_id', numericUserIdStr).eq('category', 'info').then(({ count }) => {
+          if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
+        }),
+      ]).catch(e => console.error('[Background]', e));
+    }
 
-    // Injetar notificação de promoção de padrão (se houver, gerada na sessão anterior)
     const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
     try {
       const pendingNotif = await redis.get<string>(pendingNotifKey);

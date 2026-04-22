@@ -1,0 +1,88 @@
+// app/api/finances/transactions/route.ts
+// CRUD de transações — GET lista, POST cria
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import {
+  createTransaction,
+  getTransactions,
+  updateTransactionStatus,
+  getPeriodDates,
+} from '@/lib/finances/db';
+import type { CreateTransactionPayload, TransactionType } from '@/lib/finances/types';
+
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { db: { schema: 'jarvis' } }
+);
+
+async function resolveUser(req: NextRequest) {
+  const authHeader = req.headers.get('authorization') || '';
+  const token = authHeader.replace('Bearer ', '').trim();
+  if (!token) return null;
+
+  // Resolve via auth_user_id → jarvis.users
+  const { createClient: createSupabaseClient } = await import('@supabase/supabase-js');
+  const authClient = createSupabaseClient(
+    process.env.SUPABASE_URL!,
+    process.env.SUPABASE_ANON_KEY!
+  );
+  const { data: { user } } = await authClient.auth.getUser(token);
+  if (!user) return null;
+
+  const { data: jarvisUser } = await supabase
+    .from('users')
+    .select('id, email')
+    .eq('auth_user_id', user.id)
+    .maybeSingle();
+
+  return jarvisUser ? { authUserId: user.id, jarvisUserId: jarvisUser.id } : null;
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const user = await resolveUser(req);
+    if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+
+    const { searchParams } = new URL(req.url);
+    const period = (searchParams.get('period') || 'month') as any;
+    const type = searchParams.get('type') as TransactionType | null;
+    const limit = parseInt(searchParams.get('limit') || '50', 10);
+    const offset = parseInt(searchParams.get('offset') || '0', 10);
+    const status = searchParams.get('status') || undefined;
+
+    const { start, end } = getPeriodDates(period);
+
+    const transactions = await getTransactions(user.jarvisUserId, {
+      start,
+      end,
+      type: type || undefined,
+      status,
+      limit,
+      offset,
+    });
+
+    return NextResponse.json({ ok: true, data: transactions, count: transactions.length });
+  } catch (e: any) {
+    console.error('[API] GET /finances/transactions:', e);
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const user = await resolveUser(req);
+    if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+
+    const body: CreateTransactionPayload = await req.json();
+    if (!body.amount || !body.type)
+      return NextResponse.json({ error: 'amount e type são obrigatórios.' }, { status: 400 });
+
+    const tx = await createTransaction(user.authUserId, user.jarvisUserId, body);
+    return NextResponse.json({ ok: true, data: tx }, { status: 201 });
+  } catch (e: any) {
+    console.error('[API] POST /finances/transactions:', e);
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
