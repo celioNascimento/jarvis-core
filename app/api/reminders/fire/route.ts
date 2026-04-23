@@ -4,17 +4,39 @@
 // ============================================================
 
 import { NextRequest, NextResponse } from 'next/server';
-import { verifySignatureAppRouter } from '@upstash/qstash/nextjs';
+import { Receiver } from '@upstash/qstash';
 import { supabase } from '@/lib/jarvis'; 
 
-async function handler(req: NextRequest) {
+// Instanciamos o Receiver manualmente para usar o verify()
+const receiver = new Receiver({
+  currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
+  nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY!,
+});
+
+export async function POST(req: NextRequest) {
   try {
-    const payload = await req.json();
+    // 1. Lê o stream UMA única vez como texto
+    const bodyText = await req.text();
+    const signature = req.headers.get('upstash-signature') ?? '';
+
+    // 2. Validação manual de segurança do QStash
+    const isValid = await receiver.verify({
+      signature,
+      body: bodyText,
+    }).catch(() => false);
+
+    if (!isValid) {
+      console.error('[reminders/fire] Acesso negado: Assinatura inválida');
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    }
+
+    // 3. Parse seguro do JSON que já está em memória
+    const payload = JSON.parse(bodyText);
     const { reminderId, userId, message } = payload;
 
-    console.log('[reminders/fire] Recebido:', reminderId, '— user:', userId);
+    console.log('[reminders/fire] Recebido e validado:', { reminderId, userId, message });
 
-    // 1. Atualiza status e marcos de disparo na tabela reminders
+    // 4. Atualiza status e marcos de disparo na tabela reminders
     const { error: reminderError } = await supabase
       .from('reminders')
       .update({ 
@@ -26,10 +48,10 @@ async function handler(req: NextRequest) {
       .eq('id', reminderId);
       
     if (reminderError) {
-      console.error('[reminders/fire] Erro ao atualizar status em reminders:', reminderError.message);
+      console.error('[reminders/fire] Erro ao atualizar BD:', reminderError.message);
     }
 
-    // 2. Busca os tokens do usuário (Convertendo para Number para bater com o BigInt do BD)
+    // 5. Busca os tokens do usuário garantindo o tipo Numérico
     const { data: userRow, error: userError } = await supabase
       .from('users')
       .select('push_token, telegram_chat_id')
@@ -37,14 +59,14 @@ async function handler(req: NextRequest) {
       .single();
 
     if (userError || !userRow) {
-      console.error('[reminders/fire] Usuário não encontrado:', userId, userError?.message);
+      console.error('[reminders/fire] Usuário não encontrado:', userId);
       return NextResponse.json({ ok: false, error: 'user_not_found' }, { status: 404 });
     }
 
     let notified = false;
     const activePushToken = userRow.push_token;
 
-    // 3a. Disparo via Expo Push
+    // 6a. Disparo via Expo Push
     if (activePushToken) {
       try {
         const expoPushRes = await fetch('https://exp.host/--/api/v2/push/send', {
@@ -64,14 +86,14 @@ async function handler(req: NextRequest) {
           notified = true;
           console.log('[reminders/fire] Push Expo enviado.');
         } else {
-          console.error('[reminders/fire] Erro retornado pelo Expo:', expoJson?.data?.message);
+          console.error('[reminders/fire] Erro do Expo:', expoJson?.data?.message);
         }
       } catch (err) {
-        console.error('[reminders/fire] Falha de rede no push Expo:', err);
+        console.error('[reminders/fire] Falha na API do Expo:', err);
       }
     }
 
-    // 3b. Fallback via Telegram (Se o Push não estiver disponível ou falhar)
+    // 6b. Fallback via Telegram
     if (!notified && userRow.telegram_chat_id) {
       const botToken = process.env.TELEGRAM_BOT_TOKEN;
       if (botToken) {
@@ -91,7 +113,7 @@ async function handler(req: NextRequest) {
             console.log('[reminders/fire] Telegram enviado com sucesso.');
           }
         } catch (err) {
-          console.error('[reminders/fire] Erro no disparo Telegram:', err);
+          console.error('[reminders/fire] Erro na API do Telegram:', err);
         }
       }
     }
@@ -99,10 +121,7 @@ async function handler(req: NextRequest) {
     return NextResponse.json({ ok: true, notified });
 
   } catch (err) {
-    console.error('[reminders/fire] Erro crítico interno:', err);
+    console.error('[reminders/fire] Erro crítico:', err);
     return NextResponse.json({ ok: false, error: 'internal_error' }, { status: 500 });
   }
 }
-
-// O QStash exige que a função seja encapsulada para validar a assinatura
-export const POST = verifySignatureAppRouter(handler);
