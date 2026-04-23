@@ -5,14 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { verifySignatureAppRouter } from '@upstash/qstash/nextjs';
-import { createClient } from '@supabase/supabase-js';
-
-// Usamos o service_role para garantir que o webhook consiga atualizar 
-// a tabela mesmo sem o token de autenticação do front-end
-const supabaseFire = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { supabase } from '@/lib/jarvis'; 
 
 async function handler(req: NextRequest) {
   try {
@@ -21,32 +14,35 @@ async function handler(req: NextRequest) {
 
     console.log('[reminders/fire] Recebido:', reminderId, '— user:', userId);
 
-    // 1. Atualiza diretamente na tabela unificada de lembretes
-    const { error: reminderError } = await supabaseFire
-      .schema('jarvis')
+    // 1. Atualiza status e marcos de disparo na tabela reminders
+    const { error: reminderError } = await supabase
       .from('reminders')
-      .update({ status: 'completed', updated_at: new Date().toISOString() })
+      .update({ 
+        status: 'completed', 
+        fired: true, 
+        fired_at: new Date().toISOString(),
+        updated_at: new Date().toISOString() 
+      })
       .eq('id', reminderId);
       
     if (reminderError) {
       console.error('[reminders/fire] Erro ao atualizar status em reminders:', reminderError.message);
     }
 
-    // 2. Busca os tokens do usuário
-    const { data: userRow } = await supabaseFire
-      .schema('jarvis')
+    // 2. Busca os tokens do usuário (Convertendo para Number para bater com o BigInt do BD)
+    const { data: userRow, error: userError } = await supabase
       .from('users')
-      .select('expo_push_token, push_token, telegram_chat_id')
-      .eq('id', userId)
+      .select('push_token, telegram_chat_id')
+      .eq('id', Number(userId))
       .single();
 
-    if (!userRow) {
-      console.error('[reminders/fire] Usuário não encontrado:', userId);
+    if (userError || !userRow) {
+      console.error('[reminders/fire] Usuário não encontrado:', userId, userError?.message);
       return NextResponse.json({ ok: false, error: 'user_not_found' }, { status: 404 });
     }
 
     let notified = false;
-    const activePushToken = userRow.expo_push_token || userRow.push_token;
+    const activePushToken = userRow.push_token;
 
     // 3a. Disparo via Expo Push
     if (activePushToken) {
@@ -58,7 +54,7 @@ async function handler(req: NextRequest) {
             to: activePushToken,
             title: '📅 Lembrete',
             body: message,
-            data: { reminderId, type: 'reminder' }, // Atualizado o type do payload
+            data: { reminderId, type: 'reminder' },
             sound: 'default',
           }),
         });
@@ -75,7 +71,7 @@ async function handler(req: NextRequest) {
       }
     }
 
-    // 3b. Fallback via Telegram (Se o Push falhar ou não existir)
+    // 3b. Fallback via Telegram (Se o Push não estiver disponível ou falhar)
     if (!notified && userRow.telegram_chat_id) {
       const botToken = process.env.TELEGRAM_BOT_TOKEN;
       if (botToken) {
@@ -108,5 +104,5 @@ async function handler(req: NextRequest) {
   }
 }
 
-// O QStash exige que a função seja encapsulada para validar a assinatura e bloquear invasores
+// O QStash exige que a função seja encapsulada para validar a assinatura
 export const POST = verifySignatureAppRouter(handler);
