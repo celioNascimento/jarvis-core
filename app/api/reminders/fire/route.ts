@@ -21,18 +21,18 @@ async function handler(req: NextRequest) {
 
     console.log('[reminders/fire] Recebido:', reminderId, '— user:', userId);
 
-    // 1. Marca como disparado na nova tabela da V8.13.0
-    const { error: updateError } = await supabaseFire
+    // 1. Atualiza diretamente na tabela unificada de lembretes
+    const { error: reminderError } = await supabaseFire
       .schema('jarvis')
-      .from('event_reminders')
-      .update({ status: 'fired', fired_at: new Date().toISOString() })
+      .from('reminders')
+      .update({ status: 'completed', updated_at: new Date().toISOString() })
       .eq('id', reminderId);
-
-    if (updateError) {
-      console.error('[reminders/fire] Erro ao atualizar status no BD:', updateError.message);
+      
+    if (reminderError) {
+      console.error('[reminders/fire] Erro ao atualizar status em reminders:', reminderError.message);
     }
 
-    // 2. Busca os tokens do usuário (Cobre a nomenclatura antiga e a nova)
+    // 2. Busca os tokens do usuário
     const { data: userRow } = await supabaseFire
       .schema('jarvis')
       .from('users')
@@ -58,7 +58,7 @@ async function handler(req: NextRequest) {
             to: activePushToken,
             title: '📅 Lembrete',
             body: message,
-            data: { reminderId, type: 'event_reminder' },
+            data: { reminderId, type: 'reminder' }, // Atualizado o type do payload
             sound: 'default',
           }),
         });
