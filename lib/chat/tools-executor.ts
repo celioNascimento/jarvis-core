@@ -5,7 +5,6 @@
 
 import { supabase } from '@/lib/jarvis';
 import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
-// NOTA: Adicionamos createGoogleEvent e trashGoogleEmail aqui no import
 import { getGoogleContext, searchWeb, getWeatherForecast, createGoogleEvent, trashGoogleEmail } from '@/lib/google';
 import { upsertEvent } from '@/lib/extractor-jobs';
 import { extractDiary } from '@/lib/diary';
@@ -87,32 +86,30 @@ export async function executeTool(
       return `Google Calendar:\n${g}\n\nOutlook:\n${o}`;
     }
 
-    // ===================== NOVOS: AGENDA E GMAIL =====================
-    
+    // ===================== AGENDA E GMAIL =====================
+
     case 'criar_evento_agenda': {
-      // Chama a função que você já tinha no google.ts
       return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
     }
 
     case 'excluir_email': {
-      // Chama a nova função para deletar email
       return await trashGoogleEmail(p.messageId);
     }
 
     // ===================== GESTÃO DE DIRETRIZES DINÂMICAS =====================
-    
+
     case 'adicionar_diretriz_dinamica': {
       const { error } = await supabase.rpc('upsert_dynamic_guideline', {
         p_user_id: Number(numericUserIdStr),
         p_content: p.content,
         p_scope: p.scope || 'personal'
       });
-      
+
       if (error) {
         console.error('[Tools] Erro ao adicionar diretriz:', error);
         return `Erro ao salvar a diretriz: ${error.message}`;
       }
-      
+
       return `Diretriz "${p.content}" salva com sucesso na base de dados. O comportamento será ajustado.`;
     }
 
@@ -133,32 +130,28 @@ export async function executeTool(
       const location_trigger: string | undefined = p.location_trigger;
       let type: 'temporary' | 'agenda' | 'recurring' | 'location' = p.type || 'temporary';
 
-      // 1. Tenta pegar a data que a IA mandou
       let scheduled_time: string | undefined = p.scheduled_time;
-      
-      // 2. Se ela mandou em minutos (ex: "em 10 min"), converte para data real
+
       if (!scheduled_time && p.delay_minutes) {
         const fireAt = new Date(Date.now() + p.delay_minutes * 60 * 1000);
         scheduled_time = fireAt.toISOString();
       }
 
-      // 3. SEGURANÇA: Se não tem data e não é um lembrete de lugar/repetição...
       let isFallbackTime = false;
       if (!scheduled_time && type !== 'location' && type !== 'recurring') {
-          console.warn(`[create_reminder] IA falhou no tempo. Forçando 5 minutos.`);
-          const fireAt = new Date(Date.now() + 5 * 60 * 1000); // Daqui a 5 minutos
-          scheduled_time = fireAt.toISOString();
-          isFallbackTime = true;
-          type = 'temporary'; 
+        console.warn(`[create_reminder] IA falhou no tempo. Forçando 5 minutos.`);
+        const fireAt = new Date(Date.now() + 5 * 60 * 1000);
+        scheduled_time = fireAt.toISOString();
+        isFallbackTime = true;
+        type = 'temporary';
       }
 
       if (!title) {
         return JSON.stringify({ success: false, error: 'Título é obrigatório.' });
       }
 
-      // 4. Salva no banco (Agora garantimos que scheduled_time não será NULL por erro)
+      // FIX: removido .schema('jarvis') redundante — client já tem schema padrão
       const { data: reminder, error } = await supabase
-        .schema('jarvis')
         .from('reminders')
         .insert({
           user_id: Number(numericUserIdStr),
@@ -173,11 +166,13 @@ export async function executeTool(
         .select('id')
         .single();
 
+      console.log('[create_reminder] insert result:', { reminder, error });
+
       if (error || !reminder) {
+        console.error('[create_reminder] Falha no insert:', error?.message);
         return JSON.stringify({ success: false, error: 'Falha ao salvar no banco.' });
       }
 
-      // 5. Envia para o QStash (O serviço que vai "acordar" o celular na hora certa)
       if (scheduled_time && type !== 'recurring' && type !== 'location') {
         const qstashMessageId = await scheduleReminderOnQStash({
           reminderId: String(reminder.id),
@@ -188,8 +183,8 @@ export async function executeTool(
         });
 
         if (qstashMessageId) {
+          // FIX: removido .schema('jarvis') redundante
           await supabase
-            .schema('jarvis')
             .from('reminders')
             .update({ metadata: { auth_user_id: authUserId, qstash_message_id: qstashMessageId } })
             .eq('id', reminder.id);
@@ -201,10 +196,9 @@ export async function executeTool(
             timeZone: 'America/Sao_Paulo',
             hour: '2-digit', minute: '2-digit',
           })
-        : "quando solicitado";
+        : 'quando solicitado';
 
-      // Mensagem que o Assistente vai ler para você
-      const avisoIA = isFallbackTime ? " (Agendei para daqui a 5 min porque a data não ficou clara)." : "";
+      const avisoIA = isFallbackTime ? ' (Agendei para daqui a 5 min porque a data não ficou clara).' : '';
 
       return JSON.stringify({
         success: true,
@@ -212,7 +206,7 @@ export async function executeTool(
         reminderId: reminder.id,
       });
     }
-    
+
     case 'cancel_reminder': {
       const reminderId: string = p.reminder_id || p.reminderId;
 
@@ -220,8 +214,8 @@ export async function executeTool(
         return JSON.stringify({ success: false, error: 'reminder_id não informado.' });
       }
 
+      // FIX: removido .schema('jarvis') redundante
       const { data: reminder } = await supabase
-        .schema('jarvis')
         .from('reminders')
         .select('metadata')
         .eq('id', reminderId)
@@ -233,8 +227,8 @@ export async function executeTool(
         await cancelReminderOnQStash(qstashMessageId);
       }
 
+      // FIX: removido .schema('jarvis') redundante
       await supabase
-        .schema('jarvis')
         .from('reminders')
         .update({ status: 'cancelled' })
         .eq('id', reminderId)
@@ -244,8 +238,8 @@ export async function executeTool(
     }
 
     case 'list_reminders': {
+      // FIX: removido .schema('jarvis') redundante
       const { data: reminders } = await supabase
-        .schema('jarvis')
         .from('reminders')
         .select('id, title, scheduled_time, frequency, type, status')
         .eq('user_id', Number(numericUserIdStr))
@@ -358,29 +352,26 @@ export async function executeTool(
       if (!itens?.length) return `Lista de ${p.lugar} está vazia.`;
       return `Lista de ${p.lugar}:\n${itens.map((i: any) => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
     }
-        // ===================== SUPORTE EXECUTIVO (TDAH) =====================
+
+    // ===================== SUPORTE EXECUTIVO (TDAH) =====================
 
     case 'quebrar_tarefa': {
       const tarefa = p.tarefa_principal;
       const estado = p.estado_cognitivo || 'neutro';
-      
-      // Aqui o ideal seria salvar o início na focus_sessions, mas como o LLM que vai 
-      // gerar os passos a partir dessa requisição, a tool apenas instrui o modelo
-      // sobre COMO responder, forçando o formato.
-      
+
       let instrucao_modelo = `A tarefa do usuário é "${tarefa}". O estado cognitivo detectado é "${estado}".\n\n`;
       instrucao_modelo += `REGRA DE RESPOSTA (Módulo TDAH ativado):\n`;
       instrucao_modelo += `1. Não dê preâmbulos motivacionais.\n`;
       instrucao_modelo += `2. Quebre a tarefa em 3 a 5 micro-passos sequenciais.\n`;
-      
+
       if (estado === 'sobrecarregado' || estado === 'sem_energia') {
         instrucao_modelo += `3. O Passo 1 deve ser absurdamente fácil (ex: 'Levantar da cadeira' ou 'Pegar o pano').\n`;
       }
-      
+
       instrucao_modelo += `4. Peça para o usuário responder "feito" apenas para o Passo 1 antes de mostrar os outros.`;
 
-      // Registramos na memória L3 que o usuário iniciou um processo focado
-      await supabase.schema('jarvis').from('brain').insert([{
+      // FIX: removido .schema('jarvis') redundante
+      await supabase.from('brain').insert([{
         user_id: Number(numericUserIdStr),
         category: 'Nota',
         content: `Usuário iniciou quebra de tarefa: ${tarefa} (Estado: ${estado})`,
@@ -389,7 +380,6 @@ export async function executeTool(
 
       return instrucao_modelo;
     }
-      
 
     // ===================== INSIGHTS =====================
 
@@ -409,14 +399,17 @@ export async function executeTool(
         return 'Funcionalidade de insights climáticos em desenvolvimento. Em breve! 🌤️';
       }
     }
-          case 'criar_rotina': {
+
+    case 'criar_rotina': {
       assertNumericUserId(numericUserIdStr, 'criar_rotina');
-      
-      const anchor = args.anchor;
-      const action = args.action;
-      const period = args.period || 'anytime';
-      
-      const { error } = await supabase.schema('jarvis').from('routines').insert([{
+
+      // FIX: era args.anchor/action/period (string), corrigido para p.anchor/action/period (objeto parseado)
+      const anchor = p.anchor;
+      const action = p.action;
+      const period = p.period || 'anytime';
+
+      // FIX: removido .schema('jarvis') redundante
+      const { error } = await supabase.from('routines').insert([{
         user_id: Number(numericUserIdStr),
         anchor,
         action,
@@ -430,8 +423,7 @@ export async function executeTool(
       }
 
       return `A rotina "${action}" ancorada em "${anchor}" no período ${period} foi criada com sucesso! Confirme ao utilizador de forma curta, elegante e encorajadora.`;
-          }
-      
+    }
 
     default:
       return `Ferramenta ${name} não implementada.`;
