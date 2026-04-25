@@ -4,6 +4,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { updateTransactionStatus } from '@/lib/finances/db';
+import { resolveUser } from '@/lib/finances/auth';
+
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -11,36 +13,16 @@ const supabase = createClient(
   { db: { schema: 'jarvis' } }
 );
 
-async function resolveUser(req: NextRequest) {
-  const authHeader = req.headers.get('authorization') || '';
-  const token = authHeader.replace('Bearer ', '').trim();
-  if (!token) return null;
-
-  const { createClient: createSupabaseClient } = await import('@supabase/supabase-js');
-  const authClient = createSupabaseClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
-  const { data: { user } } = await authClient.auth.getUser(token);
-  if (!user) return null;
-
-  const { data: jarvisUser } = await supabase
-    .from('users')
-    .select('id')
-    .eq('auth_user_id', user.id)
-    .maybeSingle();
-
-  return jarvisUser ? { authUserId: user.id, jarvisUserId: jarvisUser.id } : null;
-}
 
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> } // <-- Tipagem corrigida para Promise
+  { params }: { params: { id: string } }
 ) {
   try {
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-    const resolvedParams = await params; // <-- Aguardando a Promise ser resolvida
-    const id = parseInt(resolvedParams.id, 10);
-    
+    const id = parseInt(params.id, 10);
     if (isNaN(id)) return NextResponse.json({ error: 'ID inválido' }, { status: 400 });
 
     const body = await req.json();
@@ -67,15 +49,13 @@ export async function PATCH(
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> } // <-- Tipagem corrigida para Promise
+  { params }: { params: { id: string } }
 ) {
   try {
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-    const resolvedParams = await params; // <-- Aguardando a Promise ser resolvida
-    const id = parseInt(resolvedParams.id, 10);
-    
+    const id = parseInt(params.id, 10);
     if (isNaN(id)) return NextResponse.json({ error: 'ID inválido' }, { status: 400 });
 
     // Verifica propriedade antes de deletar
