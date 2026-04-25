@@ -15,9 +15,10 @@ const supabase = createClient(
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
@@ -25,7 +26,7 @@ export async function GET(
     const { data: acc } = await supabase
       .from('investment_accounts')
       .select('id')
-      .eq('id', params.id)
+      .eq('id', id)
       .eq('jarvis_user_id', user.jarvisUserId)
       .maybeSingle();
 
@@ -37,7 +38,7 @@ export async function GET(
     let query = supabase
       .from('investment_positions')
       .select('*')
-      .eq('investment_account_id', params.id)
+      .eq('investment_account_id', id)
       .order('asset_type')
       .order('asset_name');
 
@@ -54,9 +55,10 @@ export async function GET(
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
@@ -64,7 +66,7 @@ export async function POST(
     const { data: acc } = await supabase
       .from('investment_accounts')
       .select('id')
-      .eq('id', params.id)
+      .eq('id', id)
       .eq('jarvis_user_id', user.jarvisUserId)
       .maybeSingle();
 
@@ -77,7 +79,7 @@ export async function POST(
     const { data, error } = await supabase
       .from('investment_positions')
       .insert({
-        investment_account_id: params.id,
+        investment_account_id: id,
         user_id:               user.authUserId,
         jarvis_user_id:        user.jarvisUserId,
         ticker:                body.ticker         || null,
