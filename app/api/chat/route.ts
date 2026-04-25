@@ -849,7 +849,7 @@ export async function POST(req: NextRequest) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
-        const cleanRamForWeights = ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
+    const cleanRamForWeights = ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
     const weights = classifyTemporalHorizon(messageText, cleanRamForWeights, pendingQuestion);
     // Aplicação da Sabedoria: Limites ditados pelo blockPlan em vez de fixos
     const truncatedL3     = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, blockPlan.l3Limit) : '';
@@ -1092,7 +1092,8 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     const effectiveMaxTokens   = Math.round(maxTokens * adaptiveMaxTokensMultiplier);
 
     while (attempts < 5) {
-      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, effectiveTemperature, 25000, effectiveMaxTokens, forcedToolChoice);
+      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, effectiveTemperature, 50000, effectiveMaxTokens, forcedToolChoice);
+      
       const { content, toolCalls } = response;
       if (!toolCalls || toolCalls.length === 0) { finalResponse = content; break; }
       forcedToolChoice = 'auto';
