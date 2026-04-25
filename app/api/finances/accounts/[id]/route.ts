@@ -22,16 +22,17 @@ async function resolveUser(req: NextRequest) {
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
     const { data, error } = await supabase
       .from('user_accounts')
       .select('*')
-      .eq('id', params.id)
+      .eq('id', id)
       .eq('jarvis_user_id', user.jarvisUserId)
       .maybeSingle();
 
@@ -46,9 +47,10 @@ export async function GET(
 
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
@@ -68,7 +70,7 @@ export async function PATCH(
     const { data, error } = await supabase
       .from('user_accounts')
       .update(update)
-      .eq('id', params.id)
+      .eq('id', id)
       .eq('jarvis_user_id', user.jarvisUserId)
       .select('*')
       .single();
@@ -82,9 +84,10 @@ export async function PATCH(
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
@@ -92,7 +95,7 @@ export async function DELETE(
     const { error } = await supabase
       .from('user_accounts')
       .update({ is_active: false })
-      .eq('id', params.id)
+      .eq('id', id)
       .eq('jarvis_user_id', user.jarvisUserId);
 
     if (error) throw error;
