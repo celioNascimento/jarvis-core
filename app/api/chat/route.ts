@@ -428,7 +428,9 @@ export async function POST(req: NextRequest) {
     const hasEnoughHistory = historySession && historySession.length >= 2;
 
     if (hasEnoughHistory) {
-      const pairsToUse = shiftDetected ? historySession.slice(0, 1) : historySession.slice(0, 4);
+            
+      const pairsToUse = shiftDetected ? historySession.slice(0, 3) : historySession.slice(0, 8);
+      
       recentPairs = [...pairsToUse].reverse().flatMap((h: any) => [
         { role: 'user' as const, content: h.content },
         { role: 'assistant' as const, content: trimAssistantReply(h.metadata?.ai_reply || '') },
@@ -1024,13 +1026,14 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       content: `[INTERNO] Responda APENAS o que foi perguntado. NUNCA diga "Anota aí" ou "Anotado!".`,
     });
 
-    let maxTokens = 350;
-    if (isLikelyNoise) maxTokens = 150;
-    else if (detectedContexts.includes('emocao')) maxTokens = 600;
-    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias') || detectedContexts.includes('clima')) maxTokens = 800;
-    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 500;
-    else if (detectedContexts.includes('casual')) maxTokens = 250;
-
+        // Dando fôlego para o modelo não cortar as respostas
+    let maxTokens = 1000;
+    if (isLikelyNoise) maxTokens = 250;
+    else if (detectedContexts.includes('emocao')) maxTokens = 1500;
+    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias') || detectedContexts.includes('clima')) maxTokens = 1200;
+    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 1200;
+    else if (detectedContexts.includes('casual')) maxTokens = 800;
+    
     // ========== Self-Discovery ==========
     const isSelfDiscoveryQuery = /o que (você|vc) (sabe|conhece|tem|lembra)|quais (são|sao) suas (capacidades|funções|funcoes|ferramentas)|me fala sobre você|o que você pode|você (tem|sabe) algo sobre mim|minhas informações|meu perfil/i.test(messageText);
 
