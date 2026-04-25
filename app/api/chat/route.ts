@@ -429,8 +429,7 @@ export async function POST(req: NextRequest) {
 
     if (hasEnoughHistory) {
             
-      const pairsToUse = shiftDetected ? historySession.slice(0, 3) : historySession.slice(0, 8);
-      
+      const pairsToUse = historySession.slice(0, 12);
       recentPairs = [...pairsToUse].reverse().flatMap((h: any) => [
         { role: 'user' as const, content: h.content },
         { role: 'assistant' as const, content: trimAssistantReply(h.metadata?.ai_reply || '') },
@@ -917,7 +916,8 @@ export async function POST(req: NextRequest) {
 
 3. PESQUISA: Para jogos, resultados, datas, notícias, cotações, clima em outras cidades — chame searchWeb ANTES de responder.
    - CLIMA DA CIDADE DO USUÁRIO: Se "[CLIMA ATUAL]" estiver presente, USE esses dados.
-
+   - REGRA DE BUSCA: NUNCA faça buscas genéricas ("Dra. Carol"). Sempre enriqueça a query de busca com as informações que você tem na RAM (ex: "Dra. Caroline dentista Arthur Thomas 1100 Rolândia").
+   
 ${forcedSearchResult}
 ${holidaysBlock}
 ${buildAgendaBlock(blockPlan.loadCalendar, googleCtx, msCtx, numericUserIdStr)}
