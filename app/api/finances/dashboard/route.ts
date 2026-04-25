@@ -5,6 +5,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { callOpenRouter } from '@/lib/jarvis';
+import { resolveUser } from '@/lib/finances/auth';
+
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -12,15 +14,6 @@ const supabase = createClient(
   { db: { schema: 'jarvis' } }
 );
 
-async function resolveUser(req: NextRequest) {
-  const token = (req.headers.get('authorization') || '').replace('Bearer ', '').trim();
-  if (!token) return null;
-  const { createClient: c } = await import('@supabase/supabase-js');
-  const { data: { user } } = await c(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!).auth.getUser(token);
-  if (!user) return null;
-  const { data: j } = await supabase.from('users').select('id, nickname, assistant_name').eq('auth_user_id', user.id).maybeSingle();
-  return j ? { authUserId: user.id, jarvisUserId: j.id as number, nickname: j.nickname, assistantName: j.assistant_name } : null;
-}
 
 function getPeriod(year: number, month: number) {
   const start = new Date(year, month - 1, 1);
