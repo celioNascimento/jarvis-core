@@ -1,11 +1,12 @@
+
 // app/api/finances/transactions/[id]/route.ts
 // PATCH — confirmar, ignorar ou marcar como duplicada
+// DELETE — excluir transação
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { updateTransactionStatus } from '@/lib/finances/db';
 import { resolveUser } from '@/lib/finances/auth';
-
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -13,17 +14,16 @@ const supabase = createClient(
   { db: { schema: 'jarvis' } }
 );
 
-
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
+    const { id: rawId } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-    const id = parseInt(id, 10);
+    const id = parseInt(rawId, 10);
     if (isNaN(id)) return NextResponse.json({ error: 'ID inválido' }, { status: 400 });
 
     const body = await req.json();
@@ -53,11 +53,11 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
+    const { id: rawId } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-    const id = parseInt(id, 10);
+    const id = parseInt(rawId, 10);
     if (isNaN(id)) return NextResponse.json({ error: 'ID inválido' }, { status: 400 });
 
     // Verifica propriedade antes de deletar
