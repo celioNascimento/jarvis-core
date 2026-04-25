@@ -22,22 +22,53 @@ async function resolveUser(req: NextRequest) {
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
     const { data, error } = await supabase
       .from('credit_invoices')
       .select('*')
-      .eq('account_id', params.id)
+      .eq('account_id', id)
       .eq('jarvis_user_id', user.jarvisUserId)
       .order('reference_month', { ascending: false })
       .limit(12);
 
     if (error) throw error;
     return NextResponse.json({ ok: true, data });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const user = await resolveUser(req);
+    if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+
+    const body = await req.json();
+
+    const invoiceData = {
+      ...body,
+      account_id: id,
+      jarvis_user_id: user.jarvisUserId,
+    };
+
+    const { data, error } = await supabase
+      .from('credit_invoices')
+      .insert(invoiceData)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return NextResponse.json({ ok: true, data }, { status: 201 });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
