@@ -59,6 +59,21 @@ import { buildFinanceBlock } from '@/lib/finances/db'; // ✅ PATCH 1
 
 export const maxDuration = 60;
 
+// ========== SABEDORIA: ORÇAMENTO DE TOKENS ==========
+const GLOBAL_MAX_CHARS = 12000;
+const INTENT_BUDGETS: Record<string, { l3: number, hd: number, finance: number, events: number, ashes: number }> = {
+  personal: { l3: 0.6, hd: 0.2, finance: 0.05, events: 0.1, ashes: 0.05 },
+  factual:  { l3: 0.1, hd: 0.6, finance: 0.1,  events: 0.1, ashes: 0.1 },
+  finance:  { l3: 0.1, hd: 0.1, finance: 0.7,  events: 0.1, ashes: 0.0 },
+  focus:    { l3: 0.3, hd: 0.1, finance: 0.0,  events: 0.6, ashes: 0.0 },
+  calendar: { l3: 0.1, hd: 0.1, finance: 0.0,  events: 0.8, ashes: 0.0 },
+  email:    { l3: 0.2, hd: 0.1, finance: 0.1,  events: 0.6, ashes: 0.0 },
+  reminder: { l3: 0.1, hd: 0.1, finance: 0.0,  events: 0.8, ashes: 0.0 },
+  task:     { l3: 0.2, hd: 0.1, finance: 0.0,  events: 0.7, ashes: 0.0 },
+};
+// ====================================================
+
+
 // ===================== CACHE (Upstash Redis) =====================
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -629,7 +644,9 @@ export async function POST(req: NextRequest) {
       return 'personal';
     }
 
-    const intent = classifyIntent(messageText);
+        const intent = classifyIntent(messageText);
+    const budget = INTENT_BUDGETS[intent] || INTENT_BUDGETS.personal;
+
     const blockPlan = {
       ...planContextualBlocks(detectedContexts),
       loadDiary:           intent === 'personal' || intent === 'focus',
@@ -639,22 +656,32 @@ export async function POST(req: NextRequest) {
       loadCalendar:        ['calendar', 'reminder'].includes(intent),
       loadTopics:          !['factual', 'task', 'focus'].includes(intent),
       // ✅ PATCH 3: loadFinances
-      loadFinances: detectedContexts.includes('financas') || intent === 'personal',
-    };
-    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| blockPlan:', blockPlan);
+      loadFinances: detectedContexts.includes('financas') || intent === 'finance',
 
-    // ✅ PATCH 2 (corrigido): busca do financeBlock depois de blockPlan definido
+      // Limites dinâmicos calculados
+      l3Limit: Math.floor(GLOBAL_MAX_CHARS * budget.l3),
+      hdLimit: Math.floor(GLOBAL_MAX_CHARS * budget.hd),
+      financeLimit: Math.floor(GLOBAL_MAX_CHARS * budget.finance),
+      eventsLimit: Math.floor(GLOBAL_MAX_CHARS * budget.events),
+      ashesLimit: Math.floor(GLOBAL_MAX_CHARS * budget.ashes),
+    };
+    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| L3 Limit:', blockPlan.l3Limit);
+
+    
+        // ✅ PATCH 2: Busca com limite de Sabedoria
     let financeBlock = '';
-    if (blockPlan.loadFinances) {
+    if (blockPlan.loadFinances && blockPlan.financeLimit > 0) {
       const key = `finance_block_${numericUserIdStr}`;
       const cached = await cache.get<string>(key);
       if (cached !== null) {
-        financeBlock = cached;
+        financeBlock = truncateByWeight(cached, 1.0, blockPlan.financeLimit);
       } else {
-        financeBlock = await buildFinanceBlock(Number(numericUserIdStr), authUserId!).catch(() => '');
+        let fullFinance = await buildFinanceBlock(Number(numericUserIdStr), authUserId!).catch(() => '');
+        financeBlock = truncateByWeight(fullFinance, 1.0, blockPlan.financeLimit);
         await cache.set(key, financeBlock, 120000); // 2 min
       }
     }
+
 
     // ========== Ajuste adaptativo baseado no histórico do critic ==========
     let adaptiveTemperatureOffset = 0;
@@ -822,12 +849,13 @@ export async function POST(req: NextRequest) {
       personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
     }
 
-    const cleanRamForWeights = ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
+        const cleanRamForWeights = ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
     const weights = classifyTemporalHorizon(messageText, cleanRamForWeights, pendingQuestion);
-    const truncatedL3     = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, 6000) : '';
-    const truncatedHd     = blockPlan.loadHD ? truncateByWeight(hdBlock, weights.hd, 6000) : '';
-    const truncatedAshes  = (blockPlan.loadAshes && ashesBlockRaw) ? truncateByWeight(ashesBlockRaw, weights.ashes, 6000) : null;
-    const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
+    // Aplicação da Sabedoria: Limites ditados pelo blockPlan em vez de fixos
+    const truncatedL3     = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, blockPlan.l3Limit) : '';
+    const truncatedHd     = blockPlan.loadHD ? truncateByWeight(hdBlock, weights.hd, blockPlan.hdLimit) : '';
+    const truncatedAshes  = (blockPlan.loadAshes && ashesBlockRaw) ? truncateByWeight(ashesBlockRaw, weights.ashes, blockPlan.ashesLimit) : null;
+    const truncatedEvents = truncateByWeight(eventsBlock, weights.events, blockPlan.eventsLimit);
 
     const isFemale = currentContextL3.toLowerCase().includes('feminino') || currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
