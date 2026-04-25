@@ -15,16 +15,17 @@ const supabase = createClient(
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
     const { data, error } = await supabase
       .from('credit_invoices')
       .select('*')
-      .eq('account_id', params.id)
+      .eq('account_id', id)
       .eq('jarvis_user_id', user.jarvisUserId)
       .order('reference_month', { ascending: false })
       .limit(12);
