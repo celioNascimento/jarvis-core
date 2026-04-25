@@ -22,9 +22,11 @@ async function resolveUser(req: NextRequest) {
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string; invoiceId: string } }
+  context: { params: Promise<{ id: string; invoiceId: string }> } // <-- Correção aqui
 ) {
   try {
+    const params = await context.params; // <-- Await adicionado aqui
+
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
