@@ -12,6 +12,13 @@ import { updateGoalProgress } from '@/lib/diary';
 import { getCachedEmbedding } from './embedding-cache';
 import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
 import { handleSalvarEvento } from './tools-executor-agenda-patch';
+import {
+  executeRegistrarTransacao,
+  executeConsultarFinancas,
+  executeCriarOrcamento,
+  executeListarOrcamentos,
+} from '@/lib/finances/executor';
+
 
 function assertNumericUserId(id: string, context: string): void {
   if (!/^\d+$/.test(id)) {
@@ -424,6 +431,15 @@ export async function executeTool(
 
       return `A rotina "${action}" ancorada em "${anchor}" no período ${period} foi criada com sucesso! Confirme ao utilizador de forma curta, elegante e encorajadora.`;
     }
+
+    case 'registrar_transacao':
+      return executeRegistrarTransacao(args, authUserId, numericUserIdStr);
+    case 'consultar_financas':
+      return executeConsultarFinancas(args, authUserId, numericUserIdStr);
+    case 'criar_orcamento':
+      return executeCriarOrcamento(args, authUserId, numericUserIdStr);
+    case 'listar_orcamentos':
+      return executeListarOrcamentos(authUserId, numericUserIdStr);
 
     default:
       return `Ferramenta ${name} não implementada.`;
