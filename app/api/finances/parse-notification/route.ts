@@ -1,10 +1,10 @@
 // app/api/finances/parse-notification/route.ts
-// Recebe texto de notificação bancária e cria transação pendente
-// Chamado pelo app React Native quando intercepta uma push notification
+// V2 — detecta automaticamente se é notificação bancária ou de corretora
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { parseNotification } from '@/lib/finances/notification-parser';
+import { parseBrokerNotification, isBrokerNotification } from '@/lib/finances/broker-parser';
 import { resolveCategoryId, resolveAccountId } from '@/lib/finances/db';
 
 const supabase = createClient(
@@ -14,40 +14,25 @@ const supabase = createClient(
 );
 
 async function resolveUser(req: NextRequest) {
-  const authHeader = req.headers.get('authorization') || '';
-  const token = authHeader.replace('Bearer ', '').trim();
+  const token = (req.headers.get('authorization') || '').replace('Bearer ', '').trim();
   if (!token) return null;
-
   const { createClient: c } = await import('@supabase/supabase-js');
-  const authClient = c(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
-  const { data: { user } } = await authClient.auth.getUser(token);
+  const { data: { user } } = await c(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!).auth.getUser(token);
   if (!user) return null;
-
-  const { data: jarvisUser } = await supabase
-    .from('users')
-    .select('id, email')
-    .eq('auth_user_id', user.id)
-    .maybeSingle();
-
-  return jarvisUser
-    ? { authUserId: user.id, jarvisUserId: jarvisUser.id as number }
-    : null;
+  const { data: j } = await supabase.from('users').select('id').eq('auth_user_id', user.id).maybeSingle();
+  return j ? { authUserId: user.id, jarvisUserId: j.id as number } : null;
 }
 
-// Mapeamento heurístico merchant → categoria
 const MERCHANT_CATEGORY_MAP: Array<{ pattern: RegExp; category: string }> = [
-  { pattern: /ifood|rappi|uber\s*eats|delivery|hamburger|pizza|restaurante|lanche|refeição/i, category: 'Alimentação' },
-  { pattern: /mercado|supermercado|carrefour|extra|pão\s*de\s*açúcar|atacadão|rede\s*attack|hortifruti|feira/i, category: 'Alimentação' },
-  { pattern: /uber|99|cabify|taxi|ônibus|metro|metrô|combustível|gasolina|shell|ipiranga|posto/i, category: 'Transporte' },
-  { pattern: /farmácia|farmacia|drogaria|droga\s*raia|ultrafarma|panvel/i, category: 'Saúde' },
-  { pattern: /academia|smartfit|bio\s*ritmo|gym/i, category: 'Saúde' },
-  { pattern: /netflix|spotify|amazon\s*prime|hbo|disney|globoplay|youtube\s*premium/i, category: 'Assinaturas' },
-  { pattern: /amazon|mercado\s*livre|shopee|aliexpress|magalu|americanas|casas\s*bahia/i, category: 'Compras' },
-  { pattern: /escola|faculdade|universidade|curso|udemy|alura|estacio/i, category: 'Educação' },
-  { pattern: /aluguel|condomínio|condominio|iptu|água|agua|luz|energia|gás|gas\s*natural/i, category: 'Moradia' },
-  { pattern: /bar|boteco|cerveja|chopp|pub/i, category: 'Lazer' },
-  { pattern: /cinema|ingresso|teatro|show|concerto|bilheteria/i, category: 'Lazer' },
-  { pattern: /salário|salario|pagamento|folha/i, category: 'Salário' },
+  { pattern: /ifood|rappi|uber\s*eats|delivery|restaurante|lanche/i, category: 'Alimentação' },
+  { pattern: /mercado|supermercado|carrefour|extra|pão\s*de\s*açúcar|hortifruti/i, category: 'Alimentação' },
+  { pattern: /uber|99|cabify|combustível|gasolina|shell|ipiranga|posto/i, category: 'Transporte' },
+  { pattern: /farmácia|drogaria|droga\s*raia|ultrafarma/i, category: 'Saúde' },
+  { pattern: /academia|smartfit|gym/i, category: 'Saúde' },
+  { pattern: /netflix|spotify|amazon\s*prime|hbo|disney|globoplay/i, category: 'Assinaturas' },
+  { pattern: /amazon|mercado\s*livre|shopee|americanas/i, category: 'Vestuário' },
+  { pattern: /escola|faculdade|curso|udemy|alura/i, category: 'Educação' },
+  { pattern: /aluguel|condomínio|iptu|água|energia|gás/i, category: 'Moradia' },
 ];
 
 function inferCategory(merchant: string | null, description: string | null): string | null {
@@ -66,158 +51,155 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { notification_text, notification_title, app_package, notification_time } = body;
 
-    if (!notification_text && !notification_title) {
+    if (!notification_text && !notification_title)
       return NextResponse.json({ error: 'notification_text obrigatório' }, { status: 400 });
-    }
 
     const fullText = [notification_title, notification_text].filter(Boolean).join(' — ');
+    const today = notification_time
+      ? new Date(notification_time).toISOString().split('T')[0]
+      : new Date().toISOString().split('T')[0];
 
-    // 1. Parsear a notificação
-    const parsed = await parseNotification(fullText);
-
-    // Se confidence muito baixa ou sem valor, não cria transação
-    if (!parsed.amount || parsed.confidence < 0.4) {
-      return NextResponse.json({
-        ok: false,
-        skipped: true,
-        reason: 'Notificação não reconhecida como transação financeira',
-        confidence: parsed.confidence,
-      });
-    }
-
-    // 2. Detectar banco pelo app_package se não veio no parse
-    let bank = parsed.bank;
-    if (!bank && app_package) {
-      const PACKAGE_BANK_MAP: Record<string, string> = {
-        'com.nu.production': 'Nubank',
-        'com.itau': 'Itaú',
-        'com.bradesco': 'Bradesco',
-        'com.santander.app': 'Santander',
-        'br.com.intermedium': 'Inter',
-        'com.c6bank.app': 'C6 Bank',
-        'br.com.bb.android': 'Banco do Brasil',
-        'com.caixa.tem': 'Caixa',
-      };
-      bank = PACKAGE_BANK_MAP[app_package] || null;
-    }
-
-    // 3. Inferir categoria
-    const inferredCategoryName = inferCategory(parsed.merchant, parsed.description);
-    let categoryId: string | null = null;
-    if (inferredCategoryName) {
-      categoryId = await resolveCategoryId(user.authUserId, inferredCategoryName, parsed.type || 'expense').catch(() => null);
-    }
-
-    // 4. Resolver conta pelo banco
-    let accountId: string | null = null;
-    if (bank) {
-      accountId = await resolveAccountId(user.jarvisUserId, user.authUserId, bank).catch(() => null);
-    }
-
-    // 5. Verificar duplicata (mesmo source_id nos últimos 5 min)
     const sourceId = `notif_${Buffer.from(fullText.slice(0, 60)).toString('base64')}`;
+
+    // Deduplicação
     const { data: existing } = await supabase
       .from('transactions')
       .select('id')
       .eq('jarvis_user_id', user.jarvisUserId)
-      .eq('source', 'notification')
       .eq('source_id', sourceId)
       .maybeSingle();
 
     if (existing) {
-      return NextResponse.json({
-        ok: false,
-        skipped: true,
-        reason: 'Transação duplicada — já registrada',
-        existing_id: existing.id,
-      });
+      return NextResponse.json({ ok: false, skipped: true, reason: 'Duplicata detectada', existing_id: existing.id });
     }
 
-    // 6. Criar transação com status 'pending' (aguarda confirmação do usuário)
-    const today = new Date().toISOString().split('T')[0];
-    const txDate = notification_time
-      ? new Date(notification_time).toISOString().split('T')[0]
-      : today;
+    // ── Detecta se é corretora ────────────────────────────────
+    if (isBrokerNotification(fullText, app_package)) {
+      const parsed = parseBrokerNotification(fullText, app_package);
+
+      if (!parsed || !parsed.gross_amount || parsed.confidence < 0.5) {
+        return NextResponse.json({ ok: false, skipped: true, reason: 'Evento de corretora não reconhecido', confidence: parsed?.confidence });
+      }
+
+      // Busca primeira carteira de investimento
+      const { data: invAcc } = await supabase
+        .from('investment_accounts')
+        .select('id')
+        .eq('jarvis_user_id', user.jarvisUserId)
+        .eq('is_active', true)
+        .order('sort_order')
+        .limit(1)
+        .maybeSingle();
+
+      if (!invAcc) {
+        return NextResponse.json({ ok: false, skipped: true, reason: 'Nenhuma carteira de investimento cadastrada' });
+      }
+
+      const { data: event, error: evtError } = await supabase
+        .from('investment_events')
+        .insert({
+          investment_account_id: invAcc.id,
+          user_id:               user.authUserId,
+          jarvis_user_id:        user.jarvisUserId,
+          event_type:            parsed.event_type,
+          ticker:                parsed.ticker,
+          asset_name:            parsed.ticker || null,
+          gross_amount:          parsed.gross_amount,
+          ir_amount:             parsed.ir_amount || 0,
+          net_amount:            parsed.net_amount ?? parsed.gross_amount,
+          event_date:            today,
+          source:                'notification',
+          source_id:             sourceId,
+          raw_notification:      fullText,
+          broker_ref:            parsed.broker || null,
+          auto_create_transaction: true,
+        })
+        .select('id')
+        .single();
+
+      if (evtError) throw evtError;
+
+      // Push de confirmação
+      await sendConfirmationPush(user.jarvisUserId, {
+        title: `${parsed.broker || 'Corretora'} — ${parsed.event_type}`,
+        body: `${parsed.ticker ? parsed.ticker + ' · ' : ''}+R$${(parsed.net_amount ?? parsed.gross_amount).toFixed(2).replace('.', ',')}. Confirmar?`,
+        data: { type: 'investment_event', event_id: event.id },
+      });
+
+      return NextResponse.json({
+        ok: true, type: 'investment_event', event_id: event.id,
+        parsed: { event_type: parsed.event_type, ticker: parsed.ticker, net_amount: parsed.net_amount, confidence: parsed.confidence },
+      }, { status: 201 });
+    }
+
+    // ── Notificação bancária (transação) ──────────────────────
+    const parsed = await parseNotification(fullText);
+
+    if (!parsed.amount || parsed.confidence < 0.4) {
+      return NextResponse.json({ ok: false, skipped: true, reason: 'Notificação não reconhecida', confidence: parsed.confidence });
+    }
+
+    let categoryId: string | null = null;
+    const inferredCat = inferCategory(parsed.merchant, parsed.description);
+    if (inferredCat) {
+      categoryId = await resolveCategoryId(user.authUserId, inferredCat, parsed.type || 'expense').catch(() => null);
+    }
+
+    let accountId: string | null = null;
+    if (parsed.bank) {
+      accountId = await resolveAccountId(user.jarvisUserId, user.authUserId, parsed.bank).catch(() => null);
+    }
 
     const { data: transaction, error } = await supabase
       .from('transactions')
       .insert({
-        user_id: user.authUserId,
-        jarvis_user_id: user.jarvisUserId,
-        amount: parsed.amount,
-        type: parsed.type || 'expense',
-        description: parsed.description,
-        merchant: parsed.merchant,
-        transaction_date: txDate,
-        category_id: categoryId,
+        user_id:         user.authUserId,
+        jarvis_user_id:  user.jarvisUserId,
+        amount:          parsed.amount,
+        type:            parsed.type || 'expense',
+        description:     parsed.description,
+        merchant:        parsed.merchant,
+        transaction_date: today,
+        category_id:     categoryId,
         user_account_id: accountId,
-        source: 'notification',
-        source_id: sourceId,
-        raw_data: {
-          notification_title,
-          notification_text,
-          app_package,
-          bank,
-          parsed_by: parsed.confidence >= 0.75 ? 'regex' : 'llm',
-        },
-        status: 'pending', // usuário precisa confirmar
-        confidence: parsed.confidence,
+        source:          'notification',
+        source_id:       sourceId,
+        raw_data:        { notification_title, notification_text, app_package, bank: parsed.bank },
+        status:          'pending',
+        confidence:      parsed.confidence,
       })
-      .select('id, amount, type, merchant, status, transaction_date')
+      .select('id, amount, type, merchant')
       .single();
 
-    if (error) throw new Error(error.message);
+    if (error) throw error;
 
-    // 7. Enfileirar push notification para pedir confirmação ao usuário
-    // (usa o sistema de push existente)
-    try {
-      const { data: userRecord } = await supabase
-        .from('users')
-        .select('push_token, assistant_name')
-        .eq('id', user.jarvisUserId)
-        .maybeSingle();
+    const fmt = (n: number) => `R$${n.toFixed(2).replace('.', ',')}`;
 
-      if (userRecord?.push_token) {
-        const assistantName = userRecord.assistant_name || 'Lev';
-        const fmt = (n: number) =>
-          new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(n);
-
-        await fetch('https://exp.host/--/api/v2/push/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            to: userRecord.push_token,
-            title: `${assistantName} detectou uma transação`,
-            body: `${parsed.type === 'income' ? '+' : '-'}${fmt(parsed.amount)}${parsed.merchant ? ` · ${parsed.merchant}` : ''}. Confirmar?`,
-            data: {
-              type: 'finance_pending',
-              transaction_id: transaction.id,
-            },
-          }),
-        });
-      }
-    } catch (pushErr) {
-      // Push falha silenciosamente — transação já foi criada
-      console.warn('[ParseNotification] Push falhou:', pushErr);
-    }
+    await sendConfirmationPush(user.jarvisUserId, {
+      title: 'Transação detectada',
+      body: `${parsed.type === 'income' ? '+' : '-'}${fmt(parsed.amount)}${parsed.merchant ? ' · ' + parsed.merchant : ''}. Confirmar?`,
+      data: { type: 'finance_pending', transaction_id: transaction.id },
+    });
 
     return NextResponse.json({
-      ok: true,
-      transaction_id: transaction.id,
-      parsed: {
-        amount: parsed.amount,
-        type: parsed.type,
-        merchant: parsed.merchant,
-        category: inferredCategoryName,
-        confidence: parsed.confidence,
-        bank,
-      },
-      status: 'pending',
-      message: `Transação de ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(parsed.amount)} detectada e aguardando confirmação.`,
+      ok: true, type: 'transaction', transaction_id: transaction.id,
+      parsed: { amount: parsed.amount, type: parsed.type, merchant: parsed.merchant, confidence: parsed.confidence },
     }, { status: 201 });
 
   } catch (e: any) {
     console.error('[ParseNotification]', e);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
+}
+
+async function sendConfirmationPush(jarvisUserId: number, notification: { title: string; body: string; data: any }) {
+  try {
+    const { data: u } = await supabase.from('users').select('push_token').eq('id', jarvisUserId).maybeSingle();
+    if (!u?.push_token) return;
+    await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: u.push_token, ...notification }),
+    });
+  } catch { /* silencioso */ }
 }
