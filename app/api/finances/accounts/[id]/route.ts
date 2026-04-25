@@ -3,6 +3,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { resolveUser } from '@/lib/finances/auth';
+
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -10,29 +12,19 @@ const supabase = createClient(
   { db: { schema: 'jarvis' } }
 );
 
-async function resolveUser(req: NextRequest) {
-  const token = (req.headers.get('authorization') || '').replace('Bearer ', '').trim();
-  if (!token) return null;
-  const { createClient: c } = await import('@supabase/supabase-js');
-  const { data: { user } } = await c(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!).auth.getUser(token);
-  if (!user) return null;
-  const { data: j } = await supabase.from('users').select('id').eq('auth_user_id', user.id).maybeSingle();
-  return j ? { authUserId: user.id, jarvisUserId: j.id as number } : null;
-}
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: { id: string } }
 ) {
   try {
-    const { id } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
     const { data, error } = await supabase
       .from('user_accounts')
       .select('*')
-      .eq('id', id)
+      .eq('id', params.id)
       .eq('jarvis_user_id', user.jarvisUserId)
       .maybeSingle();
 
@@ -47,10 +39,9 @@ export async function GET(
 
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: { id: string } }
 ) {
   try {
-    const { id } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
@@ -70,7 +61,7 @@ export async function PATCH(
     const { data, error } = await supabase
       .from('user_accounts')
       .update(update)
-      .eq('id', id)
+      .eq('id', params.id)
       .eq('jarvis_user_id', user.jarvisUserId)
       .select('*')
       .single();
@@ -84,10 +75,9 @@ export async function PATCH(
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: { id: string } }
 ) {
   try {
-    const { id } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
@@ -95,7 +85,7 @@ export async function DELETE(
     const { error } = await supabase
       .from('user_accounts')
       .update({ is_active: false })
-      .eq('id', id)
+      .eq('id', params.id)
       .eq('jarvis_user_id', user.jarvisUserId);
 
     if (error) throw error;
