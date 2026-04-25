@@ -10,6 +10,8 @@ import {
   getPeriodDates,
 } from '@/lib/finances/db';
 import type { CreateTransactionPayload, TransactionType } from '@/lib/finances/types';
+import { resolveUser } from '@/lib/finances/auth';
+
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -17,28 +19,6 @@ const supabase = createClient(
   { db: { schema: 'jarvis' } }
 );
 
-async function resolveUser(req: NextRequest) {
-  const authHeader = req.headers.get('authorization') || '';
-  const token = authHeader.replace('Bearer ', '').trim();
-  if (!token) return null;
-
-  // Resolve via auth_user_id → jarvis.users
-  const { createClient: createSupabaseClient } = await import('@supabase/supabase-js');
-  const authClient = createSupabaseClient(
-    process.env.SUPABASE_URL!,
-    process.env.SUPABASE_ANON_KEY!
-  );
-  const { data: { user } } = await authClient.auth.getUser(token);
-  if (!user) return null;
-
-  const { data: jarvisUser } = await supabase
-    .from('users')
-    .select('id, email')
-    .eq('auth_user_id', user.id)
-    .maybeSingle();
-
-  return jarvisUser ? { authUserId: user.id, jarvisUserId: jarvisUser.id } : null;
-}
 
 export async function GET(req: NextRequest) {
   try {
