@@ -6,8 +6,8 @@ import type { NextRequest } from 'next/server'
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  // Só protege rotas /wm (exceto /wm/login e /api/*)
-  if (!pathname.startsWith('/wm') || pathname.startsWith('/wm/login') || pathname.startsWith('/api/')) {
+  // 1. Se for login, ignora para evitar loop
+  if (pathname.startsWith('/wm/login')) {
     return NextResponse.next()
   }
 
@@ -32,18 +32,26 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // Refresh da sessão — mantém o usuário logado
+  // Refresh crucial da sessão para manter o token vivo
   const { data: { user } } = await supabase.auth.getUser()
 
-  if (!user) {
+  // 2. Proteção para Rotas de Interface (WEB)
+  if (pathname.startsWith('/wm') && !user) {
     const loginUrl = new URL('/wm/login', request.url)
     loginUrl.searchParams.set('redirectTo', pathname)
     return NextResponse.redirect(loginUrl)
+  }
+
+  // 3. Proteção para API (JSON)
+  // Se for API e não tiver usuário, retorna 401 direto em vez de redirect
+  if (pathname.startsWith('/api/') && !user) {
+    return NextResponse.json({ error: 'Sessão expirada ou inválida' }, { status: 401 })
   }
 
   return response
 }
 
 export const config = {
-  matcher: ['/wm/:path*'],
+  // Ajustado para capturar tanto o painel web quanto a API
+  matcher: ['/wm/:path*', '/api/:path*'],
 }
