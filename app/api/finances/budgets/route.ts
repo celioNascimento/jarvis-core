@@ -4,6 +4,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getBudgetsWithUsage, createBudget } from '@/lib/finances/db';
+import { resolveUser } from '@/lib/finances/auth';
+
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -11,24 +13,6 @@ const supabase = createClient(
   { db: { schema: 'jarvis' } }
 );
 
-async function resolveUser(req: NextRequest) {
-  const authHeader = req.headers.get('authorization') || '';
-  const token = authHeader.replace('Bearer ', '').trim();
-  if (!token) return null;
-
-  const { createClient: c } = await import('@supabase/supabase-js');
-  const authClient = c(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
-  const { data: { user } } = await authClient.auth.getUser(token);
-  if (!user) return null;
-
-  const { data: jarvisUser } = await supabase
-    .from('users')
-    .select('id')
-    .eq('auth_user_id', user.id)
-    .maybeSingle();
-
-  return jarvisUser ? { authUserId: user.id, jarvisUserId: jarvisUser.id } : null;
-}
 
 export async function GET(req: NextRequest) {
   try {
