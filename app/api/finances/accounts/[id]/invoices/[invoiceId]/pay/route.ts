@@ -15,9 +15,10 @@ const supabase = createClient(
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string; invoiceId: string } }
+  { params }: { params: Promise<{ id: string; invoiceId: string }> }
 ) {
   try {
+    const { id, invoiceId } = await params;
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
@@ -27,8 +28,8 @@ export async function POST(
     const { data: invoice } = await supabase
       .from('credit_invoices')
       .select('*')
-      .eq('id', params.invoiceId)
-      .eq('account_id', params.id)
+      .eq('id', invoiceId)
+      .eq('account_id', id)
       .eq('jarvis_user_id', user.jarvisUserId)
       .maybeSingle();
 
@@ -45,7 +46,7 @@ export async function POST(
         status:      invoice.paid_amount + payAmount >= invoice.total_amount ? 'paid' : invoice.status,
         paid_at:     new Date().toISOString(),
       })
-      .eq('id', params.invoiceId);
+      .eq('id', invoiceId);
 
     if (invError) throw invError;
 
@@ -64,7 +65,7 @@ export async function POST(
     const { data: account } = await supabase
       .from('user_accounts')
       .select('linked_account_id')
-      .eq('id', params.id)
+      .eq('id', id)
       .maybeSingle();
 
     const refMonth = new Date(invoice.reference_month + 'T12:00:00')
