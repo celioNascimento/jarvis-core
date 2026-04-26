@@ -1033,13 +1033,13 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       content: `[INTERNO] Responda APENAS o que foi perguntado. NUNCA diga "Anota aí" ou "Anotado!".`,
     });
 
-        // Dando fôlego para o modelo não cortar as respostas
-    let maxTokens = 1000;
-    if (isLikelyNoise) maxTokens = 250;
-    else if (detectedContexts.includes('emocao')) maxTokens = 1500;
-    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias') || detectedContexts.includes('clima')) maxTokens = 1200;
-    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 1200;
-    else if (detectedContexts.includes('casual')) maxTokens = 800;
+    let maxTokens = 1200;
+    if (isLikelyNoise)                      maxTokens = 300;
+    else if (intent === 'trivial')          maxTokens = 400;
+    else if (intent === 'casual')           maxTokens = 900;
+    else if (detectedContexts.includes('emocao'))  maxTokens = 1800;
+    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias')) maxTokens = 1400;
+    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto')) maxTokens = 1400;
     
     // ========== Self-Discovery ==========
     const isSelfDiscoveryQuery = /o que (você|vc) (sabe|conhece|tem|lembra)|quais (são|sao) suas (capacidades|funções|funcoes|ferramentas)|me fala sobre você|o que você pode|você (tem|sabe) algo sobre mim|minhas informações|meu perfil/i.test(messageText);
