@@ -1220,7 +1220,7 @@ Responda APENAS com JSON válido, sem markdown:
               [],
               'google/gemini-2.0-flash-001',
               0.1,
-              4000,
+              8000,
               200,
               'none',
             )
