@@ -3,15 +3,15 @@
 import { callOpenRouter } from '@/lib/jarvis';
 import { extractDiary, extractGoal } from '@/lib/diary';
 import { extractAndSummarize } from '@/lib/extractor';
-import { extractRecomendacao } from '@/lib/extractor-jobs';
+import { upsertEvent, getCategoryFromType, extractRecomendacao } from '@/lib/extractor-jobs';
 import { supabase } from '@/lib/jarvis';
 
 interface UnifiedExtractResult {
-  diary:          { texto: string; categoria: 'reflexao' | 'acontecimento' | 'gratidao' | 'qualquer' } | null;
-  goal:           { titulo: string; descricao: string } | null;
+  diary: { texto: string; categoria: 'reflexao' | 'acontecimento' | 'gratidao' | 'qualquer' } | null;
+  goal: { titulo: string; descricao: string } | null;
   recommendation: { tipo: string; titulo: string; descricao: string } | null;
-  summary:        { fato: string; relevancia: 'alta' | 'media' | 'baixa' } | null;
-  event:          { titulo: string; data_aproximada: string; categoria: string; notas: string } | null;
+  summary: { fato: string; relevancia: 'alta' | 'media' | 'baixa' } | null;
+  event: { titulo: string; data_aproximada: string; categoria: string; notas: string } | null;
 }
 
 const EMPTY: UnifiedExtractResult = {
@@ -57,9 +57,9 @@ function parseEventDate(dataAproximada: string): string {
       // Semana do dia das mães = segunda semana de maio
       const semana = lower.includes('primeira') ? 1
         : lower.includes('segunda') ? 8
-        : lower.includes('terceira') ? 15
-        : lower.includes('última') || lower.includes('ultima') ? 22
-        : 1;
+          : lower.includes('terceira') ? 15
+            : lower.includes('última') || lower.includes('ultima') ? 22
+              : 1;
       return new Date(ano, idx, semana).toISOString();
     }
   }
@@ -160,21 +160,17 @@ export async function runUnifiedExtractor(
       (async () => {
         try {
           const eventDate = parseEventDate(data.event!.data_aproximada);
-          const { error } = await supabase
-            .from('events')
-            .insert({
-              user_id:          parseInt(userId, 10),
-              title:            data.event!.titulo,
-              event_date:       eventDate,
-              category:         data.event!.categoria,
-              notes:            data.event!.notas,
-              relevance_score:  0.8,
-              emotional_weight: 0.5,
-              is_recurring:     false,
-              decay_type:       'none',
-            });
-          if (error) console.error('[UnifiedExtractor] event insert:', error.message);
-          else console.log(`[UnifiedExtractor] Evento salvo: "${data.event!.titulo}" → ${eventDate}`);
+          await upsertEvent(userId, {
+            title: data.event!.titulo,
+            event_date: eventDate,
+            category: data.event!.categoria,
+            priority: 'media',
+            decay_type: 'one_time',
+            emotional_weight: 0.6,
+            is_recurring: false,
+            notes: data.event!.notas || null,
+          });
+          console.log(`[UnifiedExtractor] Evento salvo: "${data.event!.titulo}" → ${eventDate}`);
         } catch (e) {
           console.error('[UnifiedExtractor] event:', e);
         }
