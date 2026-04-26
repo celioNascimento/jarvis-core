@@ -75,6 +75,11 @@ export async function withRetry<T>(
       }
     }
   }
-  console.error('Falha após retries:', lastError);
+  
+  if (lastError instanceof Error && lastError.name === 'AbortError') {
+    console.warn('[OpenRouter] Chamada cancelada (background)');
+  } else {
+    console.error('[OpenRouter] Falha após retries:', lastError);
+  }
   return null;
 }
