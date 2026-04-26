@@ -635,19 +635,23 @@ export async function POST(req: NextRequest) {
     const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
     const temperature = getTemperature(detectedContexts);
 
-    function classifyIntent(message: string): string {
-      const m = message.toLowerCase();
-      if (/foco|tdah|sobrecarregado|procrastinando|travado|paralisado|por onde começo|quebrar tarefa/.test(m)) return 'focus';
-      if (/agenda|reunião|compromisso|semana|calendário/.test(m)) return 'calendar';
-      if (/email|mensagem|caixa|inbox|respondeu/.test(m)) return 'email';
-      if (/lembra|me avisa|não esquecer|lembrete|avisa/.test(m)) return 'reminder';
-      if (/como fazer|o que é|diferença|explica|qual é|por que|como funciona/.test(m)) return 'factual';
-      if (/me sinto|tô |estou |foi difícil|desabafar|cansado|ansioso/.test(m)) return 'personal';
-      if (/faz|cria|gera|escreve|monta|lista|resume/.test(m)) return 'task';
-      return 'personal';
-    }
+  function classifyIntent(message: string, contexts: ContextType[], isNoise: boolean, isTrivial: boolean): string {
+  const m = message.toLowerCase();
+  if (isTrivial) return 'trivial';
+  if (isNoise || contexts.includes('casual')) return 'casual';
+  if (/foco|tdah|sobrecarregado|procrastinando|travado|paralisado|por onde começo|quebrar tarefa/.test(m)) return 'focus';
+  if (/agenda|reunião|compromisso|semana|calendário/.test(m)) return 'calendar';
+  if (/email|mensagem|caixa|inbox|respondeu/.test(m)) return 'email';
+  if (/lembra|me avisa|não esquecer|lembrete|avisa/.test(m)) return 'reminder';
+  if (/como fazer|o que é|diferença|explica|qual é|por que|como funciona/.test(m)) return 'factual';
+  if (/me sinto|tô |estou |foi difícil|desabafar|cansado|ansioso/.test(m)) return 'personal';
+  if (/faz|cria|gera|escreve|monta|lista|resume/.test(m)) return 'task';
+  return 'personal';
+}
 
-        const intent = classifyIntent(messageText);
+    const intent = classifyIntent(messageText, detectedContexts, isLikelyNoise, isTrivialEarly);
+
+      
     const budget = INTENT_BUDGETS[intent] || INTENT_BUDGETS.personal;
 
     const blockPlan = {
