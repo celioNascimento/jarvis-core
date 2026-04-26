@@ -27,7 +27,7 @@ type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 export async function callOpenRouter(
   input: string | ChatMessage[],
-  model: string = "google/gemini-2.0-flash-001",  
+  model: string = "google/gemini-2.0-flash-001",
   temperature: number = 0.7
 ): Promise<string> {
   try {
@@ -331,8 +331,12 @@ TAREFA: Integre as novas informações ao Dossiê existente.
         .update({ current_context: newContext })
         .eq('id', userId);
 
-      await redis.del(`l3_chunks_${userId}`);
-
+      import('@/lib/chat/l3-chunks').then(({ indexL3Chunks }) => {
+        indexL3Chunks(Number(userId), newContext).catch(e =>
+          console.error('[L3Chunks] Reindexação pós-compactação falhou:', e)
+        );
+      });
+      
       await supabase.from('memories').insert([{
         summary: newContext,
         embedding,
