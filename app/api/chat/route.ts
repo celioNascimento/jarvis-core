@@ -1061,6 +1061,7 @@ Use essas informações para responder à pergunta do usuário de forma natural,
 
       console.log('[SelfDiscovery] Contexto injetado — integrações ativas:', activeIntegrations);
     }
+    console.log('[Tools] salvar_evento desc:', tools.find(t => t.function.name === 'salvar_evento')?.function.description?.slice(0, 60));
 
     // ReAct Loop
     let finalResponse = '';
