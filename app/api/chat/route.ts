@@ -158,7 +158,16 @@ function buildWeatherBlock(weather: Record<string, any> | null | undefined): str
   if (weather.humidity != null) parts.push(`Umidade ${weather.humidity}%`);
   if (weather.wind != null) parts.push(`Vento ${weather.wind} km/h`);
   if (weather.feelsLike != null) parts.push(`Sensação ${Math.round(weather.feelsLike)}°C`);
-  if (weather.forecast) parts.push(`Previsão: ${weather.forecast}`);
+  if (weather.forecast) {
+    const forecastStr = Array.isArray(weather.forecast)
+      ? weather.forecast
+        .map((d: any) => `${d.date ?? d.day ?? ''}: ${d.condition ?? d.description ?? ''}`.trim())
+        .filter(Boolean)
+        .slice(0, 3)
+        .join(', ')
+      : String(weather.forecast);
+    if (forecastStr) parts.push(`Previsão: ${forecastStr}`);
+  }
   return parts.join(' · ');
 }
 
@@ -1066,7 +1075,12 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     // ReAct Loop
     let finalResponse = '';
     let attempts = 0;
-    let forcedToolChoice: any = isReminderIntent ? { type: 'function', function: { name: 'create_reminder' } } : 'auto';
+    const isCalendarIntent = intent === 'calendar' || /crie?|adicione?|salve?|coloque?/.test(messageText.toLowerCase()) && detectedContexts.includes('agenda');
+    let forcedToolChoice: any = isReminderIntent
+      ? { type: 'function', function: { name: 'create_reminder' } }
+      : isCalendarIntent
+        ? { type: 'function', function: { name: 'salvar_evento' } }
+        : 'auto';
 
     const effectiveTemperature = Math.min(1.0, Math.max(0.0, temperature + adaptiveTemperatureOffset));
     const effectiveMaxTokens = Math.round(maxTokens * adaptiveMaxTokensMultiplier);
