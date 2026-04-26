@@ -56,26 +56,8 @@ import { buildPersonalityBlock } from '@/lib/chat/personality';
 import { buildProfileBlock } from '@/lib/chat/profile-block';
 import { promotePatternToPrinciple } from '@/lib/chat/pattern-promoter';
 import { buildFinanceBlock } from '@/lib/finances/db'; // ✅ PATCH 1
-import { getSemanticL3 } from '@/lib/chat/l3-semantic';
 
 export const maxDuration = 60;
-
-// ========== SABEDORIA: ORÇAMENTO DE TOKENS ==========
-const GLOBAL_MAX_CHARS = 12000;
-const INTENT_BUDGETS: Record<string, { l3: number, hd: number, finance: number, events: number, ashes: number }> = {
-  personal: { l3: 0.6, hd: 0.2, finance: 0.05, events: 0.1, ashes: 0.05 },
-  factual:  { l3: 0.1, hd: 0.6, finance: 0.1,  events: 0.1, ashes: 0.1 },
-  finance:  { l3: 0.1, hd: 0.1, finance: 0.7,  events: 0.1, ashes: 0.0 },
-  focus:    { l3: 0.3, hd: 0.1, finance: 0.0,  events: 0.6, ashes: 0.0 },
-  calendar: { l3: 0.1, hd: 0.1, finance: 0.0,  events: 0.8, ashes: 0.0 },
-  email:    { l3: 0.2, hd: 0.1, finance: 0.1,  events: 0.6, ashes: 0.0 },
-  reminder: { l3: 0.1, hd: 0.1, finance: 0.0,  events: 0.8, ashes: 0.0 },
-  task:     { l3: 0.2, hd: 0.1, finance: 0.0,  events: 0.7, ashes: 0.0 },
-  casual:  { l3: 0.2, hd: 0.1, finance: 0.0, events: 0.05, ashes: 0.0 },
-  trivial: { l3: 0.05, hd: 0.0, finance: 0.0, events: 0.0, ashes: 0.0 },
-};
-// ====================================================
-
 
 // ===================== CACHE (Upstash Redis) =====================
 const redis = new Redis({
@@ -176,12 +158,7 @@ function buildWeatherBlock(weather: Record<string, any> | null | undefined): str
   if (weather.humidity != null) parts.push(`Umidade ${weather.humidity}%`);
   if (weather.wind != null)     parts.push(`Vento ${weather.wind} km/h`);
   if (weather.feelsLike != null) parts.push(`Sensação ${Math.round(weather.feelsLike)}°C`);
-  if (weather.forecast) {
-    const forecastStr = Array.isArray(weather.forecast)
-      ? weather.forecast.map((f: any) => f?.description || f?.condition || '').filter(Boolean).slice(0, 2).join(', ')
-      : String(weather.forecast);
-    if (forecastStr) parts.push(`Previsão: ${forecastStr}`);
-  }
+  if (weather.forecast)         parts.push(`Previsão: ${weather.forecast}`);
   return parts.join(' · ');
 }
 
@@ -436,8 +413,7 @@ export async function POST(req: NextRequest) {
     const hasEnoughHistory = historySession && historySession.length >= 2;
 
     if (hasEnoughHistory) {
-            
-      const pairsToUse = historySession.slice(0, 12);
+      const pairsToUse = shiftDetected ? historySession.slice(0, 1) : historySession.slice(0, 4);
       recentPairs = [...pairsToUse].reverse().flatMap((h: any) => [
         { role: 'user' as const, content: h.content },
         { role: 'assistant' as const, content: trimAssistantReply(h.metadata?.ai_reply || '') },
@@ -638,29 +614,22 @@ export async function POST(req: NextRequest) {
     topicEmotionalDimension = topicEmotionalDimValue;
 
     // ========== 9. Roteamento e blockPlan ==========
-    const isLikelyNoise = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i.test(messageText.trim()) && messageText.length < 30;
     const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
     const temperature = getTemperature(detectedContexts);
 
-  function classifyIntent(message: string, contexts: ContextType[], isNoise: boolean, isTrivial: boolean): string {
-  const m = message.toLowerCase();
-  if (isTrivial) return 'trivial';
-  if (isNoise || contexts.includes('casual')) return 'casual';
-  if (/foco|tdah|sobrecarregado|procrastinando|travado|paralisado|por onde começo|quebrar tarefa/.test(m)) return 'focus';
-  if (/agenda|reunião|compromisso|semana|calendário/.test(m)) return 'calendar';
-  if (/email|mensagem|caixa|inbox|respondeu/.test(m)) return 'email';
-  if (/lembra|me avisa|não esquecer|lembrete|avisa/.test(m)) return 'reminder';
-  if (/como fazer|o que é|diferença|explica|qual é|por que|como funciona/.test(m)) return 'factual';
-  if (/me sinto|tô |estou |foi difícil|desabafar|cansado|ansioso/.test(m)) return 'personal';
-  if (/faz|cria|gera|escreve|monta|lista|resume/.test(m)) return 'task';
-  return 'personal';
-}
+    function classifyIntent(message: string): string {
+      const m = message.toLowerCase();
+      if (/foco|tdah|sobrecarregado|procrastinando|travado|paralisado|por onde começo|quebrar tarefa/.test(m)) return 'focus';
+      if (/agenda|reunião|compromisso|semana|calendário/.test(m)) return 'calendar';
+      if (/email|mensagem|caixa|inbox|respondeu/.test(m)) return 'email';
+      if (/lembra|me avisa|não esquecer|lembrete|avisa/.test(m)) return 'reminder';
+      if (/como fazer|o que é|diferença|explica|qual é|por que|como funciona/.test(m)) return 'factual';
+      if (/me sinto|tô |estou |foi difícil|desabafar|cansado|ansioso/.test(m)) return 'personal';
+      if (/faz|cria|gera|escreve|monta|lista|resume/.test(m)) return 'task';
+      return 'personal';
+    }
 
-    const intent = classifyIntent(messageText, detectedContexts, isLikelyNoise, isTrivialEarly);
-
-      
-    const budget = INTENT_BUDGETS[intent] || INTENT_BUDGETS.personal;
-
+    const intent = classifyIntent(messageText);
     const blockPlan = {
       ...planContextualBlocks(detectedContexts),
       loadDiary:           intent === 'personal' || intent === 'focus',
@@ -668,34 +637,24 @@ export async function POST(req: NextRequest) {
       loadRecommendations: intent === 'personal',
       loadEmail:           intent === 'email',
       loadCalendar:        ['calendar', 'reminder'].includes(intent),
-      loadTopics:          !['factual', 'task', 'focus', 'casual', 'trivial'].includes(intent),
+      loadTopics:          !['factual', 'task', 'focus'].includes(intent),
       // ✅ PATCH 3: loadFinances
-      loadFinances: detectedContexts.includes('financas') || intent === 'finance',
-
-      // Limites dinâmicos calculados
-      l3Limit: Math.floor(GLOBAL_MAX_CHARS * budget.l3),
-      hdLimit: Math.floor(GLOBAL_MAX_CHARS * budget.hd),
-      financeLimit: Math.floor(GLOBAL_MAX_CHARS * budget.finance),
-      eventsLimit: Math.floor(GLOBAL_MAX_CHARS * budget.events),
-      ashesLimit: Math.floor(GLOBAL_MAX_CHARS * budget.ashes),
+      loadFinances: detectedContexts.includes('financas') || intent === 'personal',
     };
-    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| L3 Limit:', blockPlan.l3Limit);
+    console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| blockPlan:', blockPlan);
 
-    
-        // ✅ PATCH 2: Busca com limite de Sabedoria
+    // ✅ PATCH 2 (corrigido): busca do financeBlock depois de blockPlan definido
     let financeBlock = '';
-    if (blockPlan.loadFinances && blockPlan.financeLimit > 0) {
+    if (blockPlan.loadFinances) {
       const key = `finance_block_${numericUserIdStr}`;
       const cached = await cache.get<string>(key);
       if (cached !== null) {
-        financeBlock = truncateByWeight(cached, 1.0, blockPlan.financeLimit);
+        financeBlock = cached;
       } else {
-        let fullFinance = await buildFinanceBlock(Number(numericUserIdStr), authUserId!).catch(() => '');
-        financeBlock = truncateByWeight(fullFinance, 1.0, blockPlan.financeLimit);
+        financeBlock = await buildFinanceBlock(Number(numericUserIdStr), authUserId!).catch(() => '');
         await cache.set(key, financeBlock, 120000); // 2 min
       }
     }
-
 
     // ========== Ajuste adaptativo baseado no histórico do critic ==========
     let adaptiveTemperatureOffset = 0;
@@ -865,19 +824,16 @@ export async function POST(req: NextRequest) {
 
     const cleanRamForWeights = ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
     const weights = classifyTemporalHorizon(messageText, cleanRamForWeights, pendingQuestion);
-    // Aplicação da Sabedoria: Limites ditados pelo blockPlan em vez de fixos
-    const truncatedL3 = (blockPlan.loadL3 && queryEmbedding)
-    ? await getSemanticL3(numericUserIdStr, currentContextL3, queryEmbedding, messageText, blockPlan.l3Limit)
-    : '';
-    const truncatedHd     = blockPlan.loadHD ? truncateByWeight(hdBlock, weights.hd, blockPlan.hdLimit) : '';
-    const truncatedAshes  = (blockPlan.loadAshes && ashesBlockRaw) ? truncateByWeight(ashesBlockRaw, weights.ashes, blockPlan.ashesLimit) : null;
-    const truncatedEvents = truncateByWeight(eventsBlock, weights.events, blockPlan.eventsLimit);
+    const truncatedL3     = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, 6000) : '';
+    const truncatedHd     = blockPlan.loadHD ? truncateByWeight(hdBlock, weights.hd, 6000) : '';
+    const truncatedAshes  = (blockPlan.loadAshes && ashesBlockRaw) ? truncateByWeight(ashesBlockRaw, weights.ashes, 6000) : null;
+    const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
 
     const isFemale = currentContextL3.toLowerCase().includes('feminino') || currentContextL3.toLowerCase().includes('mulher');
     const informalAddress = isFemale ? 'miga' : 'cara';
 
     const isReminderIntent = /me lembra|me avisa|lembrar|não esquecer|nao esquecer|avisa quando|me notifica/i.test(messageText);
-    
+    const isLikelyNoise = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i.test(messageText.trim()) && messageText.length < 30;
     const brevityInstruction = isLikelyNoise
       ? 'Responda com leveza e naturalidade — curto, mas humano. 1-2 frases no máximo.'
       : detectedContexts.includes('casual')
@@ -931,8 +887,7 @@ export async function POST(req: NextRequest) {
 
 3. PESQUISA: Para jogos, resultados, datas, notícias, cotações, clima em outras cidades — chame searchWeb ANTES de responder.
    - CLIMA DA CIDADE DO USUÁRIO: Se "[CLIMA ATUAL]" estiver presente, USE esses dados.
-   - REGRA DE BUSCA: NUNCA faça buscas genéricas ("Dra. Carol"). Sempre enriqueça a query de busca com as informações que você tem na RAM (ex: "Dra. Caroline dentista Arthur Thomas 1100 Rolândia").
-   
+
 ${forcedSearchResult}
 ${holidaysBlock}
 ${buildAgendaBlock(blockPlan.loadCalendar, googleCtx, msCtx, numericUserIdStr)}
@@ -983,14 +938,7 @@ PROIBIDO: "Anota aí", "Anotado!", "Registrado!". Se salvou via ferramenta: "Fei
 MEMÓRIA: Use as memórias naturalmente — nunca diga "Tenho uma nota aqui que diz...".
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 FILHOS: A lista canônica de filhos está em [FILHOS DE ${authorName.toUpperCase()}]. Nunca cite filhos além dos listados. Se indicar "Nenhum filho cadastrado", não invente.
-LEMBRETES SIMPLES (tarefa pontual, sem local físico):
-"me lembra de tirar a garrafa", "me avisa em 1h", "não esquecer de ligar" →
-Chame APENAS create_reminder. NÃO chame salvar_evento.
-COMPROMISSOS (evento com local, pessoa ou contexto externo):
-"consulta às 15h", "reunião amanhã às 10h", "voo sexta às 8h" →
-Chame salvar_evento E create_reminder (lembrete 30min antes).
-
-REGRA: Se a mensagem tiver "me lembra", "me avisa", "daqui a X", "em X minutos/horas" → é lembrete simples. Só create_reminder.
+LEMBRETES: Se o usuário usar "me lembra", "me avisa", "não esquecer" com tempo ou local — chame OBRIGATORIAMENTE a tool create_reminder. Nunca apenas confirme sem chamar a tool.
 ✅ PATCH 5: FINANÇAS: Quando o usuário mencionar valores monetários com verbos de ação (gastei, paguei, comprei, recebi, transferi):
 1. Chame OBRIGATORIAMENTE registrar_transacao com amount, type e description.
 2. Se mencionar categoria (mercado, combustível, academia etc.), passe em category_name.
@@ -1048,14 +996,13 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       content: `[INTERNO] Responda APENAS o que foi perguntado. NUNCA diga "Anota aí" ou "Anotado!".`,
     });
 
-    let maxTokens = 1200;
-    if (isLikelyNoise)                      maxTokens = 300;
-    else if (intent === 'trivial')          maxTokens = 400;
-    else if (intent === 'casual')           maxTokens = 900;
-    else if (detectedContexts.includes('emocao'))  maxTokens = 1800;
-    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias')) maxTokens = 1400;
-    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto')) maxTokens = 1400;
-    
+    let maxTokens = 350;
+    if (isLikelyNoise) maxTokens = 150;
+    else if (detectedContexts.includes('emocao')) maxTokens = 600;
+    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias') || detectedContexts.includes('clima')) maxTokens = 800;
+    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 500;
+    else if (detectedContexts.includes('casual')) maxTokens = 250;
+
     // ========== Self-Discovery ==========
     const isSelfDiscoveryQuery = /o que (você|vc) (sabe|conhece|tem|lembra)|quais (são|sao) suas (capacidades|funções|funcoes|ferramentas)|me fala sobre você|o que você pode|você (tem|sabe) algo sobre mim|minhas informações|meu perfil/i.test(messageText);
 
@@ -1117,7 +1064,7 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     const effectiveMaxTokens   = Math.round(maxTokens * adaptiveMaxTokensMultiplier);
 
     while (attempts < 5) {
-      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, effectiveTemperature, 40000, effectiveMaxTokens, forcedToolChoice);
+      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, effectiveTemperature, 25000, effectiveMaxTokens, forcedToolChoice);
       const { content, toolCalls } = response;
       if (!toolCalls || toolCalls.length === 0) { finalResponse = content; break; }
       forcedToolChoice = 'auto';
@@ -1230,7 +1177,7 @@ Responda APENAS com JSON válido, sem markdown:
               [],
               'google/gemini-2.0-flash-001',
               0.1,
-              8000,
+              4000,
               200,
               'none',
             )
