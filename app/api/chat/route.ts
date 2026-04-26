@@ -1237,6 +1237,9 @@ Responda APENAS com JSON válido, sem markdown:
                 { ex: 86400 },
               );
             }
+            if (backgroundTasks.length > 0) {
+            await Promise.allSettled(backgroundTasks).catch(e => console.error('[Background] Erro ao aguardar tasks:', e));
+            }
           } catch (e) {
             console.error('[PatternPromoter] Background error:', (e as Error).message);
           }
