@@ -31,13 +31,14 @@ export type ContextType =
   | 'financas'
   | 'evento'
   | 'tdah'
+  | 'retrospecto'
   | 'foco';
 
 const ALL_CONTEXTS: ContextType[] = [
   'casual', 'agenda', 'email', 'saude', 'familia', 'trabalho', 'projeto',
   'meta', 'emocao', 'diario', 'rotina', 'preferencia', 'alias', 'recomendacao',
   'esporte', 'noticias', 'clima', 'math', 'trivial', 'compras', 'financas',
-  'evento', 'tdah', 'foco',
+  'evento', 'tdah', 'foco', 'retrospecto',
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -76,6 +77,10 @@ const RULES_VERBATIM: Array<[RegExp, ContextType]> = [
   [/quanto [eé]|quanto d[aá]|calcule|soma|subtraia|multiplique|divida|raiz|pot[eê]ncia|quanto é|calcul|porcentagem|^[0-9]+ (mais|vezes|dividido por|menos) [0-9]+/i, 'math'],
   [/^(ok|oi|ol[aá]|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i, 'trivial'],
   [/R\$|\breal\b/i, 'financas'],
+  [
+  /você me (disse|falou|indicou|sugeriu|recomendou|lembrou|avisou|mostrou)|me indicou|falamos (sobre|de|que)|você (lembra|sabe) que (me|eu)|ontem (você|vc)|antes você|na última vez|você tinha dito|vc tinha falado/i,
+  'retrospecto' as ContextType
+],
 ];
 
 // ─── classifyContextRegex ─────────────────────────────────────────────────────
@@ -107,7 +112,7 @@ export function classifyContextRegex(text: string): ContextType[] {
 
 const HIGH_CONFIDENCE_CONTEXTS: ContextType[] = [
   'math', 'trivial', 'financas', 'esporte', 'clima', 'email', 'agenda',
-  'compras', 'saude', 'noticias',
+  'compras', 'saude', 'noticias', 'retrospecto',
 ];
 
 function needsLLMClassification(text: string, regexContexts: ContextType[]): boolean {
@@ -283,17 +288,20 @@ export function planContextualBlocks(
   const needsAshes = (has('diario', 'emocao', 'meta', 'familia') && (hasRealEmotion || wantsDiary)) && !isTrivial;
   const needsGaps  = (wantsCalendar || wantsFinances || has('projeto', 'meta', 'trabalho')) && !isTrivial;
   const needsTopics = has('saude', 'projeto', 'familia', 'rotina', 'preferencia') && !isTrivial && !isCasualOnly;
+  const isRetrospecto = has('retrospecto') ||
+    /você me (disse|falou|indicou|sugeriu|recomendou)|me indicou|falamos (sobre|de)|ontem você|antes você|última vez/i.test(msg);
+  
 
   return {
     loadWeather:         wantsWeather && !isTrivial,
     loadCalendar:        wantsCalendar && !isTrivial,
     loadEmail:           has('email') && !isTrivial,
     loadL3:              !isTrivial,
-    loadHD:              needsHD,
+    loadHD:              needsHD || isRetrospecto,,
     loadAshes:           needsAshes,
     loadTopics:          needsTopics,
     loadDiary:           wantsDiary && !isTrivial,
-    loadRecommendations: wantsRec && !isTrivial,
+    loadRecommendations: (wantsRec || isRetrospecto) && !isTrivial,
     loadGaps:            needsGaps,
     loadFinances:        wantsFinances && !isTrivial,
     loadProjects:        has('projeto') && !isTrivial,
