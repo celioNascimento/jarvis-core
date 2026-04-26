@@ -1,7 +1,4 @@
 // lib/chat/unified-extractor.ts
-// Substitui as 4 chamadas individuais (extractAndSummarize, extractRecomendacao,
-// extractDiary, extractGoal) por uma única chamada ao Gemini Flash.
-// Reduz de 4 calls/request → 1 call/request em background.
 
 import { callOpenRouter } from '@/lib/jarvis';
 import { extractDiary, extractGoal } from '@/lib/diary';
@@ -21,39 +18,58 @@ const EMPTY: UnifiedExtractResult = {
   diary: null, goal: null, recommendation: null, summary: null, event: null,
 };
 
-/**
- * Mapeia a categoria do LLM para o tipo esperado pela função extractDiary.
- */
 function mapDiaryCategory(cat: string): 'morning' | 'evening' | 'anytime' | undefined {
   switch (cat) {
     case 'reflexao':
     case 'acontecimento':
     case 'gratidao':
-      return 'anytime';  // sem horário específico
+      return 'anytime';
     case 'qualquer':
-      return undefined;   // genérico, não usar categoria
+      return undefined;
     default:
       return 'anytime';
   }
 }
 
-/**
- * Detecta se a mensagem tem substância suficiente para valer uma extração.
- * Evita chamar a API em saudações, respostas curtas e ruído.
- */
 function hasExtractionPotential(message: string): boolean {
   if (message.trim().length < 25) return false;
-
   const noise = /^(ok|sim|não|certo|tá|ta|ótimo|obrigad|valeu|vlw|show|👍|😊|olá|oi|e aí|fala)[!?,. ]*$/i;
   if (noise.test(message.trim())) return false;
-
   return true;
 }
 
-/**
- * Executa uma única chamada ao LLM para extrair diário, meta, recomendação e
- * resumo de uma conversa. Cada campo é null se não houver dado relevante.
- */
+function parseEventDate(dataAproximada: string): string {
+  // Tenta parse direto primeiro
+  const direct = new Date(dataAproximada);
+  if (!isNaN(direct.getTime())) return direct.toISOString();
+
+  // Tenta extrair ano e mês de texto como "primeira semana de maio 2026"
+  const meses: Record<string, number> = {
+    janeiro: 0, fevereiro: 1, março: 2, abril: 3, maio: 4, junho: 5,
+    julho: 6, agosto: 7, setembro: 8, outubro: 9, novembro: 10, dezembro: 11,
+  };
+  const lower = dataAproximada.toLowerCase();
+  const anoMatch = lower.match(/\b(202\d)\b/);
+  const ano = anoMatch ? parseInt(anoMatch[1]) : new Date().getFullYear();
+
+  for (const [nome, idx] of Object.entries(meses)) {
+    if (lower.includes(nome)) {
+      // Semana do dia das mães = segunda semana de maio
+      const semana = lower.includes('primeira') ? 1
+        : lower.includes('segunda') ? 8
+        : lower.includes('terceira') ? 15
+        : lower.includes('última') || lower.includes('ultima') ? 22
+        : 1;
+      return new Date(ano, idx, semana).toISOString();
+    }
+  }
+
+  // Fallback: 3 meses no futuro
+  const fallback = new Date();
+  fallback.setMonth(fallback.getMonth() + 3);
+  return fallback.toISOString();
+}
+
 async function extractAllFields(
   message: string,
   reply: string,
@@ -67,27 +83,24 @@ ASSISTENTE: ${reply.slice(0, 400)}
 Campos esperados:
 {
   "diary": null | { "texto": "<frase curta sobre sentimento ou acontecimento>", "categoria": "reflexao"|"acontecimento"|"gratidao"|"qualquer" },
-  "goal":  null | { "titulo": "<título curto>", "descricao": "<descrição>" },
+  "goal": null | { "titulo": "<título curto>", "descricao": "<descrição>" },
   "recommendation": null | { "tipo": "livro"|"filme"|"série"|"podcast"|"lugar"|"outro", "titulo": "<título>", "descricao": "<por que foi recomendado>" },
-  "summary": null | { "fato": "<fato novo aprendido sobre o usuário, max 80 chars>", "relevancia": "alta"|"media"|"baixa" }
+  "summary": null | { "fato": "<fato novo aprendido sobre o usuário, max 80 chars>", "relevancia": "alta"|"media"|"baixa" },
+  "event": null | { "titulo": "<nome do evento>", "data_aproximada": "<ISO 2026-05-04 ou texto 'primeira semana de maio 2026'>", "categoria": "<Viagem|Trabalho|Pessoal|Saúde|Família|Escola|Lazer>", "notas": "<contexto relevante>" }
 }
 
 Regras:
-- Se o diálogo não contiver dado relevante para um campo, deixe null.
-- Não invente informações. Extraia somente o que está explícito ou fortemente implícito.
+- Se não houver dado relevante para um campo, deixe null.
+- Não invente. Extraia apenas o que está explícito ou fortemente implícito.
 - "diary" só quando o usuário expressar sentimento, reflexão ou acontecimento pessoal.
-- "goal" só quando o usuário mencionar uma meta, objetivo ou plano concreto.
+- "goal" só quando houver meta, objetivo ou plano concreto.
 - "recommendation" só quando houver menção explícita a livro, série, filme, lugar etc.
-"summary": null | { "fato": "<fato novo aprendido sobre o usuário, max 80 chars>", "relevancia": "alta"|"media"|"baixa" },
-  "event": null | { "titulo": "<nome do evento>", "data_aproximada": "<ex: 2026-05-04 ou 'semana do dia das mães 2026'>", "categoria": "<Viagem|Trabalho|Pessoal|Saúde|Família>", "notas": "<contexto relevante>" }
-}
+- "summary" para qualquer fato novo sobre o usuário (profissão, cidade, preferência, hábito).
 - "event" quando o usuário mencionar qualquer situação futura com data ou período:
   viagem, consulta médica, reunião, aniversário, formatura, show, festa,
   prazo de entrega, voo, hospedagem, compromisso de trabalho, mudança,
-  período de férias, retorno de viagem, evento escolar, exame, procedimento.
-  Se tiver data exata use ISO (2026-05-04). Se for aproximada use texto ("primeira semana de maio 2026").
-
-Regras:
+  férias, retorno de viagem, evento escolar, exame, procedimento cirúrgico.
+  Data exata: use ISO (2026-05-04). Data aproximada: use texto descritivo.`;
 
   try {
     const raw = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1);
@@ -99,31 +112,18 @@ Regras:
   }
 }
 
-/**
- * Ponto de entrada principal. Chama a API uma vez e despacha os resultados
- * para as funções de persistência individuais em paralelo.
- *
- * Substitui no route.ts:
- *   extractAndSummarize(...)
- *   extractRecomendacao(...)
- *   extractDiary(...)
- *   extractGoal(...)
- */
 export async function runUnifiedExtractor(
   userId: string,
   authorName: string,
   message: string,
   reply: string,
 ): Promise<void> {
-  // Pré-filtro: não chama API para mensagens sem substância
   if (!hasExtractionPotential(message)) {
     console.log('[UnifiedExtractor] Mensagem sem substância — pulando.');
     return;
   }
 
   const data = await extractAllFields(message, reply);
-
-  // Despacha em paralelo somente os campos presentes
   const tasks: Promise<any>[] = [];
 
   if (data.diary) {
@@ -135,7 +135,6 @@ export async function runUnifiedExtractor(
   }
 
   if (data.goal) {
-    // extractGoal usa a mensagem original para manter compatibilidade com a assinatura existente
     tasks.push(
       extractGoal(userId, message)
         .catch(e => console.error('[UnifiedExtractor] goal:', e)),
@@ -156,9 +155,36 @@ export async function runUnifiedExtractor(
     );
   }
 
+  if (data.event) {
+    tasks.push(
+      (async () => {
+        try {
+          const eventDate = parseEventDate(data.event!.data_aproximada);
+          const { error } = await supabase
+            .from('events')
+            .insert({
+              user_id:          parseInt(userId, 10),
+              title:            data.event!.titulo,
+              event_date:       eventDate,
+              category:         data.event!.categoria,
+              notes:            data.event!.notas,
+              relevance_score:  0.8,
+              emotional_weight: 0.5,
+              is_recurring:     false,
+              decay_type:       'none',
+            });
+          if (error) console.error('[UnifiedExtractor] event insert:', error.message);
+          else console.log(`[UnifiedExtractor] Evento salvo: "${data.event!.titulo}" → ${eventDate}`);
+        } catch (e) {
+          console.error('[UnifiedExtractor] event:', e);
+        }
+      })()
+    );
+  }
+
   if (tasks.length > 0) {
     await Promise.all(tasks);
-    console.log(`[UnifiedExtractor] Extraído: diary=${!!data.diary} goal=${!!data.goal} rec=${!!data.recommendation} summary=${!!data.summary}`);
+    console.log(`[UnifiedExtractor] Extraído: diary=${!!data.diary} goal=${!!data.goal} rec=${!!data.recommendation} summary=${!!data.summary} event=${!!data.event}`);
   } else {
     console.log('[UnifiedExtractor] Nenhum dado extraível nesta mensagem.');
   }
