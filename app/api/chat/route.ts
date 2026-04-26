@@ -866,7 +866,9 @@ export async function POST(req: NextRequest) {
     const cleanRamForWeights = ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
     const weights = classifyTemporalHorizon(messageText, cleanRamForWeights, pendingQuestion);
     // Aplicação da Sabedoria: Limites ditados pelo blockPlan em vez de fixos
-    const truncatedL3     = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, blockPlan.l3Limit) : '';
+    const truncatedL3 = (blockPlan.loadL3 && queryEmbedding)
+  ? await getSemanticL3(numericUserIdStr, currentContextL3, queryEmbedding, blockPlan.l3Limit)
+  : '';
     const truncatedHd     = blockPlan.loadHD ? truncateByWeight(hdBlock, weights.hd, blockPlan.hdLimit) : '';
     const truncatedAshes  = (blockPlan.loadAshes && ashesBlockRaw) ? truncateByWeight(ashesBlockRaw, weights.ashes, blockPlan.ashesLimit) : null;
     const truncatedEvents = truncateByWeight(eventsBlock, weights.events, blockPlan.eventsLimit);
