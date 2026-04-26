@@ -434,8 +434,6 @@ export async function POST(req: NextRequest) {
       ? await getRelevantL3Chunks(Number(numericUserIdStr), queryEmbedding).catch(() => rawDossie)
       : rawDossie;
 
-    // ========== 3. Detecção de shift ==========
-
     // ========== 4. Histórico ==========
     const { data: historySession } = await supabase
       .schema('jarvis')
