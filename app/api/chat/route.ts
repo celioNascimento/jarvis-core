@@ -632,6 +632,7 @@ export async function POST(req: NextRequest) {
     topicEmotionalDimension = topicEmotionalDimValue;
 
     // ========== 9. Roteamento e blockPlan ==========
+    const isLikelyNoise = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i.test(messageText.trim()) && messageText.length < 30;
     const modelRoute = routeModel(detectedContexts, emotional.score, topicEmotionalDimension);
     const temperature = getTemperature(detectedContexts);
 
@@ -868,7 +869,7 @@ export async function POST(req: NextRequest) {
     const informalAddress = isFemale ? 'miga' : 'cara';
 
     const isReminderIntent = /me lembra|me avisa|lembrar|não esquecer|nao esquecer|avisa quando|me notifica/i.test(messageText);
-    const isLikelyNoise = /^(ok|oi|olá|ola|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i.test(messageText.trim()) && messageText.length < 30;
+    
     const brevityInstruction = isLikelyNoise
       ? 'Responda com leveza e naturalidade — curto, mas humano. 1-2 frases no máximo.'
       : detectedContexts.includes('casual')
