@@ -179,9 +179,9 @@ export async function executeTool(
         return `Erro ao buscar emails: ${err.message || 'Falha na conexão com a conta de email.'}`;
       }
 
-    case 'salvar_evento': {
+      case 'salvar_evento': {
       try {
-        return await handleSalvarEvento(args, authUserId, numericUserIdStr);
+        return await handleSalvarEvento(p, authUserId, numericUserIdStr);
       } catch (err: any) {
         console.error('[ToolsExecutor] Erro em salvar_evento:', err);
         return `Erro ao processar e salvar o evento: ${err.message}`;
