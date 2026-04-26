@@ -662,7 +662,7 @@ export async function POST(req: NextRequest) {
       loadRecommendations: intent === 'personal',
       loadEmail:           intent === 'email',
       loadCalendar:        ['calendar', 'reminder'].includes(intent),
-      loadTopics:          !['factual', 'task', 'focus'].includes(intent),
+      loadTopics:          !['factual', 'task', 'focus', 'casual', 'trivial'].includes(intent),
       // ✅ PATCH 3: loadFinances
       loadFinances: detectedContexts.includes('financas') || intent === 'finance',
 
