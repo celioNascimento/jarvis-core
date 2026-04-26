@@ -21,9 +21,14 @@ export async function callOpenRouterWithTools(
   maxTokens = 2000, // ✅ novo parâmetro com valor padrão
   toolChoice: any = 'auto' // ← novo parâmetro
 ): Promise<ToolResponse> {
-  const response = await Promise.race<Response>([
-    fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let response: Response;
+  try {
+    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
@@ -36,13 +41,12 @@ export async function callOpenRouterWithTools(
         tools: toolsDef,
         tool_choice: toolChoice,
         temperature,
-        max_tokens: maxTokens, // ✅ usa valor dinâmico
+        max_tokens: maxTokens,
       }),
-    }),
-    new Promise<Response>((_, reject) =>
-      setTimeout(() => reject(new Error('Timeout')), timeoutMs)
-    ),
-  ]);
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) throw new Error(`OpenRouter error: ${response.status}`);
   const data = await response.json();
