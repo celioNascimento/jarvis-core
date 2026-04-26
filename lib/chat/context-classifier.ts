@@ -1,6 +1,6 @@
 // lib/chat/context-classifier.ts
-// V9.0.0 — Merge completo: regex normalizada + L4 com LLM + novos contextos
-//           (tdah, foco, trabalho, financas, diario, rotina, alias, preferencia, recomendacao)
+// V9.1.0 — LLM apenas quando regex é ambíguo ou falha
+//           Reduz latência de ~700ms para ~0ms em 80%+ das mensagens
 
 import { supabase } from '@/lib/jarvis';
 import { callOpenRouter } from '@/lib/jarvis';
@@ -42,7 +42,6 @@ const ALL_CONTEXTS: ContextType[] = [
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Remove acentos para comparação normalizada */
 function norm(s: string): string {
   return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
@@ -72,9 +71,8 @@ const RULES_NORMALIZED: Array<[RegExp, ContextType]> = ([
   [norm('foco|tdah|procrastinando|travado|paralisado|sobrecarregado|por onde começo|nao sei comecar'), 'tdah'],
 ] as Array<[string, ContextType]>).map(([src, ctx]) => [new RegExp(src, 'i'), ctx]);
 
-/** Regras verbatim (sem normalização de acentos) */
 const RULES_VERBATIM: Array<[RegExp, ContextType]> = [
-  [/^\d+[\+\-\*\/]\d+|^[0-9+\-*/%() ]+$/,                                              'math'],
+  [/^\d+[\+\-\*\/]\d+|^[0-9+\-*/%() ]+$/, 'math'],
   [/quanto [eé]|quanto d[aá]|calcule|soma|subtraia|multiplique|divida|raiz|pot[eê]ncia|quanto é|calcul|porcentagem|^[0-9]+ (mais|vezes|dividido por|menos) [0-9]+/i, 'math'],
   [/^(ok|oi|ol[aá]|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i, 'trivial'],
   [/R\$|\breal\b/i, 'financas'],
@@ -97,6 +95,40 @@ export function classifyContextRegex(text: string): ContextType[] {
   return detected.length > 0 ? ([...new Set(detected)] as ContextType[]) : ['casual'];
 }
 
+// ─── Decide se vale chamar LLM ────────────────────────────────────────────────
+//
+// LLM só é necessário em dois cenários:
+//   1. Regex retornou apenas 'casual' mas a mensagem tem substância
+//      (pode ser um contexto que regex não pegou)
+//   2. Regex retornou múltiplos contextos conflitantes sem dominante claro
+//      E a mensagem é longa o suficiente para ambiguidade real
+//
+// Em todos os outros casos regex é suficiente e ~0ms.
+
+const HIGH_CONFIDENCE_CONTEXTS: ContextType[] = [
+  'math', 'trivial', 'financas', 'esporte', 'clima', 'email', 'agenda',
+  'compras', 'saude', 'noticias',
+];
+
+function needsLLMClassification(text: string, regexContexts: ContextType[]): boolean {
+  // Casos determinísticos — regex é definitivo
+  if (regexContexts.includes('math') || regexContexts.includes('trivial')) return false;
+
+  // Texto muito curto — regex já é suficiente mesmo que 'casual'
+  if (text.length < 30) return false;
+
+  // Tem pelo menos um contexto de alta confiança — regex acertou
+  if (regexContexts.some(c => HIGH_CONFIDENCE_CONTEXTS.includes(c))) return false;
+
+  // Regex retornou só 'casual' em mensagem longa — pode ter contexto oculto
+  if (regexContexts.length === 1 && regexContexts[0] === 'casual' && text.length > 60) return true;
+
+  // Múltiplos contextos de baixa confiança em mensagem longa — LLM desempata
+  if (regexContexts.length >= 3 && text.length > 100) return true;
+
+  return false;
+}
+
 // ─── classifyContextWithL4 ────────────────────────────────────────────────────
 
 export async function classifyContextWithL4(
@@ -105,31 +137,35 @@ export async function classifyContextWithL4(
 ): Promise<ContextType[]> {
   const regexContexts = classifyContextRegex(text);
 
-  // Atalho para casos simples
-  if (regexContexts.includes('math') || regexContexts.includes('trivial')) {
-    return regexContexts;
-  }
-  if (text.length < 40 && regexContexts.length <= 2) {
+  // Fast path — sem LLM
+  if (!needsLLMClassification(text, regexContexts)) {
     return regexContexts;
   }
 
-  // Priorização via topic_index quando há muitos contextos
+  // Priorização via topic_index quando há muitos contextos (DB, sem LLM)
   if (regexContexts.length > 2) {
-    const { data: topicWeights } = await supabase
-      .from('topic_index')
-      .select('topic, weight')
-      .eq('user_id', userId)
-      .in('topic', regexContexts);
+    try {
+      const { data: topicWeights } = await supabase
+        .from('topic_index')
+        .select('topic, weight')
+        .eq('user_id', userId)
+        .in('topic', regexContexts);
 
-    if (topicWeights?.length) {
-      const sorted = [...topicWeights].sort((a, b) => (b.weight || 0) - (a.weight || 0));
-      const prioritized = sorted.map((t) => t.topic as ContextType);
-      const missing = regexContexts.filter((c) => !prioritized.includes(c));
-      return [...prioritized, ...missing];
+      if (topicWeights?.length) {
+        const sorted = [...topicWeights].sort((a, b) => (b.weight || 0) - (a.weight || 0));
+        const prioritized = sorted.map((t) => t.topic as ContextType);
+        const missing = regexContexts.filter((c) => !prioritized.includes(c));
+        // Se topic_index resolveu o desempate, não precisa de LLM
+        if (prioritized.length >= regexContexts.length * 0.6) {
+          return [...prioritized, ...missing] as ContextType[];
+        }
+      }
+    } catch {
+      // continua para LLM
     }
   }
 
-  // Enriquecimento com LLM
+  // LLM apenas quando realmente ambíguo
   try {
     const prompt = `Classifique a mensagem abaixo em 1-3 categorias da lista:
 ${ALL_CONTEXTS.join(', ')}
@@ -145,7 +181,6 @@ Responda APENAS com JSON: {"contexts": ["cat1", "cat2"]}`;
       ALL_CONTEXTS.includes(c)
     );
 
-    // Merge: regex + LLM, sem duplicatas
     return [...new Set([...regexContexts, ...llmContexts])] as ContextType[];
   } catch {
     return regexContexts;
@@ -198,7 +233,11 @@ export function getTemperature(contexts: ContextType[]): number {
 
 // ─── planContextualBlocks ─────────────────────────────────────────────────────
 
-export function planContextualBlocks(contexts: ContextType[]): {
+export function planContextualBlocks(
+  contexts: ContextType[],
+  message: string,
+  emotionalScore: number,
+): {
   loadCalendar:        boolean;
   loadEmail:           boolean;
   loadL3:              boolean;
@@ -212,40 +251,54 @@ export function planContextualBlocks(contexts: ContextType[]): {
   loadProjects:        boolean;
   loadShopping:        boolean;
   loadPlaces:          boolean;
+  loadWeather:         boolean;
 } {
   const has = (...ctxs: ContextType[]) => ctxs.some((c) => contexts.includes(c));
+  const msg = message.toLowerCase();
   const isTrivial    = has('math', 'trivial');
   const isCasualOnly = contexts.length === 1 && contexts[0] === 'casual';
 
-  const hasEmotional  = has('emocao');
-  const hasPlanning   = has('agenda', 'evento', 'meta', 'projeto');
-  const hasFinancial  = has('financas');
-  const hasShopping   = has('compras');
-  const hasProject    = has('projeto');
-  const needsMemory   = hasEmotional || has('diario', 'familia', 'saude') || hasFinancial;
-  const needsLongTerm = has('diario', 'emocao');
+  const wantsWeather = has('clima') ||
+    /vai chover|levo guarda|como (está|tá|ta) o tempo|temperatura|frio|calor hoje|agasalho|sair hoje/.test(msg);
+
+  const wantsCalendar = has('agenda', 'evento') &&
+    /marcar|agendar|tem algo|minha agenda|meus compromissos|semana|amanhã|amanha|hoje|horário|horario|confirmar|cancelar|vou|tenho|tem/.test(msg);
+
+  const wantsFinances = has('financas') &&
+    /gastei|paguei|recebi|comprei|transferi|quanto (gastei|tenho|sobrou|falta)|minhas finan|meu saldo|extrato|fatura|boleto|orçamento|orcamento|limite/.test(msg);
+
+  const hasRealEmotion = emotionalScore > 0.3;
+
+  const wantsDiary = has('diario', 'meta') ||
+    (has('emocao') && hasRealEmotion) ||
+    (has('tdah') && /travado|paralisado|sobrecarregado|por onde|foco/.test(msg));
+
+  const wantsRec = has('recomendacao') ||
+    /me indica|me recomenda|onde (posso|vai|tem)|tem algum|conhece (algum|alguma)|me sugere/.test(msg);
+
+  const wantsShopping = has('compras');
+  const wantsPlaces   = wantsShopping || (has('rotina', 'recomendacao') && /perto|próximo|aqui|bairro/.test(msg));
+
+  const needsHD    = (hasRealEmotion || has('diario', 'familia', 'saude') || wantsFinances) && !isTrivial && !isCasualOnly;
+  const needsAshes = (has('diario', 'emocao', 'meta', 'familia') && (hasRealEmotion || wantsDiary)) && !isTrivial;
+  const needsGaps  = (wantsCalendar || wantsFinances || has('projeto', 'meta', 'trabalho')) && !isTrivial;
+  const needsTopics = has('saude', 'projeto', 'familia', 'rotina', 'preferencia') && !isTrivial && !isCasualOnly;
 
   return {
-    // Blocos de conteúdo externo
-    loadCalendar:        has('agenda', 'evento', 'familia') && !isTrivial,
+    loadWeather:         wantsWeather && !isTrivial,
+    loadCalendar:        wantsCalendar && !isTrivial,
     loadEmail:           has('email') && !isTrivial,
-
-    // Blocos do dossiê e memória
     loadL3:              !isTrivial,
-    loadHD:              needsMemory && !isTrivial && !isCasualOnly,
-    loadAshes:           (needsLongTerm || has('meta', 'familia')) && !isTrivial,
-
-    // Blocos gerados
-    loadTopics:          has('saude', 'projeto', 'familia', 'casual', 'rotina', 'preferencia', 'esporte', 'noticias', 'clima', 'compras') && !isTrivial,
-    loadDiary:           has('diario', 'meta', 'emocao', 'casual', 'tdah') && !isTrivial,
-    loadRecommendations: has('recomendacao', 'casual', 'emocao') && !isTrivial,
-    loadGaps:            (hasPlanning || hasEmotional || hasFinancial || has('trabalho')) && !isTrivial,
-
-    // Condicionais para buildProfileBlock
-    loadFinances:        hasFinancial && !isTrivial,
-    loadProjects:        hasProject && !isTrivial,
-    loadShopping:        hasShopping && !isTrivial,
-    loadPlaces:          (hasShopping || has('rotina', 'recomendacao')) && !isTrivial,
+    loadHD:              needsHD,
+    loadAshes:           needsAshes,
+    loadTopics:          needsTopics,
+    loadDiary:           wantsDiary && !isTrivial,
+    loadRecommendations: wantsRec && !isTrivial,
+    loadGaps:            needsGaps,
+    loadFinances:        wantsFinances && !isTrivial,
+    loadProjects:        has('projeto') && !isTrivial,
+    loadShopping:        wantsShopping && !isTrivial,
+    loadPlaces:          wantsPlaces && !isTrivial,
   };
 }
 

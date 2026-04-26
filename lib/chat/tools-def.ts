@@ -42,24 +42,74 @@ export const tools = [
       },
     },
   },
+
+  // ── AGENDA PRÓPRIA (jarvis) ────────────────────────────────────────────────
   {
     type: 'function',
     function: {
       name: 'salvar_evento',
-      description: 'Registra um evento (compromisso, aniversário, etc.) no banco de dados',
+      description:
+        'Salva um compromisso ou data importante na AGENDA PRÓPRIA do assistente (jarvis.agenda / jarvis.events). ' +
+        'Use SEMPRE por padrão para qualquer compromisso — consultas, reuniões, aulas, voos, aniversários, feriados pessoais. ' +
+        'NÃO use criar_evento_agenda a menos que o usuário peça explicitamente "salvar no Google" ou "no Google Agenda".',
       parameters: {
         type: 'object',
         properties: {
-          titulo: { type: 'string' },
-          data: { type: 'string', format: 'date', description: 'YYYY-MM-DD' },
-          prioridade: { type: 'string', enum: ['alta', 'media', 'baixa'] },
-          recorrente: { type: 'boolean', description: 'true para aniversários e eventos anuais' },
-          tipo: { type: 'string', enum: ['permanent', 'recurring_annual', 'deadline', 'one_time'] },
+          title: {
+            type: 'string',
+            description: 'Título do compromisso (ex: "Consulta médica", "Reunião com João")',
+          },
+          event_date: {
+            type: 'string',
+            description:
+              'Data e hora no formato ISO completo: "YYYY-MM-DDTHH:mm:00". ' +
+              'Para eventos sem hora fixa (aniversários, feriados), use "YYYY-MM-DDT00:00:00".',
+          },
+          category: {
+            type: 'string',
+            description: 'Categoria do evento: "Saúde", "Trabalho", "Pessoal", "Família", "Educação", "Viagem", etc.',
+          },
+          notes: {
+            type: 'string',
+            description: 'Observações opcionais sobre o evento',
+          },
+          is_recurring: {
+            type: 'boolean',
+            description: 'true para eventos que se repetem anualmente (aniversários, datas comemorativas)',
+          },
         },
-        required: ['titulo', 'data', 'prioridade', 'recorrente', 'tipo'],
+        required: ['title', 'event_date'],
       },
     },
   },
+
+  // ── GOOGLE CALENDAR (somente quando explicitamente solicitado) ────────────
+  {
+    type: 'function',
+    function: {
+      name: 'criar_evento_agenda',
+      description:
+        'Cria um evento NO GOOGLE CALENDAR do usuário. ' +
+        'Use SOMENTE quando o usuário pedir explicitamente "salvar no Google", "no Google Agenda" ou "no meu Google". ' +
+        'Para qualquer outro compromisso, use salvar_evento.',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'Título do evento' },
+          startTime: {
+            type: 'string',
+            description: 'Data e hora de início no formato ISO (ex: 2026-04-15T15:00:00)',
+          },
+          reminderMinutes: {
+            type: 'integer',
+            description: 'Minutos antes para o alarme tocar (padrão 30)',
+          },
+        },
+        required: ['summary', 'startTime'],
+      },
+    },
+  },
+
   {
     type: 'function',
     function: {
@@ -85,7 +135,10 @@ export const tools = [
         type: 'object',
         properties: {
           texto: { type: 'string' },
-          categoria: { type: 'string', enum: ['reflexao', 'acontecimento', 'gratidao', 'qualquer'] },
+          categoria: {
+            type: 'string',
+            enum: ['reflexao', 'acontecimento', 'gratidao', 'qualquer'],
+          },
         },
         required: ['texto'],
       },
@@ -126,7 +179,8 @@ export const tools = [
     type: 'function',
     function: {
       name: 'salvar_lugar',
-      description: 'Salva um lugar favorito (mercado, farmácia, etc.) com coordenadas e raio de alerta',
+      description:
+        'Salva um lugar favorito (mercado, farmácia, etc.) com coordenadas e raio de alerta',
       parameters: {
         type: 'object',
         properties: {
@@ -217,12 +271,12 @@ export const tools = [
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
-  // ✅ Tool para criação de lembretes
   {
     type: 'function',
     function: {
       name: 'create_reminder',
-      description: "Cria um lembrete para o usuário. Use quando ele pedir 'me lembra', 'avisa', 'lembrar', 'não esquecer' com tempo ou local.",
+      description:
+        "Cria um lembrete para o usuário. Use quando ele pedir 'me lembra', 'avisa', 'lembrar', 'não esquecer' com tempo ou local.",
       parameters: {
         type: 'object',
         properties: {
@@ -233,7 +287,8 @@ export const tools = [
           type: {
             type: 'string',
             enum: ['temporary', 'agenda', 'recurring', 'location'],
-            description: 'temporary = daqui a X minutos; agenda = data/hora fixa; recurring = repetição; location = geofencing',
+            description:
+              'temporary = daqui a X minutos; agenda = data/hora fixa; recurring = repetição; location = geofencing',
           },
           delay_minutes: {
             type: 'integer',
@@ -241,7 +296,8 @@ export const tools = [
           },
           scheduled_time: {
             type: 'string',
-            description: "Obrigatório se type = agenda. Data/hora no formato ISO com timezone, ex: '2026-04-10T17:00:00-03:00'",
+            description:
+              "Obrigatório se type = agenda. Data/hora no formato ISO com timezone, ex: '2026-04-10T17:00:00-03:00'",
           },
           frequency: {
             type: 'string',
@@ -250,11 +306,13 @@ export const tools = [
           },
           location_trigger: {
             type: 'string',
-            description: "Obrigatório se type = location. Nome do local (deve estar em favorite_places). Ex: 'casa', 'mercado', 'escritório'",
+            description:
+              "Obrigatório se type = location. Nome do local (deve estar em favorite_places). Ex: 'casa', 'mercado', 'escritório'",
           },
           relevance_score: {
             type: 'number',
-            description: 'Opcional. Score de relevância de 0 a 1 (0.8+ = urgente, 0.5 = normal, 0.3 = trivial).',
+            description:
+              'Opcional. Score de relevância de 0 a 1 (0.8+ = urgente, 0.5 = normal, 0.3 = trivial).',
             minimum: 0,
             maximum: 1,
           },
@@ -266,86 +324,94 @@ export const tools = [
   {
     type: 'function',
     function: {
-      name: 'criar_evento_agenda',
-      description: 'Cria um evento diretamente na agenda do Google Calendar do usuário.',
-      parameters: {
-        type: 'object',
-        properties: {
-          summary: { type: 'string', description: 'Título do evento' },
-          startTime: { type: 'string', description: 'Data e hora de início no formato ISO (ex: 2026-04-15T15:00:00)' },
-          reminderMinutes: { type: 'integer', description: 'Minutos antes para o alarme tocar (padrão 30)' }
-        },
-        required: ['summary', 'startTime']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
       name: 'excluir_email',
-      description: 'Move um email específico para a lixeira do Gmail. Requer o ID da mensagem (messageId).',
+      description:
+        'Move um email específico para a lixeira do Gmail. Requer o ID da mensagem (messageId).',
       parameters: {
         type: 'object',
         properties: {
-          messageId: { type: 'string', description: 'O ID da mensagem do Gmail a ser excluída' }
+          messageId: {
+            type: 'string',
+            description: 'O ID da mensagem do Gmail a ser excluída',
+          },
         },
-        required: ['messageId']
-      }
-    }
+        required: ['messageId'],
+      },
+    },
   },
-  // ✅ NOVA TOOL: Gestão Dinâmica de Diretrizes / Prompt
   {
     type: 'function',
     function: {
       name: 'adicionar_diretriz_dinamica',
-      description: "Adiciona uma nova regra, princípio ou diretriz ao prompt do assistente. Use OBRIGATORIAMENTE quando o usuário pedir para 'ajustar o prompt', 'nunca mais fazer X', 'sempre agir assim' ou 'adicionar uma regra'.",
+      description:
+        "Adiciona uma nova regra, princípio ou diretriz ao prompt do assistente. Use OBRIGATORIAMENTE quando o usuário pedir para 'ajustar o prompt', 'nunca mais fazer X', 'sempre agir assim' ou 'adicionar uma regra'.",
       parameters: {
         type: 'object',
         properties: {
-          content: { type: 'string', description: 'O texto da diretriz ou regra a ser seguida' },
-          scope: { type: 'string', enum: ['personal', 'global'], description: "Padrão 'personal'. Use 'global' apenas se explicitamente solicitado." }
+          content: {
+            type: 'string',
+            description: 'O texto da diretriz ou regra a ser seguida',
+          },
+          scope: {
+            type: 'string',
+            enum: ['personal', 'global'],
+            description: "Padrão 'personal'. Use 'global' apenas se explicitamente solicitado.",
+          },
         },
-        required: ['content']
-      }
-    }
-  }, 
+        required: ['content'],
+      },
+    },
+  },
   {
     type: 'function',
     function: {
       name: 'quebrar_tarefa',
-      description: "Decompõe uma tarefa complexa, esmagadora ou vaga em micro-passos acionáveis. Use OBRIGATORIAMENTE quando o usuário estiver paralisado (TDAH), disser que 'não sabe por onde começar' ou pedir ajuda com o foco.",
+      description:
+        "Decompõe uma tarefa complexa, esmagadora ou vaga em micro-passos acionáveis. Use OBRIGATORIAMENTE quando o usuário estiver paralisado (TDAH), disser que 'não sabe por onde começar' ou pedir ajuda com o foco.",
       parameters: {
         type: 'object',
         properties: {
-          tarefa_principal: { 
-            type: 'string', 
-            description: "A tarefa macro que precisa ser feita (ex: 'Limpar a cozinha', 'Fazer o imposto de renda')" 
+          tarefa_principal: {
+            type: 'string',
+            description:
+              "A tarefa macro que precisa ser feita (ex: 'Limpar a cozinha', 'Fazer o imposto de renda')",
           },
-          estado_cognitivo: { 
-            type: 'string', 
-            enum: ['sobrecarregado', 'sem_energia', 'neutro'], 
-            description: "Avaliação do estado do usuário. Se estiver 'sobrecarregado', quebre em passos ridículos de fáceis (<2min)." 
-          }
+          estado_cognitivo: {
+            type: 'string',
+            enum: ['sobrecarregado', 'sem_energia', 'neutro'],
+            description:
+              "Avaliação do estado do usuário. Se estiver 'sobrecarregado', quebre em passos ridículos de fáceis (<2min).",
+          },
         },
-        required: ['tarefa_principal', 'estado_cognitivo']
-      }
-    }
+        required: ['tarefa_principal', 'estado_cognitivo'],
+      },
+    },
   },
-    {
+  {
     type: 'function',
     function: {
       name: 'criar_rotina',
-      description: 'Cria uma nova rotina estruturada. Usado quando o utilizador define um gatilho (anchor), uma ação e um período através da interface híbrida. Vital para ajudar na previsibilidade (TDAH).',
+      description:
+        'Cria uma nova rotina estruturada. Usado quando o utilizador define um gatilho (anchor), uma ação e um período através da interface híbrida. Vital para ajudar na previsibilidade (TDAH).',
       parameters: {
         type: 'object',
         properties: {
-          anchor: { type: 'string', description: 'O gatilho que inicia a rotina (ex: "Ao acordar", "Depois do almoço")' },
-          action: { type: 'string', description: 'A ação a ser realizada (ex: "Beber água com limão", "Ler 10 páginas")' },
-          period: { type: 'string', enum: ['morning', 'afternoon', 'evening', 'anytime'], description: 'O período do dia correspondente' },
+          anchor: {
+            type: 'string',
+            description: 'O gatilho que inicia a rotina (ex: "Ao acordar", "Depois do almoço")',
+          },
+          action: {
+            type: 'string',
+            description: 'A ação a ser realizada (ex: "Beber água com limão", "Ler 10 páginas")',
+          },
+          period: {
+            type: 'string',
+            enum: ['morning', 'afternoon', 'evening', 'anytime'],
+            description: 'O período do dia correspondente',
+          },
         },
         required: ['anchor', 'action', 'period'],
       },
     },
   },
-
-];  
+];
