@@ -1,10 +1,10 @@
 // lib/chat/unified-extractor.ts
+// V2.0.0 — Recomendações e fatos relevantes agora também salvos como memória HD
 
-import { callOpenRouter } from '@/lib/jarvis';
+import { callOpenRouter, supabase, generateEmbedding } from '@/lib/jarvis';
 import { extractDiary, extractGoal } from '@/lib/diary';
 import { extractAndSummarize } from '@/lib/extractor';
-import { upsertEvent, getCategoryFromType, extractRecomendacao } from '@/lib/extractor-jobs';
-import { supabase } from '@/lib/jarvis';
+import { upsertEvent, extractRecomendacao } from '@/lib/extractor-jobs';
 
 interface UnifiedExtractResult {
   diary: { texto: string; categoria: 'reflexao' | 'acontecimento' | 'gratidao' | 'qualquer' } | null;
@@ -39,11 +39,9 @@ function hasExtractionPotential(message: string): boolean {
 }
 
 function parseEventDate(dataAproximada: string): string {
-  // Tenta parse direto primeiro
   const direct = new Date(dataAproximada);
   if (!isNaN(direct.getTime())) return direct.toISOString();
 
-  // Tenta extrair ano e mês de texto como "primeira semana de maio 2026"
   const meses: Record<string, number> = {
     janeiro: 0, fevereiro: 1, março: 2, abril: 3, maio: 4, junho: 5,
     julho: 6, agosto: 7, setembro: 8, outubro: 9, novembro: 10, dezembro: 11,
@@ -54,7 +52,6 @@ function parseEventDate(dataAproximada: string): string {
 
   for (const [nome, idx] of Object.entries(meses)) {
     if (lower.includes(nome)) {
-      // Semana do dia das mães = segunda semana de maio
       const semana = lower.includes('primeira') ? 1
         : lower.includes('segunda') ? 8
           : lower.includes('terceira') ? 15
@@ -64,7 +61,6 @@ function parseEventDate(dataAproximada: string): string {
     }
   }
 
-  // Fallback: 3 meses no futuro
   const fallback = new Date();
   fallback.setMonth(fallback.getMonth() + 3);
   return fallback.toISOString();
@@ -84,7 +80,7 @@ Campos esperados:
 {
   "diary": null | { "texto": "<frase curta sobre sentimento ou acontecimento>", "categoria": "reflexao"|"acontecimento"|"gratidao"|"qualquer" },
   "goal": null | { "titulo": "<título curto>", "descricao": "<descrição>" },
-  "recommendation": null | { "tipo": "livro"|"filme"|"série"|"podcast"|"lugar"|"outro", "titulo": "<título>", "descricao": "<por que foi recomendado>" },
+  "recommendation": null | { "tipo": "livro"|"filme"|"série"|"podcast"|"lugar"|"produto"|"presente"|"outro", "titulo": "<título>", "descricao": "<por que foi recomendado>" },
   "summary": null | { "fato": "<fato novo aprendido sobre o usuário, max 80 chars>", "relevancia": "alta"|"media"|"baixa" },
   "event": null | { "titulo": "<nome do evento>", "data_aproximada": "<ISO 2026-05-04 ou texto 'primeira semana de maio 2026'>", "categoria": "<Viagem|Trabalho|Pessoal|Saúde|Família|Escola|Lazer>", "notas": "<contexto relevante>" }
 }
@@ -94,13 +90,9 @@ Regras:
 - Não invente. Extraia apenas o que está explícito ou fortemente implícito.
 - "diary" só quando o usuário expressar sentimento, reflexão ou acontecimento pessoal.
 - "goal" só quando houver meta, objetivo ou plano concreto.
-- "recommendation" só quando houver menção explícita a livro, série, filme, lugar etc.
+- "recommendation" quando o assistente sugerir OU o usuário mencionar qualquer produto, presente, lugar, filme, livro, série, podcast.
 - "summary" para qualquer fato novo sobre o usuário (profissão, cidade, preferência, hábito).
-- "event" quando o usuário mencionar qualquer situação futura com data ou período:
-  viagem, consulta médica, reunião, aniversário, formatura, show, festa,
-  prazo de entrega, voo, hospedagem, compromisso de trabalho, mudança,
-  férias, retorno de viagem, evento escolar, exame, procedimento cirúrgico.
-  Data exata: use ISO (2026-05-04). Data aproximada: use texto descritivo.`;
+- "event" quando o usuário mencionar qualquer situação futura com data ou período.`;
 
   try {
     const raw = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1);
@@ -109,6 +101,46 @@ Regras:
   } catch (e) {
     console.warn('[UnifiedExtractor] Parse falhou, retornando vazio:', (e as Error).message);
     return EMPTY;
+  }
+}
+
+// ─── saveToHD ─────────────────────────────────────────────────────────────────
+//
+// Salva um fato relevante diretamente na camada HD (tabela memories com embedding).
+// Garante que informações importantes sejam recuperáveis via busca semântica,
+// mesmo que o histórico de sessão já tenha expirado.
+//
+// Sem isso, recomendações e fatos de ontem ficam apenas em `recommendations`
+// ou `brain`, que não são consultados pela busca vetorial do route.ts.
+
+async function saveToHD(
+  userId: string,
+  summary: string,
+  emotionalWeight = 0.5,
+  category = 'info',
+): Promise<void> {
+  try {
+    const embedding = await generateEmbedding(summary);
+    if (!embedding) {
+      console.warn('[UnifiedExtractor] HD: embedding falhou, fato não indexado:', summary.slice(0, 60));
+      return;
+    }
+
+    await supabase.from('memories').insert([{
+      summary,
+      embedding,
+      user_id: userId,
+      relevance_score: 0.8,
+      access_count: 0,
+      decay_lambda: 0.003,
+      emotional_weight: emotionalWeight,
+      category,
+      metadata: { type: 'unified_extractor', source: 'conversation' },
+    }]);
+
+    console.log('[UnifiedExtractor] HD salvo:', summary.slice(0, 80));
+  } catch (e) {
+    console.error('[UnifiedExtractor] Erro ao salvar HD:', e);
   }
 }
 
@@ -126,6 +158,7 @@ export async function runUnifiedExtractor(
   const data = await extractAllFields(message, reply);
   const tasks: Promise<any>[] = [];
 
+  // ── Diário ────────────────────────────────────────────────────────────────
   if (data.diary) {
     const mappedCategory = mapDiaryCategory(data.diary.categoria);
     tasks.push(
@@ -134,6 +167,7 @@ export async function runUnifiedExtractor(
     );
   }
 
+  // ── Meta / Objetivo ───────────────────────────────────────────────────────
   if (data.goal) {
     tasks.push(
       extractGoal(userId, message)
@@ -141,20 +175,41 @@ export async function runUnifiedExtractor(
     );
   }
 
+  // ── Recomendação ──────────────────────────────────────────────────────────
+  // Salva em duas camadas:
+  //   1. tabela `recommendations` — para o buildRecommendationsBlock
+  //   2. memória HD — para recuperação semântica em conversas futuras
   if (data.recommendation) {
+    const hdSummary = `Lev indicou para ${authorName}: ${data.recommendation.titulo} (${data.recommendation.tipo}) — ${data.recommendation.descricao}`;
+
     tasks.push(
       extractRecomendacao(userId, message, reply)
         .catch(e => console.error('[UnifiedExtractor] recommendation:', e)),
     );
+
+    tasks.push(
+      saveToHD(userId, hdSummary, 0.6, 'recommendation')
+        .catch(e => console.error('[UnifiedExtractor] recommendation HD:', e)),
+    );
   }
 
+  // ── Fato sobre o usuário ──────────────────────────────────────────────────
+  // Alta relevância → salva no HD para recuperação futura
   if (data.summary) {
     tasks.push(
       extractAndSummarize(userId, authorName, message)
         .catch(e => console.error('[UnifiedExtractor] summary:', e)),
     );
+
+    if (data.summary.relevancia === 'alta') {
+      tasks.push(
+        saveToHD(userId, data.summary.fato, 0.7, 'fact')
+          .catch(e => console.error('[UnifiedExtractor] summary HD:', e)),
+      );
+    }
   }
 
+  // ── Evento ────────────────────────────────────────────────────────────────
   if (data.event) {
     tasks.push(
       (async () => {
