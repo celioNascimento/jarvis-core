@@ -175,7 +175,12 @@ function buildWeatherBlock(weather: Record<string, any> | null | undefined): str
   if (weather.humidity != null) parts.push(`Umidade ${weather.humidity}%`);
   if (weather.wind != null)     parts.push(`Vento ${weather.wind} km/h`);
   if (weather.feelsLike != null) parts.push(`Sensação ${Math.round(weather.feelsLike)}°C`);
-  if (weather.forecast)         parts.push(`Previsão: ${weather.forecast}`);
+  if (weather.forecast) {
+    const forecastStr = Array.isArray(weather.forecast)
+      ? weather.forecast.map((f: any) => f?.description || f?.condition || '').filter(Boolean).slice(0, 2).join(', ')
+      : String(weather.forecast);
+    if (forecastStr) parts.push(`Previsão: ${forecastStr}`);
+  }
   return parts.join(' · ');
 }
 
