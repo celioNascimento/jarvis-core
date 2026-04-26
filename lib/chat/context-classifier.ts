@@ -297,7 +297,7 @@ export function planContextualBlocks(
     loadCalendar:        wantsCalendar && !isTrivial,
     loadEmail:           has('email') && !isTrivial,
     loadL3:              !isTrivial,
-    loadHD:              needsHD || isRetrospecto,,
+    loadHD:              needsHD || isRetrospecto,
     loadAshes:           needsAshes,
     loadTopics:          needsTopics,
     loadDiary:           wantsDiary && !isTrivial,
