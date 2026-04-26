@@ -1255,16 +1255,18 @@ Responda APENAS com JSON válido, sem markdown:
         })());
       }
 
-      // Compactação de memória (se mais de 20 registros)
-      backgroundTasks.push(
-        supabase.schema('jarvis').from('brain')
+      // Compactação de memória (se mais de 20 registros) — corrigido o tipo Promise
+      backgroundTasks.push((async () => {
+        const { count } = await supabase
+          .schema('jarvis')
+          .from('brain')
           .select('*', { count: 'exact', head: true })
           .eq('user_id', numericUserIdStr)
-          .eq('category', 'info')
-          .then(({ count }) => {
-            if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
-          })
-      );
+          .eq('category', 'info');
+        if (count && count >= 20) {
+          await compactMemory(numericUserIdStr, authorName);
+        }
+      })());
     }
 
     // ✅ Execução garantida de todas as background tasks antes de responder (serverless-safe)
