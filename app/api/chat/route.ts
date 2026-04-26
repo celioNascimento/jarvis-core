@@ -152,13 +152,13 @@ function trimAssistantReply(reply: string, maxChars = 300): string {
 function buildWeatherBlock(weather: Record<string, any> | null | undefined): string {
   if (!weather) return '';
   const parts: string[] = [];
-  if (weather.city)             parts.push(weather.city);
-  if (weather.temp != null)     parts.push(`${Math.round(weather.temp)}°C`);
-  if (weather.condition)        parts.push(weather.condition);
+  if (weather.city) parts.push(weather.city);
+  if (weather.temp != null) parts.push(`${Math.round(weather.temp)}°C`);
+  if (weather.condition) parts.push(weather.condition);
   if (weather.humidity != null) parts.push(`Umidade ${weather.humidity}%`);
-  if (weather.wind != null)     parts.push(`Vento ${weather.wind} km/h`);
+  if (weather.wind != null) parts.push(`Vento ${weather.wind} km/h`);
   if (weather.feelsLike != null) parts.push(`Sensação ${Math.round(weather.feelsLike)}°C`);
-  if (weather.forecast)         parts.push(`Previsão: ${weather.forecast}`);
+  if (weather.forecast) parts.push(`Previsão: ${weather.forecast}`);
   return parts.join(' · ');
 }
 
@@ -169,15 +169,15 @@ export function buildAgendaBlock(
   numericUserId: string,
 ): string {
   const parts: string[] = [];
- 
+
   if (loadCalendar && googleCtx) {
     parts.push(`[AGENDA GOOGLE — somente leitura]\n${googleCtx}`);
   }
- 
+
   if (loadCalendar && msCtx) {
     parts.push(`[AGENDA OUTLOOK — somente leitura]\n${msCtx}`);
   }
- 
+
   if (loadCalendar) {
     parts.push(
       `[INSTRUÇÃO DE AGENDA]\n` +
@@ -187,7 +187,7 @@ export function buildAgendaBlock(
       `NÃO confunda leitura de agenda com local de escrita.`
     );
   }
- 
+
   return parts.join('\n\n');
 }
 
@@ -209,10 +209,10 @@ export async function POST(req: NextRequest) {
       const formData = await req.formData();
       const audioFile = formData.get('audio') as File | null;
 
-      userEmail    = (formData.get('userEmail') as string) || (formData.get('email') as string) || '';
-      tempUserId   = (formData.get('userId') as string) || (formData.get('user_id') as string) || '';
+      userEmail = (formData.get('userEmail') as string) || (formData.get('email') as string) || '';
+      tempUserId = (formData.get('userId') as string) || (formData.get('user_id') as string) || '';
       clientSessionId = formData.get('sessionId') as string | null;
-      userFirstName   = (formData.get('userFirstName') as string) || 'Usuário';
+      userFirstName = (formData.get('userFirstName') as string) || 'Usuário';
 
       const latField = formData.get('latitude') as string | null;
       const lngField = formData.get('longitude') as string | null;
@@ -242,11 +242,11 @@ export async function POST(req: NextRequest) {
       }
     } else {
       const body = await req.json();
-      messageText     = body.message || body.text || '';
-      userEmail       = body.userEmail || body.email || '';
-      tempUserId      = body.userId || body.user_id || '';
+      messageText = body.message || body.text || '';
+      userEmail = body.userEmail || body.email || '';
+      tempUserId = body.userId || body.user_id || '';
       clientSessionId = body.sessionId || null;
-      userFirstName   = body.userFirstName || body.user_first_name || 'Usuário';
+      userFirstName = body.userFirstName || body.user_first_name || 'Usuário';
       if (body.location?.latitude != null && body.location?.longitude != null)
         location = { latitude: body.location.latitude, longitude: body.location.longitude };
       if (body.weather && typeof body.weather === 'object') weatherData = body.weather;
@@ -305,16 +305,16 @@ export async function POST(req: NextRequest) {
       authUserId = numericUserIdStr;
     }
 
-    const authorName        = userRecord.nickname || userFirstName;
-    const assistantName     = userRecord.assistant_name || 'Lev';
-    const userTimezone      = userRecord.timezone || 'America/Sao_Paulo';
-    const currentContextL3  = userRecord.current_context || 'Sem dossiê ainda.';
-    const pendingQuestion   = userRecord.pending_question || null;
+    const authorName = userRecord.nickname || userFirstName;
+    const assistantName = userRecord.assistant_name || 'Lev';
+    const userTimezone = userRecord.timezone || 'America/Sao_Paulo';
+    const currentContextL3 = userRecord.current_context || 'Sem dossiê ainda.';
+    const pendingQuestion = userRecord.pending_question || null;
 
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
 
     const canonicalDateTimeBlock = buildDateTimeBlock(userTimezone);
-    const { day, month, year }   = getCurrentDateParts(userTimezone);
+    const { day, month, year } = getCurrentDateParts(userTimezone);
     const canonicalDateISO = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
     // Localização
@@ -630,16 +630,7 @@ export async function POST(req: NextRequest) {
     }
 
     const intent = classifyIntent(messageText);
-    const blockPlan = {
-      ...planContextualBlocks(detectedContexts),
-      loadDiary:           intent === 'personal' || intent === 'focus',
-      loadGaps:            intent === 'personal',
-      loadRecommendations: intent === 'personal',
-      loadEmail:           intent === 'email',
-      loadCalendar:        ['calendar', 'reminder'].includes(intent),
-      loadTopics:          !['factual', 'task', 'focus'].includes(intent),
-      loadFinances: detectedContexts.includes('financas') || intent === 'personal',
-    };
+    const blockPlan = planContextualBlocks(detectedContexts, messageText, emotional.score);
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| blockPlan:', blockPlan);
 
     // ========== Busca financeBlock e emailBlock ==========
@@ -682,12 +673,12 @@ export async function POST(req: NextRequest) {
       const criticHistory = await redis.get<any[]>(criticHistoryKey) ?? [];
       if (criticHistory.length >= 3) {
         const recent = criticHistory.slice(-5);
-        const avgOverall   = recent.reduce((s, c) => s + (c.overall ?? 0.7), 0) / recent.length;
-        const flagCounts   = recent.reduce((acc: Record<string,number>, c) => { acc[c.flag] = (acc[c.flag] || 0) + 1; return acc; }, {});
+        const avgOverall = recent.reduce((s, c) => s + (c.overall ?? 0.7), 0) / recent.length;
+        const flagCounts = recent.reduce((acc: Record<string, number>, c) => { acc[c.flag] = (acc[c.flag] || 0) + 1; return acc; }, {});
         const dominantFlag = Object.entries(flagCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
 
-        if (dominantFlag === 'verbose')       adaptiveMaxTokensMultiplier = 0.8;
-        else if (dominantFlag === 'cold')     adaptiveTemperatureOffset   = 0.15;
+        if (dominantFlag === 'verbose') adaptiveMaxTokensMultiplier = 0.8;
+        else if (dominantFlag === 'cold') adaptiveTemperatureOffset = 0.15;
         else if (dominantFlag === 'missed_emotion') adaptiveTemperatureOffset = 0.1;
         else if (dominantFlag === 'off_topic') adaptiveMaxTokensMultiplier = 0.9;
 
@@ -703,7 +694,7 @@ export async function POST(req: NextRequest) {
     // ========== 10. Pesquisa forçada ==========
     const shouldSearch = shouldForceSearch(messageText, detectedContexts);
     const isClimaQuery = detectedContexts.includes('clima');
-    const skipSearchForWeather = isClimaQuery && !!weatherData;
+    const skipSearchForWeather = isClimaQuery && !!weatherData && blockPlan.loadWeather;
 
     let forcedSearchResult = '';
     if (shouldSearch && !skipSearchForWeather) {
@@ -720,49 +711,49 @@ export async function POST(req: NextRequest) {
     const [gapsBlock, topicBlock, diaryBlock, recsBlock, relatedTopicsBlock] = await Promise.all([
       blockPlan.loadGaps
         ? (async () => {
-            const key = `gaps_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-            let val = await cache.get<string>(key);
-            if (!val) { val = await buildGapsBlock(numericUserIdStr, messageText); await cache.set(key, val, 60000); }
-            return val;
-          })() : Promise.resolve(''),
+          const key = `gaps_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+          let val = await cache.get<string>(key);
+          if (!val) { val = await buildGapsBlock(numericUserIdStr, messageText); await cache.set(key, val, 60000); }
+          return val;
+        })() : Promise.resolve(''),
       blockPlan.loadTopics
         ? (async () => {
-            const key = `topic_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-            let val = await cache.get<string>(key);
-            if (!val) { val = await buildTopicBlock(numericUserIdStr, messageText).catch(() => ''); await cache.set(key, val, 60000); }
-            return val;
-          })() : Promise.resolve(''),
+          const key = `topic_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+          let val = await cache.get<string>(key);
+          if (!val) { val = await buildTopicBlock(numericUserIdStr, messageText).catch(() => ''); await cache.set(key, val, 60000); }
+          return val;
+        })() : Promise.resolve(''),
       blockPlan.loadDiary
         ? (async () => {
-            const key = `diary_${numericUserIdStr}`;
-            let val = await cache.get<string>(key);
-            if (!val) { val = await buildDiaryGoalsBlock(numericUserIdStr).catch(() => ''); await cache.set(key, val, 60000); }
-            return val;
-          })() : Promise.resolve(''),
+          const key = `diary_${numericUserIdStr}`;
+          let val = await cache.get<string>(key);
+          if (!val) { val = await buildDiaryGoalsBlock(numericUserIdStr).catch(() => ''); await cache.set(key, val, 60000); }
+          return val;
+        })() : Promise.resolve(''),
       blockPlan.loadRecommendations
         ? (async () => {
-            const key = `recs_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
-            let val = await cache.get<string>(key);
-            if (!val) { val = await buildRecommendationsBlock(numericUserIdStr, messageText).catch(() => ''); await cache.set(key, val, 60000); }
-            return val;
-          })() : Promise.resolve(''),
+          const key = `recs_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 50)).toString('base64')}`;
+          let val = await cache.get<string>(key);
+          if (!val) { val = await buildRecommendationsBlock(numericUserIdStr, messageText).catch(() => ''); await cache.set(key, val, 60000); }
+          return val;
+        })() : Promise.resolve(''),
       blockPlan.loadTopics
         ? (async () => {
-            const key = `related_${numericUserIdStr}_${detectedContexts[0] || 'casual'}`;
-            const cached = await cache.get<string>(key);
-            if (cached) return cached;
-            const val = await getRelatedTopics(numericUserIdStr, detectedContexts[0] || 'casual');
-            await cache.set(key, val, 30000);
-            return val;
-          })() : Promise.resolve(''),
+          const key = `related_${numericUserIdStr}_${detectedContexts[0] || 'casual'}`;
+          const cached = await cache.get<string>(key);
+          if (cached) return cached;
+          const val = await getRelatedTopics(numericUserIdStr, detectedContexts[0] || 'casual');
+          await cache.set(key, val, 30000);
+          return val;
+        })() : Promise.resolve(''),
     ]);
 
     // ========== 12. Calendários e emails ==========
     const backgroundTasks: Promise<any>[] = [];
 
     let googleCtx: string | null = null;
-    let msCtx: any = null; 
-    
+    let msCtx: any = null;
+
     if (blockPlan.loadCalendar) {
       const { data: dbContext, error: dbError } = await supabase.rpc('get_calendar_context_for_jarvis', {
         p_user_id: Number(numericUserIdStr),
@@ -770,7 +761,7 @@ export async function POST(req: NextRequest) {
       });
 
       if (!dbError && dbContext) {
-        googleCtx = dbContext; 
+        googleCtx = dbContext;
       } else if (dbError) {
         console.error('[Calendar DB Error]:', dbError.message);
       }
@@ -788,7 +779,7 @@ export async function POST(req: NextRequest) {
         })()
       );
     }
-    
+
     let holidaysBlock = '';
     const needsHolidays = detectedContexts.includes('agenda') || detectedContexts.includes('evento') || detectedContexts.includes('familia');
     if (needsHolidays) {
@@ -816,9 +807,9 @@ export async function POST(req: NextRequest) {
     );
     const eventsBlock = activeEvents.length > 0
       ? [
-          upcomingEvents.length > 0 ? `🔴 NOS PRÓXIMOS DIAS:\n${upcomingEvents.map((e) => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}` : null,
-          highRelevanceEvents.length > 0 ? `🟡 IMPORTANTES:\n${highRelevanceEvents.map((e) => `  - ${e.title}: ${e.event_date}`).join('\n')}` : null,
-        ].filter(Boolean).join('\n\n')
+        upcomingEvents.length > 0 ? `🔴 NOS PRÓXIMOS DIAS:\n${upcomingEvents.map((e) => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`).join('\n')}` : null,
+        highRelevanceEvents.length > 0 ? `🟡 IMPORTANTES:\n${highRelevanceEvents.map((e) => `  - ${e.title}: ${e.event_date}`).join('\n')}` : null,
+      ].filter(Boolean).join('\n\n')
       : 'Nenhum evento cadastrado.';
 
     const ashesBlockRaw = ashes.length > 0 ? ashes.map((a: any) => a.ash_summary).join('\n') : null;
@@ -840,9 +831,9 @@ export async function POST(req: NextRequest) {
 
     const cleanRamForWeights = ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
     const weights = classifyTemporalHorizon(messageText, cleanRamForWeights, pendingQuestion);
-    const truncatedL3     = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, 6000) : '';
-    const truncatedHd     = blockPlan.loadHD ? truncateByWeight(hdBlock, weights.hd, 6000) : '';
-    const truncatedAshes  = (blockPlan.loadAshes && ashesBlockRaw) ? truncateByWeight(ashesBlockRaw, weights.ashes, 6000) : null;
+    const truncatedL3 = blockPlan.loadL3 ? truncateByWeight(currentContextL3, weights.l3, 6000) : '';
+    const truncatedHd = blockPlan.loadHD ? truncateByWeight(hdBlock, weights.hd, 6000) : '';
+    const truncatedAshes = (blockPlan.loadAshes && ashesBlockRaw) ? truncateByWeight(ashesBlockRaw, weights.ashes, 6000) : null;
     const truncatedEvents = truncateByWeight(eventsBlock, weights.events, 6000);
 
     const isFemale = currentContextL3.toLowerCase().includes('feminino') || currentContextL3.toLowerCase().includes('mulher');
@@ -853,8 +844,8 @@ export async function POST(req: NextRequest) {
     const brevityInstruction = isLikelyNoise
       ? 'Responda com leveza e naturalidade — curto, mas humano. 1-2 frases no máximo.'
       : detectedContexts.includes('casual')
-      ? 'Conversa casual — seja presente e natural, como um amigo. Sem robotismo. Máximo 3 frases.'
-      : 'Seja direto. Sem rodeios, sem "Considerando que".';
+        ? 'Conversa casual — seja presente e natural, como um amigo. Sem robotismo. Máximo 3 frases.'
+        : 'Seja direto. Sem rodeios, sem "Considerando que".';
 
     // ========== System Prompt ==========
     const { global: globalPrinciples, individual: individualPrinciples } = principles as { global: any[]; individual: any[] };
@@ -886,7 +877,7 @@ export async function POST(req: NextRequest) {
     const personalityBlock = buildPersonalityBlock({
       assistantName, authorName, informalAddress, brevityInstruction,
       emotionalAttentionNote, canonicalDateTimeBlock, canonicalDateISO,
-      weatherBlock: weatherBlock || undefined,
+      weatherBlock: (blockPlan.loadWeather && weatherBlock) ? weatherBlock : undefined,
     });
 
     const systemPrompt = `${personalityBlock}
@@ -1012,23 +1003,22 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       role: 'system',
       content: `[INTERNO] Responda APENAS o que foi perguntado. NUNCA diga "Anota aí" ou "Anotado!".`,
     });
-
-    let maxTokens = 350;
+    let maxTokens = 500;
     if (isLikelyNoise) maxTokens = 150;
-    else if (detectedContexts.includes('emocao')) maxTokens = 600;
-    else if (detectedContexts.includes('esporte') || detectedContexts.includes('noticias') || detectedContexts.includes('clima')) maxTokens = 800;
-    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 500;
-    else if (detectedContexts.includes('casual')) maxTokens = 250;
+    else if (detectedContexts.includes('emocao')) maxTokens = 800;
+    else if (detectedContexts.includes('financas')) maxTokens = 700;
+    else if (detectedContexts.includes('agenda') || detectedContexts.includes('projeto') || detectedContexts.includes('meta')) maxTokens = 600;
+    else if (detectedContexts.includes('casual')) maxTokens = 350;
 
     // ========== Self-Discovery ==========
     const isSelfDiscoveryQuery = /o que (você|vc) (sabe|conhece|tem|lembra)|quais (são|sao) suas (capacidades|funções|funcoes|ferramentas)|me fala sobre você|o que você pode|você (tem|sabe) algo sobre mim|minhas informações|meu perfil/i.test(messageText);
 
     if (isSelfDiscoveryQuery) {
       const activeIntegrations: string[] = [];
-      if (googleCtx)  activeIntegrations.push('Google Agenda');
-      if (msCtx)      activeIntegrations.push('Outlook/Teams');
+      if (googleCtx) activeIntegrations.push('Google Agenda');
+      if (msCtx) activeIntegrations.push('Outlook/Teams');
       if (emailBlock) activeIntegrations.push('E-mail');
-      if (location)   activeIntegrations.push('Localização GPS');
+      if (location) activeIntegrations.push('Localização GPS');
       if (weatherData) activeIntegrations.push('Clima em tempo real');
 
       const selfContext = JSON.stringify({
@@ -1078,7 +1068,7 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     let forcedToolChoice: any = isReminderIntent ? { type: 'function', function: { name: 'create_reminder' } } : 'auto';
 
     const effectiveTemperature = Math.min(1.0, Math.max(0.0, temperature + adaptiveTemperatureOffset));
-    const effectiveMaxTokens   = Math.round(maxTokens * adaptiveMaxTokensMultiplier);
+    const effectiveMaxTokens = Math.round(maxTokens * adaptiveMaxTokensMultiplier);
 
     while (attempts < 5) {
       const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, effectiveTemperature, 25000, effectiveMaxTokens, forcedToolChoice);
@@ -1155,7 +1145,7 @@ Use essas informações para responder à pergunta do usuário de forma natural,
       // Perfil em background (não bloqueante)
       import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
         extractProfileFromConversation(parseInt(numericUserIdStr), messageText, finalResponse).catch(console.error);
-        redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => {});
+        redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => { });
       });
 
       // Tarefas que devem terminar antes de responder
