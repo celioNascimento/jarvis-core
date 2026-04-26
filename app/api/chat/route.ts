@@ -55,7 +55,7 @@ import { buildSharedContextBlock } from '@/lib/chat/shared-context';
 import { buildPersonalityBlock } from '@/lib/chat/personality';
 import { buildProfileBlock } from '@/lib/chat/profile-block';
 import { promotePatternToPrinciple } from '@/lib/chat/pattern-promoter';
-import { buildFinanceBlock } from '@/lib/finances/db'; // ✅ PATCH 1
+import { buildFinanceBlock } from '@/lib/finances/db';
 
 export const maxDuration = 60;
 
@@ -638,12 +638,11 @@ export async function POST(req: NextRequest) {
       loadEmail:           intent === 'email',
       loadCalendar:        ['calendar', 'reminder'].includes(intent),
       loadTopics:          !['factual', 'task', 'focus'].includes(intent),
-      // ✅ PATCH 3: loadFinances
       loadFinances: detectedContexts.includes('financas') || intent === 'personal',
     };
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| blockPlan:', blockPlan);
 
-    // ✅ PATCH 2 (corrigido): busca do financeBlock depois de blockPlan definido
+    // ========== Busca do financeBlock e emailBlock (depois de blockPlan definido) ==========
     let financeBlock = '';
     if (blockPlan.loadFinances) {
       const key = `finance_block_${numericUserIdStr}`;
@@ -652,7 +651,26 @@ export async function POST(req: NextRequest) {
         financeBlock = cached;
       } else {
         financeBlock = await buildFinanceBlock(Number(numericUserIdStr), authUserId!).catch(() => '');
-        await cache.set(key, financeBlock, 120000); // 2 min
+        await cache.set(key, financeBlock, 120000);
+      }
+    }
+
+    let emailBlock = '';
+    if (blockPlan.loadEmail) {
+      const emailKey = `emails_${numericUserIdStr}`;
+      const cachedEmails = await cache.get<string>(emailKey);
+      if (cachedEmails !== null) {
+        emailBlock = cachedEmails;
+      } else {
+        try {
+          const emails = await getRecentEmails(authUserId!, 5);
+          if (emails && emails.length) {
+            emailBlock = emails.map((e: any) => `- ${e.subject} (${e.from})`).join('\n');
+            await cache.set(emailKey, emailBlock, 60000);
+          }
+        } catch (err) {
+          console.error('[Email] Erro ao buscar emails:', err);
+        }
       }
     }
 
@@ -770,8 +788,6 @@ export async function POST(req: NextRequest) {
         })()
       );
     }
-
-    let emailBlock = null;
     
     let holidaysBlock = '';
     const needsHolidays = detectedContexts.includes('agenda') || detectedContexts.includes('evento') || detectedContexts.includes('familia');
@@ -939,7 +955,7 @@ MEMÓRIA: Use as memórias naturalmente — nunca diga "Tenho uma nota aqui que 
 FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
 FILHOS: A lista canônica de filhos está em [FILHOS DE ${authorName.toUpperCase()}]. Nunca cite filhos além dos listados. Se indicar "Nenhum filho cadastrado", não invente.
 LEMBRETES: Se o usuário usar "me lembra", "me avisa", "não esquecer" com tempo ou local — chame OBRIGATORIAMENTE a tool create_reminder. Nunca apenas confirme sem chamar a tool.
-✅ PATCH 5: FINANÇAS: Quando o usuário mencionar valores monetários com verbos de ação (gastei, paguei, comprei, recebi, transferi):
+FINANÇAS: Quando o usuário mencionar valores monetários com verbos de ação (gastei, paguei, comprei, recebi, transferi):
 1. Chame OBRIGATORIAMENTE registrar_transacao com amount, type e description.
 2. Se mencionar categoria (mercado, combustível, academia etc.), passe em category_name.
 3. Após registrar, confirme em 1 frase: "Anotado — R$X em [categoria]."
@@ -985,6 +1001,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       { role: 'user', content: messageText },
     ].filter(Boolean);
 
+    // Comando especial para apagar última mensagem
     if (/ignore isso|ignora isso|não salva|nao salva|apaga isso|esquece isso|delete isso/i.test(messageText)) {
       const { data: lastEntry } = await supabase.schema('jarvis').from('brain').select('id').eq('user_id', numericUserIdStr).order('created_at', { ascending: false }).limit(1).single();
       if (lastEntry) await supabase.schema('jarvis').from('brain').delete().eq('id', lastEntry.id);
@@ -1103,6 +1120,7 @@ Use essas informações para responder à pergunta do usuário de forma natural,
 
     if (pendingQuestion) clearPendingQuestion(numericUserIdStr).catch((e) => console.error('[PendingQ]', e));
 
+    // Persistência da conversa
     const { error: insertError } = await supabase.schema('jarvis').from('brain').insert([{
       content: messageText,
       category,
@@ -1132,24 +1150,26 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     if (insertError) console.error('BRAIN INSERT ERRO:', insertError);
     else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'model:', modelRoute.label);
 
+    // ========== TAREFAS DE BACKGROUND (AGRUPADAS) ==========
     if (!isLikelyNoise) {
+      // Perfil em background (não bloqueante, mas não aguardado)
       import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
         extractProfileFromConversation(parseInt(numericUserIdStr), messageText, finalResponse).catch(console.error);
         redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => {});
       });
 
-      backgroundTasks.push(...hdMemoryIds.map((id) => reinforceMemory(id)));
-      backgroundTasks.push(updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score).catch(e => console.error('[TopicIndex]', e)));
-
-      if (onboardingState?.status === 'in_progress')
-        backgroundTasks.push(withRetry(() => processOnboardingFromMessage(numericUserIdStr, messageText, finalResponse, onboardingState)).catch(e => console.error('[Onboarding]', e)));
-
+      // Tarefas que devem terminar antes de responder (serverless-safe)
       backgroundTasks.push(
-        withRetry(() =>
-          runUnifiedExtractor(numericUserIdStr, authorName, messageText, finalResponse)
-        ).catch(e => console.error('[UnifiedExtractor]', e))
+        ...hdMemoryIds.map((id) => reinforceMemory(id)),
+        updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score).catch(e => console.error('[TopicIndex]', e)),
+        withRetry(() => runUnifiedExtractor(numericUserIdStr, authorName, messageText, finalResponse)).catch(e => console.error('[UnifiedExtractor]', e))
       );
 
+      if (onboardingState?.status === 'in_progress') {
+        backgroundTasks.push(withRetry(() => processOnboardingFromMessage(numericUserIdStr, messageText, finalResponse, onboardingState)).catch(e => console.error('[Onboarding]', e)));
+      }
+
+      // Critic probabilístico
       backgroundTasks.push((async () => {
         try {
           if (Math.random() > 0.30) return;
@@ -1212,33 +1232,22 @@ Responda APENAS com JSON válido, sem markdown:
           const existingHistory = await redis.get<any[]>(criticHistoryKey) ?? [];
           const updatedHistory = [...existingHistory, criticScore].slice(-10);
           await redis.set(criticHistoryKey, updatedHistory, { ex: 86400 });
-
           console.log('[Critic] Score:', criticScore.overall?.toFixed(2), '| Flag:', criticScore.flag, '| Note:', criticScore.note);
         } catch (e) {
           console.error('[Critic] Falhou silenciosamente:', (e as Error).message);
         }
       })());
 
+      // Pattern promoter (10% das chamadas) — sem auto-referência
       if (Math.random() < 0.10) {
         backgroundTasks.push((async () => {
           try {
-            const promoteResult = await promotePatternToPrinciple(
-              parseInt(numericUserIdStr),
-              authorName,
-              assistantName,
-            );
+            const promoteResult = await promotePatternToPrinciple(parseInt(numericUserIdStr), authorName, assistantName);
             if (promoteResult.promoted > 0) {
               console.log(`[PatternPromoter] ${promoteResult.promoted} princípio(s) promovido(s).`);
             }
             if (promoteResult.notification) {
-              await redis.set(
-                `pending_notification_${numericUserIdStr}`,
-                promoteResult.notification,
-                { ex: 86400 },
-              );
-            }
-            if (backgroundTasks.length > 0) {
-            await Promise.allSettled(backgroundTasks).catch(e => console.error('[Background] Erro ao aguardar tasks:', e));
+              await redis.set(`pending_notification_${numericUserIdStr}`, promoteResult.notification, { ex: 86400 });
             }
           } catch (e) {
             console.error('[PatternPromoter] Background error:', (e as Error).message);
@@ -1246,14 +1255,24 @@ Responda APENAS com JSON válido, sem markdown:
         })());
       }
 
-      Promise.all([
-        ...backgroundTasks,
-        supabase.schema('jarvis').from('brain').select('*', { count: 'exact', head: true }).eq('user_id', numericUserIdStr).eq('category', 'info').then(({ count }) => {
-          if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
-        }),
-      ]).catch(e => console.error('[Background]', e));
+      // Compactação de memória (se mais de 20 registros)
+      backgroundTasks.push(
+        supabase.schema('jarvis').from('brain')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', numericUserIdStr)
+          .eq('category', 'info')
+          .then(({ count }) => {
+            if (count && count >= 20) return compactMemory(numericUserIdStr, authorName);
+          })
+      );
     }
 
+    // ✅ Execução garantida de todas as background tasks antes de responder (serverless-safe)
+    if (backgroundTasks.length > 0) {
+      await Promise.allSettled(backgroundTasks);
+    }
+
+    // Notificações pendentes (pattern promoter)
     const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
     try {
       const pendingNotif = await redis.get<string>(pendingNotifKey);
