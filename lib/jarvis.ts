@@ -1,9 +1,10 @@
-// lib/jarvis.ts
+8// lib/jarvis.ts
 // Motor Central — Conexões, IA, Vetores e Utilitários
 // ✅ CORREÇÕES: callOpenRouter e generateEmbedding via OpenRouter (OPENAI_API_KEY)
 
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
+import { Redis } from '@upstash/redis';
 
 // ============================================================
 // 1. CONEXÃO CENTRAL COM O BANCO (SCHEMA JARVIS)
@@ -13,6 +14,11 @@ export const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
 );
+
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL!,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+});
 
 // ============================================================
 // 2. MOTOR DE IA (via OpenRouter)
@@ -324,6 +330,8 @@ TAREFA: Integre as novas informações ao Dossiê existente.
         .from('users')
         .update({ current_context: newContext })
         .eq('id', userId);
+
+      await redis.del(`l3_chunks_${userId}`);
 
       await supabase.from('memories').insert([{
         summary: newContext,
