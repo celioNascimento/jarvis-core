@@ -70,6 +70,8 @@ const INTENT_BUDGETS: Record<string, { l3: number, hd: number, finance: number, 
   email:    { l3: 0.2, hd: 0.1, finance: 0.1,  events: 0.6, ashes: 0.0 },
   reminder: { l3: 0.1, hd: 0.1, finance: 0.0,  events: 0.8, ashes: 0.0 },
   task:     { l3: 0.2, hd: 0.1, finance: 0.0,  events: 0.7, ashes: 0.0 },
+  casual:  { l3: 0.2, hd: 0.1, finance: 0.0, events: 0.05, ashes: 0.0 },
+  trivial: { l3: 0.05, hd: 0.0, finance: 0.0, events: 0.0, ashes: 0.0 },
 };
 // ====================================================
 
