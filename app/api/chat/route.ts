@@ -56,6 +56,7 @@ import { buildPersonalityBlock } from '@/lib/chat/personality';
 import { buildProfileBlock } from '@/lib/chat/profile-block';
 import { promotePatternToPrinciple } from '@/lib/chat/pattern-promoter';
 import { buildFinanceBlock } from '@/lib/finances/db';
+import { getRelevantL3Chunks, hasL3Chunks, indexL3Chunks } from '@/lib/chat/l3-chunks';
 
 export const maxDuration = 60;
 
@@ -317,7 +318,6 @@ export async function POST(req: NextRequest) {
     const authorName = userRecord.nickname || userFirstName;
     const assistantName = userRecord.assistant_name || 'Lev';
     const userTimezone = userRecord.timezone || 'America/Sao_Paulo';
-    const currentContextL3 = userRecord.current_context || 'Sem dossiê ainda.';
     const pendingQuestion = userRecord.pending_question || null;
 
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
@@ -366,28 +366,11 @@ export async function POST(req: NextRequest) {
     let hdBlock = '';
     let hdMemoryIds: string[] = [];
 
+    // Embedding gerado antes da classificação L4 — necessário para a busca HD
+    // e para salvar a mensagem no brain com vetor
     if (!isTrivialEarly) {
       try {
         queryEmbedding = await getCachedEmbedding(messageText);
-        if (queryEmbedding) {
-          const { data: search, error } = (await supabase.rpc('match_memories', {
-            query_embedding: queryEmbedding,
-            match_threshold: 0.22,
-            match_count: 8,
-          })) as { data: any[] | null; error?: any };
-
-          if (error) console.error('[Memória HD] Erro na RPC:', error);
-          else if (search?.length) {
-            hdSearchResults = search.map((r: any) => ({
-              similarity: r.similarity,
-              emotional_weight: r.emotional_weight ?? 0.5,
-              summary: r.summary,
-              id: r.id,
-            }));
-            hdBlock = hdSearchResults.filter(r => !r.summary?.startsWith('[CINZA]')).map(r => r.summary).join('\n---\n');
-            hdMemoryIds = hdSearchResults.map(r => r.id);
-          }
-        }
       } catch (err) {
         console.error('[Embedding] Erro:', err);
       }
@@ -403,8 +386,55 @@ export async function POST(req: NextRequest) {
     }
     console.timeEnd('[Performance] context_classification');
 
+    // Busca HD agora acontece APÓS classificação — assim detectedContexts já existe
+    // e podemos usar threshold adaptativo para retrospecto
+    if (!isTrivialEarly && queryEmbedding) {
+      try {
+        const hdThreshold = detectedContexts.includes('retrospecto') ? 0.15 : 0.22;
+        const hdMatchCount = detectedContexts.includes('retrospecto') ? 12 : 8;
+
+        const { data: search, error } = (await supabase.rpc('match_memories', {
+          query_embedding: queryEmbedding,
+          match_threshold: hdThreshold,
+          match_count: hdMatchCount,
+        })) as { data: any[] | null; error?: any };
+
+        if (error) console.error('[Memória HD] Erro na RPC:', error);
+        else if (search?.length) {
+          hdSearchResults = search.map((r: any) => ({
+            similarity: r.similarity,
+            emotional_weight: r.emotional_weight ?? 0.5,
+            summary: r.summary,
+            id: r.id,
+          }));
+          hdBlock = hdSearchResults.filter(r => !r.summary?.startsWith('[CINZA]')).map(r => r.summary).join('\n---\n');
+          hdMemoryIds = hdSearchResults.map(r => r.id);
+        }
+      } catch (err) {
+        console.error('[Memória HD] Erro na busca:', err);
+      }
+    }
+
     // ========== 3. Detecção de shift ==========
     const shiftDetected = !isTrivialEarly ? await detectTopicShiftWithL4(numericUserIdStr, detectedContexts) : false;
+    // L3 semântico — executado após embedding e classificação estarem disponíveis
+    const rawDossie = userRecord.current_context || '';
+
+    if (rawDossie && queryEmbedding) {
+      const alreadyIndexed = await hasL3Chunks(Number(numericUserIdStr));
+      if (!alreadyIndexed) {
+        console.log('[L3Chunks] Primeira indexação para user:', numericUserIdStr);
+        await indexL3Chunks(Number(numericUserIdStr), rawDossie).catch(e =>
+          console.error('[L3Chunks] Erro na indexação inicial:', e)
+        );
+      }
+    }
+
+    const currentContextL3 = (queryEmbedding && rawDossie)
+      ? await getRelevantL3Chunks(Number(numericUserIdStr), queryEmbedding).catch(() => rawDossie)
+      : rawDossie;
+
+    // ========== 3. Detecção de shift ==========
 
     // ========== 4. Histórico ==========
     const { data: historySession } = await supabase
