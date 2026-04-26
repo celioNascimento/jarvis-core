@@ -56,6 +56,7 @@ import { buildPersonalityBlock } from '@/lib/chat/personality';
 import { buildProfileBlock } from '@/lib/chat/profile-block';
 import { promotePatternToPrinciple } from '@/lib/chat/pattern-promoter';
 import { buildFinanceBlock } from '@/lib/finances/db'; // ✅ PATCH 1
+import { getSemanticL3 } from '@/lib/chat/l3-semantic';
 
 export const maxDuration = 60;
 
