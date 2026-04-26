@@ -459,7 +459,7 @@ export async function POST(req: NextRequest) {
     // ========== 7. Tópico emocional ==========
     let topicEmotionalDimension: number | undefined;
 
-    // ========== 8. Cargas contextuais (sem financeBlock, que será buscado depois) ==========
+    // ========== 8. Cargas contextuais ==========
     const [
       events,
       ashes,
@@ -514,7 +514,7 @@ export async function POST(req: NextRequest) {
         await cache.set(key, val, 60000);
         return val;
       })(),
-      // ── childrenData — mantido para o filtro de personNotesBlock ──
+      // ── childrenData ─────────────────────────────────────────
       (async () => {
         const key = `children_${numericUserIdStr}`;
         const cached = await cache.get<any[]>(key);
@@ -642,7 +642,7 @@ export async function POST(req: NextRequest) {
     };
     console.log('[chat] contexts:', detectedContexts, '| model:', modelRoute.label, '| intent:', intent, '| blockPlan:', blockPlan);
 
-    // ========== Busca do financeBlock e emailBlock (depois de blockPlan definido) ==========
+    // ========== Busca financeBlock e emailBlock ==========
     let financeBlock = '';
     if (blockPlan.loadFinances) {
       const key = `finance_block_${numericUserIdStr}`;
@@ -663,9 +663,9 @@ export async function POST(req: NextRequest) {
         emailBlock = cachedEmails;
       } else {
         try {
-          const emails = await getRecentEmails(authUserId!, 5);
-          if (emails && emails.length) {
-            emailBlock = emails.map((e: any) => `- ${e.subject} (${e.from})`).join('\n');
+          const emailResult = await getRecentEmails(authUserId!, 5);
+          if (emailResult && typeof emailResult === 'string') {
+            emailBlock = emailResult;
             await cache.set(emailKey, emailBlock, 60000);
           }
         } catch (err) {
@@ -1150,15 +1150,15 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     if (insertError) console.error('BRAIN INSERT ERRO:', insertError);
     else console.log('BRAIN INSERT OK — user:', numericUserIdStr, 'model:', modelRoute.label);
 
-    // ========== TAREFAS DE BACKGROUND (AGRUPADAS) ==========
+    // ========== TAREFAS DE BACKGROUND ==========
     if (!isLikelyNoise) {
-      // Perfil em background (não bloqueante, mas não aguardado)
+      // Perfil em background (não bloqueante)
       import('@/lib/chat/profile-extractor').then(({ extractProfileFromConversation }) => {
         extractProfileFromConversation(parseInt(numericUserIdStr), messageText, finalResponse).catch(console.error);
         redis.del(`profile_block_${numericUserIdStr}_${detectedContexts.slice(0, 3).sort().join('_')}`).catch(() => {});
       });
 
-      // Tarefas que devem terminar antes de responder (serverless-safe)
+      // Tarefas que devem terminar antes de responder
       backgroundTasks.push(
         ...hdMemoryIds.map((id) => reinforceMemory(id)),
         updateTopicIndex(numericUserIdStr, detectedContexts, messageText, emotional.score).catch(e => console.error('[TopicIndex]', e)),
@@ -1272,7 +1272,7 @@ Responda APENAS com JSON válido, sem markdown:
       await Promise.allSettled(backgroundTasks);
     }
 
-    // Notificações pendentes (pattern promoter)
+    // Notificações pendentes
     const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
     try {
       const pendingNotif = await redis.get<string>(pendingNotifKey);
