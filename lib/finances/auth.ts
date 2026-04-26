@@ -1,7 +1,4 @@
 // lib/finances/auth.ts
-// Wrapper sobre lib/auth.ts para as rotas de finanças
-// Retorna authUserId + jarvisUserId juntos
-
 import { getUserFromToken } from '@/lib/auth';
 import { supabase } from '@/lib/jarvis';
 
@@ -14,21 +11,43 @@ export interface ResolvedUser {
 
 export async function resolveUser(req: Request): Promise<ResolvedUser | null> {
   try {
-    const token = (req.headers.get('authorization') || '').replace('Bearer ', '').trim();
-    if (!token) return null;
+    const authHeader = req.headers.get('authorization');
+    
+    // LOG 1: Verificar se o header sequer existe
+    if (!authHeader) {
+      console.error('[resolveUser] Bloqueado: Header Authorization ausente.');
+      return null;
+    }
 
-    // Usa o helper já existente no projeto
+    const token = authHeader.replace('Bearer ', '').trim();
+    if (!token) {
+      console.error('[resolveUser] Bloqueado: Token vazio após replace.');
+      return null;
+    }
+
+    // LOG 2: Verificar se a lib/auth consegue decodificar
     const jarvisUserId = await getUserFromToken(token);
-    if (!jarvisUserId) return null;
+    if (!jarvisUserId) {
+      console.error('[resolveUser] Bloqueado: getUserFromToken retornou nulo. Token inválido ou Secret expirada.');
+      return null;
+    }
 
-    // Busca authUserId e dados extras
-    const { data: userRecord } = await supabase
+    // LOG 3: Verificar consulta ao banco
+    const { data: userRecord, error: dbError } = await supabase
       .from('users')
       .select('auth_user_id, nickname, assistant_name')
       .eq('id', jarvisUserId)
       .maybeSingle();
 
-    if (!userRecord?.auth_user_id) return null;
+    if (dbError) {
+      console.error('[resolveUser] Erro de Banco:', dbError.message);
+      return null;
+    }
+
+    if (!userRecord?.auth_user_id) {
+      console.error(`[resolveUser] Bloqueado: jarvisUserId ${jarvisUserId} encontrado, mas sem auth_user_id vinculado.`);
+      return null;
+    }
 
     return {
       authUserId:    userRecord.auth_user_id,
@@ -37,8 +56,7 @@ export async function resolveUser(req: Request): Promise<ResolvedUser | null> {
       assistantName: userRecord.assistant_name || undefined,
     };
   } catch (e: any) {
-    console.error('[resolveUser]', e.message);
+    console.error('[resolveUser] Erro Crítico Exceção:', e.message);
     return null;
   }
 }
-
