@@ -7,20 +7,26 @@ const redis = new Redis({
 });
 
 function chunkL3(l3: string): string[] {
-  const raw = l3
-    .split(/\n{2,}|(?=##\s)|(?=\n-\s)/)
-    .map(s => s.trim())
-    .filter(s => s.length > 40);
+  // Agrupa por seção semântica (## headers) ou blocos de 600 chars
+  const bySection = l3.split(/(?=^##\s)/m).map(s => s.trim()).filter(s => s.length > 80);
+  
+  if (bySection.length >= 3) return bySection;
 
-  if (raw.length <= 1) {
-    const chunks: string[] = [];
-    for (let i = 0; i < l3.length; i += 400) {
-      chunks.push(l3.slice(i, i + 400));
+  // Fallback: agrupa linhas em blocos de ~600 chars
+  const lines = l3.split('\n').filter(l => l.trim().length > 0);
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const line of lines) {
+    if (current.length + line.length > 600 && current.length > 0) {
+      chunks.push(current.trim());
+      current = '';
     }
-    return chunks;
+    current += line + '\n';
   }
+  if (current.trim().length > 80) chunks.push(current.trim());
 
-  return raw;
+  return chunks;
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
