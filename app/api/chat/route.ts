@@ -1107,7 +1107,7 @@ Use essas informações para responder à pergunta do usuário de forma natural,
     const effectiveMaxTokens   = Math.round(maxTokens * adaptiveMaxTokensMultiplier);
 
     while (attempts < 5) {
-      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, effectiveTemperature, 45000, effectiveMaxTokens, forcedToolChoice);
+      const response = await callOpenRouterWithTools(conversationMessages, tools, modelRoute.model, effectiveTemperature, 40000, effectiveMaxTokens, forcedToolChoice);
       const { content, toolCalls } = response;
       if (!toolCalls || toolCalls.length === 0) { finalResponse = content; break; }
       forcedToolChoice = 'auto';
