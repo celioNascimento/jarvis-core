@@ -41,3 +41,4 @@ export async function resolveUser(req: Request): Promise<ResolvedUser | null> {
     return null;
   }
 }
+
