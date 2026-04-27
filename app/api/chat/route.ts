@@ -56,7 +56,7 @@ const cache = {
 
 function sanitizeSensitiveData(text: string): string {
   if (!text) return text;
-  const patterns = [ /(sk-[A-Za-z0-9_\-]{20,})/gi, /(Bearer\s+[A-Za-z0-9_\-\.]{20,})/gi, /(Authorization:\s*['"]?[A-Za-z0-9_\-]+)/gi, /(api[_-]?key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi, /(password['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi, /(secret['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi, /(token['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi, /(x-api-key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi ];
+  const patterns = [/(sk-[A-Za-z0-9_\-]{20,})/gi, /(Bearer\s+[A-Za-z0-9_\-\.]{20,})/gi, /(Authorization:\s*['"]?[A-Za-z0-9_\-]+)/gi, /(api[_-]?key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi, /(password['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi, /(secret['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi, /(token['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi, /(x-api-key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi];
   let sanitized = text;
   for (const p of patterns) sanitized = sanitized.replace(p, match => match.includes('=') ? match.replace(/=.*/, '= [REDACTED]') : match.includes(':') ? match.replace(/:.*/, ': [REDACTED]') : '[REDACTED]');
   return sanitized;
@@ -160,7 +160,7 @@ export async function POST(req: NextRequest) {
       locationContext = await checkProximidade(location.latitude, location.longitude, numericUserIdStr);
       const alertaGeo = await verificarAlertasDeProximidade(authUserId, location.latitude, location.longitude);
       if (alertaGeo.temAlerta) return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
-      
+
       try {
         await supabase.from('config').upsert(
           { key: `last_location_${numericUserIdStr}`, value: JSON.stringify({ lat: location.latitude, lng: location.longitude, ts: Date.now() }) },
@@ -172,17 +172,17 @@ export async function POST(req: NextRequest) {
 
       if (!messageText) messageText = '[Enviou Localização]';
     }
-    
+
     // ========== 1. Embeddings, L4 e Memória ==========
     const queryEmbedding = await getCachedEmbedding(messageText).catch(() => null);
-    
+
     const contextCacheKey = `ctx_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 30)).toString('base64')}`;
     let detectedContexts = await cache.get<ContextType[]>(contextCacheKey);
     if (!detectedContexts) {
       detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
       await cache.set(contextCacheKey, detectedContexts, 20000);
     }
-    
+
     const emotional = await computeEmotionalScore(messageText, numericUserIdStr, [], '');
     const blockPlan = planContextualBlocks(detectedContexts, messageText, emotional.score);
     const modelRoute = routeModel(detectedContexts, emotional.score, undefined);
@@ -253,9 +253,9 @@ export async function POST(req: NextRequest) {
           return data?.length ? data.map((g: any) => `- ${g.content}`).join('\n') : '';
         } catch { return ''; }
       })(),
-      blockPlan.loadL3 ? buildProfileBlock({ userId: Number(numericUserIdStr), authUserId, authorName, contexts: detectedContexts }).catch(()=>'') : Promise.resolve(''),
-      blockPlan.loadGaps ? buildGapsBlock(numericUserIdStr, messageText).catch(()=>'') : Promise.resolve(''),
-      blockPlan.loadDiary ? buildDiaryGoalsBlock(numericUserIdStr).catch(()=>'') : Promise.resolve(''),
+      blockPlan.loadL3 ? buildProfileBlock({ userId: Number(numericUserIdStr), authUserId, authorName, contexts: detectedContexts }).catch(() => '') : Promise.resolve(''),
+      blockPlan.loadGaps ? buildGapsBlock(numericUserIdStr, messageText).catch(() => '') : Promise.resolve(''),
+      blockPlan.loadDiary ? buildDiaryGoalsBlock(numericUserIdStr).catch(() => '') : Promise.resolve(''),
     ]);
 
     let financeBlock = '', emailBlock = '', googleCtx = null;
@@ -269,7 +269,7 @@ export async function POST(req: NextRequest) {
       if (criticHist.length >= 3) {
         const recent = criticHist.slice(-5);
         if ((recent.reduce((s, c) => s + (c.overall ?? 0.7), 0) / recent.length) < 0.5) adaptiveTempOffset = 0.1;
-        const dominantFlag = Object.entries(recent.reduce((acc: any, c) => { acc[c.flag] = (acc[c.flag] || 0) + 1; return acc; }, {})).sort((a:any, b:any) => b[1] - a[1])[0]?.[0];
+        const dominantFlag = Object.entries(recent.reduce((acc: any, c) => { acc[c.flag] = (acc[c.flag] || 0) + 1; return acc; }, {})).sort((a: any, b: any) => b[1] - a[1])[0]?.[0];
         if (dominantFlag === 'verbose') adaptiveMaxTokensMultiplier = 0.8;
         if (dominantFlag === 'cold') adaptiveTempOffset = 0.15;
       }
@@ -277,12 +277,12 @@ export async function POST(req: NextRequest) {
 
     let forcedSearchResult = '';
     if (shouldForceSearch(messageText, detectedContexts) && !weatherData) {
-      try { forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA]\n${await searchWeb(refineSearchQuery(messageText, detectedContexts))}`; } catch {}
+      try { forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA]\n${await searchWeb(refineSearchQuery(messageText, detectedContexts))}`; } catch { }
     }
 
     let holidaysBlock = '';
     if (detectedContexts.includes('agenda') || detectedContexts.includes('evento') || detectedContexts.includes('familia')) {
-      const holidays = await getUpcomingHolidays(10).catch(()=>[]);
+      const holidays = await getUpcomingHolidays(10).catch(() => []);
       if (holidays.length) holidaysBlock = `\n[FERIADOS NACIONAIS PRÓXIMOS]\n${holidays.map(h => `- ${h.name}: ${new Date(h.date).toLocaleDateString('pt-BR')}`).join('\n')}`;
     }
 
@@ -299,8 +299,8 @@ export async function POST(req: NextRequest) {
 
     const { global: globalPrinciples, individual: individualPrinciples } = principles;
     const principlesText = [
-      globalPrinciples.length ? `🔒 PRINCÍPIOS INVIOLÁVEIS:\n${globalPrinciples.map((p:any) => `- [${p.category || 'Geral'}] ${p.content}`).join('\n')}` : '',
-      individualPrinciples.length ? `👤 PRINCÍPIOS PESSOAIS de ${authorName}:\n${individualPrinciples.map((p:any) => `- [${p.category || 'Geral'}] ${p.content}`).join('\n')}` : ''
+      globalPrinciples.length ? `🔒 PRINCÍPIOS INVIOLÁVEIS:\n${globalPrinciples.map((p: any) => `- [${p.category || 'Geral'}] ${p.content}`).join('\n')}` : '',
+      individualPrinciples.length ? `👤 PRINCÍPIOS PESSOAIS de ${authorName}:\n${individualPrinciples.map((p: any) => `- [${p.category || 'Geral'}] ${p.content}`).join('\n')}` : ''
     ].filter(Boolean).join('\n\n');
 
     const cleanRam = memory.ram.ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
@@ -399,7 +399,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     conversationMessages.push({ role: 'system', content: `[INTERNO] Responda APENAS o que foi perguntado. NUNCA diga "Anotado!".` });
 
     // ========== 4. Gatekeeper e LLM ==========
-    let maxTokens = isLikelyNoise ? 150 : detectedContexts.includes('emocao') ? 800 : detectedContexts.includes('financas') ? 700 : 500;
+    let maxTokens = isLikelyNoise ? 250 : 2500;
     let finalResponse = '';
     let attempts = 0;
     let forcedToolChoice: any = /me lembra|avisa/i.test(messageText) ? { type: 'function', function: { name: 'create_reminder' } } : intent === 'calendar' ? { type: 'function', function: { name: 'salvar_evento' } } : 'auto';
@@ -408,21 +408,21 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       const response = await callOpenRouterWithPriority(
         1, 'never', `chat_${msg_id}`,
         conversationMessages, tools, modelRoute.model,
-        Math.min(1.0, temperature + adaptiveTempOffset), 35000, 
+        Math.min(1.0, temperature + adaptiveTempOffset), 35000,
         Math.round(maxTokens * adaptiveMaxTokensMultiplier), forcedToolChoice
       );
-      
+
       const { content, toolCalls } = response as any;
-      
-      if (!toolCalls?.length && content) { 
-        finalResponse = content; 
-        break; 
+
+      if (!toolCalls?.length && content) {
+        finalResponse = content;
+        break;
       }
 
       if (toolCalls?.length) {
-        forcedToolChoice = 'auto'; 
+        forcedToolChoice = 'auto';
         conversationMessages.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
-        
+
         for (const toolCall of toolCalls) {
           try {
             const result = await executeTool(toolCall, authUserId, numericUserIdStr);
@@ -435,12 +435,12 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         finalResponse = content || "Concluí a anotação internamente. Posso ajudar com mais alguma coisa?";
         break;
       }
-      
+
       attempts++;
     }
 
     if (!finalResponse) finalResponse = 'Processamento concluído.';
-    
+
     let category = 'info';
     if (finalResponse.match(/\[CLASSE:\s*(\w+)\]/i)) category = finalResponse.match(/\[CLASSE:\s*(\w+)\]/i)![1].toLowerCase();
     finalResponse = sanitizeSensitiveData(finalResponse.replace(/\[CLASSE:.*?\]|\[INTERNO:.*?\]/gi, '').trim());
@@ -475,7 +475,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     try {
       const pendingNotif = await redis.get<string>(pendingNotifKey);
       if (pendingNotif && !isLikelyNoise) { finalResponse = finalResponse.trimEnd() + '\n\n' + pendingNotif; await redis.del(pendingNotifKey); }
-    } catch {}
+    } catch { }
 
     console.log(`[Performance] Total Rota: ${Date.now() - totalStartTime}ms`);
     return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
