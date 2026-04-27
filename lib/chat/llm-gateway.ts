@@ -51,61 +51,66 @@ class Gatekeeper {
       this.queue.push({ task, resolve, reject });
       // Reordena: números menores (1) vão para o início da fila
       this.queue.sort((a, b) => a.task.priority - b.task.priority);
-      
+
       this.processQueue();
     });
   }
 
   private async processQueue() {
-    // Se atingiu o limite de concorrência ou a fila está vazia, aguarda.
-    if (this.activeCount >= this.maxConcurrent || this.queue.length === 0) return;
+    if (this.queue.length === 0) return;
 
-    this.activeCount++;
+    // 1. CHECAGEM DISTRIBUÍDA DE CONCORRÊNCIA (Semáforo Global Atômico)
+    const activeCount = await redis.incr('global_llm_active');
+
+    // Se foi o primeiro a entrar, garante que o semáforo não vai ficar preso para sempre
+    if (activeCount === 1) {
+      await redis.expire('global_llm_active', 45);
+    }
+
+    // Se lotou, devolve a vaga e entra em espera
+    if (activeCount > this.maxConcurrent) {
+      await redis.decr('global_llm_active');
+      setTimeout(() => this.processQueue(), 500);
+      return;
+    }
+
     const item = this.queue.shift();
-    
     if (!item) {
-      this.activeCount--;
+      await redis.decr('global_llm_active');
       return;
     }
 
     try {
-      console.log(`[Gatekeeper] Executando tarefa: ${item.task.id} (Prioridade: ${item.task.priority})`);
-      
+      console.log(`[Gatekeeper] Executando: ${item.task.id} (Prioridade: ${item.task.priority})`);
+
       let result;
       let attempts = 0;
-      // Prioridade 1 (Chat) insiste mais vezes. Prioridades menores desistem mais rápido.
-      const maxAttempts = item.task.priority === 1 ? 4 : 2; 
+      const maxAttempts = item.task.priority === 1 ? 4 : 2;
 
       while (attempts < maxAttempts) {
         try {
           result = await item.task.execute();
-          break; // Sucesso! Sai do loop de retry.
+          break;
         } catch (error: any) {
           attempts++;
-          const errorMessage = error?.message || String(error);
-          const isRateLimit = errorMessage.includes('429') || error?.status === 429 || errorMessage.includes('rate limit');
-          
+          const isRateLimit = error?.message?.includes('429') || error?.status === 429;
           if (isRateLimit && attempts < maxAttempts) {
-            // Atraso exponencial: 2s, 4s, 8s... + jitter para evitar colisões
             const delay = (Math.pow(2, attempts) * 1000) + Math.floor(Math.random() * 500);
-            console.warn(`[Gatekeeper] ⏳ 429 Rate Limit. Segurando tarefa ${item.task.id} por ${delay}ms (Tentativa ${attempts}/${maxAttempts})...`);
             await new Promise(r => setTimeout(r, delay));
           } else {
-            throw error; // Se esgotou as tentativas ou o erro não for 429, propaga o erro.
+            throw error;
           }
         }
       }
-      
-      // 4. SALVA NO CACHE DE DEDUPLICAÇÃO (TTL 60s)
+
       await redis.set(`llm_dedup:${item.task.id}`, result, { ex: 60 });
       item.resolve(result);
 
     } catch (error: any) {
-      console.error(`[Gatekeeper] ❌ Falha definitiva na tarefa ${item.task.id}:`, error.message || error);
       item.reject(error);
     } finally {
-      this.activeCount--;
-      // Ciclo contínuo: libera uma vaga e já puxa o próximo
+      // Libera a vaga no semáforo global
+      await redis.decr('global_llm_active');
       this.processQueue();
     }
   }
@@ -136,12 +141,12 @@ export async function callOpenRouterWithPriority(
     execute: async () => {
       // Repassa a chamada para a sua função de infraestrutura original
       return rawCallOpenRouter(
-        messages, 
-        tools, 
-        model, 
-        temperature, 
-        timeoutMs, 
-        maxTokens, 
+        messages,
+        tools,
+        model,
+        temperature,
+        timeoutMs,
+        maxTokens,
         toolChoice
       );
     }
