@@ -32,7 +32,7 @@ async function getUserLastLocation(numericUserIdStr: string): Promise<{ lat: num
       .from('config')
       .select('value')
       .eq('key', `last_location_${numericUserIdStr}`)
-      .single();
+      .maybeSingle();
 
     if (error || !locData?.value) return null;
 
