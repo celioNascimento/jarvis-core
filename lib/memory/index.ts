@@ -2,7 +2,7 @@
 // Memory Manager — Fonte única de verdade para todas as camadas de memória do Lev
 // V1.0.0 — Bloco 1: Tipos e interfaces
 
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/jarvis';
 import { compressToSummary, semanticRamCompression, RAM_MAX_CHARS } from '@/lib/chat/ram';
 import { detectTopicShiftWithL4 } from '@/lib/chat/context-classifier';
 
@@ -12,15 +12,6 @@ import { planContextualBlocks } from '@/lib/chat/context-classifier';
 import { generateEmbedding } from '@/lib/jarvis';
 import { indexL3Chunks } from '@/lib/chat/l3-chunks';
 
-
-
-// ─── Cliente Supabase ─────────────────────────────────────────────────────────
-
-export const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
 
 // ─── Camadas de memória ───────────────────────────────────────────────────────
 
