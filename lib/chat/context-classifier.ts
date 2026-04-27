@@ -284,12 +284,13 @@ export function planContextualBlocks(
   const wantsShopping = has('compras');
   const wantsPlaces   = wantsShopping || (has('rotina', 'recomendacao') && /perto|próximo|aqui|bairro/.test(msg));
 
- const needsHD = (hasRealEmotion || has('diario', 'familia', 'saude') || wantsFinances || isRetrospecto) && !isTrivial && !isCasualOnly;
+  const isRetrospecto = has('retrospecto') ||
+    /você me (disse|falou|indicou|sugeriu|recomendou)|me indicou|falamos (sobre|de)|ontem você|antes você|última vez/i.test(msg);
+  
+  const needsHD = (hasRealEmotion || has('diario', 'familia', 'saude') || wantsFinances || isRetrospecto) && !isTrivial && !isCasualOnly;
   const needsAshes = (has('diario', 'emocao', 'meta', 'familia') && (hasRealEmotion || wantsDiary)) && !isTrivial;
   const needsGaps  = (wantsCalendar || wantsFinances || has('projeto', 'meta', 'trabalho')) && !isTrivial;
   const needsTopics = has('saude', 'projeto', 'familia', 'rotina', 'preferencia') && !isTrivial && !isCasualOnly;
-  const isRetrospecto = has('retrospecto') ||
-    /você me (disse|falou|indicou|sugeriu|recomendou)|me indicou|falamos (sobre|de)|ontem você|antes você|última vez/i.test(msg);
   
 
   return {
