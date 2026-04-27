@@ -32,13 +32,15 @@ async function getUserLastLocation(numericUserIdStr: string): Promise<{ lat: num
       .from('config')
       .select('value')
       .eq('key', `last_location_${numericUserIdStr}`)
-      .maybeSingle();
+      .maybeSingle(); // ← Troca feita aqui para evitar o erro 406
 
     if (error || !locData?.value) return null;
 
     const parsed = JSON.parse(locData.value);
-    const lat = parsed.latitude ?? parsed.lat_approx;
-    const lng = parsed.longitude ?? parsed.lng_approx;
+    // Mantendo sua lógica de fallback original
+    const lat = parsed.latitude ?? parsed.lat_approx ?? parsed.lat;
+    const lng = parsed.longitude ?? parsed.lng_approx ?? parsed.lng;
+
     if (typeof lat === 'number' && typeof lng === 'number') return { lat, lng };
     return null;
   } catch (err) {
@@ -75,7 +77,7 @@ export async function executeTool(
         .eq('user_id', authUserId)
         .ilike('name', nome.trim())
         .single();
-        
+
       if (error) throw error;
       return data?.id ?? null;
     } catch (err) {
@@ -94,7 +96,7 @@ export async function executeTool(
           match_threshold: 0.4,
           match_count: 5,
         });
-        
+
         if (error) throw error;
 
         return (
@@ -119,7 +121,7 @@ export async function executeTool(
 
         const g = results[0].status === 'fulfilled' ? results[0].value : `[Erro Google: Falha na promessa]`;
         const o = results[1].status === 'fulfilled' ? results[1].value : `[Erro Outlook: Falha na promessa]`;
-        
+
         return `Google Calendar:\n${g}\n\nOutlook:\n${o}`;
       } catch (err: any) {
         console.error('[ToolsExecutor] Erro crítico em consultar_agenda:', err);
@@ -179,7 +181,7 @@ export async function executeTool(
         return `Erro ao buscar emails: ${err.message || 'Falha na conexão com a conta de email.'}`;
       }
 
-      case 'salvar_evento': {
+    case 'salvar_evento': {
       try {
         return await handleSalvarEvento(p, authUserId, numericUserIdStr);
       } catch (err: any) {
@@ -260,9 +262,9 @@ export async function executeTool(
 
         const formatted = scheduled_time
           ? new Date(scheduled_time).toLocaleString('pt-BR', {
-              timeZone: 'America/Sao_Paulo',
-              hour: '2-digit', minute: '2-digit',
-            })
+            timeZone: 'America/Sao_Paulo',
+            hour: '2-digit', minute: '2-digit',
+          })
           : 'quando solicitado';
 
         const avisoIA = isFallbackTime ? ' (Agendei para daqui a 5 min porque a data não ficou clara).' : '';
@@ -334,10 +336,10 @@ export async function executeTool(
         const lines = reminders.map((r: any) => {
           const dt = r.scheduled_time
             ? new Date(r.scheduled_time).toLocaleString('pt-BR', {
-                timeZone: 'America/Sao_Paulo',
-                day: '2-digit', month: '2-digit',
-                hour: '2-digit', minute: '2-digit',
-              })
+              timeZone: 'America/Sao_Paulo',
+              day: '2-digit', month: '2-digit',
+              hour: '2-digit', minute: '2-digit',
+            })
             : r.frequency || r.type;
           return `• [${r.id}] ${r.title} — ${dt}`;
         });
