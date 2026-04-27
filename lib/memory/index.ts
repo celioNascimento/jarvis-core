@@ -182,7 +182,7 @@ export interface MemoryReadOptions {
 
 // ─── Bloco 2: Leitor de RAM ───────────────────────────────────────────────────
 
-const ASSISTANT_REPLY_MAX = 300;
+const ASSISTANT_REPLY_MAX = 800;
 
 function trimAssistantReply(reply: string, maxChars = ASSISTANT_REPLY_MAX): string {
   if (!reply) return '';
@@ -968,7 +968,10 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
           session_id: payload.sessionId,
           project_tag: 'geral',
           embedding: payload.embedding ?? undefined,
-          metadata: payload.metadata || {},
+          metadata: {
+            ai_reply: payload.aiReply,  // ← isso estava faltando
+            ...(payload.metadata || {}),
+          },
         }]);
         break;
       }

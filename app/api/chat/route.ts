@@ -1,6 +1,6 @@
 // app/api/chat/route.ts
 // Motor V8.13.2 — Self-discovery + Meta-cognição + Promoção automática + Finanças
-// ✅ Ajustado: MemoryManager, Gatekeeper (llmGateway), QStash e PROMPT ORIGINAL INTACTO.
+// ✅ Ajustado: MemoryManager, Gatekeeper (llmGateway), QStash Await e Guidelines
 
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, getOrCreateSession, clearPendingQuestion } from '@/lib/jarvis';
@@ -9,7 +9,7 @@ import { getGoogleContext, searchWeb } from '@/lib/google';
 import { checkProximidade } from '@/lib/geo';
 import { verificarAlertasDeProximidade } from '@/lib/geo-alerts';
 import { classifyTemporalHorizon, truncateByWeight } from '@/lib/context-router';
-import { initOnboarding, processOnboardingFromMessage, buildOnboardingBlock } from '@/lib/onboarding';
+import { initOnboarding, buildOnboardingBlock } from '@/lib/onboarding';
 import { buildGapsBlock } from '@/lib/extractor';
 import { buildDiaryGoalsBlock } from '@/lib/diary';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
@@ -18,7 +18,6 @@ import {
   routeModel,
   getTemperature,
   planContextualBlocks,
-  classifyContextRegex,
   type ContextType,
 } from '@/lib/chat/context-classifier';
 import { shouldForceSearch, refineSearchQuery } from '@/lib/chat/search-router';
@@ -39,7 +38,6 @@ import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 
 export const maxDuration = 60;
 
-const IDENTITY_COMMAND_CONFIDENCE_THRESHOLD = 0.9;
 const BRAIN_SYNC_TIMEOUT_MS = 3000;
 
 const redis = new Redis({
@@ -163,7 +161,6 @@ export async function POST(req: NextRequest) {
       const alertaGeo = await verificarAlertasDeProximidade(authUserId, location.latitude, location.longitude);
       if (alertaGeo.temAlerta) return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
       
-      // Protegendo o upsert para evitar que o erro 406 crashe a thread principal
       try {
         await supabase.from('config').upsert(
           { key: `last_location_${numericUserIdStr}`, value: JSON.stringify({ lat: location.latitude, lng: location.longitude, ts: Date.now() }) },
@@ -176,7 +173,6 @@ export async function POST(req: NextRequest) {
       if (!messageText) messageText = '[Enviou Localização]';
     }
     
-
     // ========== 1. Embeddings, L4 e Memória ==========
     const queryEmbedding = await getCachedEmbedding(messageText).catch(() => null);
     
@@ -194,7 +190,7 @@ export async function POST(req: NextRequest) {
 
     const memory = await MemoryManager.read({
       userId: numericUserIdStr, authUserId, sessionId, queryEmbedding,
-      contexts: detectedContexts, message: messageText, emotionalScore: emotional.score, authorName
+      contexts: detectedContexts, message: messageText, emotionalScore: emotional.score, authorName, assistantName
     });
 
     const failCount = await redis.get<number>(`failure_counter:${numericUserIdStr}:background`) || 0;
@@ -219,7 +215,7 @@ export async function POST(req: NextRequest) {
       childrenData,
       personNotesData,
       onboardingState,
-      dynamicGuidelines,
+      dynamicGuidelines, // Variável restaurada e em ordem
       profileBlock,
       gapsBlock,
       diaryBlock,
@@ -248,8 +244,14 @@ export async function POST(req: NextRequest) {
         return data || await getOrCreateOnboardingStatePersistent(numericUserIdStr);
       })(),
       (async () => {
-        const { data } = await supabase.schema('jarvis').from('dynamic_guidelines').select('content').eq('active', true).or(`user_id.eq.${numericUserIdStr},scope.eq.global`).order('created_at', { ascending: false }).limit(10);
-        return data?.length ? data.map((g: any) => `- ${g.content}`).join('\n') : '';
+        if (!numericUserIdStr || numericUserIdStr === 'undefined') return '';
+        try {
+          const { data } = await supabase.schema('jarvis').from('dynamic_guidelines')
+            .select('content').eq('active', true)
+            .or(`user_id.eq.${numericUserIdStr},scope.eq.global`)
+            .order('created_at', { ascending: false }).limit(10);
+          return data?.length ? data.map((g: any) => `- ${g.content}`).join('\n') : '';
+        } catch { return ''; }
       })(),
       blockPlan.loadL3 ? buildProfileBlock({ userId: Number(numericUserIdStr), authUserId, authorName, contexts: detectedContexts }).catch(()=>'') : Promise.resolve(''),
       blockPlan.loadGaps ? buildGapsBlock(numericUserIdStr, messageText).catch(()=>'') : Promise.resolve(''),
@@ -378,13 +380,12 @@ Ao agendar:
 - Se cair em feriado ou fim de semana, avise.
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
 
-        const conversationMessages: any[] = [
+    const conversationMessages: any[] = [
       { role: 'system', content: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }] },
       ...(memory.ram.ramBlock ? [{ role: 'system', content: memory.ram.ramBlock }] : []),
       ...memory.ram.recentPairs,
       { role: 'user', content: messageText },
     ];
-    
 
     if (/ignore isso|ignora isso|apaga isso/i.test(messageText)) {
       const { data: last } = await supabase.schema('jarvis').from('brain').select('id').eq('user_id', numericUserIdStr).order('created_at', { ascending: false }).limit(1).single();
@@ -413,17 +414,13 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       
       const { content, toolCalls } = response as any;
       
-      // ✅ NOVA REGRA DE PARADA: Só encerra se TIVER conteúdo humano E NÃO TIVER ferramentas para usar
       if (!toolCalls?.length && content) { 
         finalResponse = content; 
         break; 
       }
 
-      // Se a IA decidiu chamar uma ou mais ferramentas
       if (toolCalls?.length) {
-        forcedToolChoice = 'auto'; // Libera a IA da trava na próxima iteração
-        
-        // Empurra a intenção de usar a tool no histórico
+        forcedToolChoice = 'auto'; 
         conversationMessages.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
         
         for (const toolCall of toolCalls) {
@@ -431,12 +428,10 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
             const result = await executeTool(toolCall, authUserId, numericUserIdStr);
             conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
           } catch (toolError: any) {
-            // Devolve o erro para a LLM, assim ela sabe que falhou e pode pedir ajuda
             conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ error: toolError.message }) });
           }
         }
       } else {
-        // Fallback: Se a IA não mandou tool e o content veio vazio
         finalResponse = content || "Concluí a anotação internamente. Posso ajudar com mais alguma coisa?";
         break;
       }
@@ -456,7 +451,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     try {
       const brainWrite = MemoryManager.write({
         type: 'conversation', userId: numericUserIdStr, sessionId, messageText, aiReply: finalResponse,
-        category, embedding: queryEmbedding || undefined, metadata: { msg_id, model: modelRoute.label }
+        category, embedding: queryEmbedding || undefined, metadata: { msg_id, model: modelRoute.model }
       });
       await Promise.race([brainWrite, new Promise((_, r) => setTimeout(() => r(new Error('Timeout')), BRAIN_SYNC_TIMEOUT_MS))]);
     } catch { console.warn(`[Sync] Timeout para ${msg_id}.`); }
@@ -469,7 +464,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         emotional, modelRoute: modelRoute.model
       };
 
-      fetch(`${process.env.QSTASH_URL}/v2/publish/${process.env.NEXT_PUBLIC_APP_URL}/api/jobs-processor`, {
+      await fetch(`${process.env.QSTASH_URL}/v2/publish/${process.env.NEXT_PUBLIC_APP_URL}/api/jobs-processor`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(qstashPayload)
