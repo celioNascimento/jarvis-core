@@ -1,10 +1,12 @@
+// app/api/jobs-processor/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, generateEmbedding, compactMemory } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
 import { runUnifiedExtractor } from '@/lib/chat/unified-extractor';
 import { extractProfileFromConversation } from '@/lib/chat/profile-extractor';
-import { callOpenRouterWithTools } from '@/lib/chat/openrouter';
 import { promotePatternToPrinciple } from '@/lib/chat/pattern-promoter';
+// IMPORT ATUALIZADO: Usando o Gatekeeper em vez da chamada direta
+import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; 
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -52,11 +54,42 @@ export async function POST(req: NextRequest) {
       ];
 
       // 3. TAREFAS PROBABILÍSTICAS (CRITIC & PROMOTER)
-      // Como o math.random original rolava no route.ts, simulamos a mesma taxa aqui
       if (Math.random() <= 0.30) {
         tasks.push(runIdempotentTask('critic', msg_id, async () => {
-          const criticPrompt = `... [Prompt do Critic Omitido para Brevidade] ...`;
-          const criticRes = await callOpenRouterWithTools([{ role: 'user', content: criticPrompt }], [], 'google/gemini-2.0-flash-001', 0.1, 4000, 200, 'none');
+          // PROMPT RESTAURADO
+          const criticPrompt = `Você é um avaliador interno de qualidade de um assistente de IA pessoal chamado ${assistantName}.
+Avalie a resposta do assistente abaixo em 3 dimensões (0.0 a 1.0 cada):
+
+MENSAGEM DO USUÁRIO: "${message.slice(0, 300)}"
+
+RESPOSTA DO ASSISTENTE: "${reply.slice(0, 500)}"
+
+CONTEXTO EMOCIONAL: score=${emotional.score.toFixed(2)}, trajetória=${emotional.trajectory}
+
+Responda APENAS com JSON válido, sem markdown:
+{
+  "relevance": <0.0-1.0>,
+  "emotional_fit": <0.0-1.0>,
+  "conciseness": <0.0-1.0>,
+  "overall": <0.0-1.0>,
+  "flag": <"ok"|"verbose"|"cold"|"off_topic"|"missed_emotion">,
+  "note": "<observação curta em português, máx 20 palavras>"
+}`;
+          
+          // CHAMADA VIA GATEKEEPER (Prioridade 4, descarte se cheio)
+          const criticRes = await callOpenRouterWithPriority(
+            4, 
+            'if_full', 
+            `critic_${msg_id}`, 
+            [{ role: 'user', content: criticPrompt }], 
+            [], 
+            'google/gemini-2.0-flash-001', 
+            0.1, 
+            4000, 
+            200, 
+            'none'
+          );
+
           if (criticRes?.content) {
             const criticScore = JSON.parse(criticRes.content.replace(/```json|```/g, ''));
             const historyKey = `critic_history_${userId}`;
