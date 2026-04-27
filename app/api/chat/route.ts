@@ -402,8 +402,6 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     let finalResponse = '';
     let attempts = 0;
     let forcedToolChoice: any = /me lembra|avisa/i.test(messageText) ? { type: 'function', function: { name: 'create_reminder' } } : intent === 'calendar' ? { type: 'function', function: { name: 'salvar_evento' } } : 'auto';
-    
-    let maxTokens = isLikelyNoise ? 150 : detectedContexts.includes('emocao') ? 800 : detectedContexts.includes('financas') ? 700 : 500;
 
     while (attempts < 5) {
       const response = await callOpenRouterWithPriority(
