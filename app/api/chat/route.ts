@@ -162,8 +162,20 @@ export async function POST(req: NextRequest) {
       locationContext = await checkProximidade(location.latitude, location.longitude, numericUserIdStr);
       const alertaGeo = await verificarAlertasDeProximidade(authUserId, location.latitude, location.longitude);
       if (alertaGeo.temAlerta) return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
+      
+      // Protegendo o upsert para evitar que o erro 406 crashe a thread principal
+      try {
+        await supabase.from('config').upsert(
+          { key: `last_location_${numericUserIdStr}`, value: JSON.stringify({ lat: location.latitude, lng: location.longitude, ts: Date.now() }) },
+          { onConflict: 'key' }
+        );
+      } catch (err) {
+        console.warn('[Config] Erro ignorado ao salvar localizacao');
+      }
+
       if (!messageText) messageText = '[Enviou Localização]';
     }
+    
 
     // ========== 1. Embeddings, L4 e Memória ==========
     const queryEmbedding = await getCachedEmbedding(messageText).catch(() => null);
@@ -390,6 +402,8 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     let finalResponse = '';
     let attempts = 0;
     let forcedToolChoice: any = /me lembra|avisa/i.test(messageText) ? { type: 'function', function: { name: 'create_reminder' } } : intent === 'calendar' ? { type: 'function', function: { name: 'salvar_evento' } } : 'auto';
+    
+    let maxTokens = isLikelyNoise ? 150 : detectedContexts.includes('emocao') ? 800 : detectedContexts.includes('financas') ? 700 : 500;
 
     while (attempts < 5) {
       const response = await callOpenRouterWithPriority(
@@ -400,17 +414,39 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       );
       
       const { content, toolCalls } = response as any;
-      if (!toolCalls?.length) { finalResponse = content; break; }
-      forcedToolChoice = 'auto';
-      conversationMessages.push({ role: 'assistant', content: null, tool_calls: toolCalls });
-      for (const toolCall of toolCalls) {
-        const result = await executeTool(toolCall, authUserId, numericUserIdStr);
-        conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
+      
+      // ✅ NOVA REGRA DE PARADA: Só encerra se TIVER conteúdo humano E NÃO TIVER ferramentas para usar
+      if (!toolCalls?.length && content) { 
+        finalResponse = content; 
+        break; 
       }
+
+      // Se a IA decidiu chamar uma ou mais ferramentas
+      if (toolCalls?.length) {
+        forcedToolChoice = 'auto'; // Libera a IA da trava na próxima iteração
+        
+        // Empurra a intenção de usar a tool no histórico
+        conversationMessages.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
+        
+        for (const toolCall of toolCalls) {
+          try {
+            const result = await executeTool(toolCall, authUserId, numericUserIdStr);
+            conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: result });
+          } catch (toolError: any) {
+            // Devolve o erro para a LLM, assim ela sabe que falhou e pode pedir ajuda
+            conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ error: toolError.message }) });
+          }
+        }
+      } else {
+        // Fallback: Se a IA não mandou tool e o content veio vazio
+        finalResponse = content || "Concluí a anotação internamente. Posso ajudar com mais alguma coisa?";
+        break;
+      }
+      
       attempts++;
     }
 
-    if (!finalResponse) finalResponse = 'Feito.';
+    if (!finalResponse) finalResponse = 'Processamento concluído.';
     
     let category = 'info';
     if (finalResponse.match(/\[CLASSE:\s*(\w+)\]/i)) category = finalResponse.match(/\[CLASSE:\s*(\w+)\]/i)![1].toLowerCase();
