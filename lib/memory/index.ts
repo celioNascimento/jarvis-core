@@ -513,8 +513,9 @@ export async function readAshes(
 //   - important: relevance_score >= 0.7 fora dos próximos 7 dias
 //   - active: todos os eventos válidos (upcoming + permanent passados)
 
-const EVENTS_UPCOMING_DAYS    = 7;
-const EVENTS_HIGH_RELEVANCE   = 0.7;
+ // ─── Bloco 6: Leitor de Events ───────────────────────────────────────────────
+
+const EVENTS_UPCOMING_DAYS = 7;
 const EVENTS_HOLIDAY_CONTEXTS = ['agenda', 'evento', 'familia'];
 
 export async function readEvents(
@@ -525,11 +526,12 @@ export async function readEvents(
   const empty: EventsResult = { upcoming: [], important: [], block: '' };
 
   try {
+    // 1. SELECT CORRIGIDO: usando as colunas reais da sua tabela events
     const { data, error } = await supabase
       .from('events')
-      .select('title, event_date, category, decay_type, relevance_score, emotional_weight, is_recurring, notes')
+      .select('title, start_at, category, description, all_day')
       .eq('user_id', userId)
-      .order('relevance_score', { ascending: false });
+      .order('start_at', { ascending: true });
 
     if (error) {
       console.error('[MemoryManager/Events] Erro:', error.message);
@@ -541,56 +543,32 @@ export async function readEvents(
     const hoje = new Date(canonicalDateISO);
     hoje.setHours(0, 0, 0, 0);
 
-    const sorted = [...data].sort(
-      (a, b) =>
-        Math.abs(new Date(a.event_date).getTime() - hoje.getTime()) -
-        Math.abs(new Date(b.event_date).getTime() - hoje.getTime())
-    );
+    // 2. FILTRANDO APENAS EVENTOS FUTUROS
+    const active = data.filter(e => new Date(e.start_at) >= hoje);
 
-    const upcoming = sorted.filter(e => {
+    const upcoming = active.filter(e => {
       const diff = Math.ceil(
-        (new Date(e.event_date).getTime() - hoje.getTime()) / 86400000
+        (new Date(e.start_at).getTime() - hoje.getTime()) / 86400000
       );
       return diff >= 0 && diff <= EVENTS_UPCOMING_DAYS;
     });
 
-    const important = sorted.filter(
-      e => (e.relevance_score || 0) >= EVENTS_HIGH_RELEVANCE && !upcoming.includes(e)
-    );
-
-    const active = sorted.filter(
-      e =>
-        new Date(e.event_date) >= hoje ||
-        (e.decay_type === 'permanent' && new Date(e.event_date) < hoje)
-    );
-
-    // Monta bloco de texto para o prompt
+    // 3. MONTANDO O BLOCO DE TEXTO
     const parts: string[] = [];
 
     if (upcoming.length > 0) {
       parts.push(
         `🔴 NOS PRÓXIMOS DIAS:\n${upcoming
-          .map(e => `  - ${e.title}: ${e.event_date}${e.notes ? ` (${e.notes})` : ''}`)
+          .map(e => `  - ${e.title}: ${e.start_at}${e.description ? ` (${e.description})` : ''}`)
           .join('\n')}`
       );
     }
 
-    if (important.length > 0) {
-      parts.push(
-        `🟡 IMPORTANTES:\n${important
-          .map(e => `  - ${e.title}: ${e.event_date}`)
-          .join('\n')}`
-      );
-    }
+    const block = parts.length > 0 ? parts.join('\n\n') : 'Nenhum evento cadastrado.';
 
-    const block = active.length > 0
-      ? parts.join('\n\n')
-      : 'Nenhum evento cadastrado.';
-
-    // Feriados — só carrega quando contexto é relevante
+    // Feriados Nacionais
     let holidaysBlock = '';
-    const needsHolidays = contexts.some(c => EVENTS_HOLIDAY_CONTEXTS.includes(c));
-    if (needsHolidays) {
+    if (contexts.some(c => EVENTS_HOLIDAY_CONTEXTS.includes(c))) {
       try {
         const { getUpcomingHolidays } = await import('@/lib/holidays');
         const holidays = await getUpcomingHolidays(10);
@@ -600,17 +578,13 @@ export async function readEvents(
             .join('\n')}`;
         }
       } catch (err) {
-        console.error('[MemoryManager/Events] Erro ao buscar feriados:', err);
+        console.error('[MemoryManager/Events] Erro feriados:', err);
       }
     }
 
-    console.log(
-      `[MemoryManager/Events] upcoming=${upcoming.length} important=${important.length} active=${active.length}`
-    );
-
     return {
       upcoming,
-      important,
+      important: [], // Omitido pois relevance_score não existe no seu schema
       block: block + holidaysBlock,
     };
 
