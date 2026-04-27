@@ -1,8 +1,8 @@
 // lib/chat/llm-gateway.ts
-// Motor V8.13.2 — Gatekeeper: Priority Queue, Rate Limiter e Dedup
+// Motor V8.13.2 — Gatekeeper: Priority Queue, Rate Limiter, Dedup e Exponential Backoff
 
 import { Redis } from '@upstash/redis';
-// Importe a sua função original renomeada (ou apenas mantenha a lógica de fetch lá dentro)
+// Importa a função original de rede que se comunica com o OpenRouter
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
 
 const redis = new Redis({
@@ -30,7 +30,6 @@ class Gatekeeper {
     const dedupKey = `llm_dedup:${task.id}`;
 
     // 1. DEDUPLICAÇÃO CROSS-CONTAINER (Redis)
-    // Se dois processos pedirem o mesmo job ao mesmo tempo, retorna o cache.
     try {
       const cached = await redis.get<T>(dedupKey);
       if (cached) {
@@ -42,7 +41,6 @@ class Gatekeeper {
     }
 
     // 2. LOAD SHEDDING (Descarte Seletivo)
-    // Protege o servidor descartando tarefas de luxo (ex: Critic) se a fila estiver lotada.
     if (this.queue.length >= this.maxQueueSize && task.dropPolicy === 'if_full') {
       console.warn(`[Gatekeeper] Fila cheia (${this.queue.length}). Descartando tarefa: ${task.id}`);
       throw new Error('GATEKEEPER_DROPPED_TASK');
@@ -72,30 +70,52 @@ class Gatekeeper {
 
     try {
       console.log(`[Gatekeeper] Executando tarefa: ${item.task.id} (Prioridade: ${item.task.priority})`);
-      const result = await item.task.execute();
+      
+      let result;
+      let attempts = 0;
+      // Prioridade 1 (Chat) insiste mais vezes. Prioridades menores desistem mais rápido.
+      const maxAttempts = item.task.priority === 1 ? 4 : 2; 
+
+      while (attempts < maxAttempts) {
+        try {
+          result = await item.task.execute();
+          break; // Sucesso! Sai do loop de retry.
+        } catch (error: any) {
+          attempts++;
+          const errorMessage = error?.message || String(error);
+          const isRateLimit = errorMessage.includes('429') || error?.status === 429 || errorMessage.includes('rate limit');
+          
+          if (isRateLimit && attempts < maxAttempts) {
+            // Atraso exponencial: 2s, 4s, 8s... + jitter para evitar colisões
+            const delay = (Math.pow(2, attempts) * 1000) + Math.floor(Math.random() * 500);
+            console.warn(`[Gatekeeper] ⏳ 429 Rate Limit. Segurando tarefa ${item.task.id} por ${delay}ms (Tentativa ${attempts}/${maxAttempts})...`);
+            await new Promise(r => setTimeout(r, delay));
+          } else {
+            throw error; // Se esgotou as tentativas ou o erro não for 429, propaga o erro.
+          }
+        }
+      }
       
       // 4. SALVA NO CACHE DE DEDUPLICAÇÃO (TTL 60s)
-      // Mantém a resposta salva brevemente para evitar duplicação em retries próximos
       await redis.set(`llm_dedup:${item.task.id}`, result, { ex: 60 });
-      
       item.resolve(result);
+
     } catch (error: any) {
-      // 5. BACKOFF EXPONENCIAL / RETRY LOGIC (Simplificado na base do throw para o QStash lidar)
-      console.error(`[Gatekeeper] Falha na tarefa ${item.task.id}:`, error.message);
+      console.error(`[Gatekeeper] ❌ Falha definitiva na tarefa ${item.task.id}:`, error.message || error);
       item.reject(error);
     } finally {
       this.activeCount--;
-      // Ciclo contínuo: assim que libera uma vaga, puxa o próximo da fila
+      // Ciclo contínuo: libera uma vaga e já puxa o próximo
       this.processQueue();
     }
   }
 }
 
-// Instância Singleton
+// Instância Singleton exportada
 export const llmGateway = new Gatekeeper();
 
 // ============================================================================
-// Wrapper (Drop-in Replacement) para a sua função original
+// Wrapper (Drop-in Replacement) para a sua função de OpenRouter
 // ============================================================================
 export async function callOpenRouterWithPriority(
   priority: PriorityLevel,
@@ -114,7 +134,7 @@ export async function callOpenRouterWithPriority(
     priority,
     dropPolicy,
     execute: async () => {
-      // Chama a sua lógica real de rede que fala com o OpenRouter
+      // Repassa a chamada para a sua função de infraestrutura original
       return rawCallOpenRouter(
         messages, 
         tools, 
