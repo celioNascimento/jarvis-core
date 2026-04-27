@@ -70,23 +70,23 @@ REGRAS:
 // ============================================================
 
 const EVENT_WEIGHTS: Record<string, { priority: string; decay_type: string; emotional_weight: number }> = {
-  aniversario_proprio:   { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 1.00 },
-  aniversario_casamento: { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 1.00 },
-  aniversario_esposa:    { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.95 },
-  aniversario_marido:    { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.95 },
-  aniversario_filho:     { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.90 },
-  aniversario_familiar:  { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.80 },
-  aniversario_amigo:     { priority: 'media', decay_type: 'recurring_annual', emotional_weight: 0.50 },
-  natal:                 { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.85 },
-  pascoa:                { priority: 'alta',  decay_type: 'recurring_annual', emotional_weight: 0.80 },
-  ano_novo:              { priority: 'media', decay_type: 'recurring_annual', emotional_weight: 0.60 },
-  festa_escola:          { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.60 },
-  evento_escolar:        { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.55 },
-  consulta_medica:       { priority: 'alta',  decay_type: 'deadline',         emotional_weight: 0.70 },
-  compromisso_trabalho:  { priority: 'media', decay_type: 'deadline',         emotional_weight: 0.40 },
-  entrega_projeto:       { priority: 'alta',  decay_type: 'deadline',         emotional_weight: 0.60 },
-  inicio_emprego:        { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.50 },
-  default:               { priority: 'media', decay_type: 'one_time',         emotional_weight: 0.50 },
+  aniversario_proprio: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 1.00 },
+  aniversario_casamento: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 1.00 },
+  aniversario_esposa: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.95 },
+  aniversario_marido: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.95 },
+  aniversario_filho: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.90 },
+  aniversario_familiar: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.80 },
+  aniversario_amigo: { priority: 'media', decay_type: 'recurring_annual', emotional_weight: 0.50 },
+  natal: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.85 },
+  pascoa: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.80 },
+  ano_novo: { priority: 'media', decay_type: 'recurring_annual', emotional_weight: 0.60 },
+  festa_escola: { priority: 'media', decay_type: 'one_time', emotional_weight: 0.60 },
+  evento_escolar: { priority: 'media', decay_type: 'one_time', emotional_weight: 0.55 },
+  consulta_medica: { priority: 'alta', decay_type: 'deadline', emotional_weight: 0.70 },
+  compromisso_trabalho: { priority: 'media', decay_type: 'deadline', emotional_weight: 0.40 },
+  entrega_projeto: { priority: 'alta', decay_type: 'deadline', emotional_weight: 0.60 },
+  inicio_emprego: { priority: 'media', decay_type: 'one_time', emotional_weight: 0.50 },
+  default: { priority: 'media', decay_type: 'one_time', emotional_weight: 0.50 },
 };
 
 export async function extractEvento(userId: string, userMessage: string): Promise<void> {
@@ -198,19 +198,19 @@ Mensagem do usuário: "${userMessage}"
     const data = safeParseJSON(raw);
     if (!data) { console.error('[Extrator/rotina] JSON inválido:', raw.slice(0, 100)); return; }
     const parts: string[] = [];
-    if (data.despertar)        parts.push(`Despertar: ${data.despertar}`);
-    if (data.dormir)           parts.push(`Dormir: ${data.dormir}`);
+    if (data.despertar) parts.push(`Despertar: ${data.despertar}`);
+    if (data.dormir) parts.push(`Dormir: ${data.dormir}`);
     if (data.academia_horario) parts.push(`Academia: ${data.academia_horario}`);
     if (data.trabalho_entrada) parts.push(`Entrada: ${data.trabalho_entrada}`);
-    if (data.trabalho_saida)   parts.push(`Saída: ${data.trabalho_saida}`);
+    if (data.trabalho_saida) parts.push(`Saída: ${data.trabalho_saida}`);
     if (data.lembretes?.length) parts.push(`Lembretes: ${data.lembretes.join(', ')}`);
     if (parts.length === 0) return;
 
     const { data: prof } = await supabase.from('user_profiles')
       .select('personality_notes').eq('user_id', userId).maybeSingle();
-    const old      = prof?.personality_notes || '';
+    const old = prof?.personality_notes || '';
     const newBlock = `[ROTINA] ${parts.join(' | ')}`;
-    const updated  = /\[ROTINA\]/i.test(old)
+    const updated = /\[ROTINA\]/i.test(old)
       ? old.replace(/\[ROTINA\][^\n]*/i, newBlock)
       : `${old}\n${newBlock}`.trim();
 
@@ -238,7 +238,7 @@ Tipos: lugar|comida|filme|musica|esporte|hobby|outro
 Retorne preferencias: [] se nenhuma mencionada`;
 
   try {
-    const raw  = await callAI(prompt, 200);
+    const raw = await callAI(prompt, 200);
     const data = safeParseJSON(raw);
     if (!data) { console.error('[Extrator/preferencia] JSON inválido:', raw.slice(0, 100)); return; }
     const prefs: any[] = data.preferencias || [];
@@ -246,7 +246,7 @@ Retorne preferencias: [] se nenhuma mencionada`;
 
     const { data: prof } = await supabase.from('user_profiles')
       .select('career_notes').eq('user_id', userId).maybeSingle();
-    const old     = prof?.career_notes || '';
+    const old = prof?.career_notes || '';
     const newLine = prefs.map((p: any) => `[${p.tipo}] ${p.descricao}`).join(' | ');
     const alreadyExists = prefs.every((p: any) => old.includes(p.descricao));
     if (alreadyExists) return;
@@ -275,11 +275,11 @@ export async function updateL3(userId: string): Promise<void> {
       supabase.from('users').select('current_context').eq('id', userId).single(),
     ]);
 
-    const p    = profRes.data;
+    const p = profRes.data;
     const kids = kidsRes.data || [];
     const proj = projRes.data || [];
-    const evs  = evRes.data || [];
-    let   ctx  = userRes.data?.current_context || '';
+    const evs = evRes.data || [];
+    let ctx = userRes.data?.current_context || '';
 
     const patches: Record<string, string> = {};
 
@@ -288,26 +288,26 @@ export async function updateL3(userId: string): Promise<void> {
         ? `${p.full_name} (prefere: ${p.preferred_name})`
         : p.full_name;
     }
-    if (p?.gender)        patches['Gênero']      = p.gender;
-    if (p?.birth_date)    patches['Nascimento']  = p.birth_date;
-    if (p?.city)          patches['Mora em']     = `${p.city}${p.state ? `, ${p.state}` : ''}`;
-    if (p?.birth_city)    patches['Nasceu em']   = `${p.birth_city}${p.birth_state ? `, ${p.birth_state}` : ''}`;
-    if (p?.phone)         patches['Telefone']    = p.phone;
-    if (p?.whatsapp)      patches['WhatsApp']    = p.whatsapp;
-    if (p?.spouse_name)   patches['Cônjuge']     = `${p.spouse_name}${p.spouse_birthday ? ` (aniv: ${p.spouse_birthday})` : ''}`;
-    if (p?.father_name)   patches['Pai']         = p.father_name;
-    if (p?.mother_name)   patches['Mãe']         = p.mother_name;
+    if (p?.gender) patches['Gênero'] = p.gender;
+    if (p?.birth_date) patches['Nascimento'] = p.birth_date;
+    if (p?.city) patches['Mora em'] = `${p.city}${p.state ? `, ${p.state}` : ''}`;
+    if (p?.birth_city) patches['Nasceu em'] = `${p.birth_city}${p.birth_state ? `, ${p.birth_state}` : ''}`;
+    if (p?.phone) patches['Telefone'] = p.phone;
+    if (p?.whatsapp) patches['WhatsApp'] = p.whatsapp;
+    if (p?.spouse_name) patches['Cônjuge'] = `${p.spouse_name}${p.spouse_birthday ? ` (aniv: ${p.spouse_birthday})` : ''}`;
+    if (p?.father_name) patches['Pai'] = p.father_name;
+    if (p?.mother_name) patches['Mãe'] = p.mother_name;
     if (p?.siblings_count !== null && p?.siblings_count !== undefined) {
       patches['Irmãos'] = String(p.siblings_count);
     }
-    if (p?.profession)    patches['Formação']    = p.profession;
-    if (p?.current_job)   patches['Cargo']       = [
+    if (p?.profession) patches['Formação'] = p.profession;
+    if (p?.current_job) patches['Cargo'] = [
       p.current_job,
-      p.company        ? `@ ${p.company}` : null,
+      p.company ? `@ ${p.company}` : null,
       p.job_start_date ? `(início: ${p.job_start_date})` : null,
     ].filter(Boolean).join(' ');
     if (p?.education_level) patches['Escolaridade'] = p.education_level;
-    if (p?.schools?.length) patches['Escolas']      = p.schools.join(', ');
+    if (p?.schools?.length) patches['Escolas'] = p.schools.join(', ');
     if (p?.faith_profile && p.faith_profile !== 'unknown') patches['Fé'] = p.faith_profile;
 
     if (kids.length > 0) {
@@ -321,8 +321,8 @@ export async function updateL3(userId: string): Promise<void> {
 
     const changed: string[] = [];
     for (const [key, val] of Object.entries(patches)) {
-      const rx      = new RegExp(`- ${key}: (.*)`, 'i');
-      const match   = ctx.match(rx);
+      const rx = new RegExp(`- ${key}: (.*)`, 'i');
+      const match = ctx.match(rx);
       const current = match?.[1]?.trim() || '';
       if (current === val) continue;
       const line = `- ${key}: ${val}`;
@@ -331,8 +331,8 @@ export async function updateL3(userId: string): Promise<void> {
     }
 
     if (proj.length > 0) {
-      const block     = proj.map((r: any) => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
-      const section   = `## PROJETOS\n${block}`;
+      const block = proj.map((r: any) => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
+      const section = `## PROJETOS\n${block}`;
       const existProj = /## PROJETOS[\s\S]*?(?=\n##|$)/i.exec(ctx)?.[0] || '';
       if (existProj !== section) {
         ctx = existProj
@@ -344,8 +344,8 @@ export async function updateL3(userId: string): Promise<void> {
 
     const highEvs = evs.filter((e: any) => (e.emotional_weight || 0) >= 0.7);
     if (highEvs.length > 0) {
-      const block      = highEvs.map((e: any) => `- ${e.title}: ${e.event_date}`).join('\n');
-      const section    = `## DATAS IMPORTANTES\n${block}`;
+      const block = highEvs.map((e: any) => `- ${e.title}: ${e.event_date}`).join('\n');
+      const section = `## DATAS IMPORTANTES\n${block}`;
       const existDatas = /## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i.exec(ctx)?.[0] || '';
       if (existDatas !== section) {
         ctx = existDatas
@@ -409,12 +409,12 @@ export async function upsertAlias(
   referId: string | null, referName: string | null
 ): Promise<void> {
   await supabase.from('contact_aliases').upsert({
-    user_id:        userId,
-    alias:          alias.toLowerCase().trim(),
+    user_id: userId,
+    alias: alias.toLowerCase().trim(),
     refers_to_type: type,
-    refers_to_id:   referId,
+    refers_to_id: referId,
     refers_to_name: referName,
-    updated_at:     new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   }, { onConflict: 'user_id,alias' });
 }
 
@@ -453,7 +453,7 @@ export async function upsertEvent(userId: string, ev: {
   const norm = (s: string) => s.toLowerCase().trim()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
 
-  const mmdd     = ev.event_date.slice(5);
+  const mmdd = ev.event_date.slice(5);
   const titleKey = fuzzyTitleKey(title);
   const dedupKey = `${userId}:${titleKey}:${mmdd}`;
 
@@ -463,10 +463,11 @@ export async function upsertEvent(userId: string, ev: {
     return;
   }
 
+  // CORREÇÃO 1: Buscando pela coluna correta (start_at) no LIKE
   const { data: candidates } = await supabase.from('events')
     .select('id, title, priority, emotional_weight, notes, decay_type, is_recurring')
     .eq('user_id', userId)
-    .like('event_date', `%-${mmdd}`);
+    .like('start_at', `%-${mmdd}`); // <-- Antes era event_date
 
   const ex = (candidates || []).find((c: any) => {
     const cn = norm(normalizeEventTitle(c.title));
@@ -482,9 +483,9 @@ export async function upsertEvent(userId: string, ev: {
 
   if (ex?.id) {
     const betterPriority = ev.priority === 'alta' && ex.priority !== 'alta';
-    const betterWeight   = ev.emotional_weight > (ex.emotional_weight || 0);
-    const hasNewNote     = ev.notes && !ex.notes;
-    const titleImproved  = norm(title) !== norm(ex.title);
+    const betterWeight = ev.emotional_weight > (ex.emotional_weight || 0);
+    const hasNewNote = ev.notes && !ex.notes;
+    const titleImproved = norm(title) !== norm(ex.title);
 
     if (!betterPriority && !betterWeight && !hasNewNote && !titleImproved) {
       console.log('[upsertEvent] Ignorado (sem melhoria):', title);
@@ -492,15 +493,20 @@ export async function upsertEvent(userId: string, ev: {
     }
     await supabase.from('events').update({
       title,
-      ...(betterPriority ? { priority: ev.priority }                : {}),
-      ...(betterWeight   ? { emotional_weight: ev.emotional_weight } : {}),
-      ...(hasNewNote     ? { notes: ev.notes }                       : {}),
+      ...(betterPriority ? { priority: ev.priority } : {}),
+      ...(betterWeight ? { emotional_weight: ev.emotional_weight } : {}),
+      ...(hasNewNote ? { notes: ev.notes } : {}),
     }).eq('id', ex.id);
     console.log('[upsertEvent] Atualizado:', title);
   } else {
+    // CORREÇÃO 2: Inserindo na coluna correta (start_at)
     await supabase.from('events').insert({
-      user_id: userId, title, event_date: ev.event_date,
-      category: ev.category, priority: ev.priority, decay_type: ev.decay_type,
+      user_id: userId,
+      title,
+      start_at: ev.event_date, // <-- Antes era event_date
+      category: ev.category,
+      priority: ev.priority,
+      decay_type: ev.decay_type,
       emotional_weight: ev.emotional_weight,
       is_recurring: ev.is_recurring ?? ev.decay_type === 'recurring_annual',
       notes: ev.notes || null,
@@ -585,15 +591,15 @@ REGRAS:
       }
 
       await supabase.from('recommendations').insert({
-        user_id:       userId,
-        type:          rec.tipo,
-        name:          rec.nome,
-        description:   rec.descricao || null,
-        source:        rec.source || 'jarvis',
+        user_id: userId,
+        type: rec.tipo,
+        name: rec.nome,
+        description: rec.descricao || null,
+        source: rec.source || 'jarvis',
         source_person: rec.source_person || null,
-        context:       rec.context || null,
-        status:        rec.status || 'pending',
-        tags:          rec.tags || [],
+        context: rec.context || null,
+        status: rec.status || 'pending',
+        tags: rec.tags || [],
       });
       console.log('[Extrator/recomendacao] Inserido:', rec.nome, `[${rec.tipo}]`);
     }
@@ -669,12 +675,12 @@ export async function buildTopicBlock(
     const msgLower = messageText.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
     const relevant = topics.filter((t: any) => {
-      const topicNorm   = t.topic.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      const labelNorm   = t.label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const topicNorm = t.topic.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const labelNorm = t.label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       const summaryNorm = (t.summary || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
       const words = [...topicNorm.split('_'), ...labelNorm.split(' ')].filter(w => w.length > 3);
-      const wordMatch    = words.some(w => msgLower.includes(w));
+      const wordMatch = words.some(w => msgLower.includes(w));
       const summaryWords = summaryNorm.split(/\s+/).filter((w: string) => w.length > 4);
       const summaryMatch = summaryWords.some((w: string) => msgLower.includes(w));
 
@@ -702,15 +708,15 @@ export async function buildTopicBlock(
 export function normalizeDate(raw: string): string {
   if (!raw) return raw;
   const months: Record<string, string> = {
-    janeiro:'01', fevereiro:'02', marco:'03', abril:'04',
-    maio:'05', junho:'06', julho:'07', agosto:'08',
-    setembro:'09', outubro:'10', novembro:'11', dezembro:'12',
+    janeiro: '01', fevereiro: '02', marco: '03', abril: '04',
+    maio: '05', junho: '06', julho: '07', agosto: '08',
+    setembro: '09', outubro: '10', novembro: '11', dezembro: '12',
   };
   const currentYear = new Date().getFullYear();
 
   const ptMatch = raw.match(/(\d{1,2})\s+de?\s+(\w+)(\s+de?\s+(\d{4}))?/i);
   if (ptMatch) {
-    const mon  = months[ptMatch[2].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+    const mon = months[ptMatch[2].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
     const year = ptMatch[4] || String(currentYear);
     if (mon) return `${year}-${mon}-${ptMatch[1].padStart(2, '0')}`;
   }
@@ -719,29 +725,29 @@ export function normalizeDate(raw: string): string {
 
   if (parts.length === 3) {
     const [a, b, c] = parts;
-    if (a.length === 4) return `${a}-${b.padStart(2,'0')}-${c.padStart(2,'0')}`;
-    if (c.length === 4) return `${c}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`;
-    if (c.length === 2) return `20${c}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`;
+    if (a.length === 4) return `${a}-${b.padStart(2, '0')}-${c.padStart(2, '0')}`;
+    if (c.length === 4) return `${c}-${b.padStart(2, '0')}-${a.padStart(2, '0')}`;
+    if (c.length === 2) return `20${c}-${b.padStart(2, '0')}-${a.padStart(2, '0')}`;
   }
 
   if (parts.length === 2) {
-    return `${currentYear}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+    return `${currentYear}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
   }
 
   return raw;
 }
 
 export function getCategoryFromType(tipo: string): string {
-  if (/escola|escolar/.test(tipo))       return 'school';
-  if (/medic|saude/.test(tipo))          return 'health';
-  if (/trabalho|projeto/.test(tipo))     return 'work';
+  if (/escola|escolar/.test(tipo)) return 'school';
+  if (/medic|saude/.test(tipo)) return 'health';
+  if (/trabalho|projeto/.test(tipo)) return 'work';
   if (/aniversario|familiar/.test(tipo)) return 'family';
   return 'personal';
 }
 
 export function getLifePhase(age: number | null): string {
   if (age === null || age === undefined || age < 0) return 'child';
-  if (age < 3)   return 'baby';
+  if (age < 3) return 'baby';
   if (age <= 11) return 'child';
   if (age <= 17) return 'teen';
   if (age <= 24) return 'young_adult';
