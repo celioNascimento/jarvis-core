@@ -1,22 +1,17 @@
 // app/api/chat/route.ts
-// Motor V8.13.2 — Self-discovery + Meta-cognição + Promoção automática de padrões + Finanças
-// ✅ Ajustado: MemoryManager integrado, Gatekeeper (llmGateway) e QStash Offloading.
+// Motor V8.13.2 — Self-discovery + Meta-cognição + Promoção automática + Finanças
+// ✅ Ajustado: MemoryManager, Gatekeeper (llmGateway), QStash e PROMPT ORIGINAL INTACTO.
 
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  supabase,
-  getOrCreateSession,
-  clearPendingQuestion,
-} from '@/lib/jarvis';
+import { supabase, getOrCreateSession, clearPendingQuestion } from '@/lib/jarvis';
 import { getRecentEmails } from '@/lib/microsoft';
 import { getGoogleContext, searchWeb } from '@/lib/google';
 import { checkProximidade } from '@/lib/geo';
 import { verificarAlertasDeProximidade } from '@/lib/geo-alerts';
 import { classifyTemporalHorizon, truncateByWeight } from '@/lib/context-router';
-import {
-  processOnboardingFromMessage,
-} from '@/lib/onboarding';
+import { initOnboarding, processOnboardingFromMessage, buildOnboardingBlock } from '@/lib/onboarding';
 import { buildGapsBlock } from '@/lib/extractor';
+import { buildDiaryGoalsBlock } from '@/lib/diary';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import {
   classifyContextWithL4,
@@ -33,23 +28,20 @@ import { transcribeAudio, extractAudioBuffer } from '@/lib/services/transcriptio
 import { computeEmotionalScore } from '@/lib/chat/emotional-router';
 import { getUpcomingHolidays } from '@/lib/holidays';
 import { Redis } from '@upstash/redis';
-import { buildSharedContextBlock } from '@/lib/chat/shared-context';
 import { buildPersonalityBlock } from '@/lib/chat/personality';
 import { buildProfileBlock } from '@/lib/chat/profile-block';
 import { buildFinanceBlock } from '@/lib/finances/db';
-import { hasL3Chunks, indexL3Chunks } from '@/lib/chat/l3-chunks';
+import { isMeaningfulDiaryBlock } from '@/lib/chat/ram';
 
-// NOVOS IMPORTS DE ARQUITETURA
+// IMPORTS DA NOVA ARQUITETURA
 import { MemoryManager } from '@/lib/memory';
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 
 export const maxDuration = 60;
 
-// CONFIGURAÇÕES DE POLÍTICA
 const IDENTITY_COMMAND_CONFIDENCE_THRESHOLD = 0.9;
 const BRAIN_SYNC_TIMEOUT_MS = 3000;
 
-// ===================== CACHE (Upstash Redis) =====================
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
@@ -57,68 +49,31 @@ const redis = new Redis({
 
 const cache = {
   async get<T>(key: string): Promise<T | null> {
-    try {
-      const val = await redis.get<T>(key);
-      return val ?? null;
-    } catch (e) {
-      console.warn('[Cache] Redis GET falhou:', (e as Error).message);
-      return null;
-    }
+    try { const val = await redis.get<T>(key); return val ?? null; } catch { return null; }
   },
   async set<T>(key: string, value: T, ttlMs = 30000): Promise<void> {
-    try {
-      const ttlSec = Math.max(1, Math.floor(ttlMs / 1000));
-      await redis.set(key, value, { ex: ttlSec });
-    } catch (e) {
-      console.warn('[Cache] Redis SET falhou:', (e as Error).message);
-    }
+    try { await redis.set(key, value, { ex: Math.max(1, Math.floor(ttlMs / 1000)) }); } catch { }
   },
 };
 
-// ====================================================================
-
 function sanitizeSensitiveData(text: string): string {
   if (!text) return text;
-  const patterns = [
-    /(sk-[A-Za-z0-9_\-]{20,})/gi,
-    /(Bearer\s+[A-Za-z0-9_\-\.]{20,})/gi,
-    /(Authorization:\s*['"]?[A-Za-z0-9_\-]+)/gi,
-    /(api[_-]?key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi,
-    /(password['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi,
-    /(secret['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi,
-    /(token['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi,
-    /(x-api-key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi,
-  ];
+  const patterns = [ /(sk-[A-Za-z0-9_\-]{20,})/gi, /(Bearer\s+[A-Za-z0-9_\-\.]{20,})/gi, /(Authorization:\s*['"]?[A-Za-z0-9_\-]+)/gi, /(api[_-]?key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi, /(password['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi, /(secret['"]?\s*[:=]\s*['"]?[^'"\s]{4,})/gi, /(token['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi, /(x-api-key['"]?\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,})/gi ];
   let sanitized = text;
-  for (const pattern of patterns) {
-    sanitized = sanitized.replace(pattern, (match) => {
-      if (match.includes('=')) return match.replace(/=.*/, '= [REDACTED]');
-      if (match.includes(':')) return match.replace(/:.*/, ': [REDACTED]');
-      return '[REDACTED]';
-    });
-  }
+  for (const p of patterns) sanitized = sanitized.replace(p, match => match.includes('=') ? match.replace(/=.*/, '= [REDACTED]') : match.includes(':') ? match.replace(/:.*/, ': [REDACTED]') : '[REDACTED]');
   return sanitized;
 }
 
 function buildDateTimeBlock(timezone: string): string {
   const now = new Date();
   const locale = 'pt-BR';
-  const dateStr = now.toLocaleDateString(locale, {
-    timeZone: timezone, weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
-  });
-  const timeStr = now.toLocaleTimeString(locale, {
-    timeZone: timezone, hour: '2-digit', minute: '2-digit',
-  });
-  return `${dateStr} às ${timeStr} (${timezone})`;
+  return `${now.toLocaleDateString(locale, { timeZone: timezone, weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })} às ${now.toLocaleTimeString(locale, { timeZone: timezone, hour: '2-digit', minute: '2-digit' })} (${timezone})`;
 }
 
-function getCurrentDateParts(timezone: string): { day: number; month: number; year: number } {
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone, day: 'numeric', month: 'numeric', year: 'numeric',
-  }).formatToParts(now);
-  const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? '0', 10);
-  return { day: get('day'), month: get('month'), year: get('year') };
+async function getOrCreateOnboardingStatePersistent(userId: string) {
+  const { data } = await supabase.from('memories').select('metadata').eq('user_id', userId).eq('category', 'onboarding').order('created_at', { ascending: false }).limit(1).maybeSingle();
+  if (data?.metadata?.state) return data.metadata.state;
+  return await initOnboarding(userId);
 }
 
 function buildWeatherBlock(weather: Record<string, any> | null | undefined): string {
@@ -130,37 +85,20 @@ function buildWeatherBlock(weather: Record<string, any> | null | undefined): str
   if (weather.humidity != null) parts.push(`Umidade ${weather.humidity}%`);
   if (weather.wind != null) parts.push(`Vento ${weather.wind} km/h`);
   if (weather.feelsLike != null) parts.push(`Sensação ${Math.round(weather.feelsLike)}°C`);
-  if (weather.forecast) {
-    const forecastStr = Array.isArray(weather.forecast)
-      ? weather.forecast
-        .map((d: any) => `${d.date ?? d.day ?? ''}: ${d.condition ?? d.description ?? ''}`.trim())
-        .filter(Boolean)
-        .slice(0, 3)
-        .join(', ')
-      : String(weather.forecast);
-    if (forecastStr) parts.push(`Previsão: ${forecastStr}`);
-  }
   return parts.join(' · ');
 }
 
-export function buildAgendaBlock(
-  loadCalendar: boolean,
-  googleCtx: string | null,
-  msCtx: any,
-  numericUserId: string,
-): string {
+export function buildAgendaBlock(loadCalendar: boolean, googleCtx: string | null, msCtx: any): string {
   const parts: string[] = [];
   if (loadCalendar && googleCtx) parts.push(`[AGENDA GOOGLE — somente leitura]\n${googleCtx}`);
   if (loadCalendar && msCtx) parts.push(`[AGENDA OUTLOOK — somente leitura]\n${msCtx}`);
-  if (loadCalendar) {
-    parts.push(`[INSTRUÇÃO DE AGENDA]\nA agenda PRÓPRIA do Lev é a jarvis.agenda. Use salvar_evento para compromissos.`);
-  }
+  if (loadCalendar) parts.push(`[INSTRUÇÃO DE AGENDA]\nA agenda PRÓPRIA do Lev é a jarvis.agenda. Ao salvar compromissos, use SEMPRE salvar_evento (jarvis.agenda).`);
   return parts.join('\n\n');
 }
 
 export async function POST(req: NextRequest) {
   const totalStartTime = Date.now();
-  console.log('[chat] Iniciando — V8.13.2 (Arquitetura Otimizada)');
+  console.log('[chat] Iniciando — V8.13.2 (Prompt Completo Preservado)');
   try {
     let messageText = '';
     let userEmail = '';
@@ -170,7 +108,6 @@ export async function POST(req: NextRequest) {
     let location: { latitude: number; longitude: number } | null = null;
     let weatherData: Record<string, any> | null = null;
 
-    // --- Parsing do request ---
     const contentType = req.headers.get('content-type') || '';
     if (contentType.includes('multipart/form-data')) {
       const formData = await req.formData();
@@ -179,15 +116,13 @@ export async function POST(req: NextRequest) {
       tempUserId = (formData.get('userId') as string) || (formData.get('user_id') as string) || '';
       clientSessionId = formData.get('sessionId') as string | null;
       userFirstName = (formData.get('userFirstName') as string) || 'Usuário';
-      const latField = formData.get('latitude') as string | null;
-      const lngField = formData.get('longitude') as string | null;
-      if (latField && lngField) location = { latitude: parseFloat(latField), longitude: parseFloat(lngField) };
+      if (formData.get('latitude')) location = { latitude: parseFloat(formData.get('latitude') as string), longitude: parseFloat(formData.get('longitude') as string) };
       if (formData.get('weather')) { try { weatherData = JSON.parse(formData.get('weather') as string); } catch { } }
 
       if (audioFile) {
         const buffer = await extractAudioBuffer(audioFile);
         const result = await transcribeAudio(buffer, { language: 'pt' });
-        if (!result.success) return NextResponse.json({ error: result.error || 'Falha na transcrição' }, { status: 401 });
+        if (!result.success) return NextResponse.json({ error: result.error || 'Falha' }, { status: 401 });
         messageText = result.text || '';
       } else {
         messageText = (formData.get('message') as string) || (formData.get('text') as string) || '';
@@ -206,7 +141,6 @@ export async function POST(req: NextRequest) {
     messageText = sanitizeSensitiveData(messageText);
     if (!messageText && !location) return NextResponse.json({ error: 'message obrigatório' }, { status: 400 });
 
-    // --- Lookup do usuário (CORRIGIDO) ---
     let userRecord: any = null;
     if (userEmail) userRecord = (await supabase.from('users').select('*').eq('email', userEmail).maybeSingle()).data;
     if (!userRecord && tempUserId) userRecord = (await supabase.from('users').select('*').eq('auth_user_id', tempUserId).maybeSingle()).data;
@@ -218,12 +152,11 @@ export async function POST(req: NextRequest) {
     const assistantName = userRecord.assistant_name || 'Lev';
     const userTimezone = userRecord.timezone || 'America/Sao_Paulo';
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
-    const msg_id = crypto.randomUUID(); // Idempotência
+    const msg_id = crypto.randomUUID();
 
     const canonicalDateTimeBlock = buildDateTimeBlock(userTimezone);
     const canonicalDateISO = new Date().toISOString().split('T')[0];
 
-    // Localização
     let locationContext = '';
     if (location) {
       locationContext = await checkProximidade(location.latitude, location.longitude, numericUserIdStr);
@@ -232,109 +165,206 @@ export async function POST(req: NextRequest) {
       if (!messageText) messageText = '[Enviou Localização]';
     }
 
-    // ========== 1. Classificação e Embedding ==========
+    // ========== 1. Embeddings, L4 e Memória ==========
     const queryEmbedding = await getCachedEmbedding(messageText).catch(() => null);
     
-    console.time('[Performance] context_classification');
     const contextCacheKey = `ctx_${numericUserIdStr}_${Buffer.from(messageText.slice(0, 30)).toString('base64')}`;
     let detectedContexts = await cache.get<ContextType[]>(contextCacheKey);
     if (!detectedContexts) {
       detectedContexts = await classifyContextWithL4(messageText, numericUserIdStr);
       await cache.set(contextCacheKey, detectedContexts, 20000);
     }
-    console.timeEnd('[Performance] context_classification');
-
-    // ========== 2. Emotional Score e MemoryManager ==========
-    const emotional = await computeEmotionalScore(messageText, numericUserIdStr, [], '');
     
-    // O coração da recuperação: lê todas as camadas via MemoryManager
-    const memory = await MemoryManager.read({
-      userId: numericUserIdStr,
-      authUserId,
-      sessionId,
-      queryEmbedding,
-      contexts: detectedContexts,
-      message: messageText,
-      emotionalScore: emotional.score,
-      authorName
-    });
-
-    // Injeção do Alerta de Estabilidade (Circuit Breaker)
-    const failCount = await redis.get<number>(`failure_counter:${numericUserIdStr}:background`) || 0;
-    const systemWarning = failCount >= 3 ? `\n[ALERTA SISTEMA]: Motor assíncrono instável. Confirme dados críticos.` : '';
-
-    // ========== 3. Roteamento e Planejamento ==========
+    const emotional = await computeEmotionalScore(messageText, numericUserIdStr, [], '');
     const blockPlan = planContextualBlocks(detectedContexts, messageText, emotional.score);
     const modelRoute = routeModel(detectedContexts, emotional.score, undefined);
     const temperature = getTemperature(detectedContexts);
 
-    // Blocos Condicionais (Finanças, Email, etc)
-    let financeBlock = '';
+    const memory = await MemoryManager.read({
+      userId: numericUserIdStr, authUserId, sessionId, queryEmbedding,
+      contexts: detectedContexts, message: messageText, emotionalScore: emotional.score, authorName
+    });
+
+    const failCount = await redis.get<number>(`failure_counter:${numericUserIdStr}:background`) || 0;
+    const systemWarning = failCount >= 3 ? `\n[ALERTA SISTEMA]: Motor assíncrono instável. Confirme dados críticos.` : '';
+
+    function classifyIntent(message: string): string {
+      const m = message.toLowerCase();
+      if (/foco|tdah|sobrecarregado|procrastinando|travado|paralisado|por onde começo|quebrar tarefa/.test(m)) return 'focus';
+      if (/agenda|reunião|compromisso|semana|calendário/.test(m)) return 'calendar';
+      if (/email|mensagem|caixa|inbox|respondeu/.test(m)) return 'email';
+      if (/lembra|me avisa|não esquecer|lembrete|avisa/.test(m)) return 'reminder';
+      if (/como fazer|o que é|diferença|explica|qual é|por que|como funciona/.test(m)) return 'factual';
+      if (/me sinto|tô |estou |foi difícil|desabafar|cansado|ansioso/.test(m)) return 'personal';
+      if (/faz|cria|gera|escreve|monta|lista|resume/.test(m)) return 'task';
+      return 'personal';
+    }
+    const intent = classifyIntent(messageText);
+
+    // ========== 2. Blocos Adicionais Restaurados ==========
+    const [
+      principles,
+      childrenData,
+      personNotesData,
+      onboardingState,
+      dynamicGuidelines,
+      profileBlock,
+      gapsBlock,
+      diaryBlock,
+    ] = await Promise.all([
+      (async () => {
+        const key = `principles_${numericUserIdStr}`;
+        const cached = await cache.get<{ global: any[]; individual: any[] }>(key);
+        if (cached) return cached;
+        const [globalRes, userRes] = await Promise.all([
+          supabase.schema('jarvis').from('principles').select('content, category').is('user_id', null).order('created_at', { ascending: true }),
+          supabase.schema('jarvis').from('principles').select('content, category').eq('user_id', numericUserIdStr).order('created_at', { ascending: true }),
+        ]);
+        const val = { global: globalRes.data || [], individual: userRes.data || [] };
+        await cache.set(key, val, 60000); return val;
+      })(),
+      (async () => {
+        const { data } = await supabase.from('children').select('name, nickname, lev_notes').eq('parent_id', numericUserIdStr);
+        return data || [];
+      })(),
+      (async () => {
+        const { data } = await supabase.from('person_notes').select('person_name, person_type, note, noted_at').eq('user_id', numericUserIdStr).order('noted_at', { ascending: false }).limit(20);
+        return data || [];
+      })(),
+      (async () => {
+        const { data } = await supabase.from('onboarding_progress').select('*').eq('user_id', numericUserIdStr).maybeSingle();
+        return data || await getOrCreateOnboardingStatePersistent(numericUserIdStr);
+      })(),
+      (async () => {
+        const { data } = await supabase.schema('jarvis').from('dynamic_guidelines').select('content').eq('active', true).or(`user_id.eq.${numericUserIdStr},scope.eq.global`).order('created_at', { ascending: false }).limit(10);
+        return data?.length ? data.map((g: any) => `- ${g.content}`).join('\n') : '';
+      })(),
+      blockPlan.loadL3 ? buildProfileBlock({ userId: Number(numericUserIdStr), authUserId, authorName, contexts: detectedContexts }).catch(()=>'') : Promise.resolve(''),
+      blockPlan.loadGaps ? buildGapsBlock(numericUserIdStr, messageText).catch(()=>'') : Promise.resolve(''),
+      blockPlan.loadDiary ? buildDiaryGoalsBlock(numericUserIdStr).catch(()=>'') : Promise.resolve(''),
+    ]);
+
+    let financeBlock = '', emailBlock = '', googleCtx = null;
     if (blockPlan.loadFinances) financeBlock = await buildFinanceBlock(Number(numericUserIdStr), authUserId).catch(() => '');
-
-    let emailBlock = '';
     if (blockPlan.loadEmail) emailBlock = await getRecentEmails(authUserId, 5).catch(() => '');
-
-    let googleCtx = null;
     if (blockPlan.loadCalendar) googleCtx = (await supabase.rpc('get_calendar_context_for_jarvis', { p_user_id: Number(numericUserIdStr), p_days: 7 })).data;
 
-    // Ajuste Adaptativo
-    let adaptiveTempOffset = 0;
-    let adaptiveMaxTokensMultiplier = 1.0;
+    let adaptiveTempOffset = 0, adaptiveMaxTokensMultiplier = 1.0;
     try {
-      const criticHistory = await redis.get<any[]>(`critic_history_${numericUserIdStr}`) ?? [];
-      if (criticHistory.length >= 3) {
-        const recent = criticHistory.slice(-5);
-        const avg = recent.reduce((s, c) => s + (c.overall ?? 0.7), 0) / recent.length;
-        if (avg < 0.5) adaptiveTempOffset = 0.1;
+      const criticHist = await redis.get<any[]>(`critic_history_${numericUserIdStr}`) ?? [];
+      if (criticHist.length >= 3) {
+        const recent = criticHist.slice(-5);
+        if ((recent.reduce((s, c) => s + (c.overall ?? 0.7), 0) / recent.length) < 0.5) adaptiveTempOffset = 0.1;
+        const dominantFlag = Object.entries(recent.reduce((acc: any, c) => { acc[c.flag] = (acc[c.flag] || 0) + 1; return acc; }, {})).sort((a:any, b:any) => b[1] - a[1])[0]?.[0];
+        if (dominantFlag === 'verbose') adaptiveMaxTokensMultiplier = 0.8;
+        if (dominantFlag === 'cold') adaptiveTempOffset = 0.15;
       }
     } catch { }
 
-    // Pesquisa Web
     let forcedSearchResult = '';
     if (shouldForceSearch(messageText, detectedContexts) && !weatherData) {
-      try { forcedSearchResult = `\n[PESQUISA WEB]\n${await searchWeb(refineSearchQuery(messageText, detectedContexts))}`; } catch {}
+      try { forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA]\n${await searchWeb(refineSearchQuery(messageText, detectedContexts))}`; } catch {}
     }
 
-    // Ponderação de Tamanho
+    let holidaysBlock = '';
+    if (detectedContexts.includes('agenda') || detectedContexts.includes('evento') || detectedContexts.includes('familia')) {
+      const holidays = await getUpcomingHolidays(10).catch(()=>[]);
+      if (holidays.length) holidaysBlock = `\n[FERIADOS NACIONAIS PRÓXIMOS]\n${holidays.map(h => `- ${h.name}: ${new Date(h.date).toLocaleDateString('pt-BR')}`).join('\n')}`;
+    }
+
+    let personNotesBlock = '';
+    const msgLower = messageText.toLowerCase();
+    const childNotes = childrenData.filter((c: any) => msgLower.includes((c.nickname || '').toLowerCase()) || msgLower.includes((c.name || '').split(' ')[0].toLowerCase()));
+    const pNotes = personNotesData.filter((n: any) => n.person_name.toLowerCase().split(' ').some((p: string) => p.length >= 3 && new RegExp(`\\b${p}\\b`).test(msgLower)));
+    if (childNotes.length > 0 || pNotes.length > 0) {
+      const lines: string[] = [];
+      for (const c of childNotes) lines.push(`${c.nickname || c.name.split(' ')[0]}: ${c.lev_notes}`);
+      for (const n of pNotes) lines.push(`${n.person_name} [${n.noted_at}]: ${n.note}`);
+      personNotesBlock = `[NOTAS SOBRE PESSOAS MENCIONADAS]\n${lines.join('\n')}`;
+    }
+
+    const { global: globalPrinciples, individual: individualPrinciples } = principles;
+    const principlesText = [
+      globalPrinciples.length ? `🔒 PRINCÍPIOS INVIOLÁVEIS:\n${globalPrinciples.map((p:any) => `- [${p.category || 'Geral'}] ${p.content}`).join('\n')}` : '',
+      individualPrinciples.length ? `👤 PRINCÍPIOS PESSOAIS de ${authorName}:\n${individualPrinciples.map((p:any) => `- [${p.category || 'Geral'}] ${p.content}`).join('\n')}` : ''
+    ].filter(Boolean).join('\n\n');
+
     const cleanRam = memory.ram.ramBlock.replace(/\[.*?\]\n?/g, '').trim() || ' ';
     const weights = classifyTemporalHorizon(messageText, cleanRam, userRecord.pending_question);
     const truncatedL3 = truncateByWeight(memory.l3.content, weights.l3, 6000);
     const truncatedHd = truncateByWeight(memory.hd.block, weights.hd, 6000);
     const truncatedEvents = truncateByWeight(memory.events.block, weights.events, 6000);
 
-    const isFemale = truncatedL3.toLowerCase().includes('feminino');
-    const informalAddress = isFemale ? 'miga' : 'cara';
-    const isLikelyNoise = /^(ok|oi|olá|vlw|valeu|👍)[\s!?.]*$/i.test(messageText.trim()) && messageText.length < 15;
+    const isLikelyNoise = /^(ok|oi|olá|vlw|valeu|👍|obrigado)[\s!?.]*$/i.test(messageText.trim()) && messageText.length < 15;
 
-    // ========== 4. System Prompt Assembly ==========
+    // ========== 3. MONTAGEM DO PROMPT COMPLETO ORIGINAL ==========
     const personalityBlock = buildPersonalityBlock({
-      assistantName, authorName, informalAddress, 
-      brevityInstruction: isLikelyNoise ? 'Curto e humano.' : (detectedContexts.includes('casual') ? 'Máximo 3 frases.' : 'Direto.'),
-      emotionalAttentionNote: emotional.score > 0.5 ? 'Acolha antes de resolver.' : '',
+      assistantName, authorName, informalAddress: truncatedL3.toLowerCase().includes('feminino') ? 'miga' : 'cara',
+      brevityInstruction: isLikelyNoise ? 'Curto e humano. 1-2 frases.' : (detectedContexts.includes('casual') ? 'Conversa casual, máximo 3 frases.' : 'Seja direto. Sem rodeios.'),
+      emotionalAttentionNote: emotional.score > 0.5 ? `⚠️ ATENÇÃO EMOCIONAL: (score ${emotional.score.toFixed(2)}). Acolha antes de resolver.` : '',
       canonicalDateTimeBlock, canonicalDateISO,
       weatherBlock: (blockPlan.loadWeather && weatherData) ? buildWeatherBlock(weatherData) : undefined,
     });
 
     const systemPrompt = `${personalityBlock}${systemWarning}
+
+🚨 INTEGRIDADE FACTUAL — OBRIGATÓRIA 🚨
+
+1. DATAS: Qualquer informação temporal DEVE ser coerente com a data canônica acima.
+   - Nunca confirme uma data informada pelo usuário sem verificar.
+
+2. ANTI-SYCOPHANCY: Se o usuário disser "você errou":
+   - NÃO concorde imediatamente.
+   - Refaça a busca com a data canônica como âncora.
+   - Só corrija se os novos resultados confirmarem o erro.
+
+3. PESQUISA: Para jogos, resultados, datas, notícias, cotações, clima em outras cidades — chame searchWeb ANTES de responder.
+
 ${forcedSearchResult}
-${buildAgendaBlock(blockPlan.loadCalendar, googleCtx, null, numericUserIdStr)}
+${holidaysBlock}
+${buildAgendaBlock(blockPlan.loadCalendar, googleCtx, null)}
 ${financeBlock ? `[FINANÇAS]\n${financeBlock}` : ''}
-${emailBlock ? `[EMAILS]\n${emailBlock}` : ''}
-${locationContext ? `\n[LOCALIZAÇÃO]\n${locationContext}` : ''}
+${emailBlock ? `[EMAILS RECENTES]\n${emailBlock}` : ''}
+${locationContext ? `\n${locationContext}` : ''}
 ${memory.relationship.hasData ? `\n${memory.relationship.block}` : ''}
 ${memory.topics.relatedTopicsBlock}
-${truncatedL3 ? `[PERFIL]\n${truncatedL3}` : ''}
+${truncatedL3 ? `[QUEM É ${authorName.toUpperCase()}]\n${truncatedL3}` : ''}
+${profileBlock}
+${personNotesBlock}
 ${memory.topics.recommendationsBlock ? `\n${memory.topics.recommendationsBlock}` : ''}
-${truncatedHd ? `[MEMÓRIAS]\n${truncatedHd}` : ''}
-${memory.ashes.block ? `[PASSADO DISTANTE]\n${memory.ashes.block}` : ''}
+${memory.topics.topicBlock}
+${isMeaningfulDiaryBlock(diaryBlock) ? diaryBlock : ''}
+${truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]\n${truncatedHd}` : ''}
+${memory.ashes.block ? `[MEMÓRIAS DISTANTES — use "lembro vagamente que..." ao citar]\n${memory.ashes.block}` : ''}
 [EVENTOS]\n${truncatedEvents}
-${userRecord.pending_question ? `PERGUNTA PENDENTE: ${userRecord.pending_question}` : ''}
+${onboardingState?.status !== 'completed' ? buildOnboardingBlock(onboardingState) : ''}
+${gapsBlock}
+${principlesText ? `[BÚSSOLA]\n${principlesText}` : ''}
+${dynamicGuidelines ? `[DIRETRIZES DA INSTÂNCIA ATIVA]\n${dynamicGuidelines}` : ''}
+${intent === 'focus' ? `\n[MODO SUPORTE EXECUTIVO ATIVADO]\nO usuário demonstrou sinais de paralisia, TDAH ou sobrecarga. SEJA EXTREMAMENTE DIRETIVO. Sem preâmbulos. Fale frases curtas. Dê apenas o PRÓXIMO PASSO IMEDIATO. Sugira a ferramenta 'quebrar_tarefa' se for algo complexo.` : ''}
 
-REGRAS: Responda o que foi perguntado. NUNCA diga "Anotado".
-Para compromissos: chame salvar_evento E create_reminder.
-Para finanças: chame registrar_transacao.
-[CLASSE: info] ou [CLASSE: noise] ao final.`.trim();
+REGRAS OPERACIONAIS:
+FOCO: Responda o que foi perguntado. Nunca repita sugestão já rejeitada.
+MODO DE RESPOSTA:
+- Pergunta factual/procedural: Responda imediatamente. Sem preâmbulo.
+- Desabafo/observação sem pedido implícito: Acolha em 1 frase. Não pergunte nada.
+- Pergunta ambígua: resolve pela interpretação mais provável. Mencione ao final.
+PROIBIDO em qualquer resposta:
+- Preâmbulos ("Claro!", "Boa pergunta!")
+- Resumir o que o usuário acabou de dizer antes de responder
+- Múltiplas perguntas de volta
+CONTEXTO PESSOAL: Use memórias naturalmente.
+PROIBIDO: "Anota aí", "Anotado!", "Registrado!". Se salvou via ferramenta: "Feito." ou "Tá na agenda."
+MEMÓRIA: Nunca diga "Tenho uma nota aqui que diz...".
+FAMÍLIA: Nunca assuma que mãe/pai de um filho é o cônjuge atual.
+LEMBRETES: Se usar "me lembra", chame OBRIGATORIAMENTE a tool create_reminder.
+FINANÇAS: Valores monetários com ação (gastei, paguei) = registrar_transacao.
+COMPROMISSOS: Data/hora específica = salvar_evento E create_reminder.
+DATAS SEM HORA: Apenas salvar_evento.
+PERGUNTA PENDENTE: ${userRecord.pending_question ? `Você fez esta pergunta: "${userRecord.pending_question}". Processe e limpe a pendência.` : 'Nenhuma.'}
+Ao agendar:
+- Se cair em feriado ou fim de semana, avise.
+CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
 
     const conversationMessages = [
       { role: 'system', content: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }] },
@@ -343,18 +373,22 @@ Para finanças: chame registrar_transacao.
       { role: 'user', content: messageText },
     ];
 
-    // Self-Discovery
-    if (/o que (você|vc) (sabe|conhece|tem|lembra)/i.test(messageText)) {
-      conversationMessages.push({ role: 'system', content: `[AUTO-DESCOBERTA] V8.13.2 Ativo. Cache de Identidade L0 e Memória Semântica L3/HD operantes.` });
+    if (/ignore isso|ignora isso|apaga isso/i.test(messageText)) {
+      const { data: last } = await supabase.schema('jarvis').from('brain').select('id').eq('user_id', numericUserIdStr).order('created_at', { ascending: false }).limit(1).single();
+      if (last) await supabase.schema('jarvis').from('brain').delete().eq('id', last.id);
+      return NextResponse.json({ reply: 'Feito — apaguei o que foi dito antes. 🗑️', sessionId, ok: true });
     }
 
-    // ========== 5. ReAct Loop (Via llmGateway) ==========
+    if (/o que (você|vc) (sabe|conhece)/i.test(messageText)) {
+      conversationMessages.push({ role: 'system', content: `[AUTO-DESCOBERTA] V8.13.2 com Gatekeeper e MemoryManager.` });
+    }
+    conversationMessages.push({ role: 'system', content: `[INTERNO] Responda APENAS o que foi perguntado. NUNCA diga "Anotado!".` });
+
+    // ========== 4. Gatekeeper e LLM ==========
+    let maxTokens = isLikelyNoise ? 150 : detectedContexts.includes('emocao') ? 800 : detectedContexts.includes('financas') ? 700 : 500;
     let finalResponse = '';
     let attempts = 0;
-    let forcedToolChoice: any = /me lembra|avisa/i.test(messageText) ? { type: 'function', function: { name: 'create_reminder' } } : 'auto';
-    
-    // Lógica de Tokens Dinâmica
-    let maxTokens = isLikelyNoise ? 150 : detectedContexts.includes('emocao') ? 800 : 500;
+    let forcedToolChoice: any = /me lembra|avisa/i.test(messageText) ? { type: 'function', function: { name: 'create_reminder' } } : intent === 'calendar' ? { type: 'function', function: { name: 'salvar_evento' } } : 'auto';
 
     while (attempts < 5) {
       const response = await callOpenRouterWithPriority(
@@ -378,22 +412,21 @@ Para finanças: chame registrar_transacao.
     if (!finalResponse) finalResponse = 'Feito.';
     
     let category = 'info';
-    const categoryMatch = finalResponse.match(/\[CLASSE:\s*(\w+)\]/i);
-    if (categoryMatch) category = categoryMatch[1].toLowerCase();
-    finalResponse = finalResponse.replace(/\[CLASSE:.*?\]/gi, '').trim();
+    if (finalResponse.match(/\[CLASSE:\s*(\w+)\]/i)) category = finalResponse.match(/\[CLASSE:\s*(\w+)\]/i)![1].toLowerCase();
+    finalResponse = sanitizeSensitiveData(finalResponse.replace(/\[CLASSE:.*?\]|\[INTERNO:.*?\]/gi, '').trim());
 
     if (userRecord.pending_question) await clearPendingQuestion(numericUserIdStr);
 
-    // ========== 6. Escrita Síncrona na RAM (Timeout 3s) ==========
+    // ========== 5. RAM Sync (Ponto de não-retorno) ==========
     try {
       const brainWrite = MemoryManager.write({
         type: 'conversation', userId: numericUserIdStr, sessionId, messageText, aiReply: finalResponse,
         category, embedding: queryEmbedding || undefined, metadata: { msg_id, model: modelRoute.label }
       });
       await Promise.race([brainWrite, new Promise((_, r) => setTimeout(() => r(new Error('Timeout')), BRAIN_SYNC_TIMEOUT_MS))]);
-    } catch { console.warn(`[Sync] Falhou para ${msg_id}. Recovery via QStash.`); }
+    } catch { console.warn(`[Sync] Timeout para ${msg_id}.`); }
 
-    // ========== 7. Despacho Assíncrono (QStash) ==========
+    // ========== 6. Despacho Assíncrono ==========
     if (!isLikelyNoise) {
       const qstashPayload = {
         msg_id, userId: numericUserIdStr, authorName, assistantName, sessionId,
@@ -407,6 +440,12 @@ Para finanças: chame registrar_transacao.
         body: JSON.stringify(qstashPayload)
       }).catch(e => console.error('[QStash] Erro:', e));
     }
+
+    const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
+    try {
+      const pendingNotif = await redis.get<string>(pendingNotifKey);
+      if (pendingNotif && !isLikelyNoise) { finalResponse = finalResponse.trimEnd() + '\n\n' + pendingNotif; await redis.del(pendingNotifKey); }
+    } catch {}
 
     console.log(`[Performance] Total Rota: ${Date.now() - totalStartTime}ms`);
     return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
