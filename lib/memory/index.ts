@@ -1175,18 +1175,3 @@ export const MemoryManager = {
 
 export default MemoryManager;
 
-// ─── Re-exporta tipos para uso externo ───────────────────────────────────────
-export type {
-  MemoryLayer,
-  MemoryWriteType,
-  MemoryReadOptions,
-  MemoryReadResult,
-  MemoryWritePayload,
-  RAMResult,
-  L3Result,
-  HDResult,
-  AshesResult,
-  EventsResult,
-  TopicsResult,
-  RelationshipResult,
-};
