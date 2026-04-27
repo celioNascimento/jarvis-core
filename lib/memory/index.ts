@@ -107,13 +107,13 @@ export interface RelationshipResult {
 // ─── Resultado agregado completo ──────────────────────────────────────────────
 
 export interface MemoryReadResult {
-  ram:            RAMResult;
-  l3:             L3Result;
-  hd:             HDResult;
-  ashes:          AshesResult;
-  events:         EventsResult;
-  topics:         TopicsResult;
-  relationship:   RelationshipResult;
+  ram: RAMResult;
+  l3: L3Result;
+  hd: HDResult;
+  ashes: AshesResult;
+  events: EventsResult;
+  topics: TopicsResult;
+  relationship: RelationshipResult;
 
   // Metadados da leitura — úteis para logging e debug
   meta: {
@@ -169,7 +169,7 @@ export interface MemoryReadOptions {
   message: string;
   emotionalScore: number;
   authorName: string;
-
+  assistantName?: string;
   // Quais camadas carregar — se omitido, usa planContextualBlocks
   layers?: Partial<Record<MemoryLayer, boolean>>;
 }
@@ -179,6 +179,8 @@ export interface MemoryReadOptions {
 //
 // Responsabilidade: lê o histórico da sessão atual do brain,
 // detecta shift de tópico e monta recentPairs + ramBlock para o prompt.
+
+// ─── Bloco 2: Leitor de RAM ───────────────────────────────────────────────────
 
 const ASSISTANT_REPLY_MAX = 300;
 
@@ -199,21 +201,31 @@ export async function readRAM(
   hdBlock: string,
 ): Promise<RAMResult> {
   try {
-    const { data: historySession } = await supabase
+    // PROTEÇÃO ANTI-400: Se o sessionId vier undefined, usa fallback para não quebrar a query
+    const safeSessionId = sessionId || 'default_session';
+
+    const { data: historySession, error } = await supabase
       .from('brain')
       .select('content, metadata')
       .eq('user_id', userId)
-      .eq('session_id', sessionId)
+      .eq('session_id', safeSessionId)
       .neq('category', 'archived')
       .order('created_at', { ascending: false })
       .limit(6);
+
+    if (error) {
+      console.warn('[MemoryManager/RAM] Erro na query:', error.message);
+      return { recentPairs: [], ramBlock: '', sessionId: safeSessionId };
+    }
 
     let ramBlock = '';
     let recentPairs: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
     const hasEnoughHistory = historySession && historySession.length >= 2;
+    // Garante que array de contexts é válido
+    const safeContexts = Array.isArray(contexts) ? contexts : [];
     const shiftDetected = hasEnoughHistory
-      ? await detectTopicShiftWithL4(userId, contexts as any[])
+      ? await detectTopicShiftWithL4(userId, safeContexts as any[])
       : false;
 
     if (hasEnoughHistory) {
@@ -252,11 +264,11 @@ export async function readRAM(
       }
     }
 
-    return { recentPairs, ramBlock, sessionId };
+    return { recentPairs, ramBlock, sessionId: safeSessionId };
 
   } catch (e) {
     console.error('[MemoryManager/RAM] Erro:', e);
-    return { recentPairs: [], ramBlock: '', sessionId };
+    return { recentPairs: [], ramBlock: '', sessionId: sessionId || 'default_session' };
   }
 }
 
@@ -292,9 +304,9 @@ export async function readL3(
     // Tenta busca semântica nos chunks
     const { data: results, error } = await supabase.rpc('match_l3_chunks', {
       query_embedding: queryEmbedding,
-      p_user_id:       Number(userId),
+      p_user_id: Number(userId),
       match_threshold: threshold,
-      match_count:     maxChunks,
+      match_count: maxChunks,
     });
 
     if (error) {
@@ -306,8 +318,8 @@ export async function readL3(
     if (!results || results.length === 0) {
       const { data: topResults } = await supabase.rpc('match_l3_chunks_top', {
         query_embedding: queryEmbedding,
-        p_user_id:       Number(userId),
-        match_count:     2,
+        p_user_id: Number(userId),
+        match_count: 2,
       });
 
       if (!topResults?.length) return await l3Fallback(userId);
@@ -363,12 +375,12 @@ async function l3Fallback(userId: string): Promise<L3Result> {
 //   - emocional alto → segunda busca com threshold ainda menor
 //   - trivial/casual → pula completamente
 
-const HD_THRESHOLD_DEFAULT  = 0.22;
-const HD_THRESHOLD_RETRO    = 0.15;
+const HD_THRESHOLD_DEFAULT = 0.22;
+const HD_THRESHOLD_RETRO = 0.15;
 const HD_THRESHOLD_EMOTIONAL = 0.12;
-const HD_MATCH_DEFAULT      = 8;
-const HD_MATCH_RETRO        = 12;
-const HD_MATCH_EMOTIONAL    = 12;
+const HD_MATCH_DEFAULT = 8;
+const HD_MATCH_RETRO = 12;
+const HD_MATCH_EMOTIONAL = 12;
 
 export async function readHD(
   userId: string,
@@ -381,14 +393,14 @@ export async function readHD(
   if (!queryEmbedding) return empty;
 
   const isRetrospecto = contexts.includes('retrospecto');
-  const threshold  = isRetrospecto ? HD_THRESHOLD_RETRO : HD_THRESHOLD_DEFAULT;
-  const matchCount = isRetrospecto ? HD_MATCH_RETRO     : HD_MATCH_DEFAULT;
+  const threshold = isRetrospecto ? HD_THRESHOLD_RETRO : HD_THRESHOLD_DEFAULT;
+  const matchCount = isRetrospecto ? HD_MATCH_RETRO : HD_MATCH_DEFAULT;
 
   try {
     const { data: search, error } = (await supabase.rpc('match_memories', {
       query_embedding: queryEmbedding,
       match_threshold: threshold,
-      match_count:     matchCount,
+      match_count: matchCount,
     })) as { data: any[] | null; error?: any };
 
     if (error) {
@@ -404,7 +416,7 @@ export async function readHD(
         const { data: extraSearch } = (await supabase.rpc('match_memories', {
           query_embedding: queryEmbedding,
           match_threshold: HD_THRESHOLD_EMOTIONAL,
-          match_count:     HD_MATCH_EMOTIONAL,
+          match_count: HD_MATCH_EMOTIONAL,
         })) as { data: any[] | null };
 
         if (extraSearch?.length) {
@@ -423,9 +435,9 @@ export async function readHD(
     if (!results.length) return empty;
 
     const memories = results.map((r: any) => ({
-      id:               r.id,
-      summary:          r.summary,
-      similarity:       r.similarity,
+      id: r.id,
+      summary: r.summary,
+      similarity: r.similarity,
       emotional_weight: r.emotional_weight ?? 0.5,
     }));
 
@@ -455,7 +467,7 @@ export async function readHD(
 // para sinalizar que é uma memória antiga e possivelmente imprecisa.
 
 const ASHES_CONTEXTS = ['diario', 'emocao', 'meta', 'familia'];
-const ASHES_LIMIT    = 5;
+const ASHES_LIMIT = 5;
 
 export async function readAshes(
   userId: string,
@@ -487,9 +499,9 @@ export async function readAshes(
     if (!data?.length) return empty;
 
     const periods = data.map((a: any) => ({
-      summary:      a.ash_summary,
+      summary: a.ash_summary,
       period_start: a.period_start,
-      period_end:   a.period_end,
+      period_end: a.period_end,
     }));
 
     const block = periods.map(p => p.summary).join('\n');
@@ -513,7 +525,7 @@ export async function readAshes(
 //   - important: relevance_score >= 0.7 fora dos próximos 7 dias
 //   - active: todos os eventos válidos (upcoming + permanent passados)
 
- // ─── Bloco 6: Leitor de Events ───────────────────────────────────────────────
+// ─── Bloco 6: Leitor de Events ───────────────────────────────────────────────
 
 const EVENTS_UPCOMING_DAYS = 7;
 const EVENTS_HOLIDAY_CONTEXTS = ['agenda', 'evento', 'familia'];
@@ -600,7 +612,6 @@ export async function readEvents(
 // Responsabilidade: lê padrões recorrentes (topic_index) e recomendações,
 // filtrando por relevância para a mensagem atual.
 // Também carrega tópicos relacionados ao contexto dominante.
-
 const TOPICS_CONTEXTS = [
   'saude', 'projeto', 'familia', 'rotina', 'preferencia',
 ];
@@ -621,39 +632,29 @@ export async function readTopicsAndRecommendations(
     relatedTopicsBlock: '',
   };
 
-  const isRetrospecto    = contexts.includes('retrospecto');
-  const wantsRec         = contexts.some(c => RECOMMENDATIONS_CONTEXTS.includes(c)) ||
+  // PROTEÇÃO ANTI-400: Garante que sempre teremos um array e uma string válida
+  const safeContexts = Array.isArray(contexts) ? contexts : [];
+  const dominantContext = safeContexts.find(c => c && c !== 'casual') || 'casual';
+
+  const isRetrospecto = safeContexts.includes('retrospecto');
+  const wantsRec = safeContexts.some(c => RECOMMENDATIONS_CONTEXTS.includes(c)) ||
     /me indica|me recomenda|onde (posso|vai|tem)|tem algum|conhece (algum|alguma)|me sugere|você me (indicou|sugeriu|recomendou)/i.test(message);
-  const needsTopics      = contexts.some(c => TOPICS_CONTEXTS.includes(c));
-  const dominantContext  = contexts[0] || 'casual';
+  const needsTopics = safeContexts.some(c => TOPICS_CONTEXTS.includes(c));
 
   try {
     const [topicBlock, recommendationsBlock, relatedTopicsBlock] = await Promise.all([
-      // Tópicos recorrentes — só quando contexto relacional
       needsTopics
         ? buildTopicBlock(userId, message).catch(() => '')
         : Promise.resolve(''),
 
-      // Recomendações — quando pediu sugestão ou é retrospecto
       wantsRec || isRetrospecto
         ? buildRecommendationsBlock(userId, message).catch(() => '')
         : Promise.resolve(''),
 
-      // Tópicos relacionados ao contexto dominante
       needsTopics || isRetrospecto
         ? getRelatedTopics(userId, dominantContext).catch(() => '')
         : Promise.resolve(''),
     ]);
-
-    const loaded = [
-      topicBlock         ? 'topics'        : null,
-      recommendationsBlock ? 'recommendations' : null,
-      relatedTopicsBlock   ? 'related'        : null,
-    ].filter(Boolean);
-
-    if (loaded.length > 0) {
-      console.log(`[MemoryManager/Topics] Carregados: ${loaded.join(', ')}`);
-    }
 
     return { topicBlock, recommendationsBlock, relatedTopicsBlock };
 
@@ -661,8 +662,8 @@ export async function readTopicsAndRecommendations(
     console.error('[MemoryManager/Topics] Exceção:', e);
     return empty;
   }
-}// ─── Bloco 8: Leitor de Relacionamento ───────────────────────────────────────
-// Cole após o Bloco 7 no arquivo lib/memory/index.ts
+}
+// ─── Bloco 8: Leitor de Relacionamento ───────────────────────────────────────
 //
 // Responsabilidade: lê memórias e eventos do relacionamento,
 // respeitando permissões e privacidade.
@@ -676,7 +677,7 @@ export async function readTopicsAndRecommendations(
 
 const RELATIONSHIP_CONTEXTS = ['familia', 'evento', 'emocao', 'diario', 'retrospecto'];
 const RELATIONSHIP_MEMORY_THRESHOLD = 0.25;
-const RELATIONSHIP_MEMORY_COUNT     = 4;
+const RELATIONSHIP_MEMORY_COUNT = 4;
 
 export async function readRelationship(
   userId: string,
@@ -711,8 +712,8 @@ export async function readRelationship(
 
     const parts: string[] = [];
     let allSharedMemories: RelationshipResult['sharedMemories'] = [];
-    let allSharedEvents:   RelationshipResult['sharedEvents']   = [];
-    let allHiddenItems:    RelationshipResult['hiddenItems']     = [];
+    let allSharedEvents: RelationshipResult['sharedEvents'] = [];
+    let allHiddenItems: RelationshipResult['hiddenItems'] = [];
 
     for (const rel of relationships) {
       // 2. Verifica se memories_shared está permitido
@@ -738,28 +739,28 @@ export async function readRelationship(
 
       if (hiddenItems?.length) {
         allHiddenItems.push(...hiddenItems.map((h: any) => ({
-          resource:  h.resource,
+          resource: h.resource,
           reveal_at: h.reveal_at,
-          note:      h.note,
+          note: h.note,
         })));
       }
 
       // 4. Memórias semânticas do relacionamento
       if (canReadMemories && queryEmbedding) {
         const { data: relMemories } = await supabase
-        .rpc('match_relationship_memories', {
-        query_embedding:   queryEmbedding,
-        p_relationship_id: rel.id,
-        match_threshold:   RELATIONSHIP_MEMORY_THRESHOLD,
-        match_count:       RELATIONSHIP_MEMORY_COUNT,
-        })
-        .then(
-        (res) => res,
-        ()    => ({ data: null }),
-        ) as any;
+          .rpc('match_relationship_memories', {
+            query_embedding: queryEmbedding,
+            p_relationship_id: rel.id,
+            match_threshold: RELATIONSHIP_MEMORY_THRESHOLD,
+            match_count: RELATIONSHIP_MEMORY_COUNT,
+          })
+          .then(
+            (res) => res,
+            () => ({ data: null }),
+          ) as any;
         if (relMemories?.length) {
           allSharedMemories.push(...relMemories.map((m: any) => ({
-            summary:    m.summary,
+            summary: m.summary,
             similarity: m.similarity,
           })));
 
@@ -779,8 +780,8 @@ export async function readRelationship(
 
       if (relEvents?.length) {
         allSharedEvents.push(...relEvents.map((e: any) => ({
-          title:            e.title,
-          event_date:       e.event_date,
+          title: e.title,
+          event_date: e.event_date,
           emotional_weight: e.emotional_weight,
         })));
 
@@ -815,10 +816,10 @@ export async function readRelationship(
 
     return {
       hasData,
-      block:          parts.join('\n\n'),
+      block: parts.join('\n\n'),
       sharedMemories: allSharedMemories,
-      sharedEvents:   allSharedEvents,
-      hiddenItems:    allHiddenItems,
+      sharedEvents: allSharedEvents,
+      hiddenItems: allHiddenItems,
     };
 
   } catch (e) {
@@ -856,24 +857,24 @@ export async function read(options: MemoryReadOptions): Promise<MemoryReadResult
   // Decide quais camadas carregar
   const plan = planContextualBlocks(contexts as any[], message, emotionalScore);
   const layers = {
-    ram:             true,
-    l3:              plan.loadL3,
-    hd:              plan.loadHD,
-    ashes:           plan.loadAshes,
-    events:          true, // sempre — eventos próximos são sempre relevantes
-    topics:          plan.loadTopics || plan.loadRecommendations,
+    ram: true,
+    l3: plan.loadL3,
+    hd: plan.loadHD,
+    ashes: plan.loadAshes,
+    events: true, // sempre — eventos próximos são sempre relevantes
+    topics: plan.loadTopics || plan.loadRecommendations,
     recommendations: plan.loadRecommendations,
-    relationship:    true, // sempre — custo baixo, valor alto
+    relationship: true, // sempre — custo baixo, valor alto
     ...layerOverrides,
   };
 
-  const layersLoaded:  MemoryLayer[] = [];
+  const layersLoaded: MemoryLayer[] = [];
   const layersSkipped: MemoryLayer[] = [];
 
   // Registra quais camadas serão carregadas
   for (const [layer, active] of Object.entries(layers)) {
     if (active) layersLoaded.push(layer as MemoryLayer);
-    else        layersSkipped.push(layer as MemoryLayer);
+    else layersSkipped.push(layer as MemoryLayer);
   }
 
   // ── Passo 1: HD primeiro (RAM precisa do hdBlock) ────────────────────────
@@ -961,13 +962,13 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
       case 'conversation': {
         if (!payload.messageText || !payload.sessionId) return;
         await supabase.from('brain').insert([{
-          content:     payload.messageText,
-          category:    payload.category || 'info',
-          user_id:     userId,
-          session_id:  payload.sessionId,
+          content: payload.messageText,
+          category: payload.category || 'info',
+          user_id: userId,
+          session_id: payload.sessionId,
           project_tag: 'geral',
-          embedding:   payload.embedding ?? undefined,
-          metadata:    payload.metadata || {},
+          embedding: payload.embedding ?? undefined,
+          metadata: payload.metadata || {},
         }]);
         break;
       }
@@ -981,15 +982,15 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
           return;
         }
         await supabase.from('memories').insert([{
-          summary:          payload.summary,
+          summary: payload.summary,
           embedding,
-          user_id:          userId,
-          relevance_score:  0.8,
-          access_count:     0,
-          decay_lambda:     0.003,
+          user_id: userId,
+          relevance_score: 0.8,
+          access_count: 0,
+          decay_lambda: 0.003,
           emotional_weight: payload.emotionalWeight ?? 0.6,
-          category:         payload.category || 'fact',
-          metadata:         { type: 'fact', source: 'conversation' },
+          category: payload.category || 'fact',
+          metadata: { type: 'fact', source: 'conversation' },
         }]);
         console.log('[MemoryManager/write] fact salvo no HD:', payload.summary?.slice(0, 60));
         break;
@@ -1009,11 +1010,11 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
 
         if (!existing) {
           await supabase.from('recommendations').insert({
-            user_id:     userId,
-            type:        payload.category || 'outro',
-            name:        payload.summary,
-            source:      'jarvis',
-            status:      'pending',
+            user_id: userId,
+            type: payload.category || 'outro',
+            name: payload.summary,
+            source: 'jarvis',
+            status: 'pending',
           });
         }
 
@@ -1021,15 +1022,15 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
         const embedding = payload.embedding ?? await generateEmbedding(payload.summary);
         if (embedding) {
           await supabase.from('memories').insert([{
-            summary:          payload.summary,
+            summary: payload.summary,
             embedding,
-            user_id:          userId,
-            relevance_score:  0.8,
-            access_count:     0,
-            decay_lambda:     0.003,
+            user_id: userId,
+            relevance_score: 0.8,
+            access_count: 0,
+            decay_lambda: 0.003,
             emotional_weight: payload.emotionalWeight ?? 0.6,
-            category:         'recommendation',
-            metadata:         { type: 'recommendation', source: 'conversation' },
+            category: 'recommendation',
+            metadata: { type: 'recommendation', source: 'conversation' },
           }]);
         }
         console.log('[MemoryManager/write] recommendation salva:', payload.summary?.slice(0, 60));
@@ -1041,14 +1042,14 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
         if (!payload.title || !payload.eventDate) return;
         const { upsertEvent } = await import('@/lib/extractor-jobs');
         await upsertEvent(userId, {
-          title:            payload.title,
-          event_date:       payload.eventDate,
-          category:         payload.category || 'Pessoal',
-          priority:         'media',
-          decay_type:       payload.isRecurring ? 'recurring_annual' : 'one_time',
+          title: payload.title,
+          event_date: payload.eventDate,
+          category: payload.category || 'Pessoal',
+          priority: 'media',
+          decay_type: payload.isRecurring ? 'recurring_annual' : 'one_time',
           emotional_weight: payload.emotionalWeight ?? 0.6,
-          is_recurring:     payload.isRecurring ?? false,
-          notes:            payload.notes || null,
+          is_recurring: payload.isRecurring ?? false,
+          notes: payload.notes || null,
         });
         break;
       }
@@ -1075,7 +1076,7 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
         await supabase
           .from('user_profiles')
           .upsert({
-            user_id:    userId,
+            user_id: userId,
             ...payload.profileData,
             updated_at: new Date().toISOString(),
           }, { onConflict: 'user_id' });
@@ -1089,7 +1090,7 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
           .from('users')
           .update({
             current_context: payload.dossie,
-            updated_at:      new Date().toISOString(),
+            updated_at: new Date().toISOString(),
           })
           .eq('id', userId);
 
@@ -1106,9 +1107,9 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
         const embedding = payload.embedding ?? await generateEmbedding(payload.summary);
         await supabase.from('relationship_memories').insert({
           relationship_id: payload.relationshipId,
-          summary:         payload.summary,
+          summary: payload.summary,
           embedding,
-          frozen_by:       'system',
+          frozen_by: 'system',
         });
         break;
       }
@@ -1117,14 +1118,14 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
       case 'relationship_event': {
         if (!payload.title || !payload.eventDate || !payload.relationshipId) return;
         await supabase.from('relationship_events').insert({
-          relationship_id:  payload.relationshipId,
-          title:            payload.title,
-          event_date:       payload.eventDate,
-          category:         payload.category || 'milestone',
-          is_recurring:     payload.isRecurring ?? false,
+          relationship_id: payload.relationshipId,
+          title: payload.title,
+          event_date: payload.eventDate,
+          category: payload.category || 'milestone',
+          is_recurring: payload.isRecurring ?? false,
           emotional_weight: payload.emotionalWeight ?? 0.8,
-          notes:            payload.notes || null,
-          created_by:       Number(userId),
+          notes: payload.notes || null,
+          created_by: Number(userId),
         });
         break;
       }

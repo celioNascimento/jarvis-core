@@ -1,10 +1,11 @@
 // lib/chat/unified-extractor.ts
 // V2.0.0 — Recomendações e fatos relevantes agora também salvos como memória HD
 
-import { callOpenRouter, supabase, generateEmbedding } from '@/lib/jarvis';
+import { supabase, generateEmbedding } from '@/lib/jarvis';
 import { extractDiary, extractGoal } from '@/lib/diary';
 import { extractAndSummarize } from '@/lib/extractor';
 import { upsertEvent, extractRecomendacao } from '@/lib/extractor-jobs';
+import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 
 interface UnifiedExtractResult {
   diary: { texto: string; categoria: 'reflexao' | 'acontecimento' | 'gratidao' | 'qualquer' } | null;
@@ -95,11 +96,28 @@ Regras:
 - "event" quando o usuário mencionar qualquer situação futura com data ou período.`;
 
   try {
-    const raw = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1);
-    const clean = raw.replace(/```json|```/g, '').trim();
+    // Passa pelo Gatekeeper (Fila de Prioridade 3 - Extratores)
+    const response = await callOpenRouterWithPriority(
+      3, 
+      'if_full', 
+      `extract_unified_${Date.now()}`, 
+      [{ role: 'user', content: prompt }],
+      [],
+      'google/gemini-2.0-flash-001',
+      0.1,
+      35000,
+      1500,
+      'none'
+    );
+
+    // Garante que pega o texto corretamente, independentemente do formato de retorno
+    const content = (response as any)?.content || (typeof response === 'string' ? response : '');
+    
+    const clean = content.replace(/```json|```/g, '').trim();
     return JSON.parse(clean) as UnifiedExtractResult;
+    
   } catch (e) {
-    console.warn('[UnifiedExtractor] Parse falhou, retornando vazio:', (e as Error).message);
+    console.warn('[UnifiedExtractor] Parse/Execução falhou, retornando vazio:', (e as Error).message);
     return EMPTY;
   }
 }
