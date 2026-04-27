@@ -366,12 +366,13 @@ Ao agendar:
 - Se cair em feriado ou fim de semana, avise.
 CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noise].`.trim();
 
-    const conversationMessages = [
+        const conversationMessages: any[] = [
       { role: 'system', content: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }] },
       ...(memory.ram.ramBlock ? [{ role: 'system', content: memory.ram.ramBlock }] : []),
       ...memory.ram.recentPairs,
       { role: 'user', content: messageText },
     ];
+    
 
     if (/ignore isso|ignora isso|apaga isso/i.test(messageText)) {
       const { data: last } = await supabase.schema('jarvis').from('brain').select('id').eq('user_id', numericUserIdStr).order('created_at', { ascending: false }).limit(1).single();
