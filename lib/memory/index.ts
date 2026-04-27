@@ -782,14 +782,16 @@ export async function readRelationship(
       // 4. Memórias semânticas do relacionamento
       if (canReadMemories && queryEmbedding) {
         const { data: relMemories } = await supabase
-          .rpc('match_relationship_memories', {
-            query_embedding:  queryEmbedding,
-            p_relationship_id: rel.id,
-            match_threshold:  RELATIONSHIP_MEMORY_THRESHOLD,
-            match_count:      RELATIONSHIP_MEMORY_COUNT,
-          })
-          .catch(() => ({ data: null })) as any;
-
+        .rpc('match_relationship_memories', {
+        query_embedding:   queryEmbedding,
+        p_relationship_id: rel.id,
+        match_threshold:   RELATIONSHIP_MEMORY_THRESHOLD,
+        match_count:       RELATIONSHIP_MEMORY_COUNT,
+        })
+        .then(
+        (res) => res,
+        ()    => ({ data: null }),
+        ) as any;
         if (relMemories?.length) {
           allSharedMemories.push(...relMemories.map((m: any) => ({
             summary:    m.summary,
