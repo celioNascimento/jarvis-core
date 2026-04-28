@@ -1,4 +1,3 @@
-// lib/chat/prompt-engine.ts
 import { buildPersonalityBlock } from './personality';
 
 interface PromptComposeOpts {
@@ -10,7 +9,7 @@ interface PromptComposeOpts {
   isSystemStressed: boolean;
   emotionalScore: number;
   detectedContexts: string[];
-  contextBlocks: string[]; // Blocos dos módulos
+  contextBlocks: string[];
   memoryBlocks: {
     truncatedL3: string;
     truncatedHd: string;
@@ -28,8 +27,8 @@ export function composeSystemPrompt(opts: PromptComposeOpts): string {
     assistantName: opts.assistantName,
     authorName: opts.authorName,
     informalAddress: opts.memoryBlocks.truncatedL3.toLowerCase().includes('feminino') ? 'miga' : 'cara',
-    brevityInstruction: opts.isLikelyNoise ? 'Curto e humano. 1-2 frases.' : (opts.detectedContexts.includes('casual') ? 'Conversa casual, máximo 3 frases.' : 'Seja direto. Sem rodeios.'),
-    emotionalAttentionNote: opts.emotionalScore > 0.5 ? `⚠️ ATENÇÃO EMOCIONAL: (score ${opts.emotionalScore.toFixed(2)}). Acolha antes de resolver.` : '',
+    brevityInstruction: opts.isLikelyNoise ? 'Curto e humano. 1-2 frases.' : 'Direto e conciso.',
+    emotionalAttentionNote: opts.emotionalScore > 0.6 ? 'Priorize empatia.' : '',
     canonicalDateTimeBlock: opts.canonicalDateTimeBlock,
     canonicalDateISO: opts.canonicalDateISO,
   });
@@ -37,32 +36,27 @@ export function composeSystemPrompt(opts: PromptComposeOpts): string {
   return `
 ${personality}${opts.systemWarning}
 
-🚨 INTEGRIDADE FACTUAL — OBRIGATÓRIA 🚨
-1. DATAS: Coerência com a data canônica. Nunca confirme sem verificar.
-2. ANTI-SYCOPHANCY: Se o usuário disser "você errou", refaça a busca antes de concordar.
-3. PESQUISA: Para fatos externos, chame searchWeb ANTES de responder.
+[STATUS DO SISTEMA]
+Stress: ${opts.isSystemStressed ? 'ATIVO' : 'Normal'}
+Intenção: ${opts.intent}
 
-[MÓDULOS ATIVOS]
+[CONTEXTOS ATIVOS POR MÓDULOS]
 ${opts.contextBlocks.join('\n\n')}
 
 [BÚSSOLA E DIRETRIZES]
 ${opts.dynamicGuidelines}
 
-[MEMÓRIA E CONTEXTO]
+[MEMÓRIA E CONTEXTO PESSOAL]
 ${opts.memoryBlocks.truncatedL3 ? `[QUEM É ${opts.authorName.toUpperCase()}]\n${opts.memoryBlocks.truncatedL3}` : ''}
 ${opts.memoryBlocks.relationship}
 ${opts.memoryBlocks.topics}
-${opts.memoryBlocks.truncatedHd ? `[LONGO PRAZO]\n${opts.memoryBlocks.truncatedHd}` : ''}
-[EVENTOS]\n${opts.memoryBlocks.truncatedEvents}
-
-${opts.intent === 'focus' ? `[MODO SUPORTE EXECUTIVO] Seja diretivo. Frases curtas. Dê apenas o PRÓXIMO PASSO.` : ''}
+${opts.memoryBlocks.truncatedHd ? `[MEMÓRIAS DE LONGO PRAZO]\n${opts.memoryBlocks.truncatedHd}` : ''}
+[EVENTOS E AGENDA]\n${opts.memoryBlocks.truncatedEvents}
 
 REGRAS OPERACIONAIS:
 - FOCO: Responda o que foi perguntado.
-- MODO: Factual = Direto. Desabafo = Acolha (1 frase).
-- PROIBIDO: Preâmbulos ("Claro!", "Boa pergunta!"), resumir o usuário, ou dizer "Anotado/Registrado".
-- SE SALVOU VIA TOOL: Use "Feito." ou "Tá na agenda."
-- FAMÍLIA: Não assuma que ex-parceiros são os atuais.
-- CLASSIFICAÇÃO: Inclua [CLASSE: info] ou [CLASSE: noise] ao final.
+- PROIBIDO: Preâmbulos, resumir o usuário ou dizer "Anotado".
+- SE SALVOU VIA TOOL: Responda apenas "Feito." ou confirme a ação de forma curta.
+- CLASSIFICAÇÃO: Ao final inclua [CLASSE: info] ou [CLASSE: noise].
 `.trim();
 }
