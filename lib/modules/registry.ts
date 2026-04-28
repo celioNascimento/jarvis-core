@@ -64,13 +64,16 @@ export async function loadActiveModules(
     try {
       const block = await mod.buildContextBlock(opts);
       
-      // Telemetria via waitUntil (Não trava a resposta do usuário)
-      waitUntil(
-        recordModuleMetrics(mod.id, opts.userId, {
-          latencyMs: Date.now() - start,
-          tokens: Math.ceil(block.length / 4),
-          activated: block.length > 0
-        }).catch(() => {})
+      // Telemetria via waitUntil blindada com função anônima async (IIFE)
+      // Isso força a entrega de uma Promise para o Vercel, resolvendo o erro "void".
+     waitUntil(
+        (async () => {
+          await recordModuleMetrics(mod.id, Number(opts.userId), {
+            latencyMs: Date.now() - start,
+            tokens: Math.ceil(block.length / 4),
+            activated: block.length > 0
+          });
+        })()
       );
 
       return { block, tools: mod.tools, model: mod.preferredModel };
