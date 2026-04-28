@@ -49,61 +49,33 @@ export const tools = [
     function: {
       name: 'salvar_evento',
       description:
-        'Salva um compromisso ou data importante na AGENDA PRÓPRIA do assistente (jarvis.agenda / jarvis.events). ' +
-        'Use SEMPRE por padrão para qualquer compromisso — consultas, reuniões, aulas, voos, aniversários, feriados pessoais. ' +
-        'NÃO use criar_evento_agenda a menos que o usuário peça explicitamente "salvar no Google" ou "no Google Agenda".',
+        'Salva um compromisso na AGENDA PRÓPRIA (jarvis.agenda). Use para consultas, reuniões, aulas, aniversários.',
       parameters: {
         type: 'object',
         properties: {
-          title: {
-            type: 'string',
-            description: 'Título do compromisso (ex: "Consulta médica", "Reunião com João")',
-          },
-          event_date: {
-            type: 'string',
-            description:
-              'Data e hora no formato ISO completo: "YYYY-MM-DDTHH:mm:00". ' +
-              'Para eventos sem hora fixa (aniversários, feriados), use "YYYY-MM-DDT00:00:00".',
-          },
-          category: {
-            type: 'string',
-            description: 'Categoria do evento: "Saúde", "Trabalho", "Pessoal", "Família", "Educação", "Viagem", etc.',
-          },
-          notes: {
-            type: 'string',
-            description: 'Observações opcionais sobre o evento',
-          },
-          is_recurring: {
-            type: 'boolean',
-            description: 'true para eventos que se repetem anualmente (aniversários, datas comemorativas)',
-          },
+          title: { type: 'string' },
+          event_date: { type: 'string', description: 'ISO: YYYY-MM-DDTHH:mm:00' },
+          category: { type: 'string' },
+          notes: { type: 'string' },
+          is_recurring: { type: 'boolean' },
         },
         required: ['title', 'event_date'],
       },
     },
   },
 
-  // ── GOOGLE CALENDAR (somente quando explicitamente solicitado) ────────────
+  // ── GOOGLE CALENDAR ────────────────────────────────────────────────────────
   {
     type: 'function',
     function: {
       name: 'criar_evento_agenda',
-      description:
-        'Cria um evento NO GOOGLE CALENDAR do usuário. ' +
-        'Use SOMENTE quando o usuário pedir explicitamente "salvar no Google", "no Google Agenda" ou "no meu Google". ' +
-        'Para qualquer outro compromisso, use salvar_evento.',
+      description: 'Cria evento NO GOOGLE CALENDAR (somente se solicitado explicitamente).',
       parameters: {
         type: 'object',
         properties: {
-          summary: { type: 'string', description: 'Título do evento' },
-          startTime: {
-            type: 'string',
-            description: 'Data e hora de início no formato ISO (ex: 2026-04-15T15:00:00)',
-          },
-          reminderMinutes: {
-            type: 'integer',
-            description: 'Minutos antes para o alarme tocar (padrão 30)',
-          },
+          summary: { type: 'string' },
+          startTime: { type: 'string' },
+          reminderMinutes: { type: 'integer' },
         },
         required: ['summary', 'startTime'],
       },
@@ -118,14 +90,15 @@ export const tools = [
       parameters: {
         type: 'object',
         properties: {
-          titulo_parcial: { type: 'string', description: 'Parte do título da meta' },
+          titulo_parcial: { type: 'string' },
           progresso: { type: 'integer', minimum: 0, maximum: 100 },
-          etapa_concluida: { type: 'string', description: 'Nome da etapa concluída (opcional)' },
+          etapa_concluida: { type: 'string' },
         },
         required: ['titulo_parcial', 'progresso'],
       },
     },
   },
+
   {
     type: 'function',
     function: {
@@ -135,52 +108,44 @@ export const tools = [
         type: 'object',
         properties: {
           texto: { type: 'string' },
-          categoria: {
-            type: 'string',
-            enum: ['reflexao', 'acontecimento', 'gratidao', 'qualquer'],
-          },
+          categoria: { type: 'string', enum: ['reflexao', 'acontecimento', 'gratidao', 'qualquer'] },
         },
         required: ['texto'],
       },
     },
   },
+
   {
     type: 'function',
     function: {
       name: 'searchWeb',
-      description:
-        'Pesquisa na internet em tempo real. Use para notícias, resultados de jogos, fatos de 2026 e informações que não estão na sua memória.',
+      description: 'Pesquisa na internet em tempo real (notícias, fatos de 2026, etc).',
       parameters: {
         type: 'object',
-        properties: {
-          query: { type: 'string', description: 'O termo de busca preciso' },
-        },
+        properties: { query: { type: 'string' } },
         required: ['query'],
       },
     },
   },
+
   {
     type: 'function',
     function: {
       name: 'getWeatherForecast',
-      description:
-        'Obtém clima preciso para 5 dias. Use coordenadas de Londrina (-23.27, -51.20) para o Vista Bela se o usuário não der outras.',
+      description: 'Obtém clima preciso para 5 dias.',
       parameters: {
         type: 'object',
-        properties: {
-          lat: { type: 'number' },
-          lng: { type: 'number' },
-        },
+        properties: { lat: { type: 'number' }, lng: { type: 'number' } },
         required: ['lat', 'lng'],
       },
     },
   },
+
   {
     type: 'function',
     function: {
       name: 'salvar_lugar',
-      description:
-        'Salva um lugar favorito (mercado, farmácia, etc.) com coordenadas e raio de alerta',
+      description: 'Salva um lugar favorito com coordenadas e raio de alerta',
       parameters: {
         type: 'object',
         properties: {
@@ -194,63 +159,20 @@ export const tools = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'remover_lugar',
-      description: 'Remove um lugar favorito pelo nome',
-      parameters: {
-        type: 'object',
-        properties: { nome: { type: 'string' } },
-        required: ['nome'],
-      },
-    },
-  },
+
   {
     type: 'function',
     function: {
       name: 'adicionar_item_lista',
-      description: 'Adiciona um item à lista de compras de um lugar específico',
+      description: 'Adiciona um item à lista de compras de um lugar',
       parameters: {
         type: 'object',
-        properties: {
-          item: { type: 'string' },
-          lugar: { type: 'string' },
-        },
+        properties: { item: { type: 'string' }, lugar: { type: 'string' } },
         required: ['item', 'lugar'],
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'marcar_feito',
-      description: 'Marca um item da lista como comprado',
-      parameters: {
-        type: 'object',
-        properties: {
-          item: { type: 'string' },
-          lugar: { type: 'string' },
-        },
-        required: ['item', 'lugar'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'remover_item_lista',
-      description: 'Remove um item da lista de compras',
-      parameters: {
-        type: 'object',
-        properties: {
-          item: { type: 'string' },
-          lugar: { type: 'string' },
-        },
-        required: ['item', 'lugar'],
-      },
-    },
-  },
+
   {
     type: 'function',
     function: {
@@ -263,136 +185,65 @@ export const tools = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'get_weather_insights',
-      description: 'Obtém uma dica personalizada sobre o clima atual e previsão para o usuário',
-      parameters: { type: 'object', properties: {}, required: [] },
-    },
-  },
+
   {
     type: 'function',
     function: {
       name: 'create_reminder',
-      description:
-        "Cria um lembrete para o usuário. Use quando ele pedir 'me lembra', 'avisa', 'lembrar', 'não esquecer' com tempo ou local.",
+      description: "Cria um lembrete (tempo ou local). Use quando ouvir 'me lembra' ou 'avisa'.",
       parameters: {
         type: 'object',
         properties: {
-          title: {
-            type: 'string',
-            description: "Título curto do lembrete (ex: 'Desligar feijão', 'Ligar para João')",
-          },
-          type: {
-            type: 'string',
-            enum: ['temporary', 'agenda', 'recurring', 'location'],
-            description:
-              'temporary = daqui a X minutos; agenda = data/hora fixa; recurring = repetição; location = geofencing',
-          },
-          delay_minutes: {
-            type: 'integer',
-            description: 'Obrigatório se type = temporary. Número de minutos a partir de agora.',
-          },
-          scheduled_time: {
-            type: 'string',
-            description:
-              "Obrigatório se type = agenda. Data/hora no formato ISO com timezone, ex: '2026-04-10T17:00:00-03:00'",
-          },
-          frequency: {
-            type: 'string',
-            enum: ['daily', 'weekly', 'monthly'],
-            description: 'Obrigatório se type = recurring.',
-          },
-          location_trigger: {
-            type: 'string',
-            description:
-              "Obrigatório se type = location. Nome do local (deve estar em favorite_places). Ex: 'casa', 'mercado', 'escritório'",
-          },
-          relevance_score: {
-            type: 'number',
-            description:
-              'Opcional. Score de relevância de 0 a 1 (0.8+ = urgente, 0.5 = normal, 0.3 = trivial).',
-            minimum: 0,
-            maximum: 1,
-          },
+          title: { type: 'string' },
+          type: { type: 'string', enum: ['temporary', 'agenda', 'recurring', 'location'] },
+          delay_minutes: { type: 'integer' },
+          scheduled_time: { type: 'string' },
+          frequency: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
+          location_trigger: { type: 'string' },
         },
         required: ['title', 'type'],
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'excluir_email',
-      description:
-        'Move um email específico para a lixeira do Gmail. Requer o ID da mensagem (messageId).',
-      parameters: {
-        type: 'object',
-        properties: {
-          messageId: {
-            type: 'string',
-            description: 'O ID da mensagem do Gmail a ser excluída',
-          },
-        },
-        required: ['messageId'],
-      },
-    },
-  },
+
   {
     type: 'function',
     function: {
       name: 'adicionar_diretriz_dinamica',
-      description:
-        "Adiciona uma nova regra, princípio ou diretriz ao prompt do assistente. Use OBRIGATORIAMENTE quando o usuário pedir para 'ajustar o prompt', 'nunca mais fazer X', 'sempre agir assim' ou 'adicionar uma regra'.",
+      description: "Adiciona regra ao prompt. Use para 'sempre aja assim' ou 'nunca mais faça X'.",
       parameters: {
         type: 'object',
         properties: {
-          content: {
-            type: 'string',
-            description: 'O texto da diretriz ou regra a ser seguida',
-          },
-          scope: {
-            type: 'string',
-            enum: ['personal', 'global'],
-            description: "Padrão 'personal'. Use 'global' apenas se explicitamente solicitado.",
-          },
+          content: { type: 'string' },
+          scope: { type: 'string', enum: ['personal', 'global'] },
         },
         required: ['content'],
       },
     },
   },
+
   {
     type: 'function',
     function: {
       name: 'quebrar_tarefa',
-      description:
-        "Decompõe uma tarefa complexa, esmagadora ou vaga em micro-passos acionáveis. Use OBRIGATORIAMENTE quando o usuário estiver paralisado (TDAH), disser que 'não sabe por onde começar' ou pedir ajuda com o foco.",
+      description: "Decompõe tarefa complexa em micro-passos (Módulo TDAH).",
       parameters: {
         type: 'object',
         properties: {
-          tarefa_principal: {
-            type: 'string',
-            description:
-              "A tarefa macro que precisa ser feita (ex: 'Limpar a cozinha', 'Fazer o imposto de renda')",
-          },
-          estado_cognitivo: {
-            type: 'string',
-            enum: ['sobrecarregado', 'sem_energia', 'neutro'],
-            description:
-              "Avaliação do estado do usuário. Se estiver 'sobrecarregado', quebre em passos ridículos de fáceis (<2min).",
-          },
+          tarefa_principal: { type: 'string' },
+          estado_cognitivo: { type: 'string', enum: ['sobrecarregado', 'sem_energia', 'neutro'] },
         },
         required: ['tarefa_principal', 'estado_cognitivo'],
       },
     },
   },
+
   // ── FINANÇAS ──────────────────────────────────────────────────────────────
   {
     type: 'function',
     function: {
       name: 'registrar_transacao',
-      description: 'Registra despesa, receita ou transferência financeira.',
+      description: 'Registra despesa, receita ou transferência.',
       parameters: {
         type: 'object',
         properties: {
@@ -411,7 +262,7 @@ export const tools = [
     type: 'function',
     function: {
       name: 'consultar_financas',
-      description: 'Consulta resumo financeiro ou transações recentes.',
+      description: 'Consulta resumo financeiro ou transações recentes do período.',
       parameters: {
         type: 'object',
         properties: {
@@ -420,13 +271,21 @@ export const tools = [
       }
     }
   },
-  
-    // ── VEÍCULOS (ExpertFrotas) ────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'listar_orcamentos',
+      description: 'Exibe os limites de gastos por categoria e quanto já foi usado.',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+
+  // ── VEÍCULOS (ExpertFrotas) ────────────────────────────────────────────────
   {
     type: 'function',
     function: {
       name: 'registrar_abastecimento',
-      description: 'Registra novo abastecimento de combustível e atualiza odômetro.',
+      description: 'Registra abastecimento de combustível e atualiza o odômetro.',
       parameters: {
         type: 'object',
         properties: {
@@ -461,7 +320,7 @@ export const tools = [
     type: 'function',
     function: {
       name: 'gerenciar_eisenhower',
-      description: 'Adiciona ou move itens na Matriz de Eisenhower.',
+      description: 'Adiciona, completa ou move itens na Matriz de Eisenhower.',
       parameters: {
         type: 'object',
         properties: {
@@ -471,28 +330,19 @@ export const tools = [
         },
         required: ['acao', 'texto']
       }
+    }
+  },
   {
     type: 'function',
     function: {
       name: 'criar_rotina',
-      description:
-        'Cria uma nova rotina estruturada. Usado quando o utilizador define um gatilho (anchor), uma ação e um período através da interface híbrida. Vital para ajudar na previsibilidade (TDAH).',
+      description: 'Cria uma nova rotina (gatilho + ação). Vital para TDAH.',
       parameters: {
         type: 'object',
         properties: {
-          anchor: {
-            type: 'string',
-            description: 'O gatilho que inicia a rotina (ex: "Ao acordar", "Depois do almoço")',
-          },
-          action: {
-            type: 'string',
-            description: 'A ação a ser realizada (ex: "Beber água com limão", "Ler 10 páginas")',
-          },
-          period: {
-            type: 'string',
-            enum: ['morning', 'afternoon', 'evening', 'anytime'],
-            description: 'O período do dia correspondente',
-          },
+          anchor: { type: 'string', description: 'Gatilho (ex: Ao acordar)' },
+          action: { type: 'string', description: 'Ação (ex: Beber água)' },
+          period: { type: 'string', enum: ['morning', 'afternoon', 'evening', 'anytime'] },
         },
         required: ['anchor', 'action', 'period'],
       },
