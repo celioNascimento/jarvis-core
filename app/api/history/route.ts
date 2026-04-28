@@ -1,84 +1,79 @@
-// lib/modules/registry.ts
+// app/api/history/route.ts
+import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
-import { Redis } from '@upstash/redis';
-import { waitUntil } from '@vercel/functions'; 
-import type { ModuleDefinition, ModuleConditionOpts } from '../../../lib/modules/types';
-import { recordModuleMetrics } from '../../../lib/modules/metrics';
 
-import { ModuloFinancas } from '../../../lib/modules/modules/financas';
-import { ModuloVeiculos } from '../../../lib/modules//modules/veiculos';
-import { ModuloFoco } from '../../../lib/modules//modules/foco';
-import { ModuloRotinas } from '../../../lib/modules/modules/rotinas';
+const PAGE_SIZE = 15;
 
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL!,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-});
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const userId    = searchParams.get('userId');
+    const sessionId = searchParams.get('sessionId') || null;
+    const page      = parseInt(searchParams.get('page') || '0');
 
-const ALL_MODULES: ModuleDefinition[] = [
-  ModuloFinancas,
-  ModuloVeiculos,
-  ModuloFoco,
-  ModuloRotinas,
-];
-
-export async function loadActiveModules(
-  opts: ModuleConditionOpts,
-  userPlan: string,
-  baseModel: string,
-) {
-  const cacheKey = `modules_enabled:${opts.userId}`;
-  let enabledIds = await redis.get<string[]>(cacheKey);
-  
-  if (!enabledIds) {
-    const { data } = await supabase.schema('jarvis').from('user_modules').select('module_id').eq('user_id', opts.userId).eq('enabled', true);
-    enabledIds = data?.map(r => r.module_id) || [];
-    await redis.set(cacheKey, enabledIds, { ex: 300 });
-  }
-
-  const activeModules = await Promise.all(ALL_MODULES.map(async mod => {
-    if (!enabledIds?.includes(mod.id)) return null;
-    
-    const planOrder = ['free', 'personal', 'family', 'family_plus'];
-    if (planOrder.indexOf(userPlan) < planOrder.indexOf(mod.plan)) return null;
-
-    const { trigger } = mod;
-    let activated = trigger.always || false;
-    
-    if (trigger.contexts?.some(c => opts.contexts.includes(c))) activated = true;
-    if (trigger.keywords?.test(opts.message)) activated = true;
-    if (trigger.condition && await trigger.condition(opts)) activated = true;
-
-    return activated ? mod : null;
-  }));
-
-  const finalModules = activeModules.filter(Boolean) as ModuleDefinition[];
-
-  const results = await Promise.all(finalModules.map(async mod => {
-    const start = Date.now();
-    try {
-      const block = await mod.buildContextBlock(opts);
-      
-      waitUntil(
-        (async () => {
-          await recordModuleMetrics(mod.id, Number(opts.userId), {
-            latencyMs: Date.now() - start,
-            tokens: Math.ceil(block.length / 4),
-            activated: block.length > 0
-          });
-        })()
-      );
-
-      return { block, tools: mod.tools, model: mod.preferredModel };
-    } catch (e) {
-      console.error(`[ModuleRegistry] Erro em ${mod.id}:`, e);
-      return { block: '', tools: [], model: 'flash' };
+    if (!userId) {
+      return NextResponse.json({ error: 'userId obrigatório' }, { status: 400 });
     }
-  }));
 
-  return {
-    contextBlocks: results.map(r => r.block).filter(Boolean),
-    activeTools: [...new Set(results.flatMap(r => r.tools))],
-    resolvedModel: baseModel
-  };
+    const { data: authData } = await supabase.auth.admin.getUserById(userId);
+    const email = authData?.user?.email;
+    if (!email) return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
+
+    const { data: userProfile } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .maybeSingle();
+    if (!userProfile) return NextResponse.json({ error: 'Perfil não encontrado' }, { status: 404 });
+
+    const userId_ = String(userProfile.id);
+    const from = page * PAGE_SIZE;
+    const to   = from + PAGE_SIZE - 1;
+
+    let query = supabase
+      .from('brain')
+      .select('id, content, metadata, created_at', { count: 'exact' })
+      .eq('user_id', userId_)
+      .neq('category', 'archived')
+      .order('created_at', { ascending: false })
+      .range(from, to);
+
+    let resolvedSessionId: string | null = sessionId;
+
+    if (sessionId) {
+      query = query.eq('session_id', sessionId);
+    } else {
+      const { data: lastSession } = await supabase
+        .from('brain')
+        .select('session_id')
+        .eq('user_id', userId_)
+        .neq('category', 'archived')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!lastSession?.session_id) {
+        return NextResponse.json({ messages: [], hasMore: false, total: 0, resolvedSessionId: null });
+      }
+
+      resolvedSessionId = lastSession.session_id;
+      query = query.eq('session_id', resolvedSessionId);
+    }
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      console.error('[history] Erro:', error);
+      return NextResponse.json({ error: 'Erro ao buscar histórico' }, { status: 500 });
+    }
+
+    const messages = (data || []).reverse();
+    const hasMore  = (count || 0) > (page + 1) * PAGE_SIZE;
+
+    return NextResponse.json({ messages, hasMore, total: count, resolvedSessionId });
+
+  } catch (e: any) {
+    console.error('[history] Erro:', e.message);
+    return NextResponse.json({ error: 'Erro interno' }, { status: 500 });
+  }
 }
