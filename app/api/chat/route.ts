@@ -492,7 +492,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       }).catch(e => console.error('[QStash] Erro ao despachar:', e));
     }
 
-    // Traz a notificação pendente (se o promoter tiver gerado algum insight)
+    // --- BLOCO FINAL DE NOTIFICAÇÕES E RESPOSTA ---
     const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
     try {
       const pendingNotif = await redis.get<string>(pendingNotifKey);
@@ -502,14 +502,17 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       }
     } catch {}
 
-    // Retorna a resposta de SUCESSO para o aplicativo
     console.log(`[Performance] Total Rota: ${Date.now() - totalStartTime}ms`);
-    return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
+    return NextResponse.json({ 
+      reply: finalResponse, 
+      sessionId, 
+      assistantName, 
+      authorName, 
+      ok: true 
+    });
 
   } catch (error: any) {
-    // Retorna a resposta de ERRO em caso de falha grave
     console.error('[chat] ERRO FATAL:', error);
-    return NextResponse.json({ error: 'Erro interno.' }, { status: 500 });
+    return NextResponse.json({ error: 'Erro interno no motor do Jarvis.' }, { status: 500 });
   }
-}
-}
+} 
