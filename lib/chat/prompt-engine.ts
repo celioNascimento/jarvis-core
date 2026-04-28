@@ -57,6 +57,5 @@ REGRAS OPERACIONAIS:
 - FOCO: Responda o que foi perguntado.
 - PROIBIDO: Preâmbulos, resumir o usuário ou dizer "Anotado".
 - SE SALVOU VIA TOOL: Responda apenas "Feito." ou confirme a ação de forma curta.
-- CLASSIFICAÇÃO: Ao final inclua [CLASSE: info] ou [CLASSE: noise].
 `.trim();
 }
