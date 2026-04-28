@@ -1,6 +1,5 @@
 // app/api/chat/route.ts
-// Motor V8.13.2 — Self-discovery + Meta-cognição + Promoção automática + Finanças
-// ✅ Ajustado: MemoryManager, Gatekeeper (llmGateway), QStash Await e Guidelines
+// Motor V8.13.3 — Self-discovery + Graceful Degradation + Modo Sobrevivência (Stress Check)
 
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, getOrCreateSession, clearPendingQuestion } from '@/lib/jarvis';
@@ -34,7 +33,7 @@ import { isMeaningfulDiaryBlock } from '@/lib/chat/ram';
 
 // IMPORTS DA NOVA ARQUITETURA
 import { MemoryManager } from '@/lib/memory';
-import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
+import { callOpenRouterWithPriority, llmGateway } from '@/lib/chat/llm-gateway'; // <--- IMPORT ATUALIZADO
 
 export const maxDuration = 60;
 
@@ -96,7 +95,8 @@ export function buildAgendaBlock(loadCalendar: boolean, googleCtx: string | null
 
 export async function POST(req: NextRequest) {
   const totalStartTime = Date.now();
-  console.log('[chat] Iniciando — V8.13.2 (Prompt Completo Preservado)');
+  console.log('[chat] Iniciando — V8.13.3 (Modo de Sobrevivência Ativo)');
+  
   try {
     let messageText = '';
     let userEmail = '';
@@ -152,11 +152,20 @@ export async function POST(req: NextRequest) {
     const sessionId = clientSessionId || (await getOrCreateSession(numericUserIdStr));
     const msg_id = crypto.randomUUID();
 
+    // =========================================================================
+    // 🚨 SENSOR DE STRESS (GRACEFUL DEGRADATION) 🚨
+    // =========================================================================
+    const isSystemStressed = await llmGateway.isOverloaded();
+    if (isSystemStressed) {
+      console.warn(`[Graceful Degradation] ⚠️ Sistema sob stress. Entrando em Modo Sobrevivência para msg: ${msg_id}`);
+    }
+
     const canonicalDateTimeBlock = buildDateTimeBlock(userTimezone);
     const canonicalDateISO = new Date().toISOString().split('T')[0];
 
     let locationContext = '';
-    if (location) {
+    // Só processamos geolocalização se o sistema NÃO estiver estressado
+    if (location && !isSystemStressed) {
       locationContext = await checkProximidade(location.latitude, location.longitude, numericUserIdStr);
       const alertaGeo = await verificarAlertasDeProximidade(authUserId, location.latitude, location.longitude);
       if (alertaGeo.temAlerta) return NextResponse.json({ reply: alertaGeo.mensagem, sessionId, ok: true });
@@ -169,8 +178,9 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         console.warn('[Config] Erro ignorado ao salvar localizacao');
       }
-
       if (!messageText) messageText = '[Enviou Localização]';
+    } else if (location && isSystemStressed) {
+      if (!messageText) messageText = '[Enviou Localização - ignorada por tráfego alto]';
     }
 
     // ========== 1. Embeddings, L4 e Memória ==========
@@ -185,6 +195,14 @@ export async function POST(req: NextRequest) {
 
     const emotional = await computeEmotionalScore(messageText, numericUserIdStr, [], '');
     const blockPlan = planContextualBlocks(detectedContexts, messageText, emotional.score);
+    
+    // 🚨 CORTES DO MODO SOBREVIVÊNCIA
+    if (isSystemStressed) {
+      blockPlan.loadWeather = false;
+      blockPlan.loadFinances = false;
+      blockPlan.loadEmail = false;
+    }
+
     const modelRoute = routeModel(detectedContexts, emotional.score, undefined);
     const temperature = getTemperature(detectedContexts);
 
@@ -215,7 +233,7 @@ export async function POST(req: NextRequest) {
       childrenData,
       personNotesData,
       onboardingState,
-      dynamicGuidelines, // Variável restaurada e em ordem
+      dynamicGuidelines,
       profileBlock,
       gapsBlock,
       diaryBlock,
@@ -259,8 +277,8 @@ export async function POST(req: NextRequest) {
     ]);
 
     let financeBlock = '', emailBlock = '', googleCtx = null;
-    if (blockPlan.loadFinances) financeBlock = await buildFinanceBlock(Number(numericUserIdStr), authUserId).catch(() => '');
-    if (blockPlan.loadEmail) emailBlock = await getRecentEmails(authUserId, 5).catch(() => '');
+    if (blockPlan.loadFinances && !isSystemStressed) financeBlock = await buildFinanceBlock(Number(numericUserIdStr), authUserId).catch(() => '');
+    if (blockPlan.loadEmail && !isSystemStressed) emailBlock = await getRecentEmails(authUserId, 5).catch(() => '');
     if (blockPlan.loadCalendar) googleCtx = (await supabase.rpc('get_calendar_context_for_jarvis', { p_user_id: Number(numericUserIdStr), p_days: 7 })).data;
 
     let adaptiveTempOffset = 0, adaptiveMaxTokensMultiplier = 1.0;
@@ -276,7 +294,8 @@ export async function POST(req: NextRequest) {
     } catch { }
 
     let forcedSearchResult = '';
-    if (shouldForceSearch(messageText, detectedContexts) && !weatherData) {
+    // 🚨 CORTE: Não fazemos busca automática se estiver estressado
+    if (shouldForceSearch(messageText, detectedContexts) && !weatherData && !isSystemStressed) {
       try { forcedSearchResult = `\n[PESQUISA AUTOMÁTICA REALIZADA]\n${await searchWeb(refineSearchQuery(messageText, detectedContexts))}`; } catch { }
     }
 
@@ -317,7 +336,7 @@ export async function POST(req: NextRequest) {
       brevityInstruction: isLikelyNoise ? 'Curto e humano. 1-2 frases.' : (detectedContexts.includes('casual') ? 'Conversa casual, máximo 3 frases.' : 'Seja direto. Sem rodeios.'),
       emotionalAttentionNote: emotional.score > 0.5 ? `⚠️ ATENÇÃO EMOCIONAL: (score ${emotional.score.toFixed(2)}). Acolha antes de resolver.` : '',
       canonicalDateTimeBlock, canonicalDateISO,
-      weatherBlock: (blockPlan.loadWeather && weatherData) ? buildWeatherBlock(weatherData) : undefined,
+      weatherBlock: (blockPlan.loadWeather && weatherData && !isSystemStressed) ? buildWeatherBlock(weatherData) : undefined,
     });
 
     const systemPrompt = `${personalityBlock}${systemWarning}
@@ -394,7 +413,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     }
 
     if (/o que (você|vc) (sabe|conhece)/i.test(messageText)) {
-      conversationMessages.push({ role: 'system', content: `[AUTO-DESCOBERTA] V8.13.2 com Gatekeeper e MemoryManager.` });
+      conversationMessages.push({ role: 'system', content: `[AUTO-DESCOBERTA] V8.13.3 com Gatekeeper, MemoryManager e Graceful Degradation.` });
     }
     conversationMessages.push({ role: 'system', content: `[INTERNO] Responda APENAS o que foi perguntado. NUNCA diga "Anotado!".` });
 
@@ -466,7 +485,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       await Promise.race([brainWrite, new Promise((_, r) => setTimeout(() => r(new Error('Timeout')), BRAIN_SYNC_TIMEOUT_MS))]);
     } catch { console.warn(`[Sync] Timeout para ${msg_id}.`); }
 
-     // ========== 6. Despacho Assíncrono (QStash) ==========
+    // ========== 6. Despacho Assíncrono (QStash) ==========
     if (!isLikelyNoise) {
       const qstashPayload = {
         msg_id, userId: numericUserIdStr, authorName, assistantName, sessionId,
@@ -475,14 +494,10 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       };
 
       const qstashBaseUrl = process.env.QSTASH_URL || 'https://qstash.upstash.io';
-      
-      // Limpa barras sobrando no final da URL do Vercel, se houver
       const appUrl = (process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '');
-      
-      // O SEGREDO: encodeURIComponent impede o Next.js de corromper o "https://"
       const targetUrl = encodeURIComponent(`${appUrl}/api/jobs-processor`);
 
-            fetch(`${qstashBaseUrl}/v2/publish/${targetUrl}`, {
+      fetch(`${qstashBaseUrl}/v2/publish/${targetUrl}`, {
         method: 'POST',
         headers: { 
           'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`, 
@@ -492,7 +507,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       }).catch(e => console.error('[QStash] Erro ao despachar:', e));
     }
 
-    // --- BLOCO FINAL DE NOTIFICAÇÕES E RESPOSTA ---
+    // --- BLOCO DE NOTIFICAÇÕES PENDENTES E RESPOSTA FINAL ---
     const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
     try {
       const pendingNotif = await redis.get<string>(pendingNotifKey);
@@ -500,9 +515,12 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         finalResponse = finalResponse.trimEnd() + '\n\n' + pendingNotif; 
         await redis.del(pendingNotifKey); 
       }
-    } catch {}
+    } catch (e) {
+      console.warn('[Redis] Erro ao buscar notificações pendentes:', e);
+    }
 
     console.log(`[Performance] Total Rota: ${Date.now() - totalStartTime}ms`);
+    
     return NextResponse.json({ 
       reply: finalResponse, 
       sessionId, 
@@ -513,6 +531,9 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
 
   } catch (error: any) {
     console.error('[chat] ERRO FATAL:', error);
-    return NextResponse.json({ error: 'Erro interno no motor do Jarvis.' }, { status: 500 });
+    return NextResponse.json({ 
+      error: 'Erro interno no motor do Jarvis.',
+      details: error.message 
+    }, { status: 500 });
   }
-} 
+}
