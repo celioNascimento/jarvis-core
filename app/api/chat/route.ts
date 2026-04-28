@@ -456,7 +456,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       await Promise.race([brainWrite, new Promise((_, r) => setTimeout(() => r(new Error('Timeout')), BRAIN_SYNC_TIMEOUT_MS))]);
     } catch { console.warn(`[Sync] Timeout para ${msg_id}.`); }
 
-    // ========== 6. Despacho Assíncrono ==========
+     // ========== 6. Despacho Assíncrono (QStash) ==========
     if (!isLikelyNoise) {
       const qstashPayload = {
         msg_id, userId: numericUserIdStr, authorName, assistantName, sessionId,
@@ -464,24 +464,20 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         emotional, modelRoute: modelRoute.model
       };
 
-      await fetch(`${process.env.QSTASH_URL}/v2/publish/${process.env.NEXT_PUBLIC_APP_URL}/api/jobs-processor`, {
+      const qstashBaseUrl = process.env.QSTASH_URL || 'https://qstash.upstash.io';
+      
+      // Limpa barras sobrando no final da URL do Vercel, se houver
+      const appUrl = (process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '');
+      
+      // O SEGREDO: encodeURIComponent impede o Next.js de corromper o "https://"
+      const targetUrl = encodeURIComponent(`${appUrl}/api/jobs-processor`);
+
+      fetch(`${qstashBaseUrl}/v2/publish/${targetUrl}`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`, 'Content-Type': 'application/json' },
+        headers: { 
+          'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`, 
+          'Content-Type': 'application/json' 
+        },
         body: JSON.stringify(qstashPayload)
-      }).catch(e => console.error('[QStash] Erro:', e));
+      }).catch(e => console.error('[QStash] Erro ao despachar:', e));
     }
-
-    const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
-    try {
-      const pendingNotif = await redis.get<string>(pendingNotifKey);
-      if (pendingNotif && !isLikelyNoise) { finalResponse = finalResponse.trimEnd() + '\n\n' + pendingNotif; await redis.del(pendingNotifKey); }
-    } catch { }
-
-    console.log(`[Performance] Total Rota: ${Date.now() - totalStartTime}ms`);
-    return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
-
-  } catch (error: any) {
-    console.error('[chat] ERRO FATAL:', error);
-    return NextResponse.json({ error: 'Erro interno.' }, { status: 500 });
-  }
-}
