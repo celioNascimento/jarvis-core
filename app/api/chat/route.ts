@@ -482,7 +482,7 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       // O SEGREDO: encodeURIComponent impede o Next.js de corromper o "https://"
       const targetUrl = encodeURIComponent(`${appUrl}/api/jobs-processor`);
 
-      fetch(`${qstashBaseUrl}/v2/publish/${targetUrl}`, {
+            fetch(`${qstashBaseUrl}/v2/publish/${targetUrl}`, {
         method: 'POST',
         headers: { 
           'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`, 
@@ -491,5 +491,25 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         body: JSON.stringify(qstashPayload)
       }).catch(e => console.error('[QStash] Erro ao despachar:', e));
     }
+
+    // Traz a notificação pendente (se o promoter tiver gerado algum insight)
+    const pendingNotifKey = `pending_notification_${numericUserIdStr}`;
+    try {
+      const pendingNotif = await redis.get<string>(pendingNotifKey);
+      if (pendingNotif && !isLikelyNoise) { 
+        finalResponse = finalResponse.trimEnd() + '\n\n' + pendingNotif; 
+        await redis.del(pendingNotifKey); 
+      }
+    } catch {}
+
+    // Retorna a resposta de SUCESSO para o aplicativo
+    console.log(`[Performance] Total Rota: ${Date.now() - totalStartTime}ms`);
+    return NextResponse.json({ reply: finalResponse, sessionId, assistantName, authorName, ok: true });
+
+  } catch (error: any) {
+    // Retorna a resposta de ERRO em caso de falha grave
+    console.error('[chat] ERRO FATAL:', error);
+    return NextResponse.json({ error: 'Erro interno.' }, { status: 500 });
   }
 }
+
