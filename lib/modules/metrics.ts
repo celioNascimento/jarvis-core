@@ -1,31 +1,28 @@
 import { supabase } from '@/lib/jarvis';
 
-export function recordModuleMetrics(moduleId: string, executionTimeMs: number, tokensUsed: number) {
-  // Envolvemos a chamada em uma Promise padrão nativa do JS usando async
-  const metricsPromise = (async () => {
-    try {
-      const { error } = await supabase
-        .schema('jarvis')
-        .from('module_metrics')
-        .insert({
-          module_id: moduleId,
-          execution_time_ms: executionTimeMs,
-          tokens_used: tokensUsed,
-        });
+export async function recordModuleMetrics(
+  moduleId: string,
+  userId: number,
+  payload: { latencyMs: number; tokens: number; activated: boolean }
+): Promise<void> {
+  try {
+    const { error } = await supabase
+      .schema('jarvis')
+      .from('module_metrics')
+      .insert({
+        module_id: moduleId,
+        user_id: userId,
+        execution_time_ms: payload.latencyMs,
+        tokens_used: payload.tokens,
+        activated: payload.activated
+      });
 
-      // O Supabase devolve o erro do banco aqui (ex: tabela não existe)
-      if (error) {
-        console.error(`[Metrics Error - Módulo: ${moduleId}] Falha no banco:`, error.message || error);
-      }
-    } catch (networkErr: any) {
-      // Captura erros estruturais ou de rede (Supabase fora do ar)
-      console.error(`[Metrics Fatal - Módulo: ${moduleId}] Falha de rede:`, networkErr);
+    if (error) {
+      console.error(`[Metrics Error - Módulo: ${moduleId}] Falha no banco:`, error.message || error);
     }
-  })();
-
-  // Se você estiver usando o waitUntil da Vercel, basta descomentar a linha abaixo:
-  // import { waitUntil } from '@vercel/functions';
-  // waitUntil(metricsPromise);
+  } catch (networkErr: any) {
+    console.error(`[Metrics Fatal - Módulo: ${moduleId}] Falha de rede:`, networkErr);
+  }
 }
 
 // Lê resumo de custo/latência por módulo (para dashboard ou debug)
