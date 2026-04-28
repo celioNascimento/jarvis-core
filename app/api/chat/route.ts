@@ -101,9 +101,38 @@ export async function POST(req: NextRequest) {
       0.7
     );
 
-    // 7. Retorno da API
+   const assistantReply = (response as any).content || 'Processado.';
+
+    // ─── 7. SALVAMENTO NO HISTÓRICO UNIFICADO (BRAIN) ───
+    try {
+      // Se for uma mensagem muito curta/casual, entra como noise, senão como info
+      const cat = message.length < 15 ? 'noise' : 'info';
+
+      await supabase.from('brain').insert([
+        {
+          user_id: Number(user.id),
+          session_id: sessionId,
+          content: message,
+          category: cat,
+          project_tag: 'geral',
+          metadata: { role: 'user', contexts: contexts }
+        },
+        {
+          user_id: Number(user.id),
+          session_id: sessionId,
+          content: assistantReply,
+          category: cat,
+          project_tag: 'geral',
+          metadata: { role: 'assistant', model: resolvedModel }
+        }
+      ]);
+    } catch (dbErr) {
+      console.error('[DB] Erro ao salvar no brain:', dbErr);
+    }
+    // ──────────────────────────────────────────────────────────
+
     return NextResponse.json({
-      reply: (response as any).content || 'Processado.',
+      reply: assistantReply,
       ok: true,
       performance: `${Date.now() - startTime}ms`
     });
