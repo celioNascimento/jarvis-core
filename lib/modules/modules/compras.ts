@@ -7,7 +7,7 @@ export const ModuloCompras: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
-    contexts: ['compras', 'tarefas'],
+    contexts: ['compras', 'foco'],
     keywords: /comprar|lista|mercado|item|preciso de/i
   },
   buildContextBlock: async (opts) => {
