@@ -134,7 +134,7 @@ class Gatekeeper {
 export const llmGateway = new Gatekeeper();
 
 export async function callOpenRouterWithPriority(
-  priority: PriorityLevel, dropPolicy: DropPolicy, taskId: string, messages: any[], tools: any[], model: string, temperature: number, timeoutMs: number = 35000, maxTokens?: number, toolChoice?: any
+  priority: PriorityLevel, dropPolicy: DropPolicy, taskId: string, messages: any[], tools: any[], model: string, temperature: number, timeoutMs: number = 25000, maxTokens?: number, toolChoice?: any
 ) {
   return llmGateway.enqueue({
     id: taskId, priority, dropPolicy,
