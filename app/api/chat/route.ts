@@ -418,7 +418,8 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     conversationMessages.push({ role: 'system', content: `[INTERNO] Responda APENAS o que foi perguntado. NUNCA diga "Anotado!".` });
 
     // ========== 4. Gatekeeper e LLM ==========
-    let maxTokens = isLikelyNoise ? 250 : 2500;
+    const isGeminiPro = modelRoute.model.includes('gemini-2.5-pro');
+    let maxTokens = isLikelyNoise ? 250 : (isGeminiPro ? 4096 : 2500);
     let finalResponse = '';
     let attempts = 0;
     let forcedToolChoice: any = /me lembra|avisa/i.test(messageText) ? { type: 'function', function: { name: 'create_reminder' } } : intent === 'calendar' ? { type: 'function', function: { name: 'salvar_evento' } } : 'auto';
