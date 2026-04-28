@@ -8,7 +8,7 @@ export const ModuloVeiculos: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'personal',
   trigger: {
-    contexts: ['veiculos', 'logistica'],
+    contexts: ['veiculos'],
     keywords: /carro|veículo|placa|km|óleo|gasolina|etanol|manutenção|multa/i
   },
   buildContextBlock: async (opts) => {
