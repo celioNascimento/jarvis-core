@@ -8,6 +8,7 @@ import { callOpenRouterWithPriority, llmGateway } from '@/lib/chat/llm-gateway';
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
 import { tools as ALL_TOOLS } from '@/lib/chat/tools-def';
+import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 
 export const maxDuration = 60;
 
@@ -22,6 +23,7 @@ export async function POST(req: NextRequest) {
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
     const sessionId = await getOrCreateSession(String(user.id));
+    const queryEmbedding = await getCachedEmbedding(message).catch(() => null);
 
     // 2. Inteligência de Contexto (Sensores)
     const [isStressed, contexts, emotional] = await Promise.all([
@@ -38,29 +40,70 @@ export async function POST(req: NextRequest) {
     );
 
     // 4. Memória e Prompt Engine
-    const memory = await MemoryManager.read({ userId: String(user.id), authUserId: user.auth_user_id, sessionId, message, contexts, emotionalScore: emotional.score, authorName: user.nickname, assistantName: user.assistant_name });
-    
-    const systemPrompt = composeSystemPrompt({
-      assistantName: user.assistant_name, authorName: user.nickname, isLikelyNoise: message.length < 15,
-      isSystemStressed: isStressed, emotionalScore: emotional.score, detectedContexts: contexts,
-      contextBlocks, memoryBlocks: { /* lógica de truncagem aqui */ },
-      canonicalDateTimeBlock: new Date().toLocaleString('pt-BR'),
-      canonicalDateISO: new Date().toISOString(),
-      systemWarning: '', intent: 'personal', dynamicGuidelines: ''
+    const memory = await MemoryManager.read({
+      userId: String(user.id),
+      authUserId: user.auth_user_id,
+      sessionId,
+      message,
+      contexts,
+      emotionalScore: emotional.score,
+      authorName: user.nickname,
+      assistantName: user.assistant_name,
+      queryEmbedding: queryEmbedding // <--- Resolve o erro do build
     });
 
-    // 5. Filtragem de Ferramentas (Security Layer)
-    const coreTools = ['salvar_evento', 'create_reminder', 'searchWeb'];
-    const toolsHabilitadas = ALL_TOOLS.filter(t => coreTools.includes(t.function.name) || activeTools.includes(t.function.name));
+   // 5. Composição do Prompt e Filtragem de Ferramentas (Blindado)
 
-    // 6. Execução via Gateway
-    const response = await callOpenRouterWithPriority(1, 'never', crypto.randomUUID(), [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: message }
-    ], toolsHabilitadas, resolvedModel, 0.7);
+    // A. Definimos as ferramentas essenciais que o Jarvis SEMPRE deve ter acesso
+    const coreTools = ['salvar_evento', 'create_reminder', 'searchWeb', 'buscar_memoria_longa'];
 
-    return NextResponse.json({ 
-      reply: (response as any).content || 'Processado.', 
+    // B. Filtramos a lista gigante (ALL_TOOLS) para deixar apenas o essencial + módulos ativos
+    const toolsHabilitadas = ALL_TOOLS.filter(t =>
+      coreTools.includes(t.function.name) ||
+      activeTools.includes(t.function.name)
+    );
+
+    // C. Montamos o System Prompt com as memórias limitadas sob medida (Truncagem)
+    const systemPrompt = composeSystemPrompt({
+      assistantName: user.assistant_name,
+      authorName: user.nickname,
+      isLikelyNoise: message.length < 15,
+      isSystemStressed: isStressed,
+      emotionalScore: emotional.score,
+      detectedContexts: contexts,
+      contextBlocks,
+      memoryBlocks: {
+        // Limites de segurança para não estourar a janela de contexto da LLM
+        truncatedL3: memory.l3.content.slice(0, 3000),
+        truncatedHd: memory.hd.block.slice(0, 4000),
+        truncatedEvents: memory.events.block.slice(0, 2000),
+        relationship: memory.relationship.block.slice(0, 2000),
+        topics: memory.topics.relatedTopicsBlock
+      },
+      canonicalDateTimeBlock: new Date().toLocaleString('pt-BR'),
+      canonicalDateISO: new Date().toISOString().split('T')[0],
+      systemWarning: '',
+      intent: 'personal',
+      dynamicGuidelines: ''
+    });
+
+    // 6. Execução via Gateway (Enviando tudo para a Inteligência Artificial)
+    const response = await callOpenRouterWithPriority(
+      1, 
+      'never', 
+      crypto.randomUUID(), 
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: message }
+      ], 
+      toolsHabilitadas, // <--- Aqui injetamos apenas as ferramentas permitidas
+      resolvedModel, 
+      0.7
+    );
+
+    // 7. Retorno da API
+    return NextResponse.json({
+      reply: (response as any).content || 'Processado.',
       ok: true,
       performance: `${Date.now() - startTime}ms`
     });
