@@ -1,14 +1,15 @@
+// lib/modules/registry.ts
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
-import { waitUntil } from '@vercel/functions'; // <--- A MÁGICA DA VERCEL AQUI
+import { waitUntil } from '@vercel/functions'; 
 import type { ModuleDefinition, ModuleConditionOpts } from './types';
 import { recordModuleMetrics } from './metrics';
 
-// Importa os módulos declarados
+// Importação dos Módulos Especialistas
 import { ModuloFinancas } from './modules/financas';
 import { ModuloVeiculos } from './modules/veiculos';
-import { ModuloCompras } from './modules/compras';
-import { ModuloLocalizacao } from './modules/localizacao';
+import { ModuloFoco } from './modules/foco';
+import { ModuloRotinas } from './modules/rotinas';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -18,126 +19,70 @@ const redis = new Redis({
 const ALL_MODULES: ModuleDefinition[] = [
   ModuloFinancas,
   ModuloVeiculos,
-  ModuloCompras,
-  ModuloLocalizacao,
+  ModuloFoco,
+  ModuloRotinas,
 ];
-
-async function getEnabledModules(userId: string): Promise<string[]> {
-  const cacheKey = `modules_enabled:${userId}`;
-  const cached = await redis.get<string[]>(cacheKey);
-  if (cached) return cached;
-
-  const { data } = await supabase
-    .schema('jarvis')
-    .from('user_modules')
-    .select('module_id')
-    .eq('user_id', userId)
-    .eq('enabled', true);
-
-  const enabled = data?.map(r => r.module_id) ?? [];
-  await redis.set(cacheKey, enabled, { ex: 300 });
-  return enabled;
-}
-
-export function resolveModelForModules(
-  activeModules: ModuleDefinition[],
-  baseModel: string
-): string {
-  const modelPriority: Record<string, number> = {
-    'flash': 1,
-    'pro': 2,
-    'sonnet': 3,
-  };
-  const modelMap: Record<string, string> = {
-    'flash': 'google/gemini-2.0-flash-001',
-    'pro': 'google/gemini-2.5-pro',
-    'sonnet': 'anthropic/claude-sonnet-4-5',
-  };
-
-  let highest = 'flash';
-  for (const mod of activeModules) {
-    if ((modelPriority[mod.preferredModel] ?? 0) > (modelPriority[highest] ?? 0)) {
-      highest = mod.preferredModel;
-    }
-  }
-
-  if (highest === 'pro' && !baseModel.includes('pro')) {
-    return modelMap['flash'];
-  }
-
-  return modelMap[highest] ?? baseModel;
-}
-
-export interface ActiveModuleResult {
-  contextBlocks: string[];
-  activeTools: string[];
-  activeModules: ModuleDefinition[];
-  resolvedModel: string;
-}
 
 export async function loadActiveModules(
   opts: ModuleConditionOpts,
   userPlan: string,
   baseModel: string,
-): Promise<ActiveModuleResult> {
-  const enabledIds = await getEnabledModules(opts.userId);
+) {
+  // 1. Busca módulos habilitados no Redis/DB
+  const cacheKey = `modules_enabled:${opts.userId}`;
+  let enabledIds = await redis.get<string[]>(cacheKey);
+  
+  if (!enabledIds) {
+    const { data } = await supabase.schema('jarvis').from('user_modules').select('module_id').eq('user_id', opts.userId).eq('enabled', true);
+    enabledIds = data?.map(r => r.module_id) || [];
+    await redis.set(cacheKey, enabledIds, { ex: 300 });
+  }
 
-  const eligible = ALL_MODULES.filter(mod => {
-    if (!enabledIds.includes(mod.id)) return false;
-
+  // 2. Filtra por Plano e Trigger (Contexto/Keywords/Always)
+  const activeModules = await Promise.all(ALL_MODULES.map(async mod => {
+    if (!enabledIds?.includes(mod.id)) return null;
+    
+    // Check de Plano (Hierarquia simples)
     const planOrder = ['free', 'personal', 'family', 'family_plus'];
-    if (planOrder.indexOf(userPlan) < planOrder.indexOf(mod.plan)) return false;
+    if (planOrder.indexOf(userPlan) < planOrder.indexOf(mod.plan)) return null;
 
     const { trigger } = mod;
-    if (trigger.always) return true;
-    if (trigger.contexts?.some(c => opts.contexts.includes(c))) return true;
-    if (trigger.keywords?.test(opts.message)) return true;
-    if (trigger.condition) return false;
+    let activated = trigger.always || false;
+    
+    if (trigger.contexts?.some(c => opts.contexts.includes(c))) activated = true;
+    if (trigger.keywords?.test(opts.message)) activated = true;
+    if (trigger.condition && await trigger.condition(opts)) activated = true;
 
-    return false;
-  });
+    return activated ? mod : null;
+  }));
 
-  const withConditions = await Promise.all(
-    ALL_MODULES
-      .filter(mod => enabledIds.includes(mod.id) && mod.trigger.condition)
-      .map(async mod => {
-        const ok = await mod.trigger.condition!(opts);
-        return ok ? mod : null;
-      })
-  );
+  const finalModules = activeModules.filter(Boolean) as ModuleDefinition[];
 
-  const finalModules = [
-    ...eligible,
-    ...withConditions.filter(Boolean) as ModuleDefinition[],
-  ].filter((mod, i, arr) => arr.findIndex(m => m.id === mod.id) === i);
+  // 3. Carrega blocos de contexto em paralelo
+  const results = await Promise.all(finalModules.map(async mod => {
+    const start = Date.now();
+    try {
+      const block = await mod.buildContextBlock(opts);
+      
+      // Telemetria via waitUntil (Não trava a resposta do usuário)
+      waitUntil(
+        recordModuleMetrics(mod.id, opts.userId, {
+          latencyMs: Date.now() - start,
+          tokens: Math.ceil(block.length / 4),
+          activated: block.length > 0
+        }).catch(() => {})
+      );
 
-  const blockResults = await Promise.all(
-    finalModules.map(async mod => {
-      const start = Date.now();
-      try {
-        const block = await mod.buildContextBlock(opts);
-        const latency = Date.now() - start;
-        
-        // CORREÇÃO APLICADA: waitUntil garante que a Vercel não mate essa requisição
-        waitUntil(
-          recordModuleMetrics(mod.id, opts.userId, {
-            latencyMs: latency,
-            tokens: Math.ceil(block.length / 4),
-            activated: block.length > 0,
-          }).catch(e => console.error(`[Metrics] Falha ao salvar métrica do módulo ${mod.id}`, e))
-        );
+      return { block, tools: mod.tools, model: mod.preferredModel };
+    } catch (e) {
+      console.error(`[ModuleRegistry] Erro em ${mod.id}:`, e);
+      return { block: '', tools: [], model: 'flash' };
+    }
+  }));
 
-        return block;
-      } catch (e) {
-        console.error(`[ModuleRegistry] Erro no módulo ${mod.id}:`, e);
-        return '';
-      }
-    })
-  );
-
-  const contextBlocks = blockResults.filter(Boolean);
-  const activeTools = [...new Set(finalModules.flatMap(m => m.tools))];
-  const resolvedModel = resolveModelForModules(finalModules, baseModel);
-
-  return { contextBlocks, activeTools, activeModules: finalModules, resolvedModel };
+  return {
+    contextBlocks: results.map(r => r.block).filter(Boolean),
+    activeTools: [...new Set(results.flatMap(r => r.tools))],
+    resolvedModel: baseModel // Aqui você pode implementar a lógica de upgrade de modelo se necessário
+  };
 }
