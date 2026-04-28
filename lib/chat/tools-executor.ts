@@ -68,6 +68,26 @@ export async function executeTool(
     return `Erro ao parsear argumentos de ${name}.`;
   }
 
+  // ─── IDEMPOTÊNCIA (Prevenção de Duplicidade Vercel) ───────────────────────
+  // Gera uma assinatura única baseada no ID da chamada da LLM ou no payload
+  const callSignature = toolCall.id || args.replace(/\s+/g, '').substring(0, 50);
+  const idempotencyKey = `${numericUserIdStr}_${name}_${callSignature}`;
+
+  try {
+    const { error: idemError } = await supabase
+      .from('idempotency_keys')
+      .insert({ key: idempotencyKey });
+
+    // Código 23505 do Postgres = unique_violation (Chave já existe)
+    if (idemError && idemError.code === '23505') {
+      console.warn(`[Idempotência] Bloqueado retry da Vercel para a tool: ${name}`);
+      return `[SISTEMA] Comando recebido e já processado com sucesso. Nenhuma ação extra necessária.`;
+    }
+  } catch (err) {
+    console.warn('[Idempotência] Tabela ausente ou erro leve. Seguindo fluxo normal.', err);
+  }
+  // ────────────────────────────────────────────────────────────────────────────
+
   async function getPlaceId(nome: string): Promise<string | null> {
     try {
       const { data, error } = await supabase
