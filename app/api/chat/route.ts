@@ -1,10 +1,8 @@
-// app/api/chat/route.ts — V8.14.0 (Blindado e Modular)
-
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, getOrCreateSession, clearPendingQuestion } from '@/lib/jarvis';
 import { classifyTemporalHorizon, truncateByWeight } from '@/lib/context-router';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
-import { classifyContextWithL4, routeModel, getTemperature } from '@/lib/chat/context-classifier';
+import { classifyContextWithL4 } from '@/lib/chat/context-classifier';
 import { tools } from '@/lib/chat/tools-def';
 import { executeTool } from '@/lib/chat/tools-executor';
 import { computeEmotionalScore } from '@/lib/chat/emotional-router';
@@ -20,15 +18,13 @@ const redis = new Redis({ url: process.env.UPSTASH_REDIS_REST_URL!, token: proce
 export async function POST(req: NextRequest) {
   const totalStartTime = Date.now();
   try {
-    // 1. Extração de Dados (Multipart ou JSON)
     const body = await (req.headers.get('content-type')?.includes('multipart') ? req.formData() : req.json());
     const messageRaw = body instanceof FormData ? body.get('message') as string : body.message;
     const userEmail = body instanceof FormData ? body.get('userEmail') as string : body.userEmail;
-    const location = body instanceof FormData ? null : body.location; // Simplificado para o exemplo
+    const location = body instanceof FormData ? null : body.location;
 
-    // 2. Identificação do Usuário
     const { data: userRecord } = await supabase.from('users').select('*').eq('email', userEmail).single();
-    if (!userRecord) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    if (!userRecord) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
     const numericUserIdStr = String(userRecord.id);
     const authUserId = userRecord.auth_user_id;
@@ -36,24 +32,22 @@ export async function POST(req: NextRequest) {
     const assistantName = userRecord.assistant_name || 'Lev';
     const msg_id = crypto.randomUUID();
 
-    // 3. Sensores e Inteligência de Contexto
     const isSystemStressed = await llmGateway.isOverloaded();
     const detectedContexts = await classifyContextWithL4(messageRaw, numericUserIdStr);
     const queryEmbedding = await getCachedEmbedding(messageRaw).catch(() => null);
     const emotional = await computeEmotionalScore(messageRaw, numericUserIdStr, [], '');
-    
-    // 4. CARREGAMENTO MODULAR (A NOVA ARQUITETURA)
+
+    // ─── CARREGAMENTO MODULAR ───
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       { userId: numericUserIdStr, authUserId, message: messageRaw, location, contexts: detectedContexts, emotionalScore: emotional.score },
       userRecord.plan ?? 'free',
       'google/gemini-2.0-flash-001'
     );
 
-    // 5. Memória e Truncagem
+    // ─── MEMÓRIA E PROMPT ───
     const memory = await MemoryManager.read({ userId: numericUserIdStr, authUserId, sessionId: 'default', queryEmbedding, contexts: detectedContexts, message: messageRaw, emotionalScore: emotional.score, authorName, assistantName });
     const weights = classifyTemporalHorizon(messageRaw, memory.ram.ramBlock, userRecord.pending_question);
     
-    // 6. MONTAGEM DO PROMPT VIA ENGINE
     const systemPrompt = composeSystemPrompt({
       assistantName, authorName, isLikelyNoise: messageRaw.length < 10, isSystemStressed,
       emotionalScore: emotional.score, detectedContexts, contextBlocks,
@@ -68,22 +62,20 @@ export async function POST(req: NextRequest) {
       systemWarning: '', intent: 'personal', dynamicGuidelines: ''
     });
 
-    // 7. Loop de Execução ReAct
-    let finalResponse = '';
+    // ─── FILTRAGEM DE TOOLS ───
+    const coreTools = ['salvar_evento', 'create_reminder'];
+    const toolsHabilitadas = tools.filter(t => coreTools.includes(t.function.name) || activeTools.includes(t.function.name));
+
+    // ─── EXECUÇÃO ───
     let conversationMessages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: messageRaw }];
-    const herramientasFiltradas = tools.filter(t => ['salvar_evento', 'create_reminder'].includes(t.function.name) || activeTools.includes(t.function.name));
-
-    // Chamada LLM via Gateway
-    const response = await callOpenRouterWithPriority(1, 'never', msg_id, conversationMessages, ferramentasFiltradas, resolvedModel, 0.7);
-    finalResponse = (response as any).content || 'Processado.';
-
-    // 8. Sync e Despacho Assíncrono (QStash)
-    // [Seu código de QStash e RAM Sync aqui...]
+    const response = await callOpenRouterWithPriority(1, 'never', msg_id, conversationMessages, toolsHabilitadas, resolvedModel, 0.7);
+    
+    const finalResponse = (response as any).content || 'Processado.';
 
     return NextResponse.json({ reply: finalResponse, ok: true });
 
   } catch (error: any) {
     console.error('[FATAL]', error);
-    return NextResponse.json({ error: 'Erro no motor' }, { status: 500 });
+    return NextResponse.json({ error: 'Erro interno' }, { status: 500 });
   }
 }
