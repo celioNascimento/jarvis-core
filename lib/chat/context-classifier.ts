@@ -1,6 +1,5 @@
 // lib/chat/context-classifier.ts
-// V9.1.0 — LLM apenas quando regex é ambíguo ou falha
-//           Reduz latência de ~700ms para ~0ms em 80%+ das mensagens
+// V9.1.1 — LLM apenas quando regex é ambíguo ou falha + Módulo Veículos
 
 import { supabase } from '@/lib/jarvis';
 import { callOpenRouter } from '@/lib/jarvis';
@@ -32,13 +31,14 @@ export type ContextType =
   | 'evento'
   | 'tdah'
   | 'retrospecto'
+  | 'veiculos' // <--- ADICIONADO AQUI
   | 'foco';
 
 const ALL_CONTEXTS: ContextType[] = [
   'casual', 'agenda', 'email', 'saude', 'familia', 'trabalho', 'projeto',
   'meta', 'emocao', 'diario', 'rotina', 'preferencia', 'alias', 'recomendacao',
   'esporte', 'noticias', 'clima', 'math', 'trivial', 'compras', 'financas',
-  'evento', 'tdah', 'foco', 'retrospecto',
+  'evento', 'tdah', 'foco', 'retrospecto', 'veiculos', // <--- ADICIONADO AQUI
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -70,6 +70,7 @@ const RULES_NORMALIZED: Array<[RegExp, ContextType]> = ([
   [norm('gastei|paguei|recebi|salário|salario|despesa|receita|conta|comprei|boleto|fatura|orçamento|orcamento|finanças|financas|dinheiro|grana|divida|dívida|cartao|cartão|credito|crédito|debito|débito|investimento|poupanca|poupança|saldo|extrato|gasto|pix|ted|transacao|transação|banco|nubank|itaú|itau|bradesco|santander|inter|caixa econômica'), 'financas'],
   [norm('trabalho|empresa|chefe|colega|reunião de trabalho|tarefa|prazo|entrega|cliente'), 'trabalho'],
   [norm('foco|tdah|procrastinando|travado|paralisado|sobrecarregado|por onde começo|nao sei comecar'), 'tdah'],
+  [norm('carro|veiculo|veículo|moto|placa|km|odômetro|odometro|gasolina|etanol|diesel|abasteci|abastecer|manutenção|manutencao|multa|pneu|oficina|mecanico|mecânico|troca de óleo|freio'), 'veiculos'], // <--- REGRA DO EXPERTFROTAS
 ] as Array<[string, ContextType]>).map(([src, ctx]) => [new RegExp(src, 'i'), ctx]);
 
 const RULES_VERBATIM: Array<[RegExp, ContextType]> = [
@@ -100,37 +101,17 @@ export function classifyContextRegex(text: string): ContextType[] {
   return detected.length > 0 ? ([...new Set(detected)] as ContextType[]) : ['casual'];
 }
 
-// ─── Decide se vale chamar LLM ────────────────────────────────────────────────
-//
-// LLM só é necessário em dois cenários:
-//   1. Regex retornou apenas 'casual' mas a mensagem tem substância
-//      (pode ser um contexto que regex não pegou)
-//   2. Regex retornou múltiplos contextos conflitantes sem dominante claro
-//      E a mensagem é longa o suficiente para ambiguidade real
-//
-// Em todos os outros casos regex é suficiente e ~0ms.
-
 const HIGH_CONFIDENCE_CONTEXTS: ContextType[] = [
   'math', 'trivial', 'financas', 'esporte', 'clima', 'email', 'agenda',
-  'compras', 'saude', 'noticias', 'retrospecto',
+  'compras', 'saude', 'noticias', 'retrospecto', 'veiculos' // <--- EVITA CHAMADA À LLM
 ];
 
 function needsLLMClassification(text: string, regexContexts: ContextType[]): boolean {
-  // Casos determinísticos — regex é definitivo
   if (regexContexts.includes('math') || regexContexts.includes('trivial')) return false;
-
-  // Texto muito curto — regex já é suficiente mesmo que 'casual'
   if (text.length < 30) return false;
-
-  // Tem pelo menos um contexto de alta confiança — regex acertou
   if (regexContexts.some(c => HIGH_CONFIDENCE_CONTEXTS.includes(c))) return false;
-
-  // Regex retornou só 'casual' em mensagem longa — pode ter contexto oculto
   if (regexContexts.length === 1 && regexContexts[0] === 'casual' && text.length > 60) return true;
-
-  // Múltiplos contextos de baixa confiança em mensagem longa — LLM desempata
   if (regexContexts.length >= 3 && text.length > 100) return true;
-
   return false;
 }
 
@@ -142,12 +123,10 @@ export async function classifyContextWithL4(
 ): Promise<ContextType[]> {
   const regexContexts = classifyContextRegex(text);
 
-  // Fast path — sem LLM
   if (!needsLLMClassification(text, regexContexts)) {
     return regexContexts;
   }
 
-  // Priorização via topic_index quando há muitos contextos (DB, sem LLM)
   if (regexContexts.length > 2) {
     try {
       const { data: topicWeights } = await supabase
@@ -160,7 +139,6 @@ export async function classifyContextWithL4(
         const sorted = [...topicWeights].sort((a, b) => (b.weight || 0) - (a.weight || 0));
         const prioritized = sorted.map((t) => t.topic as ContextType);
         const missing = regexContexts.filter((c) => !prioritized.includes(c));
-        // Se topic_index resolveu o desempate, não precisa de LLM
         if (prioritized.length >= regexContexts.length * 0.6) {
           return [...prioritized, ...missing] as ContextType[];
         }
@@ -170,7 +148,6 @@ export async function classifyContextWithL4(
     }
   }
 
-  // LLM apenas quando realmente ambíguo
   try {
     const prompt = `Classifique a mensagem abaixo em 1-3 categorias da lista:
 ${ALL_CONTEXTS.join(', ')}
@@ -212,7 +189,7 @@ export function routeModel(
 
   const flashFriendly: ContextType[] = [
     'esporte', 'noticias', 'clima', 'casual', 'rotina',
-    'alias', 'preferencia', 'recomendacao', 'math', 'trivial', 'compras',
+    'alias', 'preferencia', 'recomendacao', 'math', 'trivial', 'compras', 'veiculos' // <--- FLASH DÁ CONTA
   ];
   if (contexts.includes('agenda') && effectiveEmotional < 0.4)
     return { model: 'google/gemini-2.0-flash-001', label: 'flash-agenda' };
@@ -230,7 +207,7 @@ export function getTemperature(contexts: ContextType[]): number {
   if (contexts.some((c) => ['emocao', 'familia'].includes(c)))             return 0.85;
   if (contexts.some((c) => ['casual', 'projeto', 'meta', 'esporte', 'trivial'].includes(c))) return 0.7;
   if (contexts.some((c) => ['trabalho', 'projeto'].includes(c)))           return 0.5;
-  if (contexts.includes('financas'))                                        return 0.3;
+  if (contexts.some((c) => ['financas', 'veiculos']))                       return 0.3; // <--- BAIXA TEMPERATURA PARA VEÍCULOS (Maior precisão)
   if (contexts.some((c) => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima', 'compras'].includes(c))) return 0.5;
   if (contexts.some((c) => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
   return 0.7;
