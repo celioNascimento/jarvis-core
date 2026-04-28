@@ -13,6 +13,7 @@
     "@supabase/supabase-js": "^2.93.3",
     "@upstash/qstash": "^2.10.1",
     "@upstash/redis": "^1.37.0",
+    "@vercel/functions": "^3.4.4",
     "date-fns": "^4.1.0",
     "dotenv": "^17.3.1",
     "expo-server-sdk": "^6.1.0",
