@@ -1,5 +1,6 @@
-// app/api/chat/route.ts — V8.14.1
+// app/api/chat/route.ts — V8.14.2 (Anti-dupla-execução + histórico corrigido)
 import { NextRequest, NextResponse } from 'next/server';
+import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
 import { classifyContextWithL4 } from '@/lib/chat/context-classifier';
 import { computeEmotionalScore } from '@/lib/chat/emotional-router';
@@ -12,6 +13,11 @@ import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 
 export const maxDuration = 60;
 
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL!,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+});
+
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
   try {
@@ -23,6 +29,30 @@ export async function POST(req: NextRequest) {
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
     const sessionId = await getOrCreateSession(String(user.id));
+
+    // ── DEDUPLICAÇÃO GLOBAL (bloqueia retry da Vercel antes de qualquer processamento) ──
+    const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}`;
+    const dedupKey = `chat_dedup:${requestSignature}`;
+    const replyKey = `chat_reply:${requestSignature}`;
+
+    const isFirst = await redis.set(dedupKey, '1', { nx: true, ex: 30 });
+
+    if (!isFirst) {
+      // É um retry da Vercel — aguarda a primeira instância terminar e devolve o reply cacheado
+      console.warn('[Dedup] Retry detectado, aguardando reply cacheado...');
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 1500));
+        const cached = await redis.get<string>(replyKey);
+        if (cached) {
+          console.log('[Dedup] Reply cacheado encontrado, retornando.');
+          return NextResponse.json({ reply: cached, ok: true, performance: '0ms (dedup)' });
+        }
+      }
+      // Se após 15s ainda não tem cache, deixa passar para não travar o usuário
+      console.warn('[Dedup] Timeout esperando reply. Deixando passar.');
+    }
+    // ──────────────────────────────────────────────────────────────────────────────────
+
     const queryEmbedding = await getCachedEmbedding(message).catch(() => null);
 
     // 2. Inteligência de Contexto (Sensores)
@@ -82,7 +112,6 @@ export async function POST(req: NextRequest) {
     });
 
     // 6. Execução via Gateway
-    const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}`;
     const response = await callOpenRouterWithPriority(
       1,
       'never',
@@ -98,8 +127,11 @@ export async function POST(req: NextRequest) {
 
     const assistantReply = (response as any).content || 'Processado.';
 
-    // 7. Salvamento — uma linha por par, com ai_reply no metadata
-    // O loadHistory lê h.content como mensagem do usuário
+    // Cacheia o reply para o retry da Vercel recuperar
+    await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => {});
+
+    // 7. Salvamento — uma linha por par com ai_reply no metadata
+    // loadHistory lê h.content como mensagem do usuário
     // e h.metadata.ai_reply como resposta do assistente
     try {
       const cat = message.length < 15 ? 'noise' : 'info';
