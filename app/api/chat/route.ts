@@ -512,4 +512,4 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
     return NextResponse.json({ error: 'Erro interno.' }, { status: 500 });
   }
 }
-
+}
