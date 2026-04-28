@@ -88,10 +88,11 @@ export async function POST(req: NextRequest) {
     });
 
     // 6. Execução via Gateway (Enviando tudo para a Inteligência Artificial)
+    const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}`;
     const response = await callOpenRouterWithPriority(
       1, 
       'never', 
-      crypto.randomUUID(), 
+      requestSignature,
       [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: message }
