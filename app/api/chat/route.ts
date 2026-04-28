@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V8.14.0 (Blindado)
+// app/api/chat/route.ts — V8.14.1
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
 import { classifyContextWithL4 } from '@/lib/chat/context-classifier';
@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
       computeEmotionalScore(message, String(user.id), [], '')
     ]);
 
-    // 3. CARREGAMENTO MODULAR (O coração da nova arquitetura)
+    // 3. Carregamento Modular
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       { userId: String(user.id), authUserId: user.auth_user_id, message, contexts, emotionalScore: emotional.score },
       user.plan || 'free',
@@ -49,21 +49,16 @@ export async function POST(req: NextRequest) {
       emotionalScore: emotional.score,
       authorName: user.nickname,
       assistantName: user.assistant_name,
-      queryEmbedding: queryEmbedding // <--- Resolve o erro do build
+      queryEmbedding: queryEmbedding,
     });
 
-   // 5. Composição do Prompt e Filtragem de Ferramentas (Blindado)
-
-    // A. Definimos as ferramentas essenciais que o Jarvis SEMPRE deve ter acesso
+    // 5. Composição do Prompt e Filtragem de Ferramentas
     const coreTools = ['salvar_evento', 'create_reminder', 'searchWeb', 'buscar_memoria_longa'];
-
-    // B. Filtramos a lista gigante (ALL_TOOLS) para deixar apenas o essencial + módulos ativos
     const toolsHabilitadas = ALL_TOOLS.filter(t =>
       coreTools.includes(t.function.name) ||
       activeTools.includes(t.function.name)
     );
 
-    // C. Montamos o System Prompt com as memórias limitadas sob medida (Truncagem)
     const systemPrompt = composeSystemPrompt({
       assistantName: user.assistant_name,
       authorName: user.nickname,
@@ -73,7 +68,6 @@ export async function POST(req: NextRequest) {
       detectedContexts: contexts,
       contextBlocks,
       memoryBlocks: {
-        // Limites de segurança para não estourar a janela de contexto da LLM
         truncatedL3: memory.l3.content.slice(0, 3000),
         truncatedHd: memory.hd.block.slice(0, 4000),
         truncatedEvents: memory.events.block.slice(0, 2000),
@@ -87,50 +81,45 @@ export async function POST(req: NextRequest) {
       dynamicGuidelines: ''
     });
 
-    // 6. Execução via Gateway (Enviando tudo para a Inteligência Artificial)
+    // 6. Execução via Gateway
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}`;
     const response = await callOpenRouterWithPriority(
-      1, 
-      'never', 
+      1,
+      'never',
       requestSignature,
       [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: message }
-      ], 
-      toolsHabilitadas, // <--- Aqui injetamos apenas as ferramentas permitidas
-      resolvedModel, 
+      ],
+      toolsHabilitadas,
+      resolvedModel,
       0.7
     );
 
-   const assistantReply = (response as any).content || 'Processado.';
+    const assistantReply = (response as any).content || 'Processado.';
 
-    // ─── 7. SALVAMENTO NO HISTÓRICO UNIFICADO (BRAIN) ───
+    // 7. Salvamento — uma linha por par, com ai_reply no metadata
+    // O loadHistory lê h.content como mensagem do usuário
+    // e h.metadata.ai_reply como resposta do assistente
     try {
-      // Se for uma mensagem muito curta/casual, entra como noise, senão como info
       const cat = message.length < 15 ? 'noise' : 'info';
 
-      await supabase.from('brain').insert([
-        {
-          user_id: Number(user.id),
-          session_id: sessionId,
-          content: message,
-          category: cat,
-          project_tag: 'geral',
-          metadata: { role: 'user', contexts: contexts }
-        },
-        {
-          user_id: Number(user.id),
-          session_id: sessionId,
-          content: assistantReply,
-          category: cat,
-          project_tag: 'geral',
-          metadata: { role: 'assistant', model: resolvedModel }
+      await supabase.from('brain').insert({
+        user_id: Number(user.id),
+        session_id: sessionId,
+        content: message,
+        category: cat,
+        project_tag: 'geral',
+        metadata: {
+          role: 'user',
+          ai_reply: assistantReply,
+          contexts: contexts,
+          model: resolvedModel,
         }
-      ]);
+      });
     } catch (dbErr) {
       console.error('[DB] Erro ao salvar no brain:', dbErr);
     }
-    // ──────────────────────────────────────────────────────────
 
     return NextResponse.json({
       reply: assistantReply,
