@@ -439,8 +439,18 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       attempts++;
     }
 
-    if (!finalResponse) finalResponse = 'Processamento concluído.';
-
+    if (!finalResponse || finalResponse === 'Processamento concluído.') {
+      const finalPick = await callOpenRouterWithPriority(
+        1, 'never', `final_${msg_id}`,
+        [
+          ...conversationMessages, 
+          { role: 'system', content: 'Resuma o que foi feito de forma humana para o usuário em 1 ou 2 frases curtas, confirmando que os dados foram salvos ou processados.' }
+        ],
+        [], modelRoute.model, 0.5, 10000, 200
+      );
+      finalResponse = (finalPick as any).content || 'Pronto, Célio. Já deixei tudo organizado para você.';
+    }
+    
     let category = 'info';
     if (finalResponse.match(/\[CLASSE:\s*(\w+)\]/i)) category = finalResponse.match(/\[CLASSE:\s*(\w+)\]/i)![1].toLowerCase();
     finalResponse = sanitizeSensitiveData(finalResponse.replace(/\[CLASSE:.*?\]|\[INTERNO:.*?\]/gi, '').trim());
@@ -481,3 +491,4 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
         body: JSON.stringify(qstashPayload)
       }).catch(e => console.error('[QStash] Erro ao despachar:', e));
     }
+  }
