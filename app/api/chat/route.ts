@@ -492,3 +492,4 @@ CLASSIFICAÇÃO: Ao final inclua obrigatoriamente [CLASSE: info] ou [CLASSE: noi
       }).catch(e => console.error('[QStash] Erro ao despachar:', e));
     }
   }
+}
