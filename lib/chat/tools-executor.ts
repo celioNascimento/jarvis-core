@@ -376,7 +376,6 @@ export async function executeTool(
       }
 
     // ===================== PESQUISA E CLIMA =====================
-    case 'pesquisar_internet':
     case 'searchWeb': {
       try {
         console.log(`[tool] searchWeb: "${p.query}"`);
