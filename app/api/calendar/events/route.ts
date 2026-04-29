@@ -20,10 +20,11 @@ const supabase = createClient(
 
 async function resolveUserId(authUserId: string): Promise<bigint | null> {
   const { data } = await supabase
-    .from('jarvis.users')
-    .select('id')
-    .eq('auth_user_id', authUserId)
-    .single();
+  .schema('jarvis')
+  .from('users')
+  .select('id')
+  .eq('auth_user_id', authUserId)
+  .single();
   return data?.id ?? null;
 }
 
