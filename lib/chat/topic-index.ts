@@ -17,13 +17,12 @@ export async function updateTopicIndex(
   if (!contexts.length) return;
 
   const now = new Date().toISOString();
+  const numericId = Number(userId);
 
-  // FIX #1: Adicionado .schema('jarvis') — tabela está em jarvis.topic_index
   const { data: existing } = await supabase
-    .schema('jarvis')
     .from('topic_index')
     .select('topic, weight, emotional_dimension, count')
-    .eq('user_id', userId)
+    .eq('user_id', numericId)
     .in('topic', contexts);
 
   const existingMap = new Map((existing || []).map(r => [r.topic, r]));
@@ -37,8 +36,9 @@ export async function updateTopicIndex(
         newEmotionalDim = rec.emotional_dimension * 0.8 + emotionalScore * 0.2;
       }
       return {
-        user_id: userId,
+        user_id: numericId,
         topic,
+        label: topic, // CRÍTICO: Preenche a regra NOT NULL da tabela
         weight: Math.min(1.0, newWeight),
         emotional_dimension: Math.min(1.0, Math.max(0, newEmotionalDim)),
         count: (rec.count || 0) + 1,
@@ -46,8 +46,9 @@ export async function updateTopicIndex(
       };
     } else {
       return {
-        user_id: userId,
+        user_id: numericId,
         topic,
+        label: topic, // CRÍTICO: Preenche a regra NOT NULL da tabela
         weight: 1.0,
         emotional_dimension: emotionalScore ?? 0.0,
         count: 1,
@@ -56,21 +57,16 @@ export async function updateTopicIndex(
     }
   });
 
-  // FIX #1: .schema('jarvis')
-  // FIX #2: onConflict sem espaço após a vírgula (PostgREST é sensível a isso)
   await supabase
-    .schema('jarvis')
     .from('topic_index')
     .upsert(upsertRows, { onConflict: 'user_id,topic' });
 }
 
 export async function getRelatedTopics(userId: string, currentContext: string): Promise<string> {
-  // FIX #1: .schema('jarvis')
   const { data: related } = await supabase
-    .schema('jarvis')
     .from('topic_index')
     .select('topic, weight')
-    .eq('user_id', userId)
+    .eq('user_id', Number(userId))
     .neq('topic', currentContext)
     .order('weight', { ascending: false })
     .limit(3);
@@ -85,12 +81,10 @@ export async function detectTopicShiftWithL4(
   userId: string,
   currentContexts: ContextType[]
 ): Promise<boolean> {
-  // FIX #1: .schema('jarvis')
   const { data: recentTopics } = await supabase
-    .schema('jarvis')
     .from('topic_index')
     .select('topic, weight')
-    .eq('user_id', userId)
+    .eq('user_id', Number(userId))
     .order('last_mentioned', { ascending: false })
     .limit(5);
 
