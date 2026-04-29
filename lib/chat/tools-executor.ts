@@ -5,12 +5,14 @@
 
 import { supabase } from '@/lib/jarvis';
 import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
-import { getGoogleContext, searchWeb, getWeatherForecast, createGoogleEvent, trashGoogleEmail } from '@/lib/google';
-import { upsertEvent } from '@/lib/extractor-jobs';
+import { getGoogleContext, searchWeb, getWeatherForecast, createGoogleEvent } from '@/lib/google';
+// FIX #4: Removidos imports mortos: trashGoogleEmail (sem case), upsertEvent (sem case)
+// FIX #4: Removido cancelReminderOnQStash (sem case — adicione case 'cancelar_lembrete' quando implementar)
 import { extractDiary, updateGoalProgress } from '@/lib/diary';
 import { getCachedEmbedding } from './embedding-cache';
-import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
-import { handleSalvarEvento } from './tools-executor-agenda-patch';
+import { scheduleReminderOnQStash } from '@/lib/qstash';
+// FIX #1: Removido import de handleSalvarEvento — não era usado (salvar_evento tem implementação inline)
+// Se quiser usar o patch, substitua o case 'salvar_evento' abaixo pelo handleSalvarEvento
 
 // EXECUTORES DE FINANÇAS
 import {
@@ -69,7 +71,6 @@ export async function executeTool(
   }
 
   // ─── IDEMPOTÊNCIA (Prevenção de Duplicidade Vercel) ───────────────────────
-  // Gera uma assinatura única baseada no ID da chamada da LLM ou no payload
   const callSignature = toolCall.id || args.replace(/\s+/g, '').substring(0, 50);
   const idempotencyKey = `${numericUserIdStr}_${name}_${callSignature}`;
 
@@ -78,7 +79,6 @@ export async function executeTool(
       .from('idempotency_keys')
       .insert({ key: idempotencyKey });
 
-    // Código 23505 do Postgres = unique_violation (Chave já existe)
     if (idemError && idemError.code === '23505') {
       console.warn(`[Idempotência] Bloqueado retry da Vercel para a tool: ${name}`);
       return `[SISTEMA] Comando recebido e já processado com sucesso. Nenhuma ação extra necessária.`;
@@ -129,19 +129,19 @@ export async function executeTool(
         return 'Falha ao acessar memórias no momento. O banco de dados pode estar indisponível.';
       }
     }
+
     // ===================== AGENDA E GMAIL =====================
     case 'consultar_agenda': {
       try {
-        // Agora o Jarvis consulta a Agenda Lev + Google + Outlook simultaneamente
         const results = await Promise.allSettled([
           supabase.rpc('get_calendar_context_for_jarvis', { p_user_id: Number(numericUserIdStr), p_days: 7 }).then(res => res.data || 'Sem eventos recentes.'),
-          getGoogleContext().catch(e => `[Erro Google]`),
-          getMicrosoftCalendarContext().catch(e => `[Erro Outlook]`)
+          getGoogleContext().catch(() => `[Erro Google]`),
+          getMicrosoftCalendarContext().catch(() => `[Erro Outlook]`)
         ]);
 
         const lev = results[0].status === 'fulfilled' ? results[0].value : 'Erro ao carregar Agenda Lev';
-        const g = results[1].status === 'fulfilled' ? results[1].value : `[Erro Google: Falha na promessa]`;
-        const o = results[2].status === 'fulfilled' ? results[2].value : `[Erro Outlook: Falha na promessa]`;
+        const g   = results[1].status === 'fulfilled' ? results[1].value : `[Erro Google: Falha na promessa]`;
+        const o   = results[2].status === 'fulfilled' ? results[2].value : `[Erro Outlook: Falha na promessa]`;
 
         return `[AGENDA INTERNA LEV]\n${lev}\n\n[GOOGLE CALENDAR]\n${g}\n\n[OUTLOOK]\n${o}`;
       } catch (err: any) {
@@ -161,7 +161,6 @@ export async function executeTool(
 
     case 'salvar_evento': {
       try {
-        // Insere o evento diretamente na sua nova tabela jarvis.events
         const { data: event, error } = await supabase
           .schema('jarvis')
           .from('events')
@@ -169,7 +168,7 @@ export async function executeTool(
             user_id: Number(numericUserIdStr),
             title: p.title,
             start_at: p.event_date,
-            description: p.notes || null, // Mapeia "notes" do prompt para "description" do banco
+            description: p.notes || null,
             category: p.category || 'personal',
             source: 'lev'
           })
@@ -178,7 +177,6 @@ export async function executeTool(
 
         if (error) throw error;
 
-        // Opcional: Se quiser que o Jarvis já avise quando salvou certinho
         const dataFormatada = new Date(p.event_date).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
         return `Compromisso "${p.title}" salvo com sucesso na Agenda Interna (Lev) para ${dataFormatada}.`;
       } catch (err: any) {
@@ -186,8 +184,6 @@ export async function executeTool(
         return `Erro ao salvar o evento na base de dados: ${err.message}`;
       }
     }
-
-    
 
     // ===================== DIRETRIZES =====================
     case 'adicionar_diretriz_dinamica': {
@@ -209,8 +205,8 @@ export async function executeTool(
         return `Erro inesperado ao salvar diretriz: ${err.message}`;
       }
     }
-    
-    // ===================== LEMBRETES (Sincronizado com Londrina) =====================
+
+    // ===================== LEMBRETES =====================
     case 'create_reminder': {
       try {
         const title: string = p.title || p.message;
@@ -220,12 +216,10 @@ export async function executeTool(
 
         let scheduled_time: string | undefined = p.scheduled_time;
 
-        // SE NÃO HOUVER TEMPO, FALLBACK DE 5 MINUTOS
         if (!scheduled_time && !p.delay_minutes && type !== 'location') {
-           p.delay_minutes = 5;
+          p.delay_minutes = 5;
         }
 
-        // CALCULA O TEMPO GARANTINDO O TIMEZONE DE LONDRINA (-03:00)
         if (!scheduled_time && p.delay_minutes) {
           const now = new Date();
           const fireAt = new Date(now.getTime() + p.delay_minutes * 60 * 1000);
@@ -235,7 +229,7 @@ export async function executeTool(
         if (!title) return JSON.stringify({ success: false, error: 'Título é obrigatório.' });
 
         const { data: reminder, error } = await supabase
-          .schema('jarvis') // <--- Sempre garantir o schema
+          .schema('jarvis')
           .from('reminders')
           .insert({
             user_id: Number(numericUserIdStr),
@@ -252,14 +246,13 @@ export async function executeTool(
 
         if (error || !reminder) return JSON.stringify({ success: false, error: 'Erro no banco.' });
 
-        // AGENDAMENTO NO QSTASH COM TRATAMENTO DE TIMEZONE
         if (scheduled_time && type !== 'recurring' && type !== 'location') {
           const qstashMessageId = await scheduleReminderOnQStash({
             reminderId: String(reminder.id),
             userId: numericUserIdStr,
             authUserId,
             message: title,
-            scheduledTime: scheduled_time, // Passamos o ISO completo
+            scheduledTime: scheduled_time,
           });
 
           if (qstashMessageId) {
@@ -273,9 +266,9 @@ export async function executeTool(
 
         const formatted = scheduled_time
           ? new Date(scheduled_time).toLocaleString('pt-BR', {
-            timeZone: 'America/Sao_Paulo',
-            hour: '2-digit', minute: '2-digit',
-          })
+              timeZone: 'America/Sao_Paulo',
+              hour: '2-digit', minute: '2-digit',
+            })
           : 'quando solicitado';
 
         return JSON.stringify({
@@ -288,7 +281,6 @@ export async function executeTool(
         return JSON.stringify({ success: false, error: `Erro inesperado: ${err.message}` });
       }
     }
-
 
     // ===================== METAS E DIÁRIO =====================
     case 'atualizar_meta':
@@ -467,12 +459,16 @@ export async function executeTool(
 
         instrucao_modelo += `4. Peça para o usuário responder "feito" apenas para o Passo 1 antes de mostrar os outros.`;
 
-        const { error } = await supabase.from('brain').insert([{
-          user_id: Number(numericUserIdStr),
-          category: 'Nota',
-          content: `Usuário iniciou quebra de tarefa: ${tarefa} (Estado: ${estado})`,
-          project_tag: 'foco'
-        }]);
+        // FIX #3: Adicionado .schema('jarvis') — tabela brain fica no schema jarvis
+        const { error } = await supabase
+          .schema('jarvis')
+          .from('brain')
+          .insert([{
+            user_id: Number(numericUserIdStr),
+            category: 'Nota',
+            content: `Usuário iniciou quebra de tarefa: ${tarefa} (Estado: ${estado})`,
+            project_tag: 'foco'
+          }]);
 
         if (error) throw error;
 
@@ -507,16 +503,28 @@ export async function executeTool(
 
     case 'gerenciar_eisenhower': {
       try {
+        // FIX #2: Adicionado .schema('jarvis') nas duas operações
         if (p.acao === 'adicionar') {
-          await supabase.from('eisenhower_items').insert({ user_id: numericUserIdStr, text: p.texto, quadrant: p.quadrante || 'q2' });
+          const { error } = await supabase
+            .schema('jarvis')
+            .from('eisenhower_items')
+            .insert({ user_id: numericUserIdStr, text: p.texto, quadrant: p.quadrante || 'q2' });
+          if (error) throw error;
           return `Tarefa "${p.texto}" adicionada ao quadrante ${p.quadrante || 'q2'} da Matriz de Eisenhower.`;
         }
         if (p.acao === 'completar') {
-          const { error } = await supabase.from('eisenhower_items').update({ completed: true, completed_at: new Date() }).eq('user_id', numericUserIdStr).ilike('text', `%${p.texto}%`);
+          const { error } = await supabase
+            .schema('jarvis')
+            .from('eisenhower_items')
+            .update({ completed: true, completed_at: new Date() })
+            .eq('user_id', numericUserIdStr)
+            .ilike('text', `%${p.texto}%`);
           return error ? "Erro ao completar tarefa." : `Tarefa que contém "${p.texto}" concluída!`;
         }
         return "Ação processada na Matriz.";
-      } catch (err: any) { return `Erro na Matriz: ${err.message}`; }
+      } catch (err: any) {
+        return `Erro na Matriz: ${err.message}`;
+      }
     }
 
     // ===================== FINANÇAS =====================
@@ -552,7 +560,7 @@ export async function executeTool(
 
         await supabase.from('vehicle_odometer_logs').insert({ vehicle_id: v.id, user_id: numericUserIdStr, odometer: p.odometer, source: 'manual' });
         await supabase.from('vehicles').update({ current_km: p.odometer }).eq('id', v.id);
-        
+
         return `Odômetro do ${p.vehicle_name} atualizado para ${p.odometer}km.`;
       } catch (err: any) { return `Erro no odômetro: ${err.message}`; }
     }
