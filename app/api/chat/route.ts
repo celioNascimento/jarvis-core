@@ -22,7 +22,7 @@ const redis = new Redis({
 // ─── Histórico da sessão ─────────────────────────────────────────────────────
 
 const MAX_HISTORY_TURNS = 6;
-const MAX_MSG_CHARS     = 800;
+const MAX_MSG_CHARS = 800;
 
 async function getRecentMessages(
   sessionId: string,
@@ -81,8 +81,8 @@ export async function POST(req: NextRequest) {
       ? req.formData()
       : req.json());
 
-    const message           = body instanceof FormData ? body.get('message')   as string : body.message;
-    const userEmail         = body instanceof FormData ? body.get('userEmail') as string : body.userEmail;
+    const message = body instanceof FormData ? body.get('message') as string : body.message;
+    const userEmail = body instanceof FormData ? body.get('userEmail') as string : body.userEmail;
     const incomingSessionId = body instanceof FormData
       ? (body.get('sessionId') as string | null)
       : (body.sessionId as string | null);
@@ -94,7 +94,8 @@ export async function POST(req: NextRequest) {
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
     // ── DEDUPLICAÇÃO GLOBAL ──────────────────────────────────────────────────
-    const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}`;
+    const timeSlot = Math.floor(Date.now() / 10000); // janela de 10s para dedup de retries
+    const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
     const replyKey = `chat_reply:${requestSignature}`;
 
@@ -112,6 +113,7 @@ export async function POST(req: NextRequest) {
       }
       console.warn('[Dedup] Timeout esperando reply. Deixando passar.');
     }
+
     // ────────────────────────────────────────────────────────────────────────
 
     // ── FASE 1: Coisas que não dependem de memória (paralelo) ────────────────
@@ -128,14 +130,14 @@ export async function POST(req: NextRequest) {
     // emotionalScore=0 aqui é apenas um placeholder para o MemoryManager;
     // o score real será calculado na Fase 3 com os resultados da memória.
     const memory = await MemoryManager.read({
-      userId:         String(user.id),
-      authUserId:     user.auth_user_id,
+      userId: String(user.id),
+      authUserId: user.auth_user_id,
       sessionId,
       message,
       contexts,
       emotionalScore: 0,
-      authorName:     user.nickname,
-      assistantName:  user.assistant_name,
+      authorName: user.nickname,
+      assistantName: user.assistant_name,
       queryEmbedding,
     });
 
@@ -153,8 +155,8 @@ export async function POST(req: NextRequest) {
     // ── Carregamento Modular (agora com score emocional real) ─────────────────
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       {
-        userId:         String(user.id),
-        authUserId:     user.auth_user_id,
+        userId: String(user.id),
+        authUserId: user.auth_user_id,
         message,
         contexts,
         emotionalScore: emotional.score,  // 👈 score real, não zero
@@ -187,24 +189,24 @@ export async function POST(req: NextRequest) {
     );
 
     const systemPrompt = composeSystemPrompt({
-      assistantName:    user.assistant_name,
-      authorName:       user.nickname,
-      isLikelyNoise:    message.length < 15,
+      assistantName: user.assistant_name,
+      authorName: user.nickname,
+      isLikelyNoise: message.length < 15,
       isSystemStressed: isStressed,
-      emotionalScore:   emotional.score,  // 👈 score real
+      emotionalScore: emotional.score,  // 👈 score real
       detectedContexts: contexts,
       contextBlocks,
       memoryBlocks: {
-        truncatedL3:     filteredL3.slice(0, 3000),
-        truncatedHd:     memory.hd.block.slice(0, 4000),
+        truncatedL3: filteredL3.slice(0, 3000),
+        truncatedHd: memory.hd.block.slice(0, 4000),
         truncatedEvents: memory.events.block.slice(0, 2000),
-        relationship:    memory.relationship.block.slice(0, 2000),
-        topics:          memory.topics.relatedTopicsBlock,
+        relationship: memory.relationship.block.slice(0, 2000),
+        topics: memory.topics.relatedTopicsBlock,
       },
       canonicalDateTimeBlock: new Date().toLocaleString('pt-BR'),
-      canonicalDateISO:       new Date().toISOString().split('T')[0],
-      systemWarning:    '',
-      intent:           'personal',
+      canonicalDateISO: new Date().toISOString().split('T')[0],
+      systemWarning: '',
+      intent: 'personal',
       dynamicGuidelines: '',
     });
 
@@ -244,15 +246,15 @@ export async function POST(req: NextRequest) {
           role: 'assistant',
           content: firstResponse.content || null,
           tool_calls: firstResponse.toolCalls.map(tc => ({
-            id:       tc.id,
-            type:     'function',
+            id: tc.id,
+            type: 'function',
             function: { name: tc.function.name, arguments: tc.function.arguments },
           })),
         },
         ...toolResults.map(({ toolCall, result }) => ({
-          role:         'tool',
+          role: 'tool',
           tool_call_id: toolCall.id,
-          content:      result,
+          content: result,
         })),
       ];
 
@@ -270,23 +272,23 @@ export async function POST(req: NextRequest) {
       assistantReply = firstResponse.content || 'Processado.';
     }
 
-    await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => {});
+    await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => { });
 
     // 8. Salvamento no brain
     try {
       const cat = message.length < 15 ? 'noise' : 'info';
 
       await supabase.from('brain').insert({
-        user_id:     Number(user.id),
-        session_id:  sessionId,
-        content:     message,
-        category:    cat,
+        user_id: Number(user.id),
+        session_id: sessionId,
+        content: message,
+        category: cat,
         project_tag: 'geral',
         metadata: {
-          role:     'user',
+          role: 'user',
           ai_reply: assistantReply,
           contexts,
-          model:    resolvedModel,
+          model: resolvedModel,
         },
       });
     } catch (dbErr) {
@@ -294,8 +296,8 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({
-      reply:       assistantReply,
-      ok:          true,
+      reply: assistantReply,
+      ok: true,
       sessionId,
       performance: `${Date.now() - startTime}ms`,
     });
