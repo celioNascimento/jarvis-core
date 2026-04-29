@@ -1,6 +1,6 @@
 // ============================================================
 // app/api/reminders/fire/route.ts
-// Motor V8.13.0 — Disparo de Lembretes Híbridos com Segurança QStash
+// Motor V8.15.0 — Disparo de Lembretes Híbridos com Segurança QStash (Schema Jarvis)
 // ============================================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -23,7 +23,10 @@ export async function POST(req: NextRequest) {
     const isValid = await receiver.verify({
       signature,
       body: bodyText,
-    }).catch(() => false);
+    }).catch((e) => {
+      console.error('[reminders/fire] Falha de assinatura:', e.message);
+      return false;
+    });
 
     if (!isValid) {
       console.error('[reminders/fire] Acesso negado: Assinatura inválida');
@@ -31,13 +34,21 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. Parse seguro do JSON que já está em memória
-    const payload = JSON.parse(bodyText);
+    let payload;
+    try {
+      payload = JSON.parse(bodyText);
+    } catch (e) {
+      console.error('[reminders/fire] Erro de Parse JSON:', bodyText);
+      return NextResponse.json({ error: 'invalid_payload' }, { status: 400 });
+    }
+    
     const { reminderId, userId, message } = payload;
-
     console.log('[reminders/fire] Recebido e validado:', { reminderId, userId, message });
 
-    // 4. Atualiza status e marcos de disparo na tabela reminders
+    // 4. Atualiza status na tabela reminders usando o Schema JARVIS
+    // Caso seja recorrente, a lógica é tratada em background ou em outra tabela, aqui só marca como fired.
     const { error: reminderError } = await supabase
+      .schema('jarvis') // <--- CORREÇÃO CRÍTICA AQUI
       .from('reminders')
       .update({ 
         status: 'completed', 
@@ -48,18 +59,19 @@ export async function POST(req: NextRequest) {
       .eq('id', reminderId);
       
     if (reminderError) {
-      console.error('[reminders/fire] Erro ao atualizar BD:', reminderError.message);
+      console.error('[reminders/fire] Erro ao atualizar BD (reminders):', reminderError.message);
     }
 
-    // 5. Busca os tokens do usuário garantindo o tipo Numérico
+    // 5. Busca os tokens do usuário no Schema JARVIS
     const { data: userRow, error: userError } = await supabase
+      .schema('jarvis') // <--- CORREÇÃO CRÍTICA AQUI
       .from('users')
       .select('push_token, telegram_chat_id')
       .eq('id', Number(userId))
       .single();
 
     if (userError || !userRow) {
-      console.error('[reminders/fire] Usuário não encontrado:', userId);
+      console.error('[reminders/fire] Usuário não encontrado no DB:', userId);
       return NextResponse.json({ ok: false, error: 'user_not_found' }, { status: 404 });
     }
 
@@ -74,7 +86,7 @@ export async function POST(req: NextRequest) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             to: activePushToken,
-            title: '📅 Lembrete',
+            title: '📅 Lembrete do Jarvis',
             body: message,
             data: { reminderId, type: 'reminder' },
             sound: 'default',
@@ -84,16 +96,16 @@ export async function POST(req: NextRequest) {
         
         if (expoJson?.data?.status === 'ok') {
           notified = true;
-          console.log('[reminders/fire] Push Expo enviado.');
+          console.log('[reminders/fire] Push Expo enviado com sucesso.');
         } else {
-          console.error('[reminders/fire] Erro do Expo:', expoJson?.data?.message);
+          console.error('[reminders/fire] Erro do Expo API:', expoJson?.data?.message || expoJson);
         }
       } catch (err) {
-        console.error('[reminders/fire] Falha na API do Expo:', err);
+        console.error('[reminders/fire] Falha de comunicação com Expo:', err);
       }
     }
 
-    // 6b. Fallback via Telegram
+    // 6b. Fallback via Telegram (Se o Push Expo falhar ou não existir token)
     if (!notified && userRow.telegram_chat_id) {
       const botToken = process.env.TELEGRAM_BOT_TOKEN;
       if (botToken) {
@@ -110,18 +122,26 @@ export async function POST(req: NextRequest) {
           
           if (telegramRes.ok) {
             notified = true;
-            console.log('[reminders/fire] Telegram enviado com sucesso.');
+            console.log('[reminders/fire] Telegram enviado com sucesso (Fallback).');
+          } else {
+            console.error('[reminders/fire] Erro da API Telegram:', await telegramRes.text());
           }
         } catch (err) {
-          console.error('[reminders/fire] Erro na API do Telegram:', err);
+          console.error('[reminders/fire] Erro na requisição do Telegram:', err);
         }
+      } else {
+        console.warn('[reminders/fire] Bot token do Telegram não configurado no .env');
       }
+    }
+
+    if (!notified) {
+      console.warn(`[reminders/fire] Lembrete ${reminderId} falhou em todos os canais para o usuário ${userId}.`);
     }
 
     return NextResponse.json({ ok: true, notified });
 
   } catch (err) {
-    console.error('[reminders/fire] Erro crítico:', err);
+    console.error('[reminders/fire] Erro crítico no motor:', err);
     return NextResponse.json({ ok: false, error: 'internal_error' }, { status: 500 });
   }
 }
