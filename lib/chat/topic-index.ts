@@ -1,4 +1,4 @@
-// lib/chat/topic-index.ts (versão final)
+// lib/chat/topic-index.ts
 import { supabase } from '@/lib/jarvis';
 import type { ContextType } from './context-classifier';
 
@@ -18,8 +18,9 @@ export async function updateTopicIndex(
 
   const now = new Date().toISOString();
 
-  // Buscar todos os tópicos existentes de uma só vez
+  // FIX #1: Adicionado .schema('jarvis') — tabela está em jarvis.topic_index
   const { data: existing } = await supabase
+    .schema('jarvis')
     .from('topic_index')
     .select('topic, weight, emotional_dimension, count')
     .eq('user_id', userId)
@@ -30,7 +31,6 @@ export async function updateTopicIndex(
   const upsertRows = contexts.map(topic => {
     const rec = existingMap.get(topic);
     if (rec) {
-      // Tópico já existe: EMA
       const newWeight = (rec.weight || 0) * 0.7 + 0.3;
       let newEmotionalDim = rec.emotional_dimension || 0;
       if (emotionalScore !== undefined) {
@@ -45,7 +45,6 @@ export async function updateTopicIndex(
         last_mentioned: now,
       };
     } else {
-      // Novo tópico
       return {
         user_id: userId,
         topic,
@@ -57,13 +56,18 @@ export async function updateTopicIndex(
     }
   });
 
+  // FIX #1: .schema('jarvis')
+  // FIX #2: onConflict sem espaço após a vírgula (PostgREST é sensível a isso)
   await supabase
+    .schema('jarvis')
     .from('topic_index')
-    .upsert(upsertRows, { onConflict: 'user_id, topic' });
+    .upsert(upsertRows, { onConflict: 'user_id,topic' });
 }
 
 export async function getRelatedTopics(userId: string, currentContext: string): Promise<string> {
+  // FIX #1: .schema('jarvis')
   const { data: related } = await supabase
+    .schema('jarvis')
     .from('topic_index')
     .select('topic, weight')
     .eq('user_id', userId)
@@ -81,7 +85,9 @@ export async function detectTopicShiftWithL4(
   userId: string,
   currentContexts: ContextType[]
 ): Promise<boolean> {
+  // FIX #1: .schema('jarvis')
   const { data: recentTopics } = await supabase
+    .schema('jarvis')
     .from('topic_index')
     .select('topic, weight')
     .eq('user_id', userId)
