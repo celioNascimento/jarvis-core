@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V8.16.0 (tool_calls loop + session history + L3 context guard)
+// app/api/chat/route.ts — V8.17.0 (emotional score pós-memória)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -114,45 +114,54 @@ export async function POST(req: NextRequest) {
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    const [queryEmbedding, recentHistory] = await Promise.all([
+    // ── FASE 1: Coisas que não dependem de memória (paralelo) ────────────────
+    const [queryEmbedding, recentHistory, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       getRecentMessages(sessionId, String(user.id)),
+      llmGateway.isOverloaded(),
+      classifyContextWithL4(message, String(user.id)),
     ]);
 
     console.log(`[History] ${recentHistory.length} mensagens de histórico carregadas para sessão ${sessionId}`);
 
-    // 2. Inteligência de Contexto
-    const [isStressed, contexts, emotional] = await Promise.all([
-      llmGateway.isOverloaded(),
-      classifyContextWithL4(message, String(user.id)),
-      computeEmotionalScore(message, String(user.id), [], ''),
-    ]);
-
-    // 3. Carregamento Modular
-    const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
-      {
-        userId:      String(user.id),
-        authUserId:  user.auth_user_id,
-        message,
-        contexts,
-        emotionalScore: emotional.score,
-      },
-      user.plan || 'free',
-      'google/gemini-2.0-flash-001',
-    );
-
-    // 4. Memória e Prompt Engine
+    // ── FASE 2: Memória carregada com embedding real ──────────────────────────
+    // emotionalScore=0 aqui é apenas um placeholder para o MemoryManager;
+    // o score real será calculado na Fase 3 com os resultados da memória.
     const memory = await MemoryManager.read({
       userId:         String(user.id),
       authUserId:     user.auth_user_id,
       sessionId,
       message,
       contexts,
-      emotionalScore: emotional.score,
+      emotionalScore: 0,
       authorName:     user.nickname,
       assistantName:  user.assistant_name,
       queryEmbedding,
     });
+
+    // ── FASE 3: Score emocional com contexto real ─────────────────────────────
+    // Agora sim temos os searchResults do HD e o bloco RAM carregados.
+    const emotional = await computeEmotionalScore(
+      message,
+      String(user.id),
+      memory.hd.memories ?? [],  // resultados brutos com similarity + emotional_weight
+      memory.ram.ramBlock ?? '',         // bloco RAM real
+    );
+
+    console.log(`[EmotionalRouter] score=${emotional.score.toFixed(3)} | trajectory=${emotional.trajectory} | triggers=${emotional.triggers.join(', ') || 'nenhum'}`);
+
+    // ── Carregamento Modular (agora com score emocional real) ─────────────────
+    const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
+      {
+        userId:         String(user.id),
+        authUserId:     user.auth_user_id,
+        message,
+        contexts,
+        emotionalScore: emotional.score,  // 👈 score real, não zero
+      },
+      user.plan || 'free',
+      'google/gemini-2.0-flash-001',
+    );
 
     // ── Guard L3 ─────────────────────────────────────────────────────────────
     let filteredL3 = memory.l3.content;
@@ -182,7 +191,7 @@ export async function POST(req: NextRequest) {
       authorName:       user.nickname,
       isLikelyNoise:    message.length < 15,
       isSystemStressed: isStressed,
-      emotionalScore:   emotional.score,
+      emotionalScore:   emotional.score,  // 👈 score real
       detectedContexts: contexts,
       contextBlocks,
       memoryBlocks: {
@@ -220,7 +229,6 @@ export async function POST(req: NextRequest) {
     if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
       console.log(`[Tools] ${firstResponse.toolCalls.length} tool(s) detectada(s):`, firstResponse.toolCalls.map(t => t.function.name));
 
-      // Executa todas as tools em paralelo
       const toolResults = await Promise.all(
         firstResponse.toolCalls.map(async (toolCall) => {
           console.log(`[Tools] Executando: ${toolCall.function.name}`);
@@ -230,10 +238,8 @@ export async function POST(req: NextRequest) {
         })
       );
 
-      // Monta o histórico completo com a resposta do assistente + resultados das tools
       const messagesWithToolResults: any[] = [
         ...conversationMessages,
-        // Mensagem do assistente com os tool_calls emitidos
         {
           role: 'assistant',
           content: firstResponse.content || null,
@@ -243,7 +249,6 @@ export async function POST(req: NextRequest) {
             function: { name: tc.function.name, arguments: tc.function.arguments },
           })),
         },
-        // Resultados de cada tool
         ...toolResults.map(({ toolCall, result }) => ({
           role:         'tool',
           tool_call_id: toolCall.id,
@@ -251,11 +256,10 @@ export async function POST(req: NextRequest) {
         })),
       ];
 
-      // Segunda chamada: LLM sintetiza os resultados em linguagem natural
       const secondResponse = await callOpenRouterWithPriority(
         1, 'never', `${requestSignature}_tool_synthesis`,
         messagesWithToolResults,
-        [], // sem tools na segunda chamada — só síntese
+        [],
         resolvedModel,
         0.7,
       );
@@ -263,11 +267,9 @@ export async function POST(req: NextRequest) {
       assistantReply = secondResponse.content || 'Feito.';
 
     } else {
-      // Sem tool_calls — resposta direta
       assistantReply = firstResponse.content || 'Processado.';
     }
 
-    // Cacheia o reply para o retry da Vercel recuperar
     await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => {});
 
     // 8. Salvamento no brain
