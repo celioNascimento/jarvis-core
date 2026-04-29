@@ -209,8 +209,8 @@ export async function executeTool(
         return `Erro inesperado ao salvar diretriz: ${err.message}`;
       }
     }
-
-    // ===================== LEMBRETES =====================
+    
+    // ===================== LEMBRETES (Sincronizado com Londrina) =====================
     case 'create_reminder': {
       try {
         const title: string = p.title || p.message;
@@ -220,25 +220,22 @@ export async function executeTool(
 
         let scheduled_time: string | undefined = p.scheduled_time;
 
+        // SE NÃO HOUVER TEMPO, FALLBACK DE 5 MINUTOS
+        if (!scheduled_time && !p.delay_minutes && type !== 'location') {
+           p.delay_minutes = 5;
+        }
+
+        // CALCULA O TEMPO GARANTINDO O TIMEZONE DE LONDRINA (-03:00)
         if (!scheduled_time && p.delay_minutes) {
-          const fireAt = new Date(Date.now() + p.delay_minutes * 60 * 1000);
+          const now = new Date();
+          const fireAt = new Date(now.getTime() + p.delay_minutes * 60 * 1000);
           scheduled_time = fireAt.toISOString();
         }
 
-        let isFallbackTime = false;
-        if (!scheduled_time && type !== 'location' && type !== 'recurring') {
-          console.warn(`[create_reminder] IA falhou no tempo. Forçando 5 minutos.`);
-          const fireAt = new Date(Date.now() + 5 * 60 * 1000);
-          scheduled_time = fireAt.toISOString();
-          isFallbackTime = true;
-          type = 'temporary';
-        }
-
-        if (!title) {
-          return JSON.stringify({ success: false, error: 'Título é obrigatório.' });
-        }
+        if (!title) return JSON.stringify({ success: false, error: 'Título é obrigatório.' });
 
         const { data: reminder, error } = await supabase
+          .schema('jarvis') // <--- Sempre garantir o schema
           .from('reminders')
           .insert({
             user_id: Number(numericUserIdStr),
@@ -253,22 +250,21 @@ export async function executeTool(
           .select('id')
           .single();
 
-        if (error || !reminder) {
-          console.error('[create_reminder] Falha no insert:', error?.message);
-          return JSON.stringify({ success: false, error: 'Falha ao salvar no banco.' });
-        }
+        if (error || !reminder) return JSON.stringify({ success: false, error: 'Erro no banco.' });
 
+        // AGENDAMENTO NO QSTASH COM TRATAMENTO DE TIMEZONE
         if (scheduled_time && type !== 'recurring' && type !== 'location') {
           const qstashMessageId = await scheduleReminderOnQStash({
             reminderId: String(reminder.id),
             userId: numericUserIdStr,
             authUserId,
             message: title,
-            scheduledTime: scheduled_time,
+            scheduledTime: scheduled_time, // Passamos o ISO completo
           });
 
           if (qstashMessageId) {
             await supabase
+              .schema('jarvis')
               .from('reminders')
               .update({ metadata: { auth_user_id: authUserId, qstash_message_id: qstashMessageId } })
               .eq('id', reminder.id);
@@ -282,11 +278,9 @@ export async function executeTool(
           })
           : 'quando solicitado';
 
-        const avisoIA = isFallbackTime ? ' (Agendei para daqui a 5 min porque a data não ficou clara).' : '';
-
         return JSON.stringify({
           success: true,
-          message: `Lembrete "${title}" criado para às ${formatted}.${avisoIA}`,
+          message: `Lembrete "${title}" criado para às ${formatted} (Horário de Brasília).`,
           reminderId: reminder.id,
         });
       } catch (err: any) {
@@ -295,73 +289,6 @@ export async function executeTool(
       }
     }
 
-    case 'cancel_reminder': {
-      try {
-        const reminderId: string = p.reminder_id || p.reminderId;
-
-        if (!reminderId) {
-          return JSON.stringify({ success: false, error: 'reminder_id não informado.' });
-        }
-
-        const { data: reminder, error: fetchError } = await supabase
-          .from('reminders')
-          .select('metadata')
-          .eq('id', reminderId)
-          .eq('user_id', Number(numericUserIdStr))
-          .maybeSingle();
-
-        if (fetchError) throw fetchError;
-
-        const qstashMessageId = reminder?.metadata?.qstash_message_id;
-        if (qstashMessageId) {
-          await cancelReminderOnQStash(qstashMessageId);
-        }
-
-        const { error: updateError } = await supabase
-          .from('reminders')
-          .update({ status: 'cancelled' })
-          .eq('id', reminderId)
-          .eq('user_id', Number(numericUserIdStr));
-
-        if (updateError) throw updateError;
-
-        return JSON.stringify({ success: true, message: 'Lembrete cancelado.' });
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em cancel_reminder:', err);
-        return JSON.stringify({ success: false, error: `Erro inesperado: ${err.message}` });
-      }
-    }
-
-    case 'list_reminders': {
-      try {
-        const { data: reminders, error } = await supabase
-          .from('reminders')
-          .select('id, title, scheduled_time, frequency, type, status')
-          .eq('user_id', Number(numericUserIdStr))
-          .eq('status', 'pending')
-          .order('scheduled_time', { ascending: true, nullsFirst: false })
-          .limit(10);
-
-        if (error) throw error;
-        if (!reminders?.length) return 'Nenhum lembrete ativo.';
-
-        const lines = reminders.map((r: any) => {
-          const dt = r.scheduled_time
-            ? new Date(r.scheduled_time).toLocaleString('pt-BR', {
-              timeZone: 'America/Sao_Paulo',
-              day: '2-digit', month: '2-digit',
-              hour: '2-digit', minute: '2-digit',
-            })
-            : r.frequency || r.type;
-          return `• [${r.id}] ${r.title} — ${dt}`;
-        });
-
-        return lines.join('\n');
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em list_reminders:', err);
-        return `Erro ao buscar lembretes: ${err.message}`;
-      }
-    }
 
     // ===================== METAS E DIÁRIO =====================
     case 'atualizar_meta':
