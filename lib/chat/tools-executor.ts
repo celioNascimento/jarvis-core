@@ -129,22 +129,24 @@ export async function executeTool(
         return 'Falha ao acessar memórias no momento. O banco de dados pode estar indisponível.';
       }
     }
-
     // ===================== AGENDA E GMAIL =====================
     case 'consultar_agenda': {
       try {
+        // Agora o Jarvis consulta a Agenda Lev + Google + Outlook simultaneamente
         const results = await Promise.allSettled([
-          getGoogleContext().catch(e => `[Erro Google: ${e.message || 'Falha na autenticação'}]`),
-          getMicrosoftCalendarContext().catch(e => `[Erro Outlook: ${e.message || 'Falha na autenticação'}]`)
+          supabase.rpc('get_calendar_context_for_jarvis', { p_user_id: Number(numericUserIdStr), p_days: 7 }).then(res => res.data || 'Sem eventos recentes.'),
+          getGoogleContext().catch(e => `[Erro Google]`),
+          getMicrosoftCalendarContext().catch(e => `[Erro Outlook]`)
         ]);
 
-        const g = results[0].status === 'fulfilled' ? results[0].value : `[Erro Google: Falha na promessa]`;
-        const o = results[1].status === 'fulfilled' ? results[1].value : `[Erro Outlook: Falha na promessa]`;
+        const lev = results[0].status === 'fulfilled' ? results[0].value : 'Erro ao carregar Agenda Lev';
+        const g = results[1].status === 'fulfilled' ? results[1].value : `[Erro Google: Falha na promessa]`;
+        const o = results[2].status === 'fulfilled' ? results[2].value : `[Erro Outlook: Falha na promessa]`;
 
-        return `Google Calendar:\n${g}\n\nOutlook:\n${o}`;
+        return `[AGENDA INTERNA LEV]\n${lev}\n\n[GOOGLE CALENDAR]\n${g}\n\n[OUTLOOK]\n${o}`;
       } catch (err: any) {
         console.error('[ToolsExecutor] Erro crítico em consultar_agenda:', err);
-        return 'Ocorreu um erro interno ao tentar consultar as agendas. Solicite que o usuário verifique as conexões das contas.';
+        return 'Ocorreu um erro interno ao tentar consultar as agendas.';
       }
     }
 
@@ -153,35 +155,39 @@ export async function executeTool(
         return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
       } catch (err: any) {
         console.error('[ToolsExecutor] Erro em criar_evento_agenda:', err);
-        return `Erro ao criar evento na agenda: ${err.message || 'Verifique a autenticação do Google.'}`;
+        return `Erro ao criar evento no Google Agenda: ${err.message}`;
       }
     }
 
     case 'salvar_evento': {
       try {
-        return await handleSalvarEvento(p, authUserId, numericUserIdStr);
+        // Insere o evento diretamente na sua nova tabela jarvis.events
+        const { data: event, error } = await supabase
+          .schema('jarvis')
+          .from('events')
+          .insert({
+            user_id: Number(numericUserIdStr),
+            title: p.title,
+            start_at: p.event_date,
+            description: p.notes || null, // Mapeia "notes" do prompt para "description" do banco
+            category: p.category || 'personal',
+            source: 'lev'
+          })
+          .select()
+          .single();
+
+        if (error) throw error;
+
+        // Opcional: Se quiser que o Jarvis já avise quando salvou certinho
+        const dataFormatada = new Date(p.event_date).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+        return `Compromisso "${p.title}" salvo com sucesso na Agenda Interna (Lev) para ${dataFormatada}.`;
       } catch (err: any) {
         console.error('[ToolsExecutor] Erro em salvar_evento:', err);
-        return `Erro ao processar e salvar o evento: ${err.message}`;
+        return `Erro ao salvar o evento na base de dados: ${err.message}`;
       }
     }
 
-    case 'listar_emails_recentes':
-      try {
-        return await getRecentEmails(p.filtro, 5, true);
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em listar_emails_recentes:', err);
-        return `Erro ao buscar emails: ${err.message || 'Falha na conexão com a conta de email.'}`;
-      }
-
-    case 'excluir_email': {
-      try {
-        return await trashGoogleEmail(p.messageId);
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em excluir_email:', err);
-        return `Erro ao excluir email: ${err.message || 'Verifique a autenticação do Google.'}`;
-      }
-    }
+    
 
     // ===================== DIRETRIZES =====================
     case 'adicionar_diretriz_dinamica': {
