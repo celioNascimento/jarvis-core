@@ -1,4 +1,4 @@
-// lib/chat/tools-executor.ts
+// lib/chat/tools-executor.ts 
 // Dual-ID:
 //   authUserId       → favorite_places + shopping_items (UUID do Auth)
 //   numericUserIdStr → todas as demais tabelas jarvis (bigint)
