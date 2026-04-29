@@ -119,7 +119,7 @@ class Gatekeeper {
         }
       }
 
-      await redis.set(`llm_dedup:${item.task.id}`, result, { ex: 60 });
+      await redis.set(`llm_dedup:${item.task.id}`, result, { ex: 15 });
       item.resolve(result);
 
     } catch (error: any) {
