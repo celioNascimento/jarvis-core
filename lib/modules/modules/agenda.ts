@@ -27,7 +27,14 @@ export const ModuloAgenda: ModuleDefinition = {
       return '';
     }
   },
-  tools: ['salvar_evento', 'consultar_agenda_interna', 'excluir_evento_agenda'],
-  // 👇 LINHA ADICIONADA AQUI 👇
+  // 👇 AS FERRAMENTAS AGORA ESTÃO NA MÃO DA IA 👇
+  tools: [
+    'salvar_evento', 
+    'consultar_agenda', // (Ajustei o nome para bater com o seu tools-executor)
+    'excluir_evento_agenda',
+    'create_reminder',
+    'cancel_reminder',
+    'list_reminders'
+  ],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
