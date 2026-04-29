@@ -66,17 +66,25 @@ export async function executeTool(
   } catch {
     return `Erro crítico: Falha ao parsear argumentos da ferramenta ${name}.`;
   }
-
-  // ── IDEMPOTÊNCIA: Evita disparos duplicados em retries da Vercel ───────────
+  // ─── IDEMPOTÊNCIA (Prevenção de Duplicidade Vercel / QStash) ───────────────
   const callSignature = toolCall.id || args.replace(/\s+/g, '').substring(0, 50);
   const idempotencyKey = `${numericUserIdStr}_${name}_${callSignature}`;
-  try {
-    const { error: idemError } = await supabase.from('idempotency_keys').insert({ key: idempotencyKey });
-    if (idemError && (idemError.code === '23505' || idemError.status === 409)) {
-      return `[SISTEMA] O comando "${name}" já foi processado anteriormente.`;
-    }
-  } catch (err) { /* Falha silenciosa na idempotência não trava o bot */ }
 
+  try {
+    const { error: idemError } = await supabase
+      .from('idempotency_keys')
+      .insert({ key: idempotencyKey });
+
+    // Removemos o idemError.status daqui 👇
+    if (idemError && idemError.code === '23505') {
+      console.warn(`[Idempotência] Bloqueado retry para a tool: ${name}`);
+      return `[SISTEMA] Comando já processado com sucesso.`;
+    }
+  } catch (err) {
+    console.warn('[Idempotência] Erro ignorado para não travar execução.', err);
+  }
+
+  
   // ── HELPER DE LUGARES (UUID-based) ────────────────────────────────────────
   const getPlaceId = async (nome: string) => {
     const { data } = await supabase
