@@ -9,7 +9,7 @@ export const ModuloAgenda: ModuleDefinition = {
   plan: 'free',
   trigger: {
     always: true, // Agenda deve estar sempre no contexto
-    contexts: ['agenda', 'evento'], // <--- APENAS OS CONTEXTOS VÁLIDOS AQUI
+    contexts: ['agenda', 'evento'],
     keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos/i
   },
   buildContextBlock: async (opts) => {
@@ -28,4 +28,6 @@ export const ModuloAgenda: ModuleDefinition = {
     }
   },
   tools: ['salvar_evento', 'consultar_agenda_interna', 'excluir_evento_agenda'],
+  // 👇 LINHA ADICIONADA AQUI 👇
+  metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
