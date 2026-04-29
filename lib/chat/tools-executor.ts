@@ -1,18 +1,15 @@
-// lib/chat/tools-executor.ts 
-// Dual-ID:
-//   authUserId       → favorite_places + shopping_items (UUID do Auth)
-//   numericUserIdStr → todas as demais tabelas jarvis (bigint)
+// lib/chat/tools-executor.ts
+// Motor V8.20.0 — Edição Definitiva Sem Cortes (ExpertFrotas, Finance, Agenda & TDAH)
+// Dual-ID: authUserId (UUID do Auth) | numericUserIdStr (BigInt do Banco)
 
 import { supabase } from '@/lib/jarvis';
 import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
-import { getGoogleContext, searchWeb, getWeatherForecast, createGoogleEvent } from '@/lib/google';
-// FIX #4: Removidos imports mortos: trashGoogleEmail (sem case), upsertEvent (sem case)
-// FIX #4: Removido cancelReminderOnQStash (sem case — adicione case 'cancelar_lembrete' quando implementar)
+import { getGoogleContext, searchWeb, getWeatherForecast, createGoogleEvent, trashGoogleEmail } from '@/lib/google';
+import { upsertEvent } from '@/lib/extractor-jobs';
 import { extractDiary, updateGoalProgress } from '@/lib/diary';
 import { getCachedEmbedding } from './embedding-cache';
-import { scheduleReminderOnQStash } from '@/lib/qstash';
-// FIX #1: Removido import de handleSalvarEvento — não era usado (salvar_evento tem implementação inline)
-// Se quiser usar o patch, substitua o case 'salvar_evento' abaixo pelo handleSalvarEvento
+import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
+import { handleSalvarEvento } from './tools-executor-agenda-patch';
 
 // EXECUTORES DE FINANÇAS
 import {
@@ -22,15 +19,24 @@ import {
   executeListarOrcamentos,
 } from '@/lib/finances/executor';
 
+// ─── HELPERS DE APOIO E VALIDAÇÃO ──────────────────────────────────────────
+
+/**
+ * Garante que o ID do usuário é uma string numérica (BigInt do banco)
+ */
 function assertNumericUserId(id: string, context: string): void {
   if (!/^\d+$/.test(id)) {
     throw new Error(`[${context}] userId invalido: esperado numerico, recebido "${id}"`);
   }
 }
 
+/**
+ * Busca a última localização salva para prover insights climáticos precisos
+ */
 async function getUserLastLocation(numericUserIdStr: string): Promise<{ lat: number; lng: number } | null> {
   try {
     const { data: locData, error } = await supabase
+      .schema('jarvis')
       .from('config')
       .select('value')
       .eq('key', `last_location_${numericUserIdStr}`)
@@ -49,6 +55,8 @@ async function getUserLastLocation(numericUserIdStr: string): Promise<{ lat: num
     return null;
   }
 }
+
+// ─── EXECUTOR PRINCIPAL ────────────────────────────────────────────────────
 
 export async function executeTool(
   toolCall: any,
@@ -70,7 +78,7 @@ export async function executeTool(
     return `Erro ao parsear argumentos de ${name}.`;
   }
 
-  // ─── IDEMPOTÊNCIA (Prevenção de Duplicidade Vercel) ───────────────────────
+  // ─── IDEMPOTÊNCIA (Prevenção de Duplicidade Vercel / QStash) ───────────────
   const callSignature = toolCall.id || args.replace(/\s+/g, '').substring(0, 50);
   const idempotencyKey = `${numericUserIdStr}_${name}_${callSignature}`;
 
@@ -79,15 +87,15 @@ export async function executeTool(
       .from('idempotency_keys')
       .insert({ key: idempotencyKey });
 
-    if (idemError && idemError.code === '23505') {
-      console.warn(`[Idempotência] Bloqueado retry da Vercel para a tool: ${name}`);
-      return `[SISTEMA] Comando recebido e já processado com sucesso. Nenhuma ação extra necessária.`;
+    if (idemError && (idemError.code === '23505' || idemError.status === 409)) {
+      console.warn(`[Idempotência] Bloqueado retry para a tool: ${name}`);
+      return `[SISTEMA] Comando já processado com sucesso.`;
     }
   } catch (err) {
-    console.warn('[Idempotência] Tabela ausente ou erro leve. Seguindo fluxo normal.', err);
+    console.warn('[Idempotência] Erro ignorado para não travar execução.', err);
   }
-  // ────────────────────────────────────────────────────────────────────────────
 
+  // ─── HELPER PARA BUSCA DE LUGARES (Tabelas de Compras) ─────────────────────
   async function getPlaceId(nome: string): Promise<string | null> {
     try {
       const { data, error } = await supabase
@@ -110,11 +118,13 @@ export async function executeTool(
     case 'buscar_memoria_longa': {
       try {
         const emb = await getCachedEmbedding(p.query);
-        const { data: mems, error } = await supabase.rpc('match_memories', {
-          query_embedding: emb,
-          match_threshold: 0.4,
-          match_count: 5,
-        });
+        const { data: mems, error } = await supabase
+          .schema('jarvis')
+          .rpc('match_memories', {
+            query_embedding: emb,
+            match_threshold: 0.4,
+            match_count: 5,
+          });
 
         if (error) throw error;
 
@@ -122,40 +132,50 @@ export async function executeTool(
           (mems as any[])
             ?.filter((m) => !m.summary.startsWith('[CINZA]'))
             .map((m) => m.summary)
-            .join('\n---\n') || 'Nenhuma memória relevante.'
+            .join('\n---\n') || 'Nenhuma memória relevante encontrada.'
         );
       } catch (err: any) {
         console.error('[ToolsExecutor] Erro em buscar_memoria_longa:', err);
-        return 'Falha ao acessar memórias no momento. O banco de dados pode estar indisponível.';
+        return 'Falha ao acessar memórias. O banco de dados pode estar indisponível.';
       }
     }
 
-    // ===================== AGENDA E GMAIL =====================
+    case 'adicionar_diretriz_dinamica': {
+      try {
+        const { error } = await supabase
+          .schema('jarvis')
+          .rpc('upsert_dynamic_guideline', {
+            p_user_id: Number(numericUserIdStr),
+            p_content: p.content,
+            p_scope: p.scope || 'personal'
+          });
+
+        if (error) throw error;
+        return `Diretriz "${p.content}" salva com sucesso. O comportamento será ajustado.`;
+      } catch (err: any) {
+        return `Erro inesperado ao salvar diretriz: ${err.message}`;
+      }
+    }
+
+    // ===================== AGENDA E COMUNICAÇÃO =====================
     case 'consultar_agenda': {
       try {
         const results = await Promise.allSettled([
-          supabase.rpc('get_calendar_context_for_jarvis', { p_user_id: Number(numericUserIdStr), p_days: 7 }).then(res => res.data || 'Sem eventos recentes.'),
-          getGoogleContext().catch(() => `[Erro Google]`),
-          getMicrosoftCalendarContext().catch(() => `[Erro Outlook]`)
+          supabase.schema('jarvis').rpc('get_calendar_context_for_jarvis', { 
+            p_user_id: Number(numericUserIdStr), 
+            p_days: p.dias || 7 
+          }).then(res => res.data || 'Sem eventos na agenda Lev.'),
+          getGoogleContext().catch(e => `[Erro Google: ${e.message}]`),
+          getMicrosoftCalendarContext().catch(e => `[Erro Outlook: ${e.message}]`)
         ]);
 
         const lev = results[0].status === 'fulfilled' ? results[0].value : 'Erro ao carregar Agenda Lev';
-        const g   = results[1].status === 'fulfilled' ? results[1].value : `[Erro Google: Falha na promessa]`;
-        const o   = results[2].status === 'fulfilled' ? results[2].value : `[Erro Outlook: Falha na promessa]`;
+        const g = results[1].status === 'fulfilled' ? results[1].value : `[Erro Google]`;
+        const o = results[2].status === 'fulfilled' ? results[2].value : `[Erro Outlook]`;
 
         return `[AGENDA INTERNA LEV]\n${lev}\n\n[GOOGLE CALENDAR]\n${g}\n\n[OUTLOOK]\n${o}`;
       } catch (err: any) {
-        console.error('[ToolsExecutor] Erro crítico em consultar_agenda:', err);
         return 'Ocorreu um erro interno ao tentar consultar as agendas.';
-      }
-    }
-
-    case 'criar_evento_agenda': {
-      try {
-        return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em criar_evento_agenda:', err);
-        return `Erro ao criar evento no Google Agenda: ${err.message}`;
       }
     }
 
@@ -170,63 +190,52 @@ export async function executeTool(
             start_at: p.event_date,
             description: p.notes || null,
             category: p.category || 'personal',
+            is_recurring: p.is_recurring || false,
             source: 'lev'
           })
           .select()
           .single();
 
         if (error) throw error;
-
-        const dataFormatada = new Date(p.event_date).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-        return `Compromisso "${p.title}" salvo com sucesso na Agenda Interna (Lev) para ${dataFormatada}.`;
+        const dt = new Date(p.event_date).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+        return `Compromisso "${p.title}" salvo na Agenda Lev para ${dt}.`;
       } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em salvar_evento:', err);
-        return `Erro ao salvar o evento na base de dados: ${err.message}`;
+        return `Erro ao salvar o evento: ${err.message}`;
       }
     }
 
-    // ===================== DIRETRIZES =====================
-    case 'adicionar_diretriz_dinamica': {
+    case 'criar_evento_agenda':
       try {
-        const { error } = await supabase.rpc('upsert_dynamic_guideline', {
-          p_user_id: Number(numericUserIdStr),
-          p_content: p.content,
-          p_scope: p.scope || 'personal'
-        });
-
-        if (error) {
-          console.error('[Tools] Erro ao adicionar diretriz:', error);
-          return `Erro ao salvar a diretriz: ${error.message}`;
-        }
-
-        return `Diretriz "${p.content}" salva com sucesso na base de dados. O comportamento será ajustado.`;
+        return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
       } catch (err: any) {
-        console.error('[ToolsExecutor] Erro inesperado em adicionar_diretriz_dinamica:', err);
-        return `Erro inesperado ao salvar diretriz: ${err.message}`;
+        return `Erro no Google Calendar: ${err.message}`;
       }
-    }
 
-    // ===================== LEMBRETES =====================
+    case 'listar_emails_recentes':
+      try {
+        return await getRecentEmails(p.filtro, 5, true);
+      } catch (err: any) {
+        return `Erro ao buscar emails: ${err.message}`;
+      }
+
+    case 'excluir_email':
+      try {
+        return await trashGoogleEmail(p.messageId);
+      } catch (err: any) {
+        return `Erro ao excluir email: ${err.message}`;
+      }
+
+    // ===================== LEMBRETES (QSTASH + JARVIS SCHEMA) =====================
     case 'create_reminder': {
       try {
         const title: string = p.title || p.message;
-        const frequency: string | undefined = p.frequency || p.recurrence;
-        const location_trigger: string | undefined = p.location_trigger;
-        let type: 'temporary' | 'agenda' | 'recurring' | 'location' = p.type || 'temporary';
-
         let scheduled_time: string | undefined = p.scheduled_time;
 
-        if (!scheduled_time && !p.delay_minutes && type !== 'location') {
-          p.delay_minutes = 5;
-        }
-
         if (!scheduled_time && p.delay_minutes) {
-          const now = new Date();
-          const fireAt = new Date(now.getTime() + p.delay_minutes * 60 * 1000);
-          scheduled_time = fireAt.toISOString();
+          scheduled_time = new Date(Date.now() + p.delay_minutes * 60000).toISOString();
+        } else if (!scheduled_time && p.type !== 'location') {
+          scheduled_time = new Date(Date.now() + 300000).toISOString(); // Fallback 5 min
         }
-
-        if (!title) return JSON.stringify({ success: false, error: 'Título é obrigatório.' });
 
         const { data: reminder, error } = await supabase
           .schema('jarvis')
@@ -234,20 +243,20 @@ export async function executeTool(
           .insert({
             user_id: Number(numericUserIdStr),
             title,
-            type,
+            type: p.type || 'temporary',
             scheduled_time: scheduled_time || null,
-            frequency: frequency || null,
-            location_trigger: location_trigger || null,
+            frequency: p.frequency || null,
+            location_trigger: p.location_trigger || null,
             status: 'pending',
             metadata: { auth_user_id: authUserId },
           })
           .select('id')
           .single();
 
-        if (error || !reminder) return JSON.stringify({ success: false, error: 'Erro no banco.' });
+        if (error || !reminder) throw error;
 
-        if (scheduled_time && type !== 'recurring' && type !== 'location') {
-          const qstashMessageId = await scheduleReminderOnQStash({
+        if (scheduled_time && p.type !== 'recurring' && p.type !== 'location') {
+          const qid = await scheduleReminderOnQStash({
             reminderId: String(reminder.id),
             userId: numericUserIdStr,
             authUserId,
@@ -255,275 +264,160 @@ export async function executeTool(
             scheduledTime: scheduled_time,
           });
 
-          if (qstashMessageId) {
+          if (qid) {
             await supabase
               .schema('jarvis')
               .from('reminders')
-              .update({ metadata: { auth_user_id: authUserId, qstash_message_id: qstashMessageId } })
+              .update({ metadata: { auth_user_id: authUserId, qstash_message_id: qid } })
               .eq('id', reminder.id);
           }
         }
 
-        const formatted = scheduled_time
-          ? new Date(scheduled_time).toLocaleString('pt-BR', {
-              timeZone: 'America/Sao_Paulo',
-              hour: '2-digit', minute: '2-digit',
-            })
-          : 'quando solicitado';
-
-        return JSON.stringify({
-          success: true,
-          message: `Lembrete "${title}" criado para às ${formatted} (Horário de Brasília).`,
-          reminderId: reminder.id,
+        const dtFormatted = new Date(scheduled_time!).toLocaleString('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+          hour: '2-digit', minute: '2-digit',
         });
+        return JSON.stringify({ success: true, message: `Lembrete "${title}" criado para às ${dtFormatted}.` });
       } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em create_reminder:', err);
-        return JSON.stringify({ success: false, error: `Erro inesperado: ${err.message}` });
+        return JSON.stringify({ success: false, error: err.message });
       }
     }
 
-    // ===================== METAS E DIÁRIO =====================
-    case 'atualizar_meta':
+    case 'cancel_reminder': {
       try {
-        return await updateGoalProgress(numericUserIdStr, p.titulo_parcial, p.progresso, p.etapa_concluida);
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em atualizar_meta:', err);
-        return `Erro ao atualizar meta: ${err.message}`;
-      }
+        const reminderId = p.reminder_id || p.reminderId;
+        const { data: rem } = await supabase
+          .schema('jarvis')
+          .from('reminders')
+          .select('metadata')
+          .eq('id', reminderId)
+          .eq('user_id', Number(numericUserIdStr))
+          .maybeSingle();
 
-    case 'registrar_no_diario':
-      try {
-        await extractDiary(numericUserIdStr, p.texto, p.categoria || 'anytime');
-        return 'Entrada registrada no diário.';
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em registrar_no_diario:', err);
-        return `Erro ao registrar no diário: ${err.message}`;
-      }
-
-    // ===================== PESQUISA E CLIMA =====================
-    case 'searchWeb': {
-      try {
-        console.log(`[tool] searchWeb: "${p.query}"`);
-        const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout de busca atingido')), 8000));
-        const result = await Promise.race([searchWeb(p.query), timeout]) as string;
-        console.log(`[tool] resultado: ${result?.substring(0, 200) || 'Sem resultado'}`);
-        return result;
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em searchWeb:', err);
-        return "A pesquisa demorou muito ou falhou. Informe ao usuário que a busca está temporariamente indisponível.";
-      }
-    }
-
-    case 'getWeatherForecast':
-      try {
-        const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout de previsão do tempo atingido')), 5000));
-        return await Promise.race([getWeatherForecast(p.lat, p.lng), timeout]) as string;
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em getWeatherForecast:', err);
-        return "Serviço de previsão do tempo indisponível no momento.";
-      }
-
-    case 'get_weather_insights': {
-      try {
-        const location = await getUserLastLocation(numericUserIdStr);
-        if (!location) return 'Compartilhe sua localização para eu poder dar dicas do clima. 📍';
-        const { getWeatherInsight } = await import('@/lib/insights/weather-insights');
-        const { data: userData } = await supabase
-          .from('users')
-          .select('nickname')
-          .eq('id', numericUserIdStr)
-          .single();
-        return await getWeatherInsight(location.lat, location.lng, userData?.nickname || '');
-      } catch (err) {
-        console.error('[WeatherInsight] Erro ao carregar módulo:', err);
-        return 'Funcionalidade de insights climáticos em desenvolvimento. Em breve! 🌤️';
-      }
-    }
-
-    // ===================== LUGARES E LISTAS =====================
-    case 'salvar_lugar': {
-      try {
-        const { error } = await supabase.from('favorite_places').upsert(
-          {
-            user_id: authUserId,
-            name: p.nome.trim(),
-            lat: p.lat,
-            lng: p.lng,
-            radius_meters: p.raio_metros,
-            category: p.categoria.trim(),
-          },
-          { onConflict: 'user_id,name' }
-        );
-        return error ? `Erro: ${error.message}` : `Lugar "${p.nome}" salvo.`;
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em salvar_lugar:', err);
-        return `Erro ao salvar lugar: ${err.message}`;
-      }
-    }
-
-    case 'remover_lugar':
-      try {
-        const { error } = await supabase.from('favorite_places').delete().eq('user_id', authUserId).ilike('name', p.nome.trim());
-        if (error) throw error;
-        return `Lugar "${p.nome}" removido.`;
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em remover_lugar:', err);
-        return `Erro ao remover lugar: ${err.message}`;
-      }
-
-    case 'adicionar_item_lista': {
-      try {
-        const pid = await getPlaceId(p.lugar);
-        if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
-        const { error } = await supabase.from('shopping_items').upsert(
-          { user_id: authUserId, item: p.item.trim(), place_id: pid, done: false },
-          { onConflict: 'user_id,item,place_id' }
-        );
-        if (error) throw error;
-        return `"${p.item}" adicionado à lista de ${p.lugar}.`;
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em adicionar_item_lista:', err);
-        return `Erro ao adicionar item: ${err.message}`;
-      }
-    }
-
-    case 'marcar_feito': {
-      try {
-        const pid = await getPlaceId(p.lugar);
-        if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
-        const { error } = await supabase
-          .from('shopping_items')
-          .update({ done: true })
-          .eq('user_id', authUserId)
-          .ilike('item', p.item.trim())
-          .eq('place_id', pid);
-        if (error) throw error;
-        return `"${p.item}" marcado como comprado.`;
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em marcar_feito:', err);
-        return `Erro ao atualizar item: ${err.message}`;
-      }
-    }
-
-    case 'remover_item_lista': {
-      try {
-        const pid = await getPlaceId(p.lugar);
-        if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
-        const { error } = await supabase
-          .from('shopping_items')
-          .delete()
-          .eq('user_id', authUserId)
-          .ilike('item', p.item.trim())
-          .eq('place_id', pid);
-        if (error) throw error;
-        return `"${p.item}" removido.`;
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em remover_item_lista:', err);
-        return `Erro ao remover item: ${err.message}`;
-      }
-    }
-
-    case 'ver_lista': {
-      try {
-        const pid = await getPlaceId(p.lugar);
-        if (!pid) return `Lista de ${p.lugar} não encontrada.`;
-        const { data: itens, error } = await supabase
-          .from('shopping_items')
-          .select('item, done')
-          .eq('user_id', authUserId)
-          .eq('place_id', pid)
-          .order('done');
-        if (error) throw error;
-        if (!itens?.length) return `Lista de ${p.lugar} está vazia.`;
-        return `Lista de ${p.lugar}:\n${itens.map((i: any) => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
-      } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em ver_lista:', err);
-        return `Erro ao carregar lista: ${err.message}`;
-      }
-    }
-
-    // ===================== SUPORTE EXECUTIVO (TDAH & FOCO) =====================
-    case 'quebrar_tarefa': {
-      try {
-        const tarefa = p.tarefa_principal;
-        const estado = p.estado_cognitivo || 'neutro';
-
-        let instrucao_modelo = `A tarefa do usuário é "${tarefa}". O estado cognitivo detectado é "${estado}".\n\n`;
-        instrucao_modelo += `REGRA DE RESPOSTA (Módulo TDAH ativado):\n`;
-        instrucao_modelo += `1. Não dê preâmbulos motivacionais.\n`;
-        instrucao_modelo += `2. Quebre a tarefa em 3 a 5 micro-passos sequenciais.\n`;
-
-        if (estado === 'sobrecarregado' || estado === 'sem_energia') {
-          instrucao_modelo += `3. O Passo 1 deve ser absurdamente fácil (ex: 'Levantar da cadeira' ou 'Pegar o pano').\n`;
+        if (rem?.metadata?.qstash_message_id) {
+          await cancelReminderOnQStash(rem.metadata.qstash_message_id);
         }
 
-        instrucao_modelo += `4. Peça para o usuário responder "feito" apenas para o Passo 1 antes de mostrar os outros.`;
+        await supabase
+          .schema('jarvis')
+          .from('reminders')
+          .update({ status: 'cancelled' })
+          .eq('id', reminderId)
+          .eq('user_id', Number(numericUserIdStr));
 
-        // FIX #3: Adicionado .schema('jarvis') — tabela brain fica no schema jarvis
+        return "Lembrete cancelado com sucesso.";
+      } catch (err: any) {
+        return `Erro ao cancelar lembrete: ${err.message}`;
+      }
+    }
+
+    case 'list_reminders': {
+      try {
+        const { data: reminders } = await supabase
+          .schema('jarvis')
+          .from('reminders')
+          .select('id, title, scheduled_time')
+          .eq('user_id', Number(numericUserIdStr))
+          .eq('status', 'pending')
+          .order('scheduled_time', { ascending: true })
+          .limit(10);
+
+        if (!reminders?.length) return 'Nenhum lembrete ativo no momento.';
+        return reminders.map(r => `• [${r.id}] ${r.title} — ${new Date(r.scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`).join('\n');
+      } catch (err: any) {
+        return `Erro ao buscar lembretes: ${err.message}`;
+      }
+    }
+
+    // ===================== EXPERTFROTAS (VEÍCULOS) =====================
+    case 'registrar_abastecimento': {
+      try {
+        const { data: v } = await supabase
+          .schema('jarvis')
+          .from('vehicles')
+          .select('id')
+          .ilike('name', p.vehicle_name)
+          .eq('user_id', numericUserIdStr)
+          .maybeSingle();
+
+        if (!v) return `Veículo "${p.vehicle_name}" não encontrado.`;
+
         const { error } = await supabase
           .schema('jarvis')
-          .from('brain')
-          .insert([{
-            user_id: Number(numericUserIdStr),
-            category: 'Nota',
-            content: `Usuário iniciou quebra de tarefa: ${tarefa} (Estado: ${estado})`,
-            project_tag: 'foco'
-          }]);
+          .from('vehicle_refueling')
+          .insert({
+            vehicle_id: v.id,
+            user_id: numericUserIdStr,
+            auth_user_id: authUserId,
+            fuel_type: p.fuel_type,
+            total_cost: p.total_cost,
+            odometer: p.odometer,
+            liters: p.liters || null
+          });
 
         if (error) throw error;
-
-        return instrucao_modelo;
+        return `Abastecimento de ${p.fuel_type} (R$ ${p.total_cost}) registrado para o ${p.vehicle_name}.`;
       } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em quebrar_tarefa:', err);
-        return `Erro ao processar quebra de tarefa. Prossiga ajudando o usuário de forma simplificada.`;
+        return `Erro ao registrar abastecimento: ${err.message}`;
       }
     }
 
-    case 'criar_rotina': {
+    case 'registrar_manutencao': {
       try {
-        const { error } = await supabase.from('routines').insert([{
-          user_id: Number(numericUserIdStr),
-          anchor: p.anchor,
-          action: p.action,
-          period: p.period || 'anytime',
-          is_active: true
-        }]);
+        const { data: v } = await supabase
+          .schema('jarvis')
+          .from('vehicles')
+          .select('id')
+          .ilike('name', p.vehicle_name)
+          .eq('user_id', numericUserIdStr)
+          .maybeSingle();
 
-        if (error) {
-          console.error('[ToolsExecutor] Erro ao criar rotina:', error);
-          return 'Houve um erro técnico ao tentar guardar a rotina no repositório.';
-        }
+        if (!v) return `Veículo não encontrado.`;
 
-        return `A rotina "${p.action}" ancorada em "${p.anchor}" no período ${p.period || 'anytime'} foi criada com sucesso! Confirme ao utilizador de forma curta.`;
+        const { error } = await supabase
+          .schema('jarvis')
+          .from('vehicle_maintenances')
+          .insert({
+            vehicle_id: v.id,
+            user_id: numericUserIdStr,
+            title: p.servico || p.title,
+            performed_date: p.data || new Date().toISOString(),
+            odometer: p.odometer,
+            cost: p.custo || p.cost || 0
+          });
+
+        if (error) throw error;
+        return `Manutenção registrada para o ${p.vehicle_name}.`;
       } catch (err: any) {
-        console.error('[ToolsExecutor] Erro em criar_rotina:', err);
-        return `Falha ao tentar criar a rotina: ${err.message}`;
+        return `Erro ao registrar manutenção: ${err.message}`;
       }
     }
 
-    case 'gerenciar_eisenhower': {
+    case 'atualizar_odometro': {
       try {
-        // FIX #2: Adicionado .schema('jarvis') nas duas operações
-        if (p.acao === 'adicionar') {
-          const { error } = await supabase
-            .schema('jarvis')
-            .from('eisenhower_items')
-            .insert({ user_id: numericUserIdStr, text: p.texto, quadrant: p.quadrante || 'q2' });
-          if (error) throw error;
-          return `Tarefa "${p.texto}" adicionada ao quadrante ${p.quadrante || 'q2'} da Matriz de Eisenhower.`;
-        }
-        if (p.acao === 'completar') {
-          const { error } = await supabase
-            .schema('jarvis')
-            .from('eisenhower_items')
-            .update({ completed: true, completed_at: new Date() })
-            .eq('user_id', numericUserIdStr)
-            .ilike('text', `%${p.texto}%`);
-          return error ? "Erro ao completar tarefa." : `Tarefa que contém "${p.texto}" concluída!`;
-        }
-        return "Ação processada na Matriz.";
+        const { data: v } = await supabase
+          .schema('jarvis')
+          .from('vehicles')
+          .select('id')
+          .ilike('name', p.vehicle_name)
+          .eq('user_id', numericUserIdStr)
+          .maybeSingle();
+
+        if (!v) return "Veículo não encontrado.";
+
+        await supabase.schema('jarvis').from('vehicle_odometer_logs').insert({
+          vehicle_id: v.id, user_id: numericUserIdStr, odometer: p.odometer, source: 'manual'
+        });
+
+        await supabase
+          .schema('jarvis')
+          .from('vehicles')
+          .update({ current_km: p.odometer })
+          .eq('id', v.id);
+
+        return `Odômetro do ${p.vehicle_name} atualizado para ${p.odometer}km.`;
       } catch (err: any) {
-        return `Erro na Matriz: ${err.message}`;
+        return `Erro no odômetro: ${err.message}`;
       }
     }
 
@@ -532,37 +426,147 @@ export async function executeTool(
       return executeRegistrarTransacao(p, authUserId, numericUserIdStr);
     case 'consultar_financas':
       return executeConsultarFinancas(p, authUserId, numericUserIdStr);
-    case 'criar_orcamento':
-      return executeCriarOrcamento(p, authUserId, numericUserIdStr);
     case 'listar_orcamentos':
       return executeListarOrcamentos(authUserId, numericUserIdStr);
+    case 'criar_orcamento':
+      return executeCriarOrcamento(p, authUserId, numericUserIdStr);
 
-    // ===================== VEÍCULOS (ExpertFrotas) =====================
-    case 'registrar_abastecimento': {
+    // ===================== FOCO E TDAH =====================
+    case 'gerenciar_eisenhower': {
       try {
-        const { data: v } = await supabase.from('vehicles').select('id').ilike('name', p.vehicle_name).eq('user_id', numericUserIdStr).maybeSingle();
-        if (!v) return `Veículo "${p.vehicle_name}" não encontrado na sua garagem.`;
-
-        const { error } = await supabase.from('vehicle_refueling').insert({
-          vehicle_id: v.id, user_id: numericUserIdStr, auth_user_id: authUserId,
-          fuel_type: p.fuel_type, total_cost: p.total_cost, odometer: p.odometer, liters: p.liters || null
-        });
-
-        if (error) throw error;
-        return `Abastecimento de ${p.fuel_type} (R$ ${p.total_cost}) registrado para o ${p.vehicle_name}. Odômetro atualizado para ${p.odometer}km.`;
-      } catch (err: any) { return `Erro ao registrar abastecimento: ${err.message}`; }
+        if (p.acao === 'adicionar') {
+          await supabase.schema('jarvis').from('eisenhower_items').insert({ 
+            user_id: numericUserIdStr, text: p.texto, quadrant: p.quadrante || 'q2' 
+          });
+          return `Tarefa adicionada ao quadrante ${p.quadrante || 'q2'}.`;
+        }
+        if (p.acao === 'completar') {
+          await supabase.schema('jarvis').from('eisenhower_items').update({ 
+            completed: true, completed_at: new Date() 
+          }).eq('user_id', numericUserIdStr).ilike('text', `%${p.texto}%`);
+          return `Tarefa "${p.texto}" concluída na Matriz.`;
+        }
+        return "Ação processada.";
+      } catch (err: any) {
+        return `Erro na Matriz: ${err.message}`;
+      }
     }
 
-    case 'atualizar_odometro': {
+    case 'quebrar_tarefa': {
+      const tarefa = p.tarefa_principal;
+      const estado = p.estado_cognitivo || 'neutro';
+      await supabase.schema('jarvis').from('brain').insert([{ 
+        user_id: Number(numericUserIdStr), category: 'Nota', content: `Iniciou quebra de tarefa: ${tarefa}`, project_tag: 'foco' 
+      }]);
+      return `[MODO TDAH] Tarefa: "${tarefa}".\n1. Primeiro passo minúsculo (< 2 min).\n2. Aguarde o usuário confirmar antes dos próximos.`;
+    }
+
+    case 'criar_rotina': {
       try {
-        const { data: v } = await supabase.from('vehicles').select('id').ilike('name', p.vehicle_name).eq('user_id', numericUserIdStr).maybeSingle();
-        if (!v) return `Veículo "${p.vehicle_name}" não encontrado.`;
+        await supabase.schema('jarvis').from('routines').insert([{
+          user_id: Number(numericUserIdStr), anchor: p.anchor, action: p.action, period: p.period || 'anytime', is_active: true
+        }]);
+        return `Rotina "${p.action}" salva com sucesso!`;
+      } catch (err: any) {
+        return `Erro ao salvar rotina: ${err.message}`;
+      }
+    }
 
-        await supabase.from('vehicle_odometer_logs').insert({ vehicle_id: v.id, user_id: numericUserIdStr, odometer: p.odometer, source: 'manual' });
-        await supabase.from('vehicles').update({ current_km: p.odometer }).eq('id', v.id);
+    // ===================== PESQUISA, CLIMA E METAS =====================
+    case 'searchWeb':
+      try {
+        const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 8000));
+        return await Promise.race([searchWeb(p.query), timeout]) as string;
+      } catch { return "Busca temporariamente indisponível."; }
 
-        return `Odômetro do ${p.vehicle_name} atualizado para ${p.odometer}km.`;
-      } catch (err: any) { return `Erro no odômetro: ${err.message}`; }
+    case 'getWeatherForecast':
+      return await getWeatherForecast(p.lat, p.lng);
+
+    case 'get_weather_insights': {
+      try {
+        const loc = await getUserLastLocation(numericUserIdStr);
+        if (!loc) return 'Compartilhe sua localização para dicas climáticas.';
+        const { getWeatherInsight } = await import('@/lib/insights/weather-insights');
+        return await getWeatherInsight(loc.lat, loc.lng, 'Célio');
+      } catch { return 'Insights climáticos indisponíveis no momento.'; }
+    }
+
+    case 'atualizar_meta':
+      return await updateGoalProgress(numericUserIdStr, p.titulo_parcial, p.progresso, p.etapa_concluida);
+
+    case 'registrar_no_diario':
+      try {
+        await extractDiary(numericUserIdStr, p.texto, p.categoria || 'anytime');
+        return 'Entrada registrada no seu diário pessoal.';
+      } catch (err: any) {
+        return `Erro ao registrar no diário: ${err.message}`;
+      }
+
+    // ===================== LUGARES E LISTAS (UUID AUTH) =====================
+    case 'salvar_lugar': {
+      try {
+        const { error } = await supabase.from('favorite_places').upsert({
+          user_id: authUserId, name: p.nome.trim(), lat: p.lat, lng: p.lng, radius_meters: p.raio_metros, category: p.categoria.trim()
+        }, { onConflict: 'user_id,name' });
+        return error ? `Erro: ${error.message}` : `Lugar "${p.nome}" salvo nos favoritos.`;
+      } catch (err: any) {
+        return `Erro: ${err.message}`;
+      }
+    }
+
+    case 'remover_lugar':
+      try {
+        await supabase.from('favorite_places').delete().eq('user_id', authUserId).ilike('name', p.nome.trim());
+        return `Lugar removido dos favoritos.`;
+      } catch (err: any) {
+        return `Erro: ${err.message}`;
+      }
+
+    case 'adicionar_item_lista': {
+      try {
+        const pid = await getPlaceId(p.lugar);
+        if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
+        await supabase.from('shopping_items').upsert({
+          user_id: authUserId, item: p.item.trim(), place_id: pid, done: false
+        }, { onConflict: 'user_id,item,place_id' });
+        return `"${p.item}" adicionado à sua lista de ${p.lugar}.`;
+      } catch (err: any) {
+        return `Erro: ${err.message}`;
+      }
+    }
+
+    case 'marcar_feito': {
+      try {
+        const pid = await getPlaceId(p.lugar);
+        if (!pid) return `Lugar não encontrado.`;
+        await supabase.from('shopping_items').update({ done: true }).eq('user_id', authUserId).ilike('item', p.item.trim()).eq('place_id', pid);
+        return `"${p.item}" marcado como comprado em ${p.lugar}.`;
+      } catch (err: any) {
+        return `Erro: ${err.message}`;
+      }
+    }
+
+    case 'remover_item_lista': {
+      try {
+        const pid = await getPlaceId(p.lugar);
+        if (!pid) return `Lugar não encontrado.`;
+        await supabase.from('shopping_items').delete().eq('user_id', authUserId).ilike('item', p.item.trim()).eq('place_id', pid);
+        return `"${p.item}" removido da lista de ${p.lugar}.`;
+      } catch (err: any) {
+        return `Erro: ${err.message}`;
+      }
+    }
+
+    case 'ver_lista': {
+      try {
+        const pid = await getPlaceId(p.lugar);
+        if (!pid) return `Lista de ${p.lugar} não encontrada.`;
+        const { data: itens } = await supabase.from('shopping_items').select('item, done').eq('user_id', authUserId).eq('place_id', pid).order('done');
+        if (!itens?.length) return `A lista de ${p.lugar} está vazia.`;
+        return `Lista ${p.lugar}:\n${itens.map(i => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
+      } catch (err: any) {
+        return `Erro: ${err.message}`;
+      }
     }
 
     default:
