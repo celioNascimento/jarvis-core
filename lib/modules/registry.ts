@@ -1,3 +1,4 @@
+
 // lib/modules/registry.ts
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -10,6 +11,7 @@ import { ModuloFinancas } from './modules/financas';
 import { ModuloVeiculos } from './modules/veiculos';
 import { ModuloFoco } from './modules/foco';
 import { ModuloRotinas } from './modules/rotinas';
+import { ModuloAgenda } from './modules/agenda';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -21,6 +23,7 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloVeiculos,
   ModuloFoco,
   ModuloRotinas,
+  ModuloAgenda
 ];
 
 export async function loadActiveModules(
