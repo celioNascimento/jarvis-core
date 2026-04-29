@@ -9,12 +9,11 @@ export const ModuloAgenda: ModuleDefinition = {
   plan: 'free',
   trigger: {
     always: true, // Agenda deve estar sempre no contexto
-    contexts: ['agenda', 'compromisso', 'evento', 'reuniao'],
+    contexts: ['agenda', 'evento'], // <--- APENAS OS CONTEXTOS VÁLIDOS AQUI
     keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos/i
   },
   buildContextBlock: async (opts) => {
     try {
-      // Chama a sua nova RPC que você configurou na rota /context
       const { data, error } = await supabase.rpc('get_calendar_context_for_jarvis', {
         p_user_id: Number(opts.userId),
         p_days: 7,
