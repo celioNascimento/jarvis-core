@@ -1,4 +1,4 @@
-8// lib/jarvis.ts
+// lib/jarvis.ts
 // Motor Central — Conexões, IA, Vetores e Utilitários
 // ✅ CORREÇÕES: callOpenRouter e generateEmbedding via OpenRouter (OPENAI_API_KEY)
 
