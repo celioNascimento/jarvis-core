@@ -66,6 +66,7 @@ export async function executeTool(
   } catch {
     return `Erro crítico: Falha ao parsear argumentos da ferramenta ${name}.`;
   }
+
   // ─── IDEMPOTÊNCIA (Prevenção de Duplicidade Vercel / QStash) ───────────────
   const callSignature = toolCall.id || args.replace(/\s+/g, '').substring(0, 50);
   const idempotencyKey = `${numericUserIdStr}_${name}_${callSignature}`;
@@ -75,7 +76,6 @@ export async function executeTool(
       .from('idempotency_keys')
       .insert({ key: idempotencyKey });
 
-    // Removemos o idemError.status daqui 👇
     if (idemError && idemError.code === '23505') {
       console.warn(`[Idempotência] Bloqueado retry para a tool: ${name}`);
       return `[SISTEMA] Comando já processado com sucesso.`;
@@ -84,7 +84,6 @@ export async function executeTool(
     console.warn('[Idempotência] Erro ignorado para não travar execução.', err);
   }
 
-  
   // ── HELPER DE LUGARES (UUID-based) ────────────────────────────────────────
   const getPlaceId = async (nome: string) => {
     const { data } = await supabase
@@ -165,24 +164,51 @@ export async function executeTool(
     case 'create_reminder': {
       try {
         const title = p.title || p.message;
-        let scheduled_time = p.scheduled_time || (p.delay_minutes ? new Date(Date.now() + p.delay_minutes * 60000).toISOString() : new Date(Date.now() + 300000).toISOString());
+        const scheduled_time = p.scheduled_time
+          || (p.delay_minutes
+              ? new Date(Date.now() + p.delay_minutes * 60000).toISOString()
+              : new Date(Date.now() + 300000).toISOString());
 
-        const { data: reminder, error } = await supabase.schema('jarvis').from('reminders').insert({
-          user_id: Number(numericUserIdStr), title, type: p.type || 'temporary',
-          scheduled_time, status: 'pending', metadata: { auth_user_id: authUserId }
-        }).select('id').single();
+        const { data: reminder, error } = await supabase
+          .schema('jarvis')
+          .from('reminders')
+          .insert({
+            user_id:        Number(numericUserIdStr),
+            title,
+            type:           p.type || 'temporary',
+            scheduled_time,
+            status:         'pending',
+            metadata:       { auth_user_id: authUserId },
+          })
+          .select('id')
+          .single();
 
         if (error) throw error;
 
         const qstashId = await scheduleReminderOnQStash({
-          reminderId: String(reminder.id), userId: numericUserIdStr, authUserId, message: title, scheduledTime: scheduled_time
+          reminderId:    String(reminder.id),
+          userId:        numericUserIdStr,
+          authUserId,
+          message:       title,
+          scheduledTime: scheduled_time,
         });
-        
+
         if (qstashId) {
-          await supabase.schema('jarvis').from('reminders').update({ metadata: { auth_user_id: authUserId, qstash_message_id: qstashId } }).eq('id', reminder.id);
+          // ✅ Salva na coluna dedicada qstash_message_id, não dentro do jsonb metadata
+          await supabase
+            .schema('jarvis')
+            .from('reminders')
+            .update({ qstash_message_id: qstashId })
+            .eq('id', reminder.id);
+        } else {
+          console.error('[create_reminder] scheduleReminderOnQStash retornou null para reminder:', reminder.id, '| userId:', numericUserIdStr);
         }
 
-        const dtFormatted = new Date(scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+        const dtFormatted = new Date(scheduled_time).toLocaleString('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+          hour:     '2-digit',
+          minute:   '2-digit',
+        });
         return `Lembrete agendado: "${title}" às ${dtFormatted}.`;
       } catch (err: any) { return `Erro ao criar lembrete: ${err.message}`; }
     }
@@ -190,10 +216,28 @@ export async function executeTool(
     case 'cancel_reminder': {
       try {
         const rid = p.reminder_id || p.reminderId;
-        const { data: rem } = await supabase.schema('jarvis').from('reminders').select('metadata').eq('id', rid).maybeSingle();
-        if (rem?.metadata?.qstash_message_id) await cancelReminderOnQStash(rem.metadata.qstash_message_id);
-        await supabase.schema('jarvis').from('reminders').update({ status: 'cancelled' }).eq('id', rid);
-        return "Lembrete cancelado com sucesso.";
+
+        // ✅ Busca da coluna dedicada, não do jsonb metadata
+        const { data: rem } = await supabase
+          .schema('jarvis')
+          .from('reminders')
+          .select('qstash_message_id')
+          .eq('id', rid)
+          .maybeSingle();
+
+        if (rem?.qstash_message_id) {
+          await cancelReminderOnQStash(rem.qstash_message_id);
+        } else {
+          console.warn('[cancel_reminder] qstash_message_id ausente para reminder:', rid);
+        }
+
+        await supabase
+          .schema('jarvis')
+          .from('reminders')
+          .update({ status: 'cancelled' })
+          .eq('id', rid);
+
+        return 'Lembrete cancelado com sucesso.';
       } catch (err: any) { return `Erro no cancelamento: ${err.message}`; }
     }
 
@@ -223,7 +267,7 @@ export async function executeTool(
         const { data: v } = await supabase.schema('jarvis').from('vehicles').select('id').ilike('name', p.vehicle_name).eq('user_id', numericUserIdStr).maybeSingle();
         if (!v) return "Veículo não encontrado.";
         const { error } = await supabase.schema('jarvis').from('vehicle_maintenances').insert({
-          vehicle_id: v.id, user_id: numericUserIdStr, title: p.servico || p.title, 
+          vehicle_id: v.id, user_id: numericUserIdStr, title: p.servico || p.title,
           performed_date: p.data || new Date().toISOString(), odometer: p.odometer, cost: p.custo || 0
         });
         return error ? `Erro na manutenção: ${error.message}` : `A manutenção de "${p.servico}" foi registrada para o seu ${p.vehicle_name}.`;
