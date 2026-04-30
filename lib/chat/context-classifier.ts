@@ -1,8 +1,8 @@
 // lib/chat/context-classifier.ts
-// V9.1.2 — LLM centralizado no Gateway (Prioridade 2)
+// V9.1.3 — LLM centralizado no Gateway (Prio 2, if_full) com Fallback elegante
 
 import { supabase } from '@/lib/jarvis';
-import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; // <--- IMPORT CENTRALIZADO
+import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; // <--- IMPORT DO GATEKEEPER
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -157,10 +157,11 @@ Mensagem: "${text.slice(0, 200)}"
 
 Responda APENAS com JSON: {"contexts": ["cat1", "cat2"]}`;
 
-    // ✅ CENTRALIZADO NO GATEWAY (Prioridade 2: Importante, mas não bloqueia a resposta direta)
+    // ✅ CENTRALIZADO NO GATEWAY: Prio 2, policy 'if_full'
+    // Se o sistema estiver lotado, ele aborta e usamos o regex.
     const raw = await callOpenRouterWithPriority(
       2, 
-      'never', 
+      'if_full', 
       `ctx_class_${Date.now()}`, 
       [{ role: 'user', content: prompt }], 
       [], 
@@ -175,7 +176,12 @@ Responda APENAS com JSON: {"contexts": ["cat1", "cat2"]}`;
     );
 
     return [...new Set([...regexContexts, ...llmContexts])] as ContextType[];
-  } catch {
+  } catch (e: any) {
+    if (e.message === 'GATEKEEPER_DROPPED_TASK') {
+       console.log(`[ContextL4/Gateway] ✂️ Classificação LLM abortada por alto tráfego. Usando fallback de Regex.`);
+    } else {
+       console.warn(`[ContextL4] Erro na classificação LLM, caindo para regex.`, e.message);
+    }
     return regexContexts;
   }
 }
