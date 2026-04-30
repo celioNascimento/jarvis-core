@@ -1,8 +1,8 @@
 // lib/chat/context-classifier.ts
-// V9.1.3 — LLM centralizado no Gateway (Prio 2, if_full) com Fallback elegante
+// V9.1.4 — LLM no Gateway (Prio 2, if_full) com extração segura do objeto ToolResponse
 
 import { supabase } from '@/lib/jarvis';
-import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; // <--- IMPORT DO GATEKEEPER
+import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; 
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -158,8 +158,7 @@ Mensagem: "${text.slice(0, 200)}"
 Responda APENAS com JSON: {"contexts": ["cat1", "cat2"]}`;
 
     // ✅ CENTRALIZADO NO GATEWAY: Prio 2, policy 'if_full'
-    // Se o sistema estiver lotado, ele aborta e usamos o regex.
-    const raw = await callOpenRouterWithPriority(
+    const rawResponse: any = await callOpenRouterWithPriority(
       2, 
       'if_full', 
       `ctx_class_${Date.now()}`, 
@@ -169,7 +168,10 @@ Responda APENAS com JSON: {"contexts": ["cat1", "cat2"]}`;
       0.1
     );
 
-    const cleaned = raw.trim().replace(/```json|```/g, '').trim();
+    // ✅ EXTRAÇÃO SEGURA (Evita erro .trim() do TypeScript)
+    const rawText = typeof rawResponse === 'string' ? rawResponse : (rawResponse.text || rawResponse.content || '');
+
+    const cleaned = rawText.trim().replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(cleaned);
     const llmContexts = (parsed.contexts as ContextType[]).filter((c) =>
       ALL_CONTEXTS.includes(c)
