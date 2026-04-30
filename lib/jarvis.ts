@@ -1,7 +1,6 @@
 // lib/jarvis.ts
 // Motor Central — Conexões, IA, Vetores e Utilitários
-// ✅ CORREÇÕES: Vazamentos fechados (Todas chamadas de LLM passam pelo Gateway)
-// ✅ CORREÇÕES: Erro 406 resolvido (Troca de .single por .maybeSingle em selects)
+// ✅ CORREÇÕES: LLM Centralizado, Tratamento de Descarte (Gatekeeper) e Erros 406 resolvidos
 
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
@@ -28,8 +27,8 @@ const redis = new Redis({
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 /**
- * Wrapper centralizado que joga qualquer requisição interna do jarvis.ts 
- * diretamente para a fila de background (Prioridade 4) do Gatekeeper.
+ * Wrapper centralizado. 
+ * Joga requisições internas para a fila de background (Prioridade 4).
  */
 export async function callOpenRouter(
   input: string | ChatMessage[],
@@ -146,7 +145,7 @@ export async function getOrCreateSession(userId: string): Promise<string> {
       .gte('last_active', fourHoursAgo)
       .order('last_active', { ascending: false })
       .limit(1)
-      .maybeSingle(); // <--- 406 FIX
+      .maybeSingle();
 
     if (existing) {
       await supabase
@@ -166,7 +165,7 @@ export async function getOrCreateSession(userId: string): Promise<string> {
       .from('sessions')
       .insert({ user_id: userId, is_active: true })
       .select('id')
-      .single(); // Insert returning 1 row é seguro usar single()
+      .single(); 
 
     return newSession?.id || 'default';
   } catch (e) {
@@ -184,7 +183,7 @@ export async function getPendingQuestion(userId: string): Promise<{ question: st
       .from('users')
       .select('pending_question, pending_context')
       .eq('id', userId)
-      .maybeSingle(); // <--- 406 FIX
+      .maybeSingle();
 
     return {
       question: data?.pending_question || null,
@@ -251,7 +250,7 @@ export async function compactMemory(userId: string, authorName: string): Promise
       .from('users')
       .select('current_context')
       .eq('id', userId)
-      .maybeSingle(); // <--- 406 FIX
+      .maybeSingle();
 
     const oldContext = userProfile?.current_context || "Nenhum contexto prévio.";
 
@@ -296,7 +295,7 @@ TAREFA: Integre as novas informações ao Dossiê existente.
 - Retorne APENAS o Dossiê atualizado em português, sem comentários, sem markdown excessivo
     `.trim();
 
-    // Como essa compactação usa callOpenRouter, ela vai automaticamente para a fila de background (Prioridade 4) e será descartada se houver gargalo de tráfego.
+    // Prioridade 4 + if_full: Se o tráfego estiver ruim, ela será abortada pelo Gateway.
     const newContext = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.3);
 
     if (!memoriaEhValida(newContext)) {
@@ -338,23 +337,17 @@ TAREFA: Integre as novas informações ao Dossiê existente.
         .lte('created_at', lastProcessedDate);
 
       console.log(`🧹 Memória de ${authorName} consolidada. ${entradasValidas.length} entradas → L3 + HD.`);
-        } // (fim do bloco if (embedding))
+    }
   } catch (e: any) {
     if (e.message === 'GATEKEEPER_DROPPED_TASK') {
-      // TRATAMENTO DE DESCARTE (LOAD SHEDDING)
-      // Como os dados não foram apagados da tabela 'brain', não perdemos nada.
-      // Apenas logamos amigavelmente que foi adiado para proteger o sistema.
+      // ✂️ TRATAMENTO DE DESCARTE
+      // Como não excluímos as linhas do "brain", o sistema tentará compactar de novo depois!
       console.log(`[Memory/Gateway] ✂️ Compactação da RAM de ${authorName} adiada por alto tráfego. Tentaremos na próxima mensagem.`);
-      
-      // PREVENÇÃO FUTURA: Se fosse uma tarefa que não tenta de novo sozinha,
-      // nós colocaríamos o agendamento no QStash aqui:
-      // await scheduleRetryOnQStash('compactMemory', { userId, authorName }, '5m');
       return;
     }
-    
-    // Erros reais (banco fora do ar, bug de código, etc)
     console.error("[Memory] Erro crítico na compactação:", e);
   }
+}
 
 // ============================================================
 // 8. BUSCA EVENTOS PROATIVOS
@@ -407,7 +400,7 @@ export async function reinforceMemory(memoryId: string): Promise<void> {
       .from('memories')
       .select('access_count, relevance_score')
       .eq('id', memoryId)
-      .maybeSingle(); // <--- 406 FIX
+      .maybeSingle();
 
     if (!data) return;
 
