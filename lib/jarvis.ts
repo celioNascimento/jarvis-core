@@ -338,11 +338,23 @@ TAREFA: Integre as novas informações ao Dossiê existente.
         .lte('created_at', lastProcessedDate);
 
       console.log(`🧹 Memória de ${authorName} consolidada. ${entradasValidas.length} entradas → L3 + HD.`);
+        } // (fim do bloco if (embedding))
+  } catch (e: any) {
+    if (e.message === 'GATEKEEPER_DROPPED_TASK') {
+      // TRATAMENTO DE DESCARTE (LOAD SHEDDING)
+      // Como os dados não foram apagados da tabela 'brain', não perdemos nada.
+      // Apenas logamos amigavelmente que foi adiado para proteger o sistema.
+      console.log(`[Memory/Gateway] ✂️ Compactação da RAM de ${authorName} adiada por alto tráfego. Tentaremos na próxima mensagem.`);
+      
+      // PREVENÇÃO FUTURA: Se fosse uma tarefa que não tenta de novo sozinha,
+      // nós colocaríamos o agendamento no QStash aqui:
+      // await scheduleRetryOnQStash('compactMemory', { userId, authorName }, '5m');
+      return;
     }
-  } catch (e) {
-    console.error("[Memory] Erro na compactação:", e);
+    
+    // Erros reais (banco fora do ar, bug de código, etc)
+    console.error("[Memory] Erro crítico na compactação:", e);
   }
-}
 
 // ============================================================
 // 8. BUSCA EVENTOS PROATIVOS
