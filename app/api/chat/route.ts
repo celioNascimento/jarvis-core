@@ -182,13 +182,20 @@ export async function POST(req: NextRequest) {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    // 5. Composição do Prompt e Filtragem de Ferramentas
+        // 5. Composição do Prompt e Filtragem de Ferramentas
     const coreTools = ['salvar_evento', 'create_reminder', 'searchWeb', 'buscar_memoria_longa'];
     const toolsHabilitadas = ALL_TOOLS.filter(t =>
       coreTools.includes(t.function.name) || activeTools.includes(t.function.name)
     );
 
-    const systemPrompt = composeSystemPrompt({
+    // ─── RELÓGIO ABSOLUTO (Fuso de São Paulo) ────────────────────────────────
+    const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+    const diasDaSemana = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+    const nomeDia = diasDaSemana[nowSP.getDay()];
+    const dataHoraSP = nowSP.toLocaleString('pt-BR');
+    const dataIsoSP = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
+
+    const basePrompt = composeSystemPrompt({
       assistantName: user.assistant_name,
       authorName: user.nickname,
       isLikelyNoise: message.length < 15,
@@ -203,13 +210,20 @@ export async function POST(req: NextRequest) {
         relationship: memory.relationship.block.slice(0, 2000),
         topics: memory.topics.relatedTopicsBlock,
       },
-      canonicalDateTimeBlock: new Date().toLocaleString('pt-BR'),
-      canonicalDateISO: new Date().toISOString().split('T')[0],
+      canonicalDateTimeBlock: dataHoraSP, // 👈 Agora usa o fuso certo
+      canonicalDateISO: dataIsoSP,        // 👈 Agora usa o fuso certo
       systemWarning: '',
       intent: 'personal',
       dynamicGuidelines: '',
     });
 
+    // ─── LEI NÚMERO 1 INJETADA NO TOPO DA MENTE DA IA ────────────────────────
+    const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
+Hoje é ${nomeDia}, ${dataHoraSP}. 
+Você DEVE basear qualquer cálculo de data, dia da semana ou planejamento EXCLUSIVAMENTE nesta informação. Ignore sumariamente qualquer data descrita nas memórias ou no dossiê como sendo o "hoje".
+---
+${basePrompt}`;
+    
     // 6. Primeira chamada ao LLM
     const conversationMessages: any[] = [
       { role: 'system', content: systemPrompt },
