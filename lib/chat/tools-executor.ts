@@ -347,6 +347,26 @@ export async function executeTool(
       } catch (err: any) { return `Erro ao adicionar: ${err.message}`; }
     }
 
+      case 'adicionar_diretriz_dinamica': {
+  try {
+    const { error } = await supabase
+      .schema('jarvis') // <--- ISSO É VITAL
+      .from('dynamic_guidelines')
+      .insert({
+        user_id: Number(numericUserIdStr),
+        content: p.content,
+        scope: p.scope || 'personal',
+        active: true
+      });
+
+    if (error) throw error;
+
+    return `Entendido, Célio. Diretriz aplicada com sucesso: "${p.content}". A partir de agora, seguirei essa regra em nossas interações.`;
+  } catch (err: any) { 
+    return `Erro técnico ao salvar diretriz: ${err.message}`; 
+  }
+      }
+
     case 'ver_lista': {
       try {
         const pid = await getPlaceId(p.lugar);
