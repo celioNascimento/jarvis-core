@@ -44,7 +44,8 @@ export async function callOpenRouter(
       ? [{ role: 'user', content: input }]
       : input;
 
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    // Função auxiliar para não repetir o payload
+    const buildFetchOptions = (modelToUse: string) => ({
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -52,11 +53,21 @@ export async function callOpenRouter(
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: finalModel,
+        model: modelToUse,
         messages,
         temperature
       })
     });
+
+    // 1ª Tentativa (Modelo Principal)
+    let res = await fetch("https://openrouter.ai/api/v1/chat/completions", buildFetchOptions(finalModel));
+
+    // 2ª Tentativa INSTANTÂNEA (Fallback para Erro 429)
+    if (res.status === 429) {
+      console.warn(`[OpenRouter] Rate Limit (429) em ${finalModel}. Disparando Fallback instantâneo...`);
+      const fallbackModel = "google/gemini-1.5-flash"; // Modelo rápido de backup
+      res = await fetch("https://openrouter.ai/api/v1/chat/completions", buildFetchOptions(fallbackModel));
+    }
 
     clearTimeout(timeout);
 
