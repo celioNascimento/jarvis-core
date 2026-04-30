@@ -100,3 +100,28 @@ export async function getUpcomingHolidays(
     .filter((h, i, arr) => arr.findIndex(x => x.date === h.date && x.name === h.name) === i)
     .slice(0, limit);
 }
+
+export async function isBusinessDay(date: Date, city?: string, state?: string): Promise<boolean> {
+  const dayOfWeek = date.getDay();
+  
+  // 0 = Domingo, 6 = Sábado
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    return false;
+  }
+
+  // Verifica se é feriado nacional
+  const isNatHoliday = await isNationalHoliday(date);
+  if (isNatHoliday) {
+    return false;
+  }
+
+  // Verifica feriado municipal (se cidade/estado forem fornecidos)
+  if (city && state) {
+    const isMunHoliday = await isMunicipalHoliday(date, city, state);
+    if (isMunHoliday) {
+      return false;
+    }
+  }
+
+  return true;
+}
