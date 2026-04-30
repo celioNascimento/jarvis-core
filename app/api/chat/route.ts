@@ -203,7 +203,7 @@ export async function POST(req: NextRequest) {
     // ─────────────────────────────────────────────────────────────────────────
 
         // 5. Composição do Prompt e Filtragem de Ferramentas
-    const coreTools = ['salvar_evento', 'create_reminder', 'searchWeb', 'buscar_memoria_longa'];
+    const coreTools = ['salvar_evento', 'create_reminder', 'searchWeb', 'buscar_memoria_longa', 'adicionar_diretriz_dinamica'];
     const toolsHabilitadas = ALL_TOOLS.filter(t =>
       coreTools.includes(t.function.name) || activeTools.includes(t.function.name)
     );
