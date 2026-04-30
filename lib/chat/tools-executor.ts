@@ -110,16 +110,6 @@ export async function executeTool(
           .join('\n---\n') || 'Nenhuma memória relevante encontrada para esta busca.';
       } catch (err) { return 'Erro ao acessar o banco de memórias semânticas.'; }
     }
-
-    case 'adicionar_diretriz_dinamica': {
-      try {
-        const { error } = await supabase.schema('jarvis').rpc('upsert_dynamic_guideline', {
-          p_user_id: Number(numericUserIdStr), p_content: p.content, p_scope: p.scope || 'personal'
-        });
-        return error ? `Falha ao salvar regra: ${error.message}` : `Diretriz aplicada. Eu passarei a agir conforme solicitado: "${p.content}"`;
-      } catch (err: any) { return `Erro técnico ao salvar diretriz: ${err.message}`; }
-    }
-
     // ===================== AGENDA LEV + GOOGLE + OUTLOOK =====================
     case 'consultar_agenda': {
       try {
