@@ -337,25 +337,22 @@ export async function executeTool(
       } catch (err: any) { return `Erro ao adicionar: ${err.message}`; }
     }
 
-      case 'adicionar_diretriz_dinamica': {
-  try {
-    const { error } = await supabase
-      .schema('jarvis') // <--- ISSO É VITAL
-      .from('dynamic_guidelines')
-      .insert({
-        user_id: Number(numericUserIdStr),
-        content: p.content,
-        scope: p.scope || 'personal',
-        active: true
-      });
-
-    if (error) throw error;
-
-    return `Entendido, Célio. Diretriz aplicada com sucesso: "${p.content}". A partir de agora, seguirei essa regra em nossas interações.`;
-  } catch (err: any) { 
-    return `Erro técnico ao salvar diretriz: ${err.message}`; 
-  }
-      }
+      {
+    type: 'function',
+    function: {
+      name: 'adicionar_diretriz_dinamica',
+      description: "AÇÃO OBRIGATÓRIA E IMEDIATA: Execute esta ferramenta SEMPRE que o usuário pedir para você mudar de comportamento, alterar seu tom de voz, criar uma nova regra de convivência ou usar frases como 'nunca mais faça X', 'aja assim', 'lembre-se de agir'. É ESTRITAMENTE PROIBIDO confirmar a mudança no texto sem antes invocar esta ferramenta.",
+      parameters: {
+        type: 'object',
+        properties: {
+          content: { type: 'string', description: 'O texto claro e direto da nova regra. Ex: "Seja proativo e empático ao falar da minha família, nunca responda apenas Feito."' },
+          scope: { type: 'string', enum: ['personal', 'global'], default: 'personal' },
+        },
+        required: ['content'],
+      },
+    },
+  },
+      
 
     case 'ver_lista': {
       try {
