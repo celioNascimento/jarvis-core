@@ -206,21 +206,22 @@ export const tools = [
     },
   },
 
-  {
+   {
     type: 'function',
     function: {
       name: 'adicionar_diretriz_dinamica',
-      description: "Adiciona regra ao prompt. Use para 'sempre aja assim' ou 'nunca mais faça X'.",
+      description: "AÇÃO OBRIGATÓRIA E IMEDIATA: Execute esta ferramenta SEMPRE que o usuário pedir para você mudar de comportamento, alterar seu tom de voz, criar uma nova regra de convivência ou usar frases como 'nunca mais faça X', 'aja assim', 'lembre-se de agir'. É ESTRITAMENTE PROIBIDO confirmar a mudança no texto sem antes invocar esta ferramenta.",
       parameters: {
         type: 'object',
         properties: {
-          content: { type: 'string' },
-          scope: { type: 'string', enum: ['personal', 'global'] },
+          content: { type: 'string', description: 'O texto claro e direto da nova regra.' },
+          scope: { type: 'string', enum: ['personal', 'global'], default: 'personal' },
         },
         required: ['content'],
       },
     },
   },
+  
 
   {
     type: 'function',
