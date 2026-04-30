@@ -20,11 +20,11 @@ const supabase = createClient(
 
 async function resolveUserId(authUserId: string): Promise<bigint | null> {
   const { data } = await supabase
-  .schema('jarvis')
-  .from('users')
-  .select('id')
-  .eq('auth_user_id', authUserId)
-  .single();
+    .schema('jarvis')
+    .from('users')
+    .select('id')
+    .eq('auth_user_id', authUserId)
+    .single();
   return data?.id ?? null;
 }
 
@@ -44,10 +44,10 @@ async function scheduleRemindersForEvent(
   // 2. Agenda cada lembrete no QStash e salva o messageId
   for (const reminder of reminders) {
     const messageId = await scheduleReminderOnQStash({
-      reminderId:    reminder.reminder_id,
+      reminderId: reminder.reminder_id,
       userId,
       authUserId,
-      message:       `Lembrete: ${eventTitle}`,
+      message: `Lembrete: ${eventTitle}`,
       scheduledTime: reminder.scheduled_at,
     });
 
@@ -70,20 +70,22 @@ export async function GET(req: NextRequest) {
   const userId = await resolveUserId(authUserId);
   if (!userId) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
-  const from     = searchParams.get('from');
-  const to       = searchParams.get('to');
+  const from = searchParams.get('from');
+  const to = searchParams.get('to');
   const category = searchParams.get('category') ?? undefined;
 
   // Se não tiver range, usa próximos 30 dias
   const fromDate = from ? new Date(from) : new Date();
-  const toDate   = to   ? new Date(to)   : new Date(Date.now() + 30 * 86400_000);
+  const toDate = to ? new Date(to) : new Date(Date.now() + 30 * 86400_000);
 
-  const { data, error } = await supabase.rpc('get_events_in_range', {
-    p_user_id:  userId,
-    p_from:     fromDate.toISOString(),
-    p_to:       toDate.toISOString(),
-    p_category: category ?? null,
-  });
+  const { data, error } = await supabase
+    .schema('jarvis')
+    .rpc('get_events_in_range', {
+      p_user_id: userId,
+      p_from: fromDate.toISOString(),
+      p_to: toDate.toISOString(),
+      p_category: category ?? null,
+    });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ events: data });
@@ -120,11 +122,11 @@ export async function POST(req: NextRequest) {
       start_at, end_at,
       all_day: all_day ?? false,
       color,
-      category:        category ?? 'personal',
-      entity_type:     entity_type ?? null,
-      entity_id:       entity_id ?? null,
+      category: category ?? 'personal',
+      entity_type: entity_type ?? null,
+      entity_id: entity_id ?? null,
       recurrence_rule: recurrence_rule ?? null,
-      recurrence_end:  recurrence_end ?? null,
+      recurrence_end: recurrence_end ?? null,
       reminder_minutes: reminder_minutes ?? null,
       source: 'lev',
     })
