@@ -65,12 +65,32 @@ async function getRecentMessages(
   }
 }
 
-// ─── Guard de contexto L3 ────────────────────────────────────────────────────
+// ─── Guard de contexto L3 — V8.18.0 (Radar de Afeto) ──────────────────────────
 
-const FAMILY_DATE_SIGNALS = [
-  /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
-  /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
-];
+const today = new Date();
+const isMay = today.getMonth() === 4; // Maio
+const isAugust = today.getMonth() === 7; // Agosto
+
+// Se for maio, o sinal de "mãe" fica permanentemente ligado
+const isHighAlertMonth = isMay || isAugust; 
+
+if (recentHistory.length > 0 || isHighAlertMonth) {
+  const recentText = recentHistory.map(m => m.content).join(' ');
+  const historyHasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentText));
+  const messageHasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(message));
+
+  // Se for mês das mães/pais ou houver sinal, NUNCA filtre a família
+  if (historyHasFamilySignal || messageHasFamilySignal || isHighAlertMonth) {
+    // Mantém o bloco de família intacto
+    filteredL3 = memory.l3.content; 
+  } else {
+    // Filtro normal para economizar tokens em dias comuns
+    filteredL3 = filteredL3
+      .replace(/##\s*(datas?|aniversário|comemoração|evento importante)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
+      .trim();
+  }
+}
+
 
 // ─── Handler principal ────────────────────────────────────────────────────────
 
