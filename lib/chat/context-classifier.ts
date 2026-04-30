@@ -1,8 +1,8 @@
 // lib/chat/context-classifier.ts
-// V9.1.1 — LLM apenas quando regex é ambíguo ou falha + Módulo Veículos
+// V9.1.2 — LLM centralizado no Gateway (Prioridade 2)
 
 import { supabase } from '@/lib/jarvis';
-import { callOpenRouter } from '@/lib/jarvis';
+import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; // <--- IMPORT CENTRALIZADO
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -31,14 +31,14 @@ export type ContextType =
   | 'evento'
   | 'tdah'
   | 'retrospecto'
-  | 'veiculos' // <--- ADICIONADO AQUI
+  | 'veiculos'
   | 'foco';
 
 const ALL_CONTEXTS: ContextType[] = [
   'casual', 'agenda', 'email', 'saude', 'familia', 'trabalho', 'projeto',
   'meta', 'emocao', 'diario', 'rotina', 'preferencia', 'alias', 'recomendacao',
   'esporte', 'noticias', 'clima', 'math', 'trivial', 'compras', 'financas',
-  'evento', 'tdah', 'foco', 'retrospecto', 'veiculos', // <--- ADICIONADO AQUI
+  'evento', 'tdah', 'foco', 'retrospecto', 'veiculos',
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ const RULES_NORMALIZED: Array<[RegExp, ContextType]> = ([
   [norm('gastei|paguei|recebi|salário|salario|despesa|receita|conta|comprei|boleto|fatura|orçamento|orcamento|finanças|financas|dinheiro|grana|divida|dívida|cartao|cartão|credito|crédito|debito|débito|investimento|poupanca|poupança|saldo|extrato|gasto|pix|ted|transacao|transação|banco|nubank|itaú|itau|bradesco|santander|inter|caixa econômica'), 'financas'],
   [norm('trabalho|empresa|chefe|colega|reunião de trabalho|tarefa|prazo|entrega|cliente'), 'trabalho'],
   [norm('foco|tdah|procrastinando|travado|paralisado|sobrecarregado|por onde começo|nao sei comecar'), 'tdah'],
-  [norm('carro|veiculo|veículo|moto|placa|km|odômetro|odometro|gasolina|etanol|diesel|abasteci|abastecer|manutenção|manutencao|multa|pneu|oficina|mecanico|mecânico|troca de óleo|freio'), 'veiculos'], // <--- REGRA DO EXPERTFROTAS
+  [norm('carro|veiculo|veículo|moto|placa|km|odômetro|odometro|gasolina|etanol|diesel|abasteci|abastecer|manutenção|manutencao|multa|pneu|oficina|mecanico|mecânico|troca de óleo|freio'), 'veiculos'],
 ] as Array<[string, ContextType]>).map(([src, ctx]) => [new RegExp(src, 'i'), ctx]);
 
 const RULES_VERBATIM: Array<[RegExp, ContextType]> = [
@@ -103,7 +103,7 @@ export function classifyContextRegex(text: string): ContextType[] {
 
 const HIGH_CONFIDENCE_CONTEXTS: ContextType[] = [
   'math', 'trivial', 'financas', 'esporte', 'clima', 'email', 'agenda',
-  'compras', 'saude', 'noticias', 'retrospecto', 'veiculos' // <--- EVITA CHAMADA À LLM
+  'compras', 'saude', 'noticias', 'retrospecto', 'veiculos'
 ];
 
 function needsLLMClassification(text: string, regexContexts: ContextType[]): boolean {
@@ -130,6 +130,7 @@ export async function classifyContextWithL4(
   if (regexContexts.length > 2) {
     try {
       const { data: topicWeights } = await supabase
+        .schema('public')
         .from('topic_index')
         .select('topic, weight')
         .eq('user_id', userId)
@@ -156,7 +157,17 @@ Mensagem: "${text.slice(0, 200)}"
 
 Responda APENAS com JSON: {"contexts": ["cat1", "cat2"]}`;
 
-    const raw = await callOpenRouter(prompt, 'flash', 0.1);
+    // ✅ CENTRALIZADO NO GATEWAY (Prioridade 2: Importante, mas não bloqueia a resposta direta)
+    const raw = await callOpenRouterWithPriority(
+      2, 
+      'never', 
+      `ctx_class_${Date.now()}`, 
+      [{ role: 'user', content: prompt }], 
+      [], 
+      'google/gemini-2.0-flash-001', 
+      0.1
+    );
+
     const cleaned = raw.trim().replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(cleaned);
     const llmContexts = (parsed.contexts as ContextType[]).filter((c) =>
@@ -189,7 +200,7 @@ export function routeModel(
 
   const flashFriendly: ContextType[] = [
     'esporte', 'noticias', 'clima', 'casual', 'rotina',
-    'alias', 'preferencia', 'recomendacao', 'math', 'trivial', 'compras', 'veiculos' // <--- FLASH DÁ CONTA
+    'alias', 'preferencia', 'recomendacao', 'math', 'trivial', 'compras', 'veiculos'
   ];
   if (contexts.includes('agenda') && effectiveEmotional < 0.4)
     return { model: 'google/gemini-2.0-flash-001', label: 'flash-agenda' };
@@ -207,7 +218,7 @@ export function getTemperature(contexts: ContextType[]): number {
   if (contexts.some((c) => ['emocao', 'familia'].includes(c)))             return 0.85;
   if (contexts.some((c) => ['casual', 'projeto', 'meta', 'esporte', 'trivial'].includes(c))) return 0.7;
   if (contexts.some((c) => ['trabalho', 'projeto'].includes(c)))           return 0.5;
-  if (contexts.some((c) => ['financas', 'veiculos']))                       return 0.3; // <--- BAIXA TEMPERATURA PARA VEÍCULOS (Maior precisão)
+  if (contexts.some((c) => ['financas', 'veiculos']))                       return 0.3; 
   if (contexts.some((c) => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima', 'compras'].includes(c))) return 0.5;
   if (contexts.some((c) => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
   return 0.7;
@@ -296,6 +307,7 @@ export async function detectTopicShiftWithL4(
 ): Promise<boolean> {
   try {
     const { data } = await supabase
+      .schema('public')
       .from('topic_index')
       .select('topic, last_used_at')
       .eq('user_id', userId)
