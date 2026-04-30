@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V8.17.0 (emotional score pós-memória)
+// app/api/chat/route.ts — V8.18.1 (Radar de Afeto + Diretrizes Dinâmicas)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -19,10 +19,18 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-// ─── Histórico da sessão ─────────────────────────────────────────────────────
+// ─── Constantes Globais ──────────────────────────────────────────────────────
 
 const MAX_HISTORY_TURNS = 6;
 const MAX_MSG_CHARS = 800;
+
+// Restaurado: O array de sinais precisa ficar no escopo global
+const FAMILY_DATE_SIGNALS = [
+  /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
+  /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
+];
+
+// ─── Histórico da sessão ─────────────────────────────────────────────────────
 
 async function getRecentMessages(
   sessionId: string,
@@ -65,33 +73,6 @@ async function getRecentMessages(
   }
 }
 
-// ─── Guard de contexto L3 — V8.18.0 (Radar de Afeto) ──────────────────────────
-
-const today = new Date();
-const isMay = today.getMonth() === 4; // Maio
-const isAugust = today.getMonth() === 7; // Agosto
-
-// Se for maio, o sinal de "mãe" fica permanentemente ligado
-const isHighAlertMonth = isMay || isAugust; 
-
-if (recentHistory.length > 0 || isHighAlertMonth) {
-  const recentText = recentHistory.map(m => m.content).join(' ');
-  const historyHasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentText));
-  const messageHasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(message));
-
-  // Se for mês das mães/pais ou houver sinal, NUNCA filtre a família
-  if (historyHasFamilySignal || messageHasFamilySignal || isHighAlertMonth) {
-    // Mantém o bloco de família intacto
-    filteredL3 = memory.l3.content; 
-  } else {
-    // Filtro normal para economizar tokens em dias comuns
-    filteredL3 = filteredL3
-      .replace(/##\s*(datas?|aniversário|comemoração|evento importante)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
-      .trim();
-  }
-}
-
-
 // ─── Handler principal ────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
@@ -113,8 +94,18 @@ export async function POST(req: NextRequest) {
 
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
+    // ── BUSCA DIRETRIZES DINÂMICAS ───────────────────────────────────────────
+    const { data: guidelines } = await supabase
+      .schema('jarvis')
+      .from('dynamic_guidelines')
+      .select('content')
+      .eq('user_id', user.id)
+      .eq('active', true);
+
+    const dynamicGuidelinesBlock = guidelines?.map(g => `- ${g.content}`).join('\n') || '';
+
     // ── DEDUPLICAÇÃO GLOBAL ──────────────────────────────────────────────────
-    const timeSlot = Math.floor(Date.now() / 10000); // janela de 10s para dedup de retries
+    const timeSlot = Math.floor(Date.now() / 10000); 
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
     const replyKey = `chat_reply:${requestSignature}`;
@@ -134,9 +125,7 @@ export async function POST(req: NextRequest) {
       console.warn('[Dedup] Timeout esperando reply. Deixando passar.');
     }
 
-    // ────────────────────────────────────────────────────────────────────────
-
-    // ── FASE 1: Coisas que não dependem de memória (paralelo) ────────────────
+    // ── FASE 1: Paralelo ─────────────────────────────────────────────────────
     const [queryEmbedding, recentHistory, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       getRecentMessages(sessionId, String(user.id)),
@@ -144,11 +133,7 @@ export async function POST(req: NextRequest) {
       classifyContextWithL4(message, String(user.id)),
     ]);
 
-    console.log(`[History] ${recentHistory.length} mensagens de histórico carregadas para sessão ${sessionId}`);
-
     // ── FASE 2: Memória carregada com embedding real ──────────────────────────
-    // emotionalScore=0 aqui é apenas um placeholder para o MemoryManager;
-    // o score real será calculado na Fase 3 com os resultados da memória.
     const memory = await MemoryManager.read({
       userId: String(user.id),
       authUserId: user.auth_user_id,
@@ -162,53 +147,57 @@ export async function POST(req: NextRequest) {
     });
 
     // ── FASE 3: Score emocional com contexto real ─────────────────────────────
-    // Agora sim temos os searchResults do HD e o bloco RAM carregados.
     const emotional = await computeEmotionalScore(
       message,
       String(user.id),
-      memory.hd.memories ?? [],  // resultados brutos com similarity + emotional_weight
-      memory.ram.ramBlock ?? '',         // bloco RAM real
+      memory.hd.memories ?? [],
+      memory.ram.ramBlock ?? '',
     );
 
-    console.log(`[EmotionalRouter] score=${emotional.score.toFixed(3)} | trajectory=${emotional.trajectory} | triggers=${emotional.triggers.join(', ') || 'nenhum'}`);
-
-    // ── Carregamento Modular (agora com score emocional real) ─────────────────
+    // ── Carregamento Modular ─────────────────────────────────────────────────
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       {
         userId: String(user.id),
         authUserId: user.auth_user_id,
         message,
         contexts,
-        emotionalScore: emotional.score,  // 👈 score real, não zero
+        emotionalScore: emotional.score,
       },
       user.plan || 'free',
       'google/gemini-2.0-flash-001',
     );
 
-    // ── Guard L3 ─────────────────────────────────────────────────────────────
+    // ── Guard L3 (Radar de Afeto corrigido e no lugar certo) ─────────────────
     let filteredL3 = memory.l3.content;
 
-    if (recentHistory.length > 0) {
+    const todayCheck = new Date();
+    const isMay = todayCheck.getMonth() === 4; // Maio
+    const isAugust = todayCheck.getMonth() === 7; // Agosto
+    const isHighAlertMonth = isMay || isAugust; 
+
+    if (recentHistory.length > 0 || isHighAlertMonth) {
       const recentText = recentHistory.map(m => m.content).join(' ');
       const historyHasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentText));
       const messageHasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(message));
 
-      if (!historyHasFamilySignal && !messageHasFamilySignal) {
+      if (historyHasFamilySignal || messageHasFamilySignal || isHighAlertMonth) {
+        filteredL3 = memory.l3.content; // Mantém intacto
+      } else {
         filteredL3 = filteredL3
           .replace(/##\s*(datas?|aniversário|comemoração|evento importante)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
           .replace(/##\s*(famil[íi]a|cônjuge|esposa|marido|filho|parente)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
           .trim();
       }
     }
-    // ─────────────────────────────────────────────────────────────────────────
 
-        // 5. Composição do Prompt e Filtragem de Ferramentas
+    // 5. Composição do Prompt e Filtragem de Ferramentas
+    // ✅ adicionar_diretriz_dinamica devidamente autorizada
     const coreTools = ['salvar_evento', 'create_reminder', 'searchWeb', 'buscar_memoria_longa', 'adicionar_diretriz_dinamica'];
     const toolsHabilitadas = ALL_TOOLS.filter(t =>
       coreTools.includes(t.function.name) || activeTools.includes(t.function.name)
     );
 
-    // ─── RELÓGIO ABSOLUTO (Fuso de São Paulo) ────────────────────────────────
+    // ─── RELÓGIO ABSOLUTO ────────────────────────────────────────────────────
     const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
     const diasDaSemana = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
     const nomeDia = diasDaSemana[nowSP.getDay()];
@@ -220,7 +209,7 @@ export async function POST(req: NextRequest) {
       authorName: user.nickname,
       isLikelyNoise: message.length < 15,
       isSystemStressed: isStressed,
-      emotionalScore: emotional.score,  // 👈 score real
+      emotionalScore: emotional.score,
       detectedContexts: contexts,
       contextBlocks,
       memoryBlocks: {
@@ -230,14 +219,13 @@ export async function POST(req: NextRequest) {
         relationship: memory.relationship.block.slice(0, 2000),
         topics: memory.topics.relatedTopicsBlock,
       },
-      canonicalDateTimeBlock: dataHoraSP, // 👈 Agora usa o fuso certo
-      canonicalDateISO: dataIsoSP,        // 👈 Agora usa o fuso certo
+      canonicalDateTimeBlock: dataHoraSP,
+      canonicalDateISO: dataIsoSP,
       systemWarning: '',
       intent: 'personal',
-      dynamicGuidelines: '',
+      dynamicGuidelines: dynamicGuidelinesBlock, // ✅ DIRETRIZES INJETADAS AQUI
     });
 
-    // ─── LEI NÚMERO 1 INJETADA NO TOPO DA MENTE DA IA ────────────────────────
     const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
 Hoje é ${nomeDia}, ${dataHoraSP}. 
 Você DEVE basear qualquer cálculo de data, dia da semana ou planejamento EXCLUSIVAMENTE nesta informação. Ignore sumariamente qualquer data descrita nas memórias ou no dossiê como sendo o "hoje".
