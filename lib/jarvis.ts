@@ -1,11 +1,11 @@
 // lib/jarvis.ts
 // Motor Central — Conexões, IA, Vetores e Utilitários
-// ✅ CORREÇÕES: LLM Centralizado, Tratamento de Descarte (Gatekeeper) e Erros 406 resolvidos
+// ✅ CORREÇÕES: Extração segura do ToolResponse no Gateway e Erros 406 resolvidos
 
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
 import { Redis } from '@upstash/redis';
-import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; // <--- IMPORT DO GATEKEEPER
+import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; 
 
 // ============================================================
 // 1. CONEXÃO CENTRAL COM O BANCO (SCHEMA JARVIS)
@@ -39,18 +39,20 @@ export async function callOpenRouter(
   const taskId = `jarvis_internal_${Date.now()}_${Math.random().toString(36).substring(7)}`;
   const messages = typeof input === 'string' ? [{ role: 'user', content: input }] : input;
   
-  // Tarefas prioritárias (1, 2) nunca caem. Tarefas de background (3, 4) são descartadas sob estresse (Load Shedding).
   const dropPolicy = (priority === 3 || priority === 4) ? 'if_full' : 'never';
 
-  return callOpenRouterWithPriority(
+  const response: any = await callOpenRouterWithPriority(
     priority,
     dropPolicy,
     taskId,
     messages,
-    [], // Sem tools para chamadas internas genéricas
+    [], // Sem tools
     model,
     temperature
   );
+
+  // ✅ EXTRAÇÃO SEGURA
+  return typeof response === 'string' ? response : (response.text || response.content || '');
 }
 
 // ============================================================
@@ -295,7 +297,6 @@ TAREFA: Integre as novas informações ao Dossiê existente.
 - Retorne APENAS o Dossiê atualizado em português, sem comentários, sem markdown excessivo
     `.trim();
 
-    // Prioridade 4 + if_full: Se o tráfego estiver ruim, ela será abortada pelo Gateway.
     const newContext = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.3);
 
     if (!memoriaEhValida(newContext)) {
@@ -337,11 +338,9 @@ TAREFA: Integre as novas informações ao Dossiê existente.
         .lte('created_at', lastProcessedDate);
 
       console.log(`🧹 Memória de ${authorName} consolidada. ${entradasValidas.length} entradas → L3 + HD.`);
-    }
+    } 
   } catch (e: any) {
     if (e.message === 'GATEKEEPER_DROPPED_TASK') {
-      // ✂️ TRATAMENTO DE DESCARTE
-      // Como não excluímos as linhas do "brain", o sistema tentará compactar de novo depois!
       console.log(`[Memory/Gateway] ✂️ Compactação da RAM de ${authorName} adiada por alto tráfego. Tentaremos na próxima mensagem.`);
       return;
     }
