@@ -1,6 +1,6 @@
 // lib/chat/tools-executor.ts
-// Motor V8.21.0 — Edição Titã (ExpertFrotas, Finance, Agenda Lev & TDAH)
-// Blindagem de Schemas e Idempotência Nível Produção
+// Motor V8.21.1 — Edição Titã (ExpertFrotas, Finance, Agenda Lev & TDAH)
+// Blindagem de Schemas, Idempotência e Correção de Sintaxe
 
 import { supabase } from '@/lib/jarvis';
 import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
@@ -110,6 +110,27 @@ export async function executeTool(
           .join('\n---\n') || 'Nenhuma memória relevante encontrada para esta busca.';
       } catch (err) { return 'Erro ao acessar o banco de memórias semânticas.'; }
     }
+
+    case 'adicionar_diretriz_dinamica': {
+      try {
+        const { error } = await supabase
+          .schema('jarvis') // <--- ISSO É VITAL
+          .from('dynamic_guidelines')
+          .insert({
+            user_id: Number(numericUserIdStr),
+            content: p.content,
+            scope: p.scope || 'personal',
+            active: true
+          });
+
+        if (error) throw error;
+
+        return `Entendido, Célio. Diretriz aplicada com sucesso: "${p.content}". A partir de agora, seguirei essa regra em nossas interações.`;
+      } catch (err: any) { 
+        return `Erro técnico ao salvar diretriz: ${err.message}`; 
+      }
+    }
+
     // ===================== AGENDA LEV + GOOGLE + OUTLOOK =====================
     case 'consultar_agenda': {
       try {
@@ -184,14 +205,11 @@ export async function executeTool(
         });
 
         if (qstashId) {
-          // ✅ Salva na coluna dedicada qstash_message_id, não dentro do jsonb metadata
           await supabase
             .schema('jarvis')
             .from('reminders')
             .update({ qstash_message_id: qstashId })
             .eq('id', reminder.id);
-        } else {
-          console.error('[create_reminder] scheduleReminderOnQStash retornou null para reminder:', reminder.id, '| userId:', numericUserIdStr);
         }
 
         const dtFormatted = new Date(scheduled_time).toLocaleString('pt-BR', {
@@ -207,7 +225,6 @@ export async function executeTool(
       try {
         const rid = p.reminder_id || p.reminderId;
 
-        // ✅ Busca da coluna dedicada, não do jsonb metadata
         const { data: rem } = await supabase
           .schema('jarvis')
           .from('reminders')
@@ -217,8 +234,6 @@ export async function executeTool(
 
         if (rem?.qstash_message_id) {
           await cancelReminderOnQStash(rem.qstash_message_id);
-        } else {
-          console.warn('[cancel_reminder] qstash_message_id ausente para reminder:', rid);
         }
 
         await supabase
@@ -336,29 +351,6 @@ export async function executeTool(
         return `"${p.item}" adicionado à lista de ${p.lugar}.`;
       } catch (err: any) { return `Erro ao adicionar: ${err.message}`; }
     }
-
-      {
-        case 'adicionar_diretriz_dinamica': {
-      try {
-        const { error } = await supabase
-          .schema('jarvis') // <--- ISSO É VITAL
-          .from('dynamic_guidelines')
-          .insert({
-            user_id: Number(numericUserIdStr),
-            content: p.content,
-            scope: p.scope || 'personal',
-            active: true
-          });
-
-        if (error) throw error;
-
-        return `Entendido, Célio. Diretriz aplicada com sucesso: "${p.content}". A partir de agora, seguirei essa regra em nossas interações.`;
-      } catch (err: any) { 
-        return `Erro técnico ao salvar diretriz: ${err.message}`; 
-      }
-      }
-      
-      
 
     case 'ver_lista': {
       try {
