@@ -1,10 +1,12 @@
 // lib/jarvis.ts
 // Motor Central — Conexões, IA, Vetores e Utilitários
-// ✅ CORREÇÕES: callOpenRouter e generateEmbedding via OpenRouter (OPENAI_API_KEY)
+// ✅ CORREÇÕES: Vazamentos fechados (Todas chamadas de LLM passam pelo Gateway)
+// ✅ CORREÇÕES: Erro 406 resolvido (Troca de .single por .maybeSingle em selects)
 
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
 import { Redis } from '@upstash/redis';
+import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; // <--- IMPORT DO GATEKEEPER
 
 // ============================================================
 // 1. CONEXÃO CENTRAL COM O BANCO (SCHEMA JARVIS)
@@ -21,69 +23,36 @@ const redis = new Redis({
 });
 
 // ============================================================
-// 2. MOTOR DE IA (via OpenRouter)
+// 2. MOTOR DE IA (Encaminhado para o Gatekeeper)
 // ============================================================
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
+/**
+ * Wrapper centralizado que joga qualquer requisição interna do jarvis.ts 
+ * diretamente para a fila de background (Prioridade 4) do Gatekeeper.
+ */
 export async function callOpenRouter(
   input: string | ChatMessage[],
   model: string = "google/gemini-2.0-flash-001",
-  temperature: number = 0.7
+  temperature: number = 0.7,
+  priority: 1 | 2 | 3 | 4 = 4 // Default para Background
 ): Promise<string> {
-  try {
-    // MAPEAMENTO DINÂMICO DE MODELOS
-    let finalModel = model;
-    if (model === "flash") finalModel = "google/gemini-2.0-flash-001";
-    else if (model === "pro") finalModel = "google/gemini-2.5-pro";
-    else if (model === "haiku") finalModel = "anthropic/claude-3-5-haiku";
+  const taskId = `jarvis_internal_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+  const messages = typeof input === 'string' ? [{ role: 'user', content: input }] : input;
+  
+  // Tarefas prioritárias (1, 2) nunca caem. Tarefas de background (3, 4) são descartadas sob estresse (Load Shedding).
+  const dropPolicy = (priority === 3 || priority === 4) ? 'if_full' : 'never';
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
-
-    const messages: ChatMessage[] = typeof input === 'string'
-      ? [{ role: 'user', content: input }]
-      : input;
-
-    // Função auxiliar para não repetir o payload
-    const buildFetchOptions = (modelToUse: string) => ({
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: modelToUse,
-        messages,
-        temperature
-      })
-    });
-
-    // 1ª Tentativa (Modelo Principal)
-    let res = await fetch("https://openrouter.ai/api/v1/chat/completions", buildFetchOptions(finalModel));
-
-    // 2ª Tentativa INSTANTÂNEA (Fallback para Erro 429)
-    if (res.status === 429) {
-      console.warn(`[OpenRouter] Rate Limit (429) em ${finalModel}. Disparando Fallback instantâneo...`);
-      const fallbackModel = "google/gemini-1.5-flash"; // Modelo rápido de backup
-      res = await fetch("https://openrouter.ai/api/v1/chat/completions", buildFetchOptions(fallbackModel));
-    }
-
-    clearTimeout(timeout);
-
-    if (!res.ok) {
-      throw new Error(`OpenRouter error: ${res.status}`);
-    }
-
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content || "";
-  } catch (error) {
-    console.error("[OpenRouter] Erro na chamada:", error);
-    throw error;
-  }
+  return callOpenRouterWithPriority(
+    priority,
+    dropPolicy,
+    taskId,
+    messages,
+    [], // Sem tools para chamadas internas genéricas
+    model,
+    temperature
+  );
 }
-
-
 
 // ============================================================
 // 3. MOTOR VETORIAL (Embeddings via OpenRouter)
@@ -177,7 +146,7 @@ export async function getOrCreateSession(userId: string): Promise<string> {
       .gte('last_active', fourHoursAgo)
       .order('last_active', { ascending: false })
       .limit(1)
-      .single();
+      .maybeSingle(); // <--- 406 FIX
 
     if (existing) {
       await supabase
@@ -197,7 +166,7 @@ export async function getOrCreateSession(userId: string): Promise<string> {
       .from('sessions')
       .insert({ user_id: userId, is_active: true })
       .select('id')
-      .single();
+      .single(); // Insert returning 1 row é seguro usar single()
 
     return newSession?.id || 'default';
   } catch (e) {
@@ -215,7 +184,7 @@ export async function getPendingQuestion(userId: string): Promise<{ question: st
       .from('users')
       .select('pending_question, pending_context')
       .eq('id', userId)
-      .single();
+      .maybeSingle(); // <--- 406 FIX
 
     return {
       question: data?.pending_question || null,
@@ -282,7 +251,7 @@ export async function compactMemory(userId: string, authorName: string): Promise
       .from('users')
       .select('current_context')
       .eq('id', userId)
-      .single();
+      .maybeSingle(); // <--- 406 FIX
 
     const oldContext = userProfile?.current_context || "Nenhum contexto prévio.";
 
@@ -327,6 +296,7 @@ TAREFA: Integre as novas informações ao Dossiê existente.
 - Retorne APENAS o Dossiê atualizado em português, sem comentários, sem markdown excessivo
     `.trim();
 
+    // Como essa compactação usa callOpenRouter, ela vai automaticamente para a fila de background (Prioridade 4) e será descartada se houver gargalo de tráfego.
     const newContext = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.3);
 
     if (!memoriaEhValida(newContext)) {
@@ -425,7 +395,7 @@ export async function reinforceMemory(memoryId: string): Promise<void> {
       .from('memories')
       .select('access_count, relevance_score')
       .eq('id', memoryId)
-      .single();
+      .maybeSingle(); // <--- 406 FIX
 
     if (!data) return;
 
