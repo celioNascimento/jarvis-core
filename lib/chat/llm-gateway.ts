@@ -1,5 +1,5 @@
 // lib/chat/llm-gateway.ts
-// Motor V8.13.3 — Gatekeeper com Graceful Degradation e Circuit Breaker
+// Motor V8.13.4 — Gatekeeper com Ghost Counter Protection e Loop Lock
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
@@ -21,26 +21,23 @@ export interface LLMTask<T> {
 
 class Gatekeeper {
   private readonly maxConcurrent = 3; 
+  private isProcessingLoop = false; // <-- TRAVA PARA EVITAR VAZAMENTO DE MEMÓRIA NA VERCEL
 
-  // NOVO: Sensor de estresse do sistema
   async isOverloaded(): Promise<boolean> {
     try {
-      // 1. O Disjuntor desarmou? (Acabamos de tomar um 429)
       const breaker = await redis.get('llm_circuit_breaker');
       if (breaker === 'open') return true;
 
-      // 2. A fila global está lotada?
       const activeCount = await redis.get<number>('global_llm_active') || 0;
       return activeCount >= this.maxConcurrent;
     } catch {
-      return false; // Em caso de falha no Redis, assume que está ok para não travar
+      return false; 
     }
   }
 
   async enqueue<T>(task: LLMTask<T>): Promise<T> {
     const dedupKey = `llm_dedup:${task.id}`;
 
-    // 1. DEDUPLICAÇÃO
     try {
       const cached = await redis.get<T>(dedupKey);
       if (cached) {
@@ -49,31 +46,38 @@ class Gatekeeper {
       }
     } catch (e) {}
 
-    // 2. LOAD SHEDDING GLOBAL (A Guilhotina)
     if (task.dropPolicy === 'if_full') {
       const overloaded = await this.isOverloaded();
       if (overloaded) {
         console.warn(`[Gatekeeper] ✂️ Sistema em STRESS. Descartando tarefa de luxo: ${task.id}`);
-        // Retorna um erro amigável e controlado para não quebrar o background
         throw new Error('GATEKEEPER_DROPPED_TASK'); 
       }
     }
 
-    // 3. ENFILEIRAMENTO
     return new Promise<T>((resolve, reject) => {
       this.queue.push({ task, resolve, reject });
       this.queue.sort((a, b) => a.task.priority - b.task.priority);
-      this.processQueue();
+      
+      // Só dispara o loop se não houver um já rodando neste container
+      if (!this.isProcessingLoop) {
+        this.processQueue();
+      }
     });
   }
 
   private queue: Array<{ task: LLMTask<any>; resolve: (v: any) => void; reject: (e: any) => void }> = [];
 
   private async processQueue() {
-    if (this.queue.length === 0) return;
+    if (this.queue.length === 0) {
+      this.isProcessingLoop = false;
+      return;
+    }
 
+    this.isProcessingLoop = true;
+
+    // INCREMENTO SEGURO CONTRA "GHOST COUNTERS"
     const activeCount = await redis.incr('global_llm_active');
-    if (activeCount === 1) await redis.expire('global_llm_active', 45);
+    await redis.expire('global_llm_active', 45); // <-- AGORA RENOVA SEMPRE, SALVA VIDAS!
 
     if (activeCount > this.maxConcurrent) {
       await redis.decr('global_llm_active');
@@ -84,6 +88,7 @@ class Gatekeeper {
     const item = this.queue.shift();
     if (!item) {
       await redis.decr('global_llm_active');
+      this.isProcessingLoop = false;
       return;
     }
 
@@ -92,7 +97,7 @@ class Gatekeeper {
 
       let result;
       let attempts = 0;
-      const maxAttempts = item.task.priority === 1 ? 2 : 1; // Reduzido para evitar timeout do Vercel
+      const maxAttempts = item.task.priority === 1 ? 2 : 1; 
 
       while (attempts < maxAttempts) {
         try {
@@ -103,7 +108,6 @@ class Gatekeeper {
           const isRateLimit = error?.message?.includes('429') || error?.status === 429;
           
           if (isRateLimit) {
-            // NOVO: Desarma o disjuntor global por 15 segundos para avisar o resto do sistema
             await redis.set('llm_circuit_breaker', 'open', { ex: 15 });
             
             if (attempts < maxAttempts) {
@@ -111,7 +115,8 @@ class Gatekeeper {
               console.warn(`[Gatekeeper] ⚠️ Rate Limit. Pausa de ${delay}ms...`);
               await new Promise(r => setTimeout(r, delay));
             } else {
-              throw error;
+              // Devolvemos um erro claro se todas as tentativas falharem
+              throw new Error("RATE_LIMIT_EXCEEDED");
             }
           } else {
             throw error;
@@ -125,7 +130,8 @@ class Gatekeeper {
     } catch (error: any) {
       item.reject(error);
     } finally {
-      await redis.decr('global_llm_active');
+      // DECREMENTO SEGURO
+      try { await redis.decr('global_llm_active'); } catch(e) {}
       this.processQueue();
     }
   }
