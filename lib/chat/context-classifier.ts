@@ -66,7 +66,7 @@ const RULES_NORMALIZED: Array<[RegExp, ContextType]> = ([
   [norm('jogo|partida|futebol|basquete|vôlei|volei|tenis|f1|corrida|campeonato|copa|campeonato brasileiro|libertadores|copa do brasil|série a|série b|classificação|tabela|artilheiro|resultado|placar|hoje tem jogo|quando é o jogo|proximo jogo|próximo jogo|data do jogo|horário do jogo|escalação'), 'esporte'],
   [norm('noticia|notícias|últimas|recente|aconteceu|hoje no|manchete|jornal|portal|g1|globo|folha|estadão|política|politica|eleição|eleicao|governo'), 'noticias'],
   [norm('clima|tempo|temperatura|chuva|frio|calor|previsão|previsao|amanhecer|entardecer|umidade|vento|chover|chuvoso|vai chover|como esta o tempo|como esta o clima|céu|ceu'), 'clima'],
-  [norm('compra|compras|mercado|supermercado|feira|lista de compras|item|itens|precisamos de|falta em casa|acabou o|acabou a|precisando de|faltando'), 'compras'],
+  [norm('compra|mercado|feira|lista|cimento|tinta|whey|suplemento|reforma|precisamos de|acabou o|faltando|falta em casa|precisando de|supermercado|item'), 'compras'],
   [norm('gastei|paguei|recebi|salário|salario|despesa|receita|conta|comprei|boleto|fatura|orçamento|orcamento|finanças|financas|dinheiro|grana|divida|dívida|cartao|cartão|credito|crédito|debito|débito|investimento|poupanca|poupança|saldo|extrato|gasto|pix|ted|transacao|transação|banco|nubank|itaú|itau|bradesco|santander|inter|caixa econômica'), 'financas'],
   [norm('trabalho|empresa|chefe|colega|reunião de trabalho|tarefa|prazo|entrega|cliente'), 'trabalho'],
   [norm('foco|tdah|procrastinando|travado|paralisado|sobrecarregado|por onde começo|nao sei comecar'), 'tdah'],
