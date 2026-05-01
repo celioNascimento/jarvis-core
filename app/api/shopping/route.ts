@@ -23,3 +23,31 @@ export async function GET(req: NextRequest) {
     ok: true 
   });
 }
+
+// Adicione estes métodos ao seu arquivo de rota
+export async function POST(req: NextRequest) {
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  const userId = await getUserFromToken(token); // Retorna o bigint numérico
+  
+  const { item, category } = await req.json();
+
+  const { data, error } = await supabase
+    .from('shopping_items')
+    .insert({ user_id: userId, item, category: category || 'mercado', done: false })
+    .select()
+    .single();
+
+  return NextResponse.json({ item: data, ok: !error });
+}
+
+export async function DELETE(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const id = searchParams.get('id');
+
+  const { error } = await supabase
+    .from('shopping_items')
+    .delete()
+    .eq('id', id);
+
+  return NextResponse.json({ ok: !error });
+}
