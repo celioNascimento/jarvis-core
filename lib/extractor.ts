@@ -60,9 +60,9 @@ export async function buildGapsBlock(userId: string, currentMessage?: string): P
 
     // Detecta se a mensagem atual tem contexto incompatível com os gaps pendentes
     const msgLower = (currentMessage || '').toLowerCase();
-    const isEmotional   = /dific|barra|trist|saudade|relação|família|filho|esposa|mãe|pai|deus|fé|oração/.test(msgLower);
-    const isAboutDate   = /aniversário|data|nascimento|casamento|páscoa|natal/.test(msgLower);
-    const isAboutWork   = /trabalho|projeto|empresa|reunião|entrega|prazo|cliente/.test(msgLower);
+    const isEmotional = /dific|barra|trist|saudade|relação|família|filho|esposa|mãe|pai|deus|fé|oração/.test(msgLower);
+    const isAboutDate = /aniversário|data|nascimento|casamento|páscoa|natal/.test(msgLower);
+    const isAboutWork = /trabalho|projeto|empresa|reunião|entrega|prazo|cliente/.test(msgLower);
     const hasProjectGap = gaps.some(g => (g.field || '').match(/projeto|pqf/i));
     const blockProjectGap = hasProjectGap && !isAboutWork;
 
@@ -119,36 +119,36 @@ export async function extractAndSummarize(
     console.log('[Extrator/classify] contextos:', classification.contexts);
     const msg = userMessage.toLowerCase();
 
-    const temPerfil   = classification.contexts.includes('perfil');
-    const temFamilia  = classification.contexts.includes('familia');
-    const temEvento   = classification.contexts.includes('evento');
-    const temProjeto  = classification.contexts.includes('projeto');
-    const temAgenda   = classification.contexts.includes('agenda');
-    const temRotina   = classification.contexts.includes('rotina');
-    const temPref     = classification.contexts.includes('preferencia');
-    const temRelacao  = classification.contexts.includes('relacao');
-    const temRec      = classification.contexts.includes('recomendacao');
-    const temAlias    = classification.contexts.includes('alias');
+    const temPerfil = classification.contexts.includes('perfil');
+    const temFamilia = classification.contexts.includes('familia');
+    const temEvento = classification.contexts.includes('evento');
+    const temProjeto = classification.contexts.includes('projeto');
+    const temAgenda = classification.contexts.includes('agenda');
+    const temRotina = classification.contexts.includes('rotina');
+    const temPref = classification.contexts.includes('preferencia');
+    const temRelacao = classification.contexts.includes('relacao');
+    const temRec = classification.contexts.includes('recomendacao');
+    const temAlias = classification.contexts.includes('alias');
 
     // Filtros semânticos — só roda se a mensagem realmente falar do assunto
-    const msgFamilia  = /filho|filha|esposa|marido|cônjuge|pai|mãe|irmão|irmã|bebê|criança|nasceu|grávid/.test(msg);
-    const msgProjeto  = /projeto|app|sistema|negócio|ideia|desenvolv|startup|pqf/.test(msg);
-    const msgAgenda   = /\d{1,2}[\/\-:h]\d|às \d|amanhã|semana que vem|consulta|reunião|voo|compromisso/.test(msg);
-    const msgRotina   = /todo dia|toda manhã|sempre|rotina|hábito|costume|horário|acord|dorm/.test(msg);
-    const msgRelacao  = /não (nos|me|se) (damos|dou|fala)|relação|difícil|distante|próximo|me dou bem/.test(msg);
-    const msgAlias    = /chamo|chama|apelido|me chama de|chamo de/.test(msg);
+    const msgFamilia = /filho|filha|esposa|marido|cônjuge|pai|mãe|irmão|irmã|bebê|criança|nasceu|grávid/.test(msg);
+    const msgProjeto = /projeto|app|sistema|negócio|ideia|desenvolv|startup|pqf/.test(msg);
+    const msgAgenda = /\d{1,2}[\/\-:h]\d|às \d|amanhã|semana que vem|consulta|reunião|voo|compromisso/.test(msg);
+    const msgRotina = /todo dia|toda manhã|sempre|rotina|hábito|costume|horário|acord|dorm/.test(msg);
+    const msgRelacao = /não (nos|me|se) (damos|dou|fala)|relação|difícil|distante|próximo|me dou bem/.test(msg);
+    const msgAlias = /chamo|chama|apelido|me chama de|chamo de/.test(msg);
 
-    if (temPerfil)                        tasks.push(extractPerfil(userId, userMessage));
-    if (temFamilia  && msgFamilia)        tasks.push(extractFamilia(userId, userMessage, pendingGaps));
-    if (temAlias    && msgAlias)          tasks.push(extractAlias(userId, userMessage));
-    if (temProjeto  && msgProjeto)        tasks.push(extractProjeto(userId, userMessage));
+    if (temPerfil) tasks.push(extractPerfil(userId, userMessage));
+    if (temFamilia && msgFamilia) tasks.push(extractFamilia(userId, userMessage, pendingGaps));
+    if (temAlias && msgAlias) tasks.push(extractAlias(userId, userMessage));
+    if (temProjeto && msgProjeto) tasks.push(extractProjeto(userId, userMessage));
     // extractEvento REMOVIDO — eventos são inseridos exclusivamente pelo webhook
     // via gatilho SALVAR_EVENTO. Dois caminhos = race condition + duplicatas.
-    if (temAgenda   && msgAgenda)         tasks.push(extractAgenda(userId, userMessage));
-    if (temRotina   && msgRotina)         tasks.push(extractRotina(userId, userMessage));
-    if (temPref)                          tasks.push(extractPreferencia(userId, userMessage));
-    if (temRelacao  && msgRelacao)        tasks.push(extractRelacao(userId, userMessage));
-    if (temRec)                           tasks.push(extractRecomendacao(userId, userMessage, aiReply));
+    if (temAgenda && msgAgenda) tasks.push(extractAgenda(userId, userMessage));
+    if (temRotina && msgRotina) tasks.push(extractRotina(userId, userMessage));
+    if (temPref) tasks.push(extractPreferencia(userId, userMessage));
+    if (temRelacao && msgRelacao) tasks.push(extractRelacao(userId, userMessage));
+    if (temRec) tasks.push(extractRecomendacao(userId, userMessage, aiReply));
 
     console.log('[Extrator/tasks]', tasks.length, 'tarefas ativas de', classification.contexts.length, 'contextos');
 
@@ -177,13 +177,13 @@ export async function extractAndRoute(
 
 function summarizeContexts(contexts: string[]): string {
   const labels: Record<string, string> = {
-    perfil:      'dados do seu perfil',
-    familia:     'informações da sua família',
-    alias:       'apelido registrado',
-    projeto:     'projeto anotado',
-    evento:      'data importante salva',
-    agenda:      'compromisso na agenda',
-    rotina:      'rotina atualizada',
+    perfil: 'dados do seu perfil',
+    familia: 'informações da sua família',
+    alias: 'apelido registrado',
+    projeto: 'projeto anotado',
+    evento: 'data importante salva',
+    agenda: 'compromisso na agenda',
+    rotina: 'rotina atualizada',
     preferencia: 'preferência registrada',
   };
   const found = contexts.filter(c => labels[c]).map(c => labels[c]);
@@ -207,9 +207,9 @@ export function safeParseJSON(raw: string): any | null {
     // Fecha string aberta
     if ((fixed.match(/"/g) || []).length % 2 !== 0) fixed += '"';
     // Fecha arrays e objetos
-    const opens   = (fixed.match(/\{/g) || []).length;
-    const closes  = (fixed.match(/\}/g) || []).length;
-    const aOpens  = (fixed.match(/\[/g) || []).length;
+    const opens = (fixed.match(/\{/g) || []).length;
+    const closes = (fixed.match(/\}/g) || []).length;
+    const aOpens = (fixed.match(/\[/g) || []).length;
     const aCloses = (fixed.match(/\]/g) || []).length;
     for (let i = 0; i < aOpens - aCloses; i++) fixed += ']';
     for (let i = 0; i < opens - closes; i++) fixed += '}';
@@ -297,7 +297,7 @@ async function detectGaps(
     supabase.from('children').select('name').eq('parent_id', userId),
   ]);
 
-  const p          = profileRes.data;
+  const p = profileRes.data;
   const childNames = (childrenRes.data || []).map((c: any) => c.name);
 
   const prompt = `Identifique lacunas de informação. Máximo 2 gaps relevantes.
@@ -353,9 +353,15 @@ Retorne {"gaps": []} se não há lacunas ou se já sabemos tudo.`;
 // ============================================================
 
 async function extractPerfil(userId: string, userMessage: string): Promise<void> {
-  const { data: current } = await supabase
+  // 1. Busca dados atuais de ambas as tabelas para evitar sobrescrita cega
+  const { data: userCurrent } = await supabase
+    .from('users')
+    .select('preferred_name, nickname')
+    .eq('id', userId).single();
+
+  const { data: profileCurrent } = await supabase
     .from('user_profiles')
-    .select('full_name, preferred_name, gender, schools, birth_date, birth_city, birth_state, phone, whatsapp, father_name, mother_name, faith_profile, profession, company')
+    .select('full_name, gender, schools, birth_date, birth_city, birth_state, phone, whatsapp, father_name, mother_name, faith_profile, profession, company')
     .eq('user_id', userId).maybeSingle();
 
   const prompt = `Extraia dados de perfil pessoal afirmados explicitamente pelo USUÁRIO.
@@ -375,95 +381,80 @@ Retorne APENAS JSON (null para campos não mencionados):
 }
 
 REGRAS:
-- FONTE: extraia APENAS do que o USUÁRIO afirma. Perguntas do assistente = ignorar
-- nome_completo: só com sobrenome(s). "Celio Roberto Ramos do Nascimento" → extrai tudo
-  "pode me chamar de X" → NÃO é nome_completo, é nome_preferido
-- nome_preferido: APENAS quando usuário disser explicitamente como quer ser chamado.
-  "pode me chamar de X", "prefiro X", "me chama de X" → nome_preferido="X"
-  NUNCA inferir de contexto, nome de terceiros ou perguntas do assistente
-- cidade/estado: infira estado pela cidade (Londrina→PR, São Paulo→SP). Estado = sigla 2 letras
-- cidade_natal ≠ cidade: natal=onde nasceu, cidade=onde mora AGORA
-- telefone: "telefone", "celular", "número", "fone", "contato"
-- whatsapp: "whatsapp", "wpp", "zap"
-- formacao: ÁREA DE ESTUDO ("Engenharia de Computação"). NÃO é cargo nem empresa
-- cargo_atual: FUNÇÃO/CARGO ("Técnico Jr"). NÃO é área de estudo
-- empresa: empresa onde trabalha/vai trabalhar. NÃO é escola/faculdade
-- data_inicio_emprego: "a partir de 12/03/2026" → "2026-03-12". Formato YYYY-MM-DD
-- escola: instituição de ensino. NÃO é empresa
+- FONTE: extraia APENAS do que o USUÁRIO afirma.
+- nome_completo: só com sobrenome(s). "Celio Roberto" → ignorar. "Celio Roberto Ramos do Nascimento" → extrai.
+- nome_preferido: "pode me chamar de X", "me chama de X".
 - escolaridade: "fundamental"|"medio"|"tecnico"|"superior_cursando"|"superior_completo"|"pos_graduacao"|"mestrado"|"doutorado"
 - fe: "christian_declared"|"open"|"none"
-- genero: "masculino"|"feminino" explícito, ou inferido: "minha esposa"→masculino, "meu marido"→feminino
-- qtd_irmaos: número inteiro`;
+- nascimento: YYYY-MM-DD`;
 
   try {
     const data = JSON.parse(await callAI(prompt, 400));
-    const patch: Record<string, any> = {};
+    const userPatch: Record<string, any> = {};
+    const profilePatch: Record<string, any> = {};
 
-    function set(field: string, newVal: any, type: 'name'|'once'|'array'|'number' = 'once') {
+    // Helper para decidir o que atualizar
+    function setField(target: 'user' | 'profile', field: string, newVal: any, type: 'name' | 'once' | 'array' | 'number' = 'once') {
       if (newVal === null || newVal === undefined || newVal === '') return;
-      const cur = (current as any)?.[field];
+
+      const currentObj = target === 'user' ? userCurrent : profileCurrent;
+      const patchObj = target === 'user' ? userPatch : profilePatch;
+      const cur = (currentObj as any)?.[field];
+
       if (type === 'name') {
         const curWords = cur ? cur.trim().split(/\s+/).length : 0;
         const newWords = String(newVal).trim().split(/\s+/).length;
-        if (!cur || newWords > curWords) patch[field] = newVal;
+        if (!cur || newWords > curWords) patchObj[field] = newVal;
       } else if (type === 'array') {
-        const existing: string[] = cur || [];
-        const norm = (s: string) => s.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-        if (!existing.some((e: string) => norm(e) === norm(String(newVal)))) {
-          patch[field] = [...existing, newVal];
-        }
+        const existing = cur || [];
+        if (!existing.includes(newVal)) patchObj[field] = [...existing, newVal];
       } else if (type === 'number') {
-        if (cur === null || cur === undefined) patch[field] = newVal;
+        if (cur === null || cur === undefined) patchObj[field] = newVal;
       } else {
-        if (!cur) patch[field] = newVal;
+        if (!cur) patchObj[field] = newVal;
       }
     }
 
-    set('full_name',      data.nome_completo,      'name');
-    if (data.nome_preferido) patch.preferred_name = data.nome_preferido;
-    set('nickname',       data.apelido,             'once');
-    set('city',           data.cidade,              'once');
-    set('state',          data.estado,              'once');
-    set('birth_city',     data.cidade_natal,        'once');
-    set('birth_state',    data.estado_natal,        'once');
-    console.log('[Extrator/perfil] birth_date atual:', (current as any)?.birth_date, '| novo:', data.nascimento);
-    set('birth_date',     data.nascimento,          'once');
-    set('phone',          data.telefone,            'once');
-    set('whatsapp',       data.whatsapp,            'once');
-    set('father_name',    data.nome_pai,            'name');
-    set('mother_name',    data.nome_mae,            'name');
-    set('faith_profile',  data.fe,                  'once');
-    set('faith_notes',    data.fe_notas,            'once');
-    set('profession',     data.formacao,            'once');
-    set('current_job',    data.cargo_atual,         'once');
-    set('company',        data.empresa,             'once');
-    set('job_start_date', data.data_inicio_emprego, 'once');
-    set('schools',        data.escola,              'array');
+    // Mapeamento para jarvis.users
+    setField('user', 'preferred_name', data.nome_preferido);
+    setField('user', 'nickname', data.apelido);
 
-    if (data.qtd_irmaos !== null && data.qtd_irmaos !== undefined) {
-      set('siblings_count', parseInt(String(data.qtd_irmaos)), 'number');
+    // Mapeamento para jarvis.user_profiles
+    setField('profile', 'full_name', data.nome_completo, 'name');
+    setField('profile', 'city', data.cidade);
+    setField('profile', 'state', data.estado);
+    setField('profile', 'birth_city', data.cidade_natal);
+    setField('profile', 'birth_state', data.estado_natal);
+    setField('profile', 'birth_date', data.nascimento);
+    setField('profile', 'phone', data.telefone);
+    setField('profile', 'whatsapp', data.whatsapp);
+    setField('profile', 'father_name', data.nome_pai, 'name');
+    setField('profile', 'mother_name', data.nome_mae, 'name');
+    setField('profile', 'faith_profile', data.fe);
+    setField('profile', 'faith_notes', data.fe_notas);
+    setField('profile', 'profession', data.formacao);
+    setField('profile', 'current_job', data.cargo_atual);
+    setField('profile', 'company', data.empresa);
+    setField('profile', 'job_start_date', data.data_inicio_emprego);
+    setField('profile', 'schools', data.escola, 'array');
+
+    if (data.qtd_irmaos !== null) setField('profile', 'siblings_count', parseInt(data.qtd_irmaos), 'number');
+
+    // 1. Atualiza Identidade de Sistema (Users)
+    if (Object.keys(userPatch).length > 0) {
+      await supabase.from('users').update(userPatch).eq('id', userId);
+      console.log('[Extrator/Perfil] Users atualizado:', Object.keys(userPatch));
     }
 
-    const escValidos = ['fundamental','medio','tecnico','superior_cursando',
-                        'superior_completo','pos_graduacao','mestrado','doutorado'];
-    if (data.escolaridade && escValidos.includes(data.escolaridade)) {
-      set('education_level', data.escolaridade, 'once');
+    // 2. Atualiza Dados Biográficos (Profiles)
+    if (Object.keys(profilePatch).length > 0) {
+      profilePatch.user_id = userId;
+      profilePatch.updated_at = new Date().toISOString();
+      await supabase.from('user_profiles').upsert(profilePatch, { onConflict: 'user_id' });
+      console.log('[Extrator/Perfil] Profile atualizado:', Object.keys(profilePatch));
     }
 
-    if (data.genero && !current?.gender) {
-      const g = data.genero.toLowerCase();
-      patch.gender = g.includes('masc') || g === 'm' ? 'masculino'
-                   : g.includes('fem')  || g === 'f' ? 'feminino'
-                   : 'prefiro_nao_dizer';
-    }
-    if (Object.keys(patch).length === 0) return;
-    patch.user_id    = userId;
-    patch.updated_at = new Date().toISOString();
-
-    const { error } = await supabase.from('user_profiles').upsert(patch, { onConflict: 'user_id' });
-    if (error) console.error('[Extrator/perfil] Erro:', JSON.stringify(error));
-    else console.log('[Extrator/perfil] Gravou:', Object.keys(patch).filter(k => !['user_id','updated_at'].includes(k)).join(', '));
-  } catch (e) { console.error('[Extrator/perfil] Erro:', e); }
+  } catch (e) { console.error('[Extrator/Perfil] Erro crítico:', e); }
 }
 
 // ============================================================
@@ -476,7 +467,7 @@ async function extractFamilia(
   gaps: DetectedGap[]
 ): Promise<void> {
   const hasEsposaGap = gaps.some(g => g.field === 'nome_esposa' || g.field === 'nome_marido');
-  const hasFilhoGap  = gaps.some(g => g.field === 'nome_filho');
+  const hasFilhoGap = gaps.some(g => g.field === 'nome_filho');
 
   const { data: current } = await supabase
     .from('user_profiles')
@@ -486,7 +477,7 @@ async function extractFamilia(
   const prompt = `Extraia dados familiares afirmados explicitamente pelo USUÁRIO.
 IGNORE qualquer informação vinda de perguntas ou afirmações do assistente.
 ${hasEsposaGap ? 'PRIORIDADE: usuário fornecendo nome do cônjuge — extraia.' : ''}
-${hasFilhoGap  ? 'PRIORIDADE: usuário fornecendo nome de filho — extraia.' : ''}
+${hasFilhoGap ? 'PRIORIDADE: usuário fornecendo nome de filho — extraia.' : ''}
 
 Mensagem do usuário: "${userMessage}"
 
@@ -538,7 +529,7 @@ REGRAS:
     const kidCount = Math.max((existingKids || []).length, 1);
     const maxTokens = 300 + (kidCount * 100);
 
-    const raw  = await callAI(prompt, maxTokens);
+    const raw = await callAI(prompt, maxTokens);
     const data = safeParseJSON(raw);
     if (!data) { console.error('[Extrator/familia] JSON inválido:', raw.slice(0, 200)); return; }
 
@@ -596,10 +587,10 @@ REGRAS:
         : filho.idade;
       const life_phase = getLifePhase(ageReal);
 
-      const existingName  = ex?.name || '';
+      const existingName = ex?.name || '';
       const existingWords = existingName.trim().split(/\s+/).length;
-      const newWords      = filho.nome.trim().split(/\s+/).length;
-      const nameToSave    = (!existingName || newWords > existingWords) ? filho.nome : existingName;
+      const newWords = filho.nome.trim().split(/\s+/).length;
+      const nameToSave = (!existingName || newWords > existingWords) ? filho.nome : existingName;
 
       let nicknameToSave: string | null = ex?.nickname || null;
       if (ex?.child_user_id) {
@@ -608,8 +599,8 @@ REGRAS:
           .eq('user_id', String(ex.child_user_id)).maybeSingle();
         nicknameToSave = childUser?.preferred_name || childUser?.full_name?.split(' ')[0] || null;
       } else {
-        const apelido  = filho.apelido || nameToSave.split(' ')[0];
-        const apWords  = apelido.trim().split(/\s+/).length;
+        const apelido = filho.apelido || nameToSave.split(' ')[0];
+        const apWords = apelido.trim().split(/\s+/).length;
         const curWords = (ex?.nickname || '').trim().split(/\s+/).length;
         if (!ex?.nickname || apWords > curWords) nicknameToSave = apelido;
       }
@@ -618,7 +609,7 @@ REGRAS:
       if (filho.genero) {
         const g = filho.genero.toLowerCase();
         generoNorm = (g === 'm' || g.startsWith('masc')) ? 'masculino'
-                   : (g === 'f' || g.startsWith('fem'))  ? 'feminino' : 'outro';
+          : (g === 'f' || g.startsWith('fem')) ? 'feminino' : 'outro';
       } else if (filho.pronome) {
         generoNorm = filho.pronome === 'ele' ? 'masculino' : filho.pronome === 'ela' ? 'feminino' : null;
       }
@@ -627,21 +618,21 @@ REGRAS:
         name: nameToSave,
         updated_at: new Date().toISOString(),
       };
-      if (birth_date)  childData.birth_date  = birth_date;
+      if (birth_date) childData.birth_date = birth_date;
       if (life_phase && (!ex || birth_date)) childData.life_phase = life_phase;
-      if (nicknameToSave)              childData.nickname          = nicknameToSave;
-      if (generoNorm)                  childData.gender             = generoNorm;
-      if (filho.escola)                childData.school_name        = filho.escola;
-      if (filho.serie)                 childData.school_grade       = filho.serie;
-      if (filho.turno)                 childData.school_shift       = filho.turno;
-      if (filho.necessidades_especiais) childData.special_needs     = filho.necessidades_especiais;
-      if (filho.outro_pai)             childData.other_parent_name  = filho.outro_pai === 'desconhecido' ? null : filho.outro_pai;
+      if (nicknameToSave) childData.nickname = nicknameToSave;
+      if (generoNorm) childData.gender = generoNorm;
+      if (filho.escola) childData.school_name = filho.escola;
+      if (filho.serie) childData.school_grade = filho.serie;
+      if (filho.turno) childData.school_shift = filho.turno;
+      if (filho.necessidades_especiais) childData.special_needs = filho.necessidades_especiais;
+      if (filho.outro_pai) childData.other_parent_name = filho.outro_pai === 'desconhecido' ? null : filho.outro_pai;
 
       if (filho.nota) {
         const { data: childRec } = await supabase.from('children')
           .select('lev_notes').eq('id', ex?.id || '').maybeSingle();
         const existing = childRec?.lev_notes || '';
-        const newNote  = `[${new Date().toLocaleDateString('pt-BR')}] ${filho.nota}`;
+        const newNote = `[${new Date().toLocaleDateString('pt-BR')}] ${filho.nota}`;
         if (!existing.includes(filho.nota)) {
           childData.lev_notes = existing ? `${existing}\n${newNote}` : newNote;
         }
@@ -664,11 +655,11 @@ REGRAS:
           };
           if (nivelToPhase[filho.nivel_escolar]) childData.life_phase = nivelToPhase[filho.nivel_escolar];
         }
-        if (!filho.serie && ['creche','pre'].includes(filho.nivel_escolar)) {
+        if (!filho.serie && ['creche', 'pre'].includes(filho.nivel_escolar)) {
           childData.school_grade = filho.nivel_escolar;
         }
         if (filho.nivel_escolar === 'nao_estuda') {
-          childData.school_name  = null;
+          childData.school_name = null;
           childData.school_grade = null;
           const nivelLabel: Record<string, string> = {
             medio: 'Ensino médio concluído',
@@ -747,14 +738,14 @@ REGRAS:
 // ============================================================
 
 const INITIAL_WEIGHTS: Record<string, number> = {
-  spouse:    1.0,
-  child:     0.9,
-  parent:    0.7,
-  sibling:   0.4,
-  friend:    0.3,
+  spouse: 1.0,
+  child: 0.9,
+  parent: 0.7,
+  sibling: 0.4,
+  friend: 0.3,
   colleague: 0.2,
-  ex:        0.1,
-  other:     0.1,
+  ex: 0.1,
+  other: 0.1,
 };
 
 async function upsertPerson(
@@ -781,31 +772,31 @@ async function upsertPerson(
       const newWeight = Math.min(1.0, existing.emotional_weight + delta);
       await supabase.from('persons').update({
         emotional_weight: newWeight,
-        last_mentioned:   new Date().toISOString(),
-        updated_at:       new Date().toISOString(),
+        last_mentioned: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
         ...(options?.nickname && !existing.nickname ? { nickname: options.nickname } : {}),
       }).eq('id', existing.id);
       personId = existing.id;
     } else {
       const { data: created } = await supabase.from('persons').insert({
-        user_id:          userId,
+        user_id: userId,
         name,
         type,
         emotional_weight: baseWeight,
-        nickname:         options?.nickname ?? null,
-        last_mentioned:   new Date().toISOString(),
+        nickname: options?.nickname ?? null,
+        last_mentioned: new Date().toISOString(),
       }).select('id').single();
       personId = created?.id;
     }
 
     if (options?.noteText && personId) {
       await supabase.from('person_notes').upsert({
-        user_id:     userId,
+        user_id: userId,
         person_name: name,
         person_type: type,
-        person_id:   personId,
-        note:        options.noteText,
-        noted_at:    new Date().toISOString().slice(0, 10),
+        person_id: personId,
+        note: options.noteText,
+        noted_at: new Date().toISOString().slice(0, 10),
       }, { onConflict: 'user_id,person_name,note,noted_at', ignoreDuplicates: true });
     }
 
@@ -871,9 +862,16 @@ Retorne relacoes: [] se nenhuma dinâmica mencionada`;
 }
 
 async function extractAlias(userId: string, userMessage: string): Promise<void> {
+  // Busca o contexto de quem o Jarvis já conhece no seu perfil
   const { data: prof } = await supabase
-    .from('user_profiles').select('spouse_name, father_name, mother_name').eq('user_id', userId).maybeSingle();
-  const { data: kids } = await supabase.from('children').select('name').eq('parent_id', userId);
+    .from('user_profiles')
+    .select('spouse_name, father_name, mother_name')
+    .eq('user_id', userId).maybeSingle();
+    
+  const { data: kids } = await supabase
+    .from('children')
+    .select('name')
+    .eq('parent_id', userId);
 
   const conhecidos = [
     prof?.spouse_name ? `cônjuge: ${prof.spouse_name}` : null,
@@ -890,15 +888,17 @@ Pessoas conhecidas: ${conhecidos || 'nenhuma ainda'}
 Retorne APENAS JSON:
 {"aliases": [{"apelido": "vida", "tipo": "spouse", "nome_real": "Giselle"}]}
 
-tipos: spouse|child|parent|sibling|friend|other
-Retorne aliases: [] se nenhum identificado.`;
+Tipos aceitos: spouse|child|parent|sibling|friend|other`;
 
   try {
-    const data = JSON.parse(await callAI(prompt, 200));
+    const aiResponse = await callAI(prompt, 200);
+    const data = JSON.parse(aiResponse);
+    
     for (const a of (data.aliases || [])) {
       if (!a.apelido) continue;
+      // Chama sua função auxiliar de upsert para gravar o alias
       await upsertAlias(userId, a.apelido, a.tipo || 'other', null, a.nome_real || null);
-      console.log('[Extrator/alias]', a.apelido, '→', a.nome_real);
+      console.log('[Extrator/Alias] Novo apelido:', a.apelido, 'para', a.nome_real || 'desconhecido');
     }
-  } catch (e) { console.error('[Extrator/alias] Erro:', e); }
+  } catch (e) { console.error('[Extrator/Alias] Erro ao extrair:', e); }
 }
