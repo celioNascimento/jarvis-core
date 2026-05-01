@@ -1,4 +1,3 @@
-// app/api/user/profile/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
 import { getUserFromToken } from '@/lib/auth';
@@ -8,18 +7,19 @@ export async function GET(req: NextRequest) {
   const numericUserId = await getUserFromToken(token);
   if (!numericUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  // Busca dados do user
+  // 1. Busca dados do user (Adicionado: preferred_voice)
   const { data: user, error: userErr } = await supabase
     .from('users')
-    .select('id, assistant_name, preferred_name, timezone, nickname, notification_hour')
+    .select('id, assistant_name, preferred_name, timezone, nickname, notification_hour, preferred_voice')
     .eq('id', numericUserId)
     .single();
+    
   if (userErr) return NextResponse.json({ error: userErr.message }, { status: 500 });
 
-  // Busca dados do perfil
+  // 2. Busca dados do perfil (Adicionado: full_name)
   const { data: profile, error: profileErr } = await supabase
     .from('user_profiles')
-    .select('city, state, profession, birth_date, phone')
+    .select('full_name, city, state, profession, birth_date, phone')
     .eq('user_id', numericUserId)
     .maybeSingle();
 
@@ -36,6 +36,8 @@ export async function PATCH(req: NextRequest) {
   const body = await req.json();
   const { userFields, profileFields } = body;
 
+  // O PATCH já é genérico, então se o frontend enviar 'preferred_voice', 
+  // ele atualizará automaticamente se a coluna existir no DB.
   if (userFields && Object.keys(userFields).length) {
     const { error: updateUserErr } = await supabase
       .from('users')
@@ -45,7 +47,6 @@ export async function PATCH(req: NextRequest) {
   }
 
   if (profileFields && Object.keys(profileFields).length) {
-    // Atualiza ou insere
     const { error: upsertErr } = await supabase
       .from('user_profiles')
       .upsert({ user_id: numericUserId, ...profileFields }, { onConflict: 'user_id' });
