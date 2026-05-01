@@ -9,7 +9,7 @@ import {
   extractProjeto, extractEvento, extractAgenda,
   extractRotina, extractPreferencia, extractRecomendacao, updateL3,
   callAI, upsertAlias, upsertEvent, normalizeDate,
-  getCategoryFromType, getLifePhase,
+  getCategoryFromType, getLifePhase, extractShopping
 } from '@/lib/extractor-jobs';
 
 const supabase = createClient(
@@ -129,6 +129,7 @@ export async function extractAndSummarize(
     const temRelacao = classification.contexts.includes('relacao');
     const temRec = classification.contexts.includes('recomendacao');
     const temAlias = classification.contexts.includes('alias');
+    const temCompras = classification.contexts.includes('compras');
 
     // Filtros semânticos — só roda se a mensagem realmente falar do assunto
     const msgFamilia = /filho|filha|esposa|marido|cônjuge|pai|mãe|irmão|irmã|bebê|criança|nasceu|grávid/.test(msg);
@@ -137,6 +138,7 @@ export async function extractAndSummarize(
     const msgRotina = /todo dia|toda manhã|sempre|rotina|hábito|costume|horário|acord|dorm/.test(msg);
     const msgRelacao = /não (nos|me|se) (damos|dou|fala)|relação|difícil|distante|próximo|me dou bem/.test(msg);
     const msgAlias = /chamo|chama|apelido|me chama de|chamo de/.test(msg);
+    const msgCompras = /comprar|anota|lista|falta|acabou|mercado|reforma|academia/i.test(msg);
 
     if (temPerfil) tasks.push(extractPerfil(userId, userMessage));
     if (temFamilia && msgFamilia) tasks.push(extractFamilia(userId, userMessage, pendingGaps));
@@ -149,6 +151,7 @@ export async function extractAndSummarize(
     if (temPref) tasks.push(extractPreferencia(userId, userMessage));
     if (temRelacao && msgRelacao) tasks.push(extractRelacao(userId, userMessage));
     if (temRec) tasks.push(extractRecomendacao(userId, userMessage, aiReply));
+    if (temCompras && msgCompras) tasks.push(extractShopping(userId, userMessage));
 
     console.log('[Extrator/tasks]', tasks.length, 'tarefas ativas de', classification.contexts.length, 'contextos');
 
@@ -185,6 +188,7 @@ function summarizeContexts(contexts: string[]): string {
     agenda: 'compromisso na agenda',
     rotina: 'rotina atualizada',
     preferencia: 'preferência registrada',
+    compras: 'lista de compras atualizada',
   };
   const found = contexts.filter(c => labels[c]).map(c => labels[c]);
   if (found.length === 0) return '';
