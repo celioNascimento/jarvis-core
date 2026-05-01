@@ -760,25 +760,26 @@ export async function extractShopping(userId: string, userMessage: string): Prom
     const prompt = `Você é o assistente Lev. Extraia os itens de compra da mensagem do usuário.
     Mensagem: "${userMessage}"
     
-    Retorne APENAS um JSON válido neste exato formato:
+    Retorne APENAS um JSON válido neste exato formato e NADA MAIS. 
+    NÃO USE blocos de código markdown (crases).
     {"items": [{"item": "nome do item", "category": "mercado"}]}
     
     Categorias válidas: mercado, higiene, farmacia, academia, reforma, casa, roupas, tecnologia, outros.
-    Se não identificar nenhum item claro para comprar, retorne {"items": []}.`;
+    Se não identificar nenhum item claro, retorne {"items": []}.`;
 
-    // Chama o LLM para estruturar o dado (igual ao que a tela do app já faz por padrão)
     const aiResponse = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.1);
-    const data = JSON.parse(aiResponse);
+    
+    // ── AQUI ESTÁ A CORREÇÃO: Limpador de Markdown ──
+    const cleanJson = aiResponse.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+    const data = JSON.parse(cleanJson);
 
     if (!data.items || data.items.length === 0) {
       console.log('[Extrator/Shopping] Nenhum item detectado.');
       return;
     }
 
-    // ── AQUI ESTÁ A UNIFICAÇÃO ──
-    // Monta a inserção exatamente como a sua API POST do app faz
     const inserts = data.items.map((i: any) => ({
-      user_id: Number(userId), // O BigInt numérico que consertamos hoje
+      user_id: Number(userId),
       item: i.item,
       category: i.category || 'outros',
       done: false
