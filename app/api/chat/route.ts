@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V8.18.1 (Radar de Afeto + Diretrizes Dinâmicas)
+// app/api/chat/route.ts — V8.18.1 (Radar de Afeto + Diretrizes Dinâmicas + Extrator de Dados)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -12,6 +12,8 @@ import { tools as ALL_TOOLS } from '@/lib/chat/tools-def';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import { executeTool } from '@/lib/chat/tools-executor';
 import OpenAI from 'openai';
+import { getUserFromToken } from '@/lib/auth';
+import { extractAndSummarize } from '@/lib/extractor'; // ✅ IMPORT DO EXTRATOR ADICIONADO
 
 export const maxDuration = 60;
 
@@ -20,15 +22,13 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 }); // <--- ADICIONE ESTE
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 });
 
 // ─── Constantes Globais ──────────────────────────────────────────────────────
 
 const MAX_HISTORY_TURNS = 6;
 const MAX_MSG_CHARS = 800;
 
-// Restaurado: O array de sinais precisa ficar no escopo global
 const FAMILY_DATE_SIGNALS = [
   /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
   /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
@@ -85,7 +85,7 @@ async function generateTTS(text: string, voice: string = 'alloy'): Promise<strin
 
     const mp3 = await openai.audio.speech.create({
       model: "tts-1",
-      voice: voice as any, // Aqui usamos a voz vinda do banco
+      voice: voice as any,
       input: cleanText,
     });
 
@@ -100,6 +100,7 @@ async function generateTTS(text: string, voice: string = 'alloy'): Promise<strin
 // ─── Handler principal ────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const token = req.headers.get('authorization')?.split(' ')[1];
   const startTime = Date.now();
   try {
     const body = await (req.headers.get('content-type')?.includes('multipart')
@@ -108,14 +109,12 @@ export async function POST(req: NextRequest) {
 
     const message = body instanceof FormData ? body.get('message') as string : body.message;
     const userEmail = body instanceof FormData ? body.get('userEmail') as string : body.userEmail;
-    
     const speak = body instanceof FormData ? body.get('speak') === 'true' : !!body.speak;
-
-    const incomingSessionId = body instanceof FormData 
+    const incomingSessionId = body instanceof FormData
       ? (body.get('sessionId') as string | null)
       : (body.sessionId as string | null);
 
-    // 1. Resolve Usuário
+    // 1. Resolve Usuário (AQUI JÁ TEMOS O BIGINT EM user.id)
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
 
@@ -160,7 +159,7 @@ export async function POST(req: NextRequest) {
       classifyContextWithL4(message, String(user.id)),
     ]);
 
-    // ── FASE 2: Memória carregada com embedding real ──────────────────────────
+    // ── FASE 2: Memória carregada ──────────────────────────
     const memory = await MemoryManager.read({
       userId: String(user.id),
       authUserId: user.auth_user_id,
@@ -173,7 +172,7 @@ export async function POST(req: NextRequest) {
       queryEmbedding,
     });
 
-    // ── FASE 3: Score emocional com contexto real ─────────────────────────────
+    // ── FASE 3: Score emocional ─────────────────────────────
     const emotional = await computeEmotionalScore(
       message,
       String(user.id),
@@ -194,12 +193,11 @@ export async function POST(req: NextRequest) {
       'google/gemini-2.0-flash-001',
     );
 
-    // ── Guard L3 (Radar de Afeto corrigido e no lugar certo) ─────────────────
+    // ── Guard L3 (Radar de Afeto) ─────────────────
     let filteredL3 = memory.l3.content;
-
     const todayCheck = new Date();
-    const isMay = todayCheck.getMonth() === 4; // Maio
-    const isAugust = todayCheck.getMonth() === 7; // Agosto
+    const isMay = todayCheck.getMonth() === 4;
+    const isAugust = todayCheck.getMonth() === 7;
     const isHighAlertMonth = isMay || isAugust;
 
     if (recentHistory.length > 0 || isHighAlertMonth) {
@@ -208,7 +206,7 @@ export async function POST(req: NextRequest) {
       const messageHasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(message));
 
       if (historyHasFamilySignal || messageHasFamilySignal || isHighAlertMonth) {
-        filteredL3 = memory.l3.content; // Mantém intacto
+        filteredL3 = memory.l3.content;
       } else {
         filteredL3 = filteredL3
           .replace(/##\s*(datas?|aniversário|comemoração|evento importante)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
@@ -217,14 +215,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5. Composição do Prompt e Filtragem de Ferramentas
-    // ✅ adicionar_diretriz_dinamica devidamente autorizada
+    // 5. Composição do Prompt
     const coreTools = ['salvar_evento', 'create_reminder', 'searchWeb', 'buscar_memoria_longa', 'adicionar_diretriz_dinamica'];
     const toolsHabilitadas = ALL_TOOLS.filter(t =>
       coreTools.includes(t.function.name) || activeTools.includes(t.function.name)
     );
 
-    // ─── RELÓGIO ABSOLUTO ────────────────────────────────────────────────────
     const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
     const diasDaSemana = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
     const nomeDia = diasDaSemana[nowSP.getDay()];
@@ -250,7 +246,7 @@ export async function POST(req: NextRequest) {
       canonicalDateISO: dataIsoSP,
       systemWarning: '',
       intent: 'personal',
-      dynamicGuidelines: dynamicGuidelinesBlock, // ✅ DIRETRIZES INJETADAS AQUI
+      dynamicGuidelines: dynamicGuidelinesBlock,
     });
 
     const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
@@ -278,13 +274,11 @@ ${basePrompt}`;
 
     // 7. Loop de execução de tools
     if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
-      console.log(`[Tools] ${firstResponse.toolCalls.length} tool(s) detectada(s):`, firstResponse.toolCalls.map(t => t.function.name));
+      console.log(`[Tools] ${firstResponse.toolCalls.length} tool(s) detectada(s)`);
 
       const toolResults = await Promise.all(
         firstResponse.toolCalls.map(async (toolCall) => {
-          console.log(`[Tools] Executando: ${toolCall.function.name}`);
           const result = await executeTool(toolCall, user.auth_user_id, String(user.id));
-          console.log(`[Tools] Resultado de ${toolCall.function.name}:`, result.slice(0, 100));
           return { toolCall, result };
         })
       );
@@ -345,27 +339,27 @@ ${basePrompt}`;
     }
 
     const userVoice = user.preferred_voice || 'alloy';
-
-    // 9. GERAÇÃO DE ÁUDIO CONDICIONAL
-    // O Jarvis só gera o áudio se o sinal 'speak' for verdadeiro
     const audioBase64 = speak ? await generateTTS(assistantReply, userVoice) : null;
 
-    // 10. RESPOSTA FINAL CONSOLIDADA
-    // Enviamos o texto, o áudio (se houver) e os metadados de uma vez
+    // ── ✅ 10. EXTRAÇÃO DE DADOS EM BACKGROUND (A MÁGICA ACONTECE AQUI) ──
+    // O sistema dispara o extrator em segundo plano para anotar as informações (Compras, Perfil, Projetos)
+    // Usamos String(user.id) garantindo que o BigInt correto seja passado.
+    extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply)
+      .catch(err => console.error('[Chat/Extraction] Erro no background:', err));
+
+    // 11. RESPOSTA FINAL
     return NextResponse.json({
       reply: assistantReply,
-      audioBase64, 
+      audioBase64,
       ok: true,
       sessionId,
       performance: `${Date.now() - startTime}ms`,
     });
 
   } catch (e: any) {
-    // 11. TRATAMENTO DE ERRO FATAL
-    // Se o motor pifar em qualquer etapa, retornamos o status 500
     console.error('[FATAL]', e);
     return NextResponse.json(
-      { error: 'Erro interno no motor do Jarvis.' }, 
+      { error: 'Erro interno no motor do Jarvis.' },
       { status: 500 }
     );
   }

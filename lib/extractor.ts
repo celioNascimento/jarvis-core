@@ -89,12 +89,33 @@ export async function buildGapsBlock(userId: string, currentMessage?: string): P
 // ============================================================
 
 export async function extractAndSummarize(
-  userId: string,
+  maybeUuid: string,
   userName: string,
   userMessage: string,
   aiReply: string = ''
 ): Promise<string> {
-  // ── GUARD: bloqueia UUID do Auth aqui — ponto de entrada principal ──
+  let userId = maybeUuid;
+
+  // ── PONTE DE AUTO-CURA: Resolve UUID para BigInt ──
+  // Se o ID contiver traços, ele é um UUID do Auth e precisa ser convertido
+  if (maybeUuid.includes('-')) {
+    console.log(`[Extrator] UUID detectado (${maybeUuid.slice(0, 8)}). Buscando ID numérico...`);
+    const { data: userData } = await supabase
+      .from('users')
+      .select('id')
+      .eq('auth_user_id', maybeUuid)
+      .maybeSingle();
+
+    if (userData) {
+      userId = String(userData.id);
+      console.log(`[Extrator] ID numérico localizado: ${userId}`);
+    } else {
+      console.error(`[Extrator] Erro crítico: Usuário com UUID ${maybeUuid} não encontrado no schema jarvis.`);
+      return '';
+    }
+  }
+
+  // ── GUARD: Valida que agora temos o BigInt numérico ──
   assertNumericUserId(userId, 'extractAndSummarize');
 
   try {
@@ -131,7 +152,7 @@ export async function extractAndSummarize(
     const temAlias = classification.contexts.includes('alias');
     const temCompras = classification.contexts.includes('compras');
 
-    // Filtros semânticos — só roda se a mensagem realmente falar do assunto
+    // Filtros semânticos
     const msgFamilia = /filho|filha|esposa|marido|cônjuge|pai|mãe|irmão|irmã|bebê|criança|nasceu|grávid/.test(msg);
     const msgProjeto = /projeto|app|sistema|negócio|ideia|desenvolv|startup|pqf/.test(msg);
     const msgAgenda = /\d{1,2}[\/\-:h]\d|às \d|amanhã|semana que vem|consulta|reunião|voo|compromisso/.test(msg);
@@ -140,12 +161,11 @@ export async function extractAndSummarize(
     const msgAlias = /chamo|chama|apelido|me chama de|chamo de/.test(msg);
     const msgCompras = /comprar|anota|lista|falta|acabou|mercado|reforma|academia/i.test(msg);
 
+    // Adição das Tarefas
     if (temPerfil) tasks.push(extractPerfil(userId, userMessage));
     if (temFamilia && msgFamilia) tasks.push(extractFamilia(userId, userMessage, pendingGaps));
     if (temAlias && msgAlias) tasks.push(extractAlias(userId, userMessage));
     if (temProjeto && msgProjeto) tasks.push(extractProjeto(userId, userMessage));
-    // extractEvento REMOVIDO — eventos são inseridos exclusivamente pelo webhook
-    // via gatilho SALVAR_EVENTO. Dois caminhos = race condition + duplicatas.
     if (temAgenda && msgAgenda) tasks.push(extractAgenda(userId, userMessage));
     if (temRotina && msgRotina) tasks.push(extractRotina(userId, userMessage));
     if (temPref) tasks.push(extractPreferencia(userId, userMessage));
@@ -153,7 +173,7 @@ export async function extractAndSummarize(
     if (temRec) tasks.push(extractRecomendacao(userId, userMessage, aiReply));
     if (temCompras && msgCompras) tasks.push(extractShopping(userId, userMessage));
 
-    console.log('[Extrator/tasks]', tasks.length, 'tarefas ativas de', classification.contexts.length, 'contextos');
+    console.log('[Extrator/tasks]', tasks.length, 'tarefas ativas');
 
     const results = await Promise.allSettled(tasks);
     results.forEach((r, i) => {
@@ -871,7 +891,7 @@ async function extractAlias(userId: string, userMessage: string): Promise<void> 
     .from('user_profiles')
     .select('spouse_name, father_name, mother_name')
     .eq('user_id', userId).maybeSingle();
-    
+
   const { data: kids } = await supabase
     .from('children')
     .select('name')
@@ -897,7 +917,7 @@ Tipos aceitos: spouse|child|parent|sibling|friend|other`;
   try {
     const aiResponse = await callAI(prompt, 200);
     const data = JSON.parse(aiResponse);
-    
+
     for (const a of (data.aliases || [])) {
       if (!a.apelido) continue;
       // Chama sua função auxiliar de upsert para gravar o alias
