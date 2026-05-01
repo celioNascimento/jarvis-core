@@ -171,7 +171,7 @@ export async function extractAndSummarize(
     if (temPref) tasks.push(extractPreferencia(userId, userMessage));
     if (temRelacao && msgRelacao) tasks.push(extractRelacao(userId, userMessage));
     if (temRec) tasks.push(extractRecomendacao(userId, userMessage, aiReply));
-    if (temCompras && msgCompras) tasks.push(extractShopping(userId, userMessage));
+    if (temCompras || msgCompras) tasks.push(extractShopping(userId, userMessage));
 
     console.log('[Extrator/tasks]', tasks.length, 'tarefas ativas');
 
