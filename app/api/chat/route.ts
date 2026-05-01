@@ -80,13 +80,12 @@ async function getRecentMessages(
 // ─── Gerador de Voz (OpenAI TTS) ─────────────────────────────────────────────
 async function generateTTS(text: string): Promise<string | null> {
   try {
-    // Removemos tags markdown (como ** ou #) para a voz ficar mais natural
     const cleanText = text.replace(/[*#_~]/g, '').trim();
     if (!cleanText) return null;
 
     const mp3 = await openai.audio.speech.create({
       model: "tts-1",
-      voice: "alloy", // Opções: alloy, echo, fable, onyx, nova, shimmer
+      voice: "alloy",
       input: cleanText,
     });
 
@@ -109,7 +108,10 @@ export async function POST(req: NextRequest) {
 
     const message = body instanceof FormData ? body.get('message') as string : body.message;
     const userEmail = body instanceof FormData ? body.get('userEmail') as string : body.userEmail;
-    const incomingSessionId = body instanceof FormData
+    
+    const speak = body instanceof FormData ? body.get('speak') === 'true' : !!body.speak;
+
+    const incomingSessionId = body instanceof FormData 
       ? (body.get('sessionId') as string | null)
       : (body.sessionId as string | null);
 
@@ -342,22 +344,27 @@ ${basePrompt}`;
       console.error('[DB] Erro ao salvar no brain:', dbErr);
     }
 
-    // 9. GERAÇÃO DE ÁUDIO (Obrigatório antes do return)
-    // Chamamos a função que você criou para transformar o texto em som
-    const audioBase64 = await generateTTS(assistantReply);
+    // 9. GERAÇÃO DE ÁUDIO CONDICIONAL
+    // O Jarvis só gera o áudio se o sinal 'speak' for verdadeiro
+    const audioBase64 = speak ? await generateTTS(assistantReply) : null;
 
-    // 10. RESPOSTA FINAL (Única e consolidada)
+    // 10. RESPOSTA FINAL CONSOLIDADA
+    // Enviamos o texto, o áudio (se houver) e os metadados de uma vez
     return NextResponse.json({
       reply: assistantReply,
-      audioBase64, // Agora o áudio viaja junto com o texto!
+      audioBase64, 
       ok: true,
       sessionId,
       performance: `${Date.now() - startTime}ms`,
     });
 
   } catch (e: any) {
+    // 11. TRATAMENTO DE ERRO FATAL
+    // Se o motor pifar em qualquer etapa, retornamos o status 500
     console.error('[FATAL]', e);
-    return NextResponse.json({ error: 'Erro interno no motor.' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Erro interno no motor do Jarvis.' }, 
+      { status: 500 }
+    );
   }
 }
-
