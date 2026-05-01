@@ -778,3 +778,36 @@ export async function extractShopping(userId: string, userMessage: string): Prom
     console.error('[Extrator/shopping] Erro:', e);
   }
 }
+
+export async function extractShoppingLinks(userId: string, userMessage: string): Promise<void> {
+  const prompt = `Identifique links de pesquisa ou referências de compra.
+  Mensagem: "${userMessage}"
+  Retorne JSON: {"links": [{"url": "...", "title": "...", "category": "reforma"}]}
+  Categorias: mercado, higiene, farmacia, academia, reforma, casa, roupas, tecnologia, outros.`;
+
+  try {
+    const aiResponse = await callAI(prompt, 300);
+    const data = JSON.parse(aiResponse);
+
+    for (const link of (data.links || [])) {
+      // Upsert nos metadados da categoria
+      const { data: existing } = await supabase
+        .from('shopping_list_metadata')
+        .select('links')
+        .eq('user_id', userId)
+        .eq('category', link.category)
+        .maybeSingle();
+
+      const newLinks = [...(existing?.links || []), { url: link.url, title: link.title }];
+      
+      await supabase.from('shopping_list_metadata').upsert({
+        user_id: userId,
+        category: link.category,
+        links: newLinks,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id, category' });
+    }
+  } catch (e) {
+    console.error('[Extrator/Links] Erro:', e);
+  }
+}
