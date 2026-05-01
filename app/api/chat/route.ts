@@ -344,8 +344,7 @@ ${basePrompt}`;
     // ── ✅ 10. EXTRAÇÃO DE DADOS EM BACKGROUND (A MÁGICA ACONTECE AQUI) ──
     // O sistema dispara o extrator em segundo plano para anotar as informações (Compras, Perfil, Projetos)
     // Usamos String(user.id) garantindo que o BigInt correto seja passado.
-    extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply)
-      .catch(err => console.error('[Chat/Extraction] Erro no background:', err));
+   await extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply);
 
     // 11. RESPOSTA FINAL
     return NextResponse.json({

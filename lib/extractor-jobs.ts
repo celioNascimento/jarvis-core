@@ -5,6 +5,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { safeParseJSON } from './extractor';
+import { callOpenRouter } from './jarvis';
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -755,27 +756,44 @@ export function getLifePhase(age: number | null): string {
 }
 
 export async function extractShopping(userId: string, userMessage: string): Promise<void> {
-  const prompt = `Extraia itens de compra da mensagem. 
-  Retorne APENAS JSON: {"items": [{"item": "Cimento", "category": "reforma", "qty": "2 sacos"}]}
-  
-  Categorias: mercado, higiene, farmacia, academia, reforma, casa, roupas, tecnologia, outros.`;
-
   try {
-    const aiResponse = await callAI(prompt, 300);
+    const prompt = `Você é o assistente Lev. Extraia os itens de compra da mensagem do usuário.
+    Mensagem: "${userMessage}"
+    
+    Retorne APENAS um JSON válido neste exato formato:
+    {"items": [{"item": "nome do item", "category": "mercado"}]}
+    
+    Categorias válidas: mercado, higiene, farmacia, academia, reforma, casa, roupas, tecnologia, outros.
+    Se não identificar nenhum item claro para comprar, retorne {"items": []}.`;
+
+    // Chama o LLM para estruturar o dado (igual ao que a tela do app já faz por padrão)
+    const aiResponse = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.1);
     const data = JSON.parse(aiResponse);
 
-    if (data.items?.length > 0) {
-      const inserts = data.items.map((i: any) => ({
-        user_id: userId,
-        item: i.qty ? `${i.item} (${i.qty})` : i.item,
-        category: i.category || 'mercado',
-        done: false
-      }));
-
-      await supabase.from('shopping_items').insert(inserts);
+    if (!data.items || data.items.length === 0) {
+      console.log('[Extrator/Shopping] Nenhum item detectado.');
+      return;
     }
+
+    // ── AQUI ESTÁ A UNIFICAÇÃO ──
+    // Monta a inserção exatamente como a sua API POST do app faz
+    const inserts = data.items.map((i: any) => ({
+      user_id: Number(userId), // O BigInt numérico que consertamos hoje
+      item: i.item,
+      category: i.category || 'outros',
+      done: false
+    }));
+
+    const { error } = await supabase.from('shopping_items').insert(inserts);
+
+    if (error) {
+      console.error('[Extrator/Shopping] Erro de DB:', error.message);
+    } else {
+      console.log(`[Extrator/Shopping] Sucesso: ${inserts.length} itens inseridos na lista.`);
+    }
+
   } catch (e) {
-    console.error('[Extrator/shopping] Erro:', e);
+    console.error('[Extrator/Shopping] Erro ao extrair itens:', e);
   }
 }
 
@@ -799,7 +817,7 @@ export async function extractShoppingLinks(userId: string, userMessage: string):
         .maybeSingle();
 
       const newLinks = [...(existing?.links || []), { url: link.url, title: link.title }];
-      
+
       await supabase.from('shopping_list_metadata').upsert({
         user_id: userId,
         category: link.category,
