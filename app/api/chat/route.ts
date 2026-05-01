@@ -78,21 +78,21 @@ async function getRecentMessages(
 }
 
 // ─── Gerador de Voz (OpenAI TTS) ─────────────────────────────────────────────
-async function generateTTS(text: string): Promise<string | null> {
+async function generateTTS(text: string, voice: string = 'alloy'): Promise<string | null> {
   try {
     const cleanText = text.replace(/[*#_~]/g, '').trim();
     if (!cleanText) return null;
 
     const mp3 = await openai.audio.speech.create({
       model: "tts-1",
-      voice: "alloy",
+      voice: voice as any, // Aqui usamos a voz vinda do banco
       input: cleanText,
     });
 
     const buffer = Buffer.from(await mp3.arrayBuffer());
     return buffer.toString('base64');
   } catch (e) {
-    console.error('[TTS] Erro ao gerar áudio:', e);
+    console.error('[TTS] Erro:', e);
     return null;
   }
 }
@@ -344,9 +344,11 @@ ${basePrompt}`;
       console.error('[DB] Erro ao salvar no brain:', dbErr);
     }
 
+    const userVoice = user.preferred_voice || 'alloy';
+
     // 9. GERAÇÃO DE ÁUDIO CONDICIONAL
     // O Jarvis só gera o áudio se o sinal 'speak' for verdadeiro
-    const audioBase64 = speak ? await generateTTS(assistantReply) : null;
+    const audioBase64 = speak ? await generateTTS(assistantReply, userVoice) : null;
 
     // 10. RESPOSTA FINAL CONSOLIDADA
     // Enviamos o texto, o áudio (se houver) e os metadados de uma vez
