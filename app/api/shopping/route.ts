@@ -5,23 +5,21 @@ import { getUserFromToken } from '@/lib/auth';
 export async function GET(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   const userId = await getUserFromToken(token);
-  
-  const { data, error } = await supabase
-    .from('shopping_items')
-    .select('*')
-    .eq('user_id', userId)
-    .order('done', { ascending: true }) // Itens pendentes primeiro
-    .order('created_at', { ascending: false });
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  return NextResponse.json({ items: data, ok: !error });
-}
+  // Busca itens e metadados em paralelo
+  const [itemsRes, metaRes] = await Promise.all([
+    supabase.from('shopping_items').select('*').eq('user_id', userId).order('done', { ascending: true }),
+    supabase.from('shopping_list_metadata').select('*').eq('user_id', userId)
+  ]);
 
-export async function PATCH(req: NextRequest) {
-  const { id, done } = await req.json();
-  const { error } = await supabase
-    .from('shopping_items')
-    .update({ done })
-    .eq('id', id);
+  if (itemsRes.error || metaRes.error) {
+    return NextResponse.json({ error: 'Erro ao buscar dados' }, { status: 500 });
+  }
 
-  return NextResponse.json({ ok: !error });
+  return NextResponse.json({ 
+    items: itemsRes.data, 
+    metadata: metaRes.data, // Aqui vêm os wallpapers e links por categoria
+    ok: true 
+  });
 }
