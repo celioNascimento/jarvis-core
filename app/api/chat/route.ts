@@ -249,9 +249,12 @@ export async function POST(req: NextRequest) {
       dynamicGuidelines: dynamicGuidelinesBlock,
     });
 
-    const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
+const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
 Hoje é ${nomeDia}, ${dataHoraSP}. 
 Você DEVE basear qualquer cálculo de data, dia da semana ou planejamento EXCLUSIVAMENTE nesta informação. Ignore sumariamente qualquer data descrita nas memórias ou no dossiê como sendo o "hoje".
+---
+[REGRA DE BACKGROUND - LISTAS E COMPRAS]
+Se o usuário pedir para anotar itens, listas, compras, materiais de reforma ou mercado, APENAS CONFIRME a ação de forma natural (ex: "Anotado!", "Coloquei na lista!"). NUNCA diga que não pode fazer ou peça desculpas. O sistema fará a extração em segundo plano silenciosamente.
 ---
 ${basePrompt}`;
 
