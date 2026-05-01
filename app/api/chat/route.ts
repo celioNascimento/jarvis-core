@@ -11,6 +11,7 @@ import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
 import { tools as ALL_TOOLS } from '@/lib/chat/tools-def';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import { executeTool } from '@/lib/chat/tools-executor';
+import OpenAI from 'openai';
 
 export const maxDuration = 60;
 
@@ -18,6 +19,9 @@ const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
+
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 }); // <--- ADICIONE ESTE
 
 // ─── Constantes Globais ──────────────────────────────────────────────────────
 
@@ -73,6 +77,27 @@ async function getRecentMessages(
   }
 }
 
+// ─── Gerador de Voz (OpenAI TTS) ─────────────────────────────────────────────
+async function generateTTS(text: string): Promise<string | null> {
+  try {
+    // Removemos tags markdown (como ** ou #) para a voz ficar mais natural
+    const cleanText = text.replace(/[*#_~]/g, '').trim();
+    if (!cleanText) return null;
+
+    const mp3 = await openai.audio.speech.create({
+      model: "tts-1",
+      voice: "alloy", // Opções: alloy, echo, fable, onyx, nova, shimmer
+      input: cleanText,
+    });
+
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+    return buffer.toString('base64');
+  } catch (e) {
+    console.error('[TTS] Erro ao gerar áudio:', e);
+    return null;
+  }
+}
+
 // ─── Handler principal ────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
@@ -105,7 +130,7 @@ export async function POST(req: NextRequest) {
     const dynamicGuidelinesBlock = guidelines?.map(g => `- ${g.content}`).join('\n') || '';
 
     // ── DEDUPLICAÇÃO GLOBAL ──────────────────────────────────────────────────
-    const timeSlot = Math.floor(Date.now() / 10000); 
+    const timeSlot = Math.floor(Date.now() / 10000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
     const replyKey = `chat_reply:${requestSignature}`;
@@ -173,7 +198,7 @@ export async function POST(req: NextRequest) {
     const todayCheck = new Date();
     const isMay = todayCheck.getMonth() === 4; // Maio
     const isAugust = todayCheck.getMonth() === 7; // Agosto
-    const isHighAlertMonth = isMay || isAugust; 
+    const isHighAlertMonth = isMay || isAugust;
 
     if (recentHistory.length > 0 || isHighAlertMonth) {
       const recentText = recentHistory.map(m => m.content).join(' ');
@@ -231,7 +256,7 @@ Hoje é ${nomeDia}, ${dataHoraSP}.
 Você DEVE basear qualquer cálculo de data, dia da semana ou planejamento EXCLUSIVAMENTE nesta informação. Ignore sumariamente qualquer data descrita nas memórias ou no dossiê como sendo o "hoje".
 ---
 ${basePrompt}`;
-    
+
     // 6. Primeira chamada ao LLM
     const conversationMessages: any[] = [
       { role: 'system', content: systemPrompt },
@@ -317,8 +342,14 @@ ${basePrompt}`;
       console.error('[DB] Erro ao salvar no brain:', dbErr);
     }
 
+    // 9. GERAÇÃO DE ÁUDIO (Obrigatório antes do return)
+    // Chamamos a função que você criou para transformar o texto em som
+    const audioBase64 = await generateTTS(assistantReply);
+
+    // 10. RESPOSTA FINAL (Única e consolidada)
     return NextResponse.json({
       reply: assistantReply,
+      audioBase64, // Agora o áudio viaja junto com o texto!
       ok: true,
       sessionId,
       performance: `${Date.now() - startTime}ms`,
@@ -329,3 +360,4 @@ ${basePrompt}`;
     return NextResponse.json({ error: 'Erro interno no motor.' }, { status: 500 });
   }
 }
+
