@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
     r.user_id_a === userRow.auth_user_id ? r.user_id_b : r.user_id_a
   );
 
-  const { data: partners } = await supabase
+  const { data: partners, error: partnersError } = await supabase
   .from('users')
   .select('id, auth_user_id, preferred_name, full_name, nickname, name')
   .in('auth_user_id', partnerUUIDs);
@@ -57,6 +57,7 @@ export async function GET(req: NextRequest) {
   console.log('[DEBUG partners]', JSON.stringify({
     partnerUUIDs,
     partners,
+    error: partnersError,
   }, null, 2));
   // ──────────────────────────────────────────────────────────────────────────
 
