@@ -9,18 +9,31 @@ export async function GET(req: NextRequest) {
   
   if (!userId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
+  // 1. Busca quais categorias os outros usuários compartilharam COMIGO
+  const { data: shares } = await supabase
+    .from('shopping_shares')
+    .select('owner_id, category')
+    .eq('shared_with_id', userId);
+
+  // 2. Monta a query dinâmica: Meus itens + Itens autorizados
+  let orQuery = `user_id.eq.${userId}`;
+  if (shares && shares.length > 0) {
+    const shareConditions = shares.map(s => `and(user_id.eq.${s.owner_id},category.eq.${s.category})`);
+    orQuery += `,${shareConditions.join(',')}`;
+  }
+
   // Busca paralela para otimizar performance
   const [itemsRes, metaRes] = await Promise.all([
     supabase
       .from('shopping_items')
       .select('*')
-      .eq('user_id', userId)
+      .or(orQuery) // 👈 Substituímos o eq direto por nossa query dinâmica
       .order('done', { ascending: true })
       .order('created_at', { ascending: false }),
     supabase
       .from('shopping_list_metadata')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', userId) // Metadados (cor, ícones) continuam sendo individuais
   ]);
 
   if (itemsRes.error || metaRes.error) {
@@ -44,7 +57,7 @@ export async function POST(req: NextRequest) {
   const { data, error } = await supabase
     .from('shopping_items')
     .insert({ 
-      user_id: userId, 
+      user_id: userId, // Ao criar, você sempre é o dono primário
       item, 
       category: category || 'mercado', 
       done: false 
@@ -63,11 +76,36 @@ export async function PATCH(req: NextRequest) {
 
   const { id, done } = await req.json();
 
+  // 1. Identifica o item primeiro para saber quem é o dono
+  const { data: itemData, error: fetchError } = await supabase
+    .from('shopping_items')
+    .select('user_id, category')
+    .eq('id', id)
+    .single();
+
+  if (fetchError || !itemData) return NextResponse.json({ error: 'Item não encontrado' }, { status: 404 });
+
+  // 2. Verifica permissão de edição
+  if (String(itemData.user_id) !== String(userId)) {
+    // Se não sou o dono, verifico se tenho permissão na tabela shares
+    const { data: hasPermission } = await supabase
+      .from('shopping_shares')
+      .select('id')
+      .eq('owner_id', itemData.user_id)
+      .eq('shared_with_id', userId)
+      .eq('category', itemData.category)
+      .single();
+
+    if (!hasPermission) {
+      return NextResponse.json({ error: 'Sem permissão para alterar este item' }, { status: 403 });
+    }
+  }
+
+  // 3. Atualiza o status
   const { error } = await supabase
     .from('shopping_items')
     .update({ done })
-    .eq('id', id)
-    .eq('user_id', userId); // Segurança extra: garante que o item pertence ao usuário
+    .eq('id', id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
@@ -83,11 +121,35 @@ export async function DELETE(req: NextRequest) {
 
   if (!id) return NextResponse.json({ error: 'ID ausente' }, { status: 400 });
 
+  // 1. Identifica o item para saber quem é o dono
+  const { data: itemData, error: fetchError } = await supabase
+    .from('shopping_items')
+    .select('user_id, category')
+    .eq('id', id)
+    .single();
+
+  if (fetchError || !itemData) return NextResponse.json({ error: 'Item não encontrado' }, { status: 404 });
+
+  // 2. Verifica permissão de exclusão (mesma lógica do PATCH)
+  if (String(itemData.user_id) !== String(userId)) {
+    const { data: hasPermission } = await supabase
+      .from('shopping_shares')
+      .select('id')
+      .eq('owner_id', itemData.user_id)
+      .eq('shared_with_id', userId)
+      .eq('category', itemData.category)
+      .single();
+
+    if (!hasPermission) {
+      return NextResponse.json({ error: 'Sem permissão para excluir este item' }, { status: 403 });
+    }
+  }
+
+  // 3. Exclui o item
   const { error } = await supabase
     .from('shopping_items')
     .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
+    .eq('id', id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
