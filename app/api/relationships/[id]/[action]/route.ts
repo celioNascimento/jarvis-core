@@ -187,14 +187,30 @@ export async function PATCH(
   if (action === 'settings') {
     const { shopping_enabled } = await req.json();
 
-    const { error } = await supabase
+    // 1. Busca o settings atual para não sobrescrever outros campos
+    const { data: rel } = await supabase
+      .schema('jarvis')                          // ← correção principal
       .from('relationships')
-      .update({ settings: { shopping_enabled } })
+      .select('settings')
+      .eq('id', id)
+      .maybeSingle();
+
+    const newSettings = { ...(rel?.settings ?? {}), shopping_enabled };
+
+    // 2. Salva o merge
+    const { error } = await supabase
+      .schema('jarvis')                          // ← correção principal
+      .from('relationships')
+      .update({ settings: newSettings })
       .eq('id', id);
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      console.error('[Settings PATCH]', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
     return NextResponse.json({ ok: true });
   }
 
-  return NextResponse.json({ error: 'Método PATCH não suportado para esta ação' }, { status: 400 });
+  return NextResponse.json({ error: 'Ação não suportada' }, { status: 400 });
 }
