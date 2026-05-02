@@ -37,6 +37,13 @@ export async function GET(req: NextRequest) {
     .eq('status', 'active')
     .or(`user_id_a.eq.${userRow.auth_user_id},user_id_b.eq.${userRow.auth_user_id}`);
 
+  console.log('[DEBUG relationships]', {
+    auth_user_id: userRow.auth_user_id,
+    total: relationships?.length,
+    relationships: relationships,
+    shoppingFiltered: (relationships ?? []).filter(r => r.settings?.shopping_enabled === true),
+  });
+
   const shoppingRelationships = (relationships ?? []).filter(
     r => r.settings?.shopping_enabled === true
   );
