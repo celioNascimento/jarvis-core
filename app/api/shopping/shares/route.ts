@@ -48,16 +48,15 @@ export async function GET(req: NextRequest) {
     r.user_id_a === userRow.auth_user_id ? r.user_id_b : r.user_id_a
   );
 
-  const { data: partners, error: partnersError } = await supabase
-  .from('users')
-  .select('id, auth_user_id, preferred_name, full_name, nickname, name')
-  .in('auth_user_id', partnerUUIDs);
+  const { data: partners } = await supabase
+    .from('users')
+    .select('id, auth_user_id, preferred_name, nickname, name')
+    .in('auth_user_id', partnerUUIDs);
 
   // ── LOG 2 ──────────────────────────────────────────────────────────────────
   console.log('[DEBUG partners]', JSON.stringify({
     partnerUUIDs,
     partners,
-    error: partnersError,
   }, null, 2));
   // ──────────────────────────────────────────────────────────────────────────
 
@@ -79,7 +78,6 @@ export async function GET(req: NextRequest) {
     const contactName =
       partner.preferred_name ||
       partner.nickname ||
-      partner.full_name ||
       partner.name ||
       rel.contact_name ||
       'Contato';
