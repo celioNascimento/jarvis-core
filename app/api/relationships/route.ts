@@ -28,7 +28,7 @@ export async function GET(req: Request) {
   try {
     const { data: asA, error: errA } = await supabase
       .from('relationships')
-      .select('id, user_id_a, user_id_b, relationship_type, contact_name, status, type_a, type_b, initiated_by, created_at')
+      .select('id, user_id_a, user_id_b, relationship_type, contact_name, status, type_a, type_b, initiated_by, created_at, settings')
       .eq('user_id_a', authUUID)
       .order('created_at', { ascending: false });
 
