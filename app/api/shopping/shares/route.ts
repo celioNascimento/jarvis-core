@@ -14,22 +14,16 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const category = searchParams.get('category');
   if (!category) return NextResponse.json({ error: 'category obrigatório' }, { status: 400 });
-  const userIdStr = String(userId);
 
-  // Busca auth_user_id do usuário atual
   const { data: userRow } = await supabase
     .schema('jarvis')
     .from('users')
     .select('auth_user_id')
-    .eq('id', userIdStr)   // ← força string
+    .eq('id', userId)
     .maybeSingle();
-
-  // Adicione um log aqui para confirmar:
-  console.log('[Shares GET] userId:', userId, 'userRow:', userRow);
 
   if (!userRow) return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
 
-  // 1. Vínculos ativos com shopping_enabled = true
   const { data: relationships } = await supabase
     .schema('jarvis')
     .from('relationships')
@@ -37,34 +31,36 @@ export async function GET(req: NextRequest) {
     .eq('status', 'active')
     .or(`user_id_a.eq.${userRow.auth_user_id},user_id_b.eq.${userRow.auth_user_id}`);
 
-  console.log('[DEBUG relationships]', {
-    auth_user_id: userRow.auth_user_id,
-    total: relationships?.length,
-    relationships: relationships,
-    shoppingFiltered: (relationships ?? []).filter(r => r.settings?.shopping_enabled === true),
-  });
-
   const shoppingRelationships = (relationships ?? []).filter(
     r => r.settings?.shopping_enabled === true
   );
+
+  // ── LOG 1 ──────────────────────────────────────────────────────────────────
+  console.log('[DEBUG settings raw]', JSON.stringify(relationships, null, 2));
+  console.log('[DEBUG shoppingFiltered]', JSON.stringify(shoppingRelationships, null, 2));
+  // ──────────────────────────────────────────────────────────────────────────
 
   if (shoppingRelationships.length === 0) {
     return NextResponse.json({ ok: true, options: [] });
   }
 
-  // 2. Para cada vínculo, descobre o UUID do parceiro
   const partnerUUIDs = shoppingRelationships.map(r =>
     r.user_id_a === userRow.auth_user_id ? r.user_id_b : r.user_id_a
   );
 
-  // 3. Busca os bigint ids e nomes dos parceiros
   const { data: partners } = await supabase
     .schema('jarvis')
     .from('users')
     .select('id, auth_user_id, preferred_name, full_name, nickname, name')
     .in('auth_user_id', partnerUUIDs);
 
-  // 4. Verifica quais categorias já estão compartilhadas
+  // ── LOG 2 ──────────────────────────────────────────────────────────────────
+  console.log('[DEBUG partners]', JSON.stringify({
+    partnerUUIDs,
+    partners,
+  }, null, 2));
+  // ──────────────────────────────────────────────────────────────────────────
+
   const partnerBigintIds = (partners ?? []).map(p => p.id);
   const { data: existingShares } = await supabase
     .schema('jarvis')
@@ -76,7 +72,6 @@ export async function GET(req: NextRequest) {
 
   const activeShareIds = new Set((existingShares ?? []).map(s => s.shared_with_id));
 
-  // 5. Monta as opções
   const options = shoppingRelationships.map(rel => {
     const partnerUUID = rel.user_id_a === userRow.auth_user_id ? rel.user_id_b : rel.user_id_a;
     const partner = (partners ?? []).find(p => p.auth_user_id === partnerUUID);
@@ -91,12 +86,21 @@ export async function GET(req: NextRequest) {
       'Contato';
 
     return {
-      user_id: partner.auth_user_id,    // UUID (para chave no frontend)
-      bigint_id: partner.id,             // bigint (para shopping_shares)
+      user_id: partner.auth_user_id,
+      bigint_id: partner.id,
       contact_name: contactName,
       is_active: activeShareIds.has(partner.id),
     };
   }).filter(Boolean);
+
+  // ── LOG 3 ──────────────────────────────────────────────────────────────────
+  console.log('[DEBUG final options]', JSON.stringify({
+    partnerBigintIds,
+    existingShares,
+    activeShareIds: [...activeShareIds],
+    options,
+  }, null, 2));
+  // ──────────────────────────────────────────────────────────────────────────
 
   return NextResponse.json({ ok: true, options });
 }
