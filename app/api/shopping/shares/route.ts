@@ -4,8 +4,6 @@ import { supabase } from '@/lib/jarvis';
 import { getUserFromToken } from '@/lib/auth';
 
 // ── GET /api/shopping/shares?category=mercado ─────────────────────────────────
-// Retorna a lista de vínculos que têm shopping_enabled=true,
-// indicando quais já têm compartilhamento ativo nessa categoria.
 export async function GET(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   const userId = await getUserFromToken(token);
@@ -35,11 +33,6 @@ export async function GET(req: NextRequest) {
     r => r.settings?.shopping_enabled === true
   );
 
-  // ── LOG 1 ──────────────────────────────────────────────────────────────────
-  console.log('[DEBUG settings raw]', JSON.stringify(relationships, null, 2));
-  console.log('[DEBUG shoppingFiltered]', JSON.stringify(shoppingRelationships, null, 2));
-  // ──────────────────────────────────────────────────────────────────────────
-
   if (shoppingRelationships.length === 0) {
     return NextResponse.json({ ok: true, options: [] });
   }
@@ -53,14 +46,9 @@ export async function GET(req: NextRequest) {
     .select('id, auth_user_id, preferred_name, nickname, name')
     .in('auth_user_id', partnerUUIDs);
 
-  // ── LOG 2 ──────────────────────────────────────────────────────────────────
-  console.log('[DEBUG partners]', JSON.stringify({
-    partnerUUIDs,
-    partners,
-  }, null, 2));
-  // ──────────────────────────────────────────────────────────────────────────
-
   const partnerBigintIds = (partners ?? []).map(p => p.id);
+
+  // O que EU compartilhei com os parceiros nessa categoria
   const { data: existingShares } = await supabase
     .from('shopping_shares')
     .select('shared_with_id')
@@ -69,6 +57,18 @@ export async function GET(req: NextRequest) {
     .in('shared_with_id', partnerBigintIds);
 
   const activeShareIds = new Set((existingShares ?? []).map(s => s.shared_with_id));
+
+  // O que os PARCEIROS compartilharam COMIGO nessa categoria
+  const { data: receivedShares } = await supabase
+    .from('shopping_shares')
+    .select('owner_id, category')
+    .eq('shared_with_id', userId)
+    .eq('category', category)
+    .in('owner_id', partnerBigintIds);
+
+  const receivedShareKeys = new Set(
+    (receivedShares ?? []).map(s => `${s.owner_id}:${s.category}`)
+  );
 
   const options = shoppingRelationships.map(rel => {
     const partnerUUID = rel.user_id_a === userRow.auth_user_id ? rel.user_id_b : rel.user_id_a;
@@ -87,23 +87,14 @@ export async function GET(req: NextRequest) {
       bigint_id: partner.id,
       contact_name: contactName,
       is_active: activeShareIds.has(partner.id),
+      received_from_partner: receivedShareKeys.has(`${partner.id}:${category}`),
     };
   }).filter(Boolean);
-
-  // ── LOG 3 ──────────────────────────────────────────────────────────────────
-  console.log('[DEBUG final options]', JSON.stringify({
-    partnerBigintIds,
-    existingShares,
-    activeShareIds: [...activeShareIds],
-    options,
-  }, null, 2));
-  // ──────────────────────────────────────────────────────────────────────────
 
   return NextResponse.json({ ok: true, options });
 }
 
 // ── POST /api/shopping/shares ─────────────────────────────────────────────────
-// Liga ou desliga o compartilhamento de uma categoria com uma pessoa.
 export async function POST(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   const userId = await getUserFromToken(token);
@@ -116,7 +107,6 @@ export async function POST(req: NextRequest) {
   }
 
   if (active) {
-    // Upsert — cria ou mantém o compartilhamento
     const { error } = await supabase
       .from('shopping_shares')
       .upsert(
@@ -126,7 +116,6 @@ export async function POST(req: NextRequest) {
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   } else {
-    // Remove o compartilhamento
     const { error } = await supabase
       .from('shopping_shares')
       .delete()
