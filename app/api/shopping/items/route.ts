@@ -94,12 +94,23 @@ export async function PATCH(req: NextRequest) {
   const userId = await getUserFromToken(token);
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { id, done } = await req.json();
+  const body = await req.json();
+  const { id, done, links } = body;
+
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 });
+
+  // Monta apenas os campos enviados
+  const updates: Record<string, any> = {};
+  if (typeof done === 'boolean') updates.done = done;
+  if (Array.isArray(links)) updates.links = links;
+
+  if (Object.keys(updates).length === 0) {
+    return NextResponse.json({ error: 'Nada para atualizar' }, { status: 400 });
+  }
 
   const { error } = await supabase
     .from('shopping_items')
-    .update({ done })
+    .update(updates)
     .eq('id', id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
