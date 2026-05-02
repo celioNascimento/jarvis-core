@@ -14,14 +14,18 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const category = searchParams.get('category');
   if (!category) return NextResponse.json({ error: 'category obrigatório' }, { status: 400 });
+  const userIdStr = String(userId);
 
   // Busca auth_user_id do usuário atual
   const { data: userRow } = await supabase
     .schema('jarvis')
     .from('users')
     .select('auth_user_id')
-    .eq('id', userId)
+    .eq('id', userIdStr)   // ← força string
     .maybeSingle();
+
+  // Adicione um log aqui para confirmar:
+  console.log('[Shares GET] userId:', userId, 'userRow:', userRow);
 
   if (!userRow) return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
 
