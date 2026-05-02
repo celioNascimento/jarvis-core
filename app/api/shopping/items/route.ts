@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
 
   if (!item?.trim()) return NextResponse.json({ error: 'Item obrigatório' }, { status: 400 });
 
-  const validCategories = ['mercado','higiene','farmacia','academia','reforma','casa','roupas','tecnologia','outros'];
+  const validCategories = ['mercado', 'higiene', 'farmacia', 'academia', 'reforma', 'casa', 'roupas', 'tecnologia', 'outros'];
   if (!validCategories.includes(category)) {
     return NextResponse.json({ error: 'Categoria inválida' }, { status: 400 });
   }
@@ -107,6 +107,8 @@ export async function PATCH(req: NextRequest) {
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: 'Nada para atualizar' }, { status: 400 });
   }
+
+  updates.updated_at = new Date().toISOString();
 
   const { error } = await supabase
     .from('shopping_items')
