@@ -49,10 +49,9 @@ export async function GET(req: NextRequest) {
   );
 
   const { data: partners } = await supabase
-    .schema('jarvis')
-    .from('users')
-    .select('id, auth_user_id, preferred_name, full_name, nickname, name')
-    .in('auth_user_id', partnerUUIDs);
+  .from('users')
+  .select('id, auth_user_id, preferred_name, full_name, nickname, name')
+  .in('auth_user_id', partnerUUIDs);
 
   // ── LOG 2 ──────────────────────────────────────────────────────────────────
   console.log('[DEBUG partners]', JSON.stringify({
