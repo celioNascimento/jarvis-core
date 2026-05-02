@@ -1,48 +1,131 @@
+// app/api/shopping/shares/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
 import { getUserFromToken } from '@/lib/auth';
 
+// ── GET /api/shopping/shares?category=mercado ─────────────────────────────────
+// Retorna a lista de vínculos que têm shopping_enabled=true,
+// indicando quais já têm compartilhamento ativo nessa categoria.
+export async function GET(req: NextRequest) {
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  const userId = await getUserFromToken(token);
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const { searchParams } = new URL(req.url);
+  const category = searchParams.get('category');
+  if (!category) return NextResponse.json({ error: 'category obrigatório' }, { status: 400 });
+
+  // Busca auth_user_id do usuário atual
+  const { data: userRow } = await supabase
+    .schema('jarvis')
+    .from('users')
+    .select('auth_user_id')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (!userRow) return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
+
+  // 1. Vínculos ativos com shopping_enabled = true
+  const { data: relationships } = await supabase
+    .schema('jarvis')
+    .from('relationships')
+    .select('id, user_id_a, user_id_b, contact_name, settings')
+    .eq('status', 'active')
+    .or(`user_id_a.eq.${userRow.auth_user_id},user_id_b.eq.${userRow.auth_user_id}`);
+
+  const shoppingRelationships = (relationships ?? []).filter(
+    r => r.settings?.shopping_enabled === true
+  );
+
+  if (shoppingRelationships.length === 0) {
+    return NextResponse.json({ ok: true, options: [] });
+  }
+
+  // 2. Para cada vínculo, descobre o UUID do parceiro
+  const partnerUUIDs = shoppingRelationships.map(r =>
+    r.user_id_a === userRow.auth_user_id ? r.user_id_b : r.user_id_a
+  );
+
+  // 3. Busca os bigint ids e nomes dos parceiros
+  const { data: partners } = await supabase
+    .schema('jarvis')
+    .from('users')
+    .select('id, auth_user_id, preferred_name, full_name, nickname, name')
+    .in('auth_user_id', partnerUUIDs);
+
+  // 4. Verifica quais categorias já estão compartilhadas
+  const partnerBigintIds = (partners ?? []).map(p => p.id);
+  const { data: existingShares } = await supabase
+    .schema('jarvis')
+    .from('shopping_shares')
+    .select('shared_with_id')
+    .eq('owner_id', userId)
+    .eq('category', category)
+    .in('shared_with_id', partnerBigintIds);
+
+  const activeShareIds = new Set((existingShares ?? []).map(s => s.shared_with_id));
+
+  // 5. Monta as opções
+  const options = shoppingRelationships.map(rel => {
+    const partnerUUID = rel.user_id_a === userRow.auth_user_id ? rel.user_id_b : rel.user_id_a;
+    const partner = (partners ?? []).find(p => p.auth_user_id === partnerUUID);
+    if (!partner) return null;
+
+    const contactName =
+      partner.preferred_name ||
+      partner.nickname ||
+      partner.full_name ||
+      partner.name ||
+      rel.contact_name ||
+      'Contato';
+
+    return {
+      user_id: partner.auth_user_id,    // UUID (para chave no frontend)
+      bigint_id: partner.id,             // bigint (para shopping_shares)
+      contact_name: contactName,
+      is_active: activeShareIds.has(partner.id),
+    };
+  }).filter(Boolean);
+
+  return NextResponse.json({ ok: true, options });
+}
+
+// ── POST /api/shopping/shares ─────────────────────────────────────────────────
+// Liga ou desliga o compartilhamento de uma categoria com uma pessoa.
 export async function POST(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   const userId = await getUserFromToken(token);
-  if (!userId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { shared_with_id, category } = await req.json();
+  const { category, shared_with_id, active } = await req.json();
 
-  // Insere a permissão (o unique na tabela evita duplicados)
-  const { error } = await supabase
-    .from('shopping_shares')
-    .insert({
-      owner_id: userId,
-      shared_with_id,
-      category
-    });
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
-}
-
-export async function DELETE(req: NextRequest) {
-  const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  const userId = await getUserFromToken(token);
-  if (!userId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
-
-  const { searchParams } = new URL(req.url);
-  const shared_with_id = searchParams.get('shared_with_id');
-  const category = searchParams.get('category');
-
-  if (!shared_with_id || !category) {
-    return NextResponse.json({ error: 'Parâmetros ausentes' }, { status: 400 });
+  if (!category || !shared_with_id || typeof active !== 'boolean') {
+    return NextResponse.json({ error: 'category, shared_with_id e active são obrigatórios' }, { status: 400 });
   }
 
-  // Remove a permissão específica
-  const { error } = await supabase
-    .from('shopping_shares')
-    .delete()
-    .eq('owner_id', userId)
-    .eq('shared_with_id', shared_with_id)
-    .eq('category', category);
+  if (active) {
+    // Upsert — cria ou mantém o compartilhamento
+    const { error } = await supabase
+      .schema('jarvis')
+      .from('shopping_shares')
+      .upsert(
+        { owner_id: userId, shared_with_id, category },
+        { onConflict: 'owner_id,shared_with_id,category' }
+      );
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  } else {
+    // Remove o compartilhamento
+    const { error } = await supabase
+      .schema('jarvis')
+      .from('shopping_shares')
+      .delete()
+      .eq('owner_id', userId)
+      .eq('shared_with_id', shared_with_id)
+      .eq('category', category);
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
   return NextResponse.json({ ok: true });
 }
