@@ -4,34 +4,26 @@ import { supabase } from '@/lib/jarvis';
 import { getUserFromToken } from '@/lib/auth';
 
 // ── GET /api/shopping/items ───────────────────────────────────────────────────
-// Retorna itens próprios + itens compartilhados com o usuário (via shopping_shares)
 export async function GET(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  const userId = await getUserFromToken(token);
+  const userId = await getUserFromToken(token); // bigint numérico
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  // Busca auth_user_id para usar em shopping_items (user_id é text/uuid lá)
-  const { data: userRow } = await supabase
-    .schema('jarvis')
-    .from('users')
-    .select('auth_user_id')
-    .eq('id', userId)
-    .maybeSingle();
+  // shopping_items.user_id é TEXT com o id numérico (ex: "8595482774")
+  const userIdStr = String(userId);
 
-  if (!userRow) return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
-
-  // Itens próprios (não arquivados)
+  // Itens próprios
   const { data: ownItems, error: ownError } = await supabase
     .schema('jarvis')
     .from('shopping_items')
     .select('id, item, category, done, links')
-    .eq('user_id', userRow.auth_user_id)
+    .eq('user_id', userIdStr)
     .eq('archived', false)
     .order('created_at', { ascending: false });
 
   if (ownError) return NextResponse.json({ error: ownError.message }, { status: 500 });
 
-  // Categorias compartilhadas com este usuário por outros
+  // Categorias que outros compartilharam com este usuário
   const { data: sharedWith } = await supabase
     .schema('jarvis')
     .from('shopping_shares')
@@ -41,31 +33,17 @@ export async function GET(req: NextRequest) {
   let sharedItems: any[] = [];
 
   if (sharedWith && sharedWith.length > 0) {
-    // Para cada par (owner, category), busca os itens do dono
-    // Busca auth_user_id dos donos
-    const ownerIds = [...new Set(sharedWith.map(s => s.owner_id))];
-    const { data: owners } = await supabase
-      .schema('jarvis')
-      .from('users')
-      .select('id, auth_user_id')
-      .in('id', ownerIds);
+    for (const share of sharedWith) {
+      const { data: items } = await supabase
+        .schema('jarvis')
+        .from('shopping_items')
+        .select('id, item, category, done, links')
+        .eq('user_id', String(share.owner_id))
+        .eq('category', share.category)
+        .eq('archived', false)
+        .order('created_at', { ascending: false });
 
-    if (owners) {
-      for (const share of sharedWith) {
-        const owner = owners.find(o => o.id === share.owner_id);
-        if (!owner) continue;
-
-        const { data: items } = await supabase
-          .schema('jarvis')
-          .from('shopping_items')
-          .select('id, item, category, done, links')
-          .eq('user_id', owner.auth_user_id)
-          .eq('category', share.category)
-          .eq('archived', false)
-          .order('created_at', { ascending: false });
-
-        if (items) sharedItems = [...sharedItems, ...items];
-      }
+      if (items) sharedItems = [...sharedItems, ...items];
     }
   }
 
@@ -87,15 +65,6 @@ export async function POST(req: NextRequest) {
   const userId = await getUserFromToken(token);
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { data: userRow } = await supabase
-    .schema('jarvis')
-    .from('users')
-    .select('auth_user_id')
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (!userRow) return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
-
   const body = await req.json();
   const { item, category } = body;
 
@@ -110,7 +79,7 @@ export async function POST(req: NextRequest) {
     .schema('jarvis')
     .from('shopping_items')
     .insert({
-      user_id: userRow.auth_user_id,
+      user_id: String(userId),
       item: item.trim(),
       category,
       done: false,
@@ -124,26 +93,14 @@ export async function POST(req: NextRequest) {
 }
 
 // ── PATCH /api/shopping/items ─────────────────────────────────────────────────
-// Marca/desmarca item como concluído
 export async function PATCH(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   const userId = await getUserFromToken(token);
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { data: userRow } = await supabase
-    .schema('jarvis')
-    .from('users')
-    .select('auth_user_id')
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (!userRow) return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
-
   const { id, done } = await req.json();
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 });
 
-  // Verifica posse: o item precisa pertencer ao usuário
-  // (quem visualiza item compartilhado pode marcar como feito também)
   const { error } = await supabase
     .schema('jarvis')
     .from('shopping_items')
@@ -161,26 +118,16 @@ export async function DELETE(req: NextRequest) {
   const userId = await getUserFromToken(token);
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { data: userRow } = await supabase
-    .schema('jarvis')
-    .from('users')
-    .select('auth_user_id')
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (!userRow) return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
-
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 });
 
-  // Só o dono pode deletar
   const { error } = await supabase
     .schema('jarvis')
     .from('shopping_items')
     .delete()
     .eq('id', id)
-    .eq('user_id', userRow.auth_user_id); // garante posse
+    .eq('user_id', String(userId));
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
