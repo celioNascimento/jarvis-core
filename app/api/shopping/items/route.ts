@@ -14,7 +14,6 @@ export async function GET(req: NextRequest) {
 
   // Itens próprios
   const { data: ownItems, error: ownError } = await supabase
-    .schema('jarvis')
     .from('shopping_items')
     .select('id, item, category, done, links')
     .eq('user_id', userIdStr)
@@ -25,7 +24,6 @@ export async function GET(req: NextRequest) {
 
   // Categorias que outros compartilharam com este usuário
   const { data: sharedWith } = await supabase
-    .schema('jarvis')
     .from('shopping_shares')
     .select('owner_id, category')
     .eq('shared_with_id', userId);
@@ -35,7 +33,6 @@ export async function GET(req: NextRequest) {
   if (sharedWith && sharedWith.length > 0) {
     for (const share of sharedWith) {
       const { data: items } = await supabase
-        .schema('jarvis')
         .from('shopping_items')
         .select('id, item, category, done, links')
         .eq('user_id', String(share.owner_id))
@@ -76,7 +73,6 @@ export async function POST(req: NextRequest) {
   }
 
   const { data: newItem, error } = await supabase
-    .schema('jarvis')
     .from('shopping_items')
     .insert({
       user_id: String(userId),
@@ -102,7 +98,6 @@ export async function PATCH(req: NextRequest) {
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 });
 
   const { error } = await supabase
-    .schema('jarvis')
     .from('shopping_items')
     .update({ done })
     .eq('id', id);
@@ -123,7 +118,6 @@ export async function DELETE(req: NextRequest) {
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 });
 
   const { error } = await supabase
-    .schema('jarvis')
     .from('shopping_items')
     .delete()
     .eq('id', id)

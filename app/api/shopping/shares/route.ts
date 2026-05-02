@@ -62,7 +62,6 @@ export async function GET(req: NextRequest) {
 
   const partnerBigintIds = (partners ?? []).map(p => p.id);
   const { data: existingShares } = await supabase
-    .schema('jarvis')
     .from('shopping_shares')
     .select('shared_with_id')
     .eq('owner_id', userId)
@@ -120,7 +119,6 @@ export async function POST(req: NextRequest) {
   if (active) {
     // Upsert — cria ou mantém o compartilhamento
     const { error } = await supabase
-      .schema('jarvis')
       .from('shopping_shares')
       .upsert(
         { owner_id: userId, shared_with_id, category },
@@ -131,7 +129,6 @@ export async function POST(req: NextRequest) {
   } else {
     // Remove o compartilhamento
     const { error } = await supabase
-      .schema('jarvis')
       .from('shopping_shares')
       .delete()
       .eq('owner_id', userId)
