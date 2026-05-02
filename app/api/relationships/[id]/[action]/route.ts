@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
+import { getUserFromToken } from '@/lib/auth';
 
 // ============================================================
 // /api/relationships/[id]/[action]
@@ -170,4 +171,29 @@ export async function POST(
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
+}
+
+export async function PATCH(req: NextRequest, { params }: { params: { id: string, action: string } }) {
+  // O getUserFromToken deve ser importado no topo do seu arquivo se já não estiver:
+  // import { getUserFromToken } from '@/lib/auth';
+  // import { supabase } from '@/lib/jarvis';
+  
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  const userId = await getUserFromToken(token);
+  
+  if (!userId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+
+  if (params.action === 'settings') {
+    const { shopping_enabled } = await req.json();
+
+    const { error } = await supabase
+      .from('relationships')
+      .update({ settings: { shopping_enabled } })
+      .eq('id', params.id);
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true });
+  }
+
+  return NextResponse.json({ error: 'Método PATCH não suportado para esta ação' }, { status: 400 });
 }
