@@ -7,10 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import {
-  scheduleReminderOnQStash,
-  cancelReminderOnQStash,
-} from '@/lib/qstash';
+import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -51,6 +48,46 @@ async function cancelPendingReminders(eventId: string) {
     .eq('status', 'pending');
 }
 
+// Verifica se userId tem acesso ao evento (próprio ou compartilhado)
+async function hasAccessToEvent(eventId: string, userId: bigint): Promise<{ allowed: boolean; event: any }> {
+  const { data: event, error } = await supabase
+    .schema('jarvis')
+    .from('events')
+    .select('*')
+    .eq('id', eventId)
+    .single();
+
+  if (error || !event) return { allowed: false, event: null };
+
+  // É o dono
+  if (String(event.user_id) === String(userId)) return { allowed: true, event };
+
+  // Verifica compartilhamento por categoria
+  const { data: catShare } = await supabase
+    .schema('jarvis')
+    .from('calendar_shares')
+    .select('id')
+    .eq('owner_id', event.user_id)
+    .eq('shared_with_id', userId)
+    .eq('category', event.category)
+    .maybeSingle();
+
+  if (catShare) return { allowed: true, event };
+
+  // Verifica compartilhamento por evento específico
+  const { data: eventShare } = await supabase
+    .schema('jarvis')
+    .from('calendar_event_shares')
+    .select('id')
+    .eq('event_id', eventId)
+    .eq('shared_with_id', userId)
+    .maybeSingle();
+
+  if (eventShare) return { allowed: true, event };
+
+  return { allowed: false, event };
+}
+
 // ── GET ─────────────────────────────────────────────────────
 
 export async function GET(
@@ -60,16 +97,14 @@ export async function GET(
   const authUserId = req.headers.get('x-user-id');
   if (!authUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
+  const userId = await resolveUserId(authUserId);
+  if (!userId) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+
   const { id } = await params;
 
-  const { data: event, error } = await supabase
-    .schema('jarvis')
-    .from('events')
-    .select('*')
-    .eq('id', id)
-    .single();
+  const { allowed, event } = await hasAccessToEvent(id, userId);
+  if (!allowed || !event) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  if (error || !event) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   return NextResponse.json({ event });
 }
 
@@ -87,24 +122,22 @@ export async function PUT(
 
   const [{ id }, body] = await Promise.all([params, req.json()]);
 
-  // Cancela lembretes antigos antes de recriar
+  const { allowed } = await hasAccessToEvent(id, userId);
+  if (!allowed) return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
+
   await cancelPendingReminders(id);
 
+  // PUT sem .eq('user_id') pois o acesso já foi validado acima
   const { data: event, error } = await supabase
     .schema('jarvis')
     .from('events')
-    .update({
-      ...body,
-      updated_at: new Date().toISOString(),
-    })
+    .update({ ...body, updated_at: new Date().toISOString() })
     .eq('id', id)
-    .eq('user_id', userId)
     .select()
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // Reagenda lembretes se houver
   if (body.reminder_minutes?.length) {
     for (const reminder of body.reminder_minutes) {
       const scheduledAt = new Date(
@@ -148,15 +181,16 @@ export async function DELETE(
 
   const { id } = await params;
 
-  // Cancela lembretes pendentes no QStash
+  const { allowed } = await hasAccessToEvent(id, userId);
+  if (!allowed) return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
+
   await cancelPendingReminders(id);
 
   const { error } = await supabase
     .schema('jarvis')
     .from('events')
     .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
+    .eq('id', id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ success: true });
