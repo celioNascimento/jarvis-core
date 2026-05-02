@@ -173,23 +173,24 @@ export async function POST(
   }
 }
 
-export async function PATCH(req: NextRequest, { params }: { params: { id: string, action: string } }) {
-  // O getUserFromToken deve ser importado no topo do seu arquivo se já não estiver:
-  // import { getUserFromToken } from '@/lib/auth';
-  // import { supabase } from '@/lib/jarvis';
-  
+export async function PATCH(
+  req: NextRequest, 
+  { params }: { params: Promise<{ id: string, action: string }> }
+) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   const userId = await getUserFromToken(token);
   
   if (!userId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-  if (params.action === 'settings') {
+  const { id, action } = await params;
+
+  if (action === 'settings') {
     const { shopping_enabled } = await req.json();
 
     const { error } = await supabase
       .from('relationships')
       .update({ settings: { shopping_enabled } })
-      .eq('id', params.id);
+      .eq('id', id);
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true });
