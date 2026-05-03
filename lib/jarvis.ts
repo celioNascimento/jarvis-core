@@ -1,11 +1,14 @@
-// lib/jarvis.ts
-// Motor Central — Conexões, IA, Vetores e Utilitários
-// ✅ CORREÇÕES: Extração segura do ToolResponse no Gateway e Erros 406 resolvidos
+/**
+ * MOTOR CENTRAL JARVIS (lib/jarvis.ts)
+ * Responsável por: Gateway de IA, Memória Vetorial (L3/HD), Consolidação de RAM
+ * e Varredura Modular de Contextos Compartilhados (Plug-ins).
+ */
 
 import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; 
+import { RELATIONSHIP_MODULES } from '@/constants/modules';
 
 // ============================================================
 // 1. CONEXÃO CENTRAL COM O BANCO (SCHEMA JARVIS)
@@ -22,14 +25,10 @@ const redis = new Redis({
 });
 
 // ============================================================
-// 2. MOTOR DE IA (Encaminhado para o Gatekeeper)
+// 2. MOTOR DE IA (Gateway de Prioridade OpenRouter)
 // ============================================================
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
-/**
- * Wrapper centralizado. 
- * Joga requisições internas para a fila de background (Prioridade 4).
- */
 export async function callOpenRouter(
   input: string | ChatMessage[],
   model: string = "google/gemini-2.0-flash-001",
@@ -56,8 +55,67 @@ export async function callOpenRouter(
 }
 
 // ============================================================
-// 3. MOTOR VETORIAL (Embeddings via OpenRouter)
+// 3. MOTOR DE VISIBILIDADE COMPARTILHADA (O QUE O CHAT VÊ)
 // ============================================================
+
+/**
+ * ANALISADOR DE VÍNCULOS: Esta função percorre todos os módulos definidos
+ * em 'constants/modules.ts' e, se o interruptor estiver ligado no vínculo,
+ * injeta os dados do parceiro no prompt do Chat.
+ */
+export async function getPartnerContextForChat(authUserId: string): Promise<string> {
+  try {
+    // 1. Busca vínculos ativos do usuário
+    const { data: relationships } = await supabase
+      .from('relationships')
+      .select('user_id_a, user_id_b, settings, contact_name')
+      .eq('status', 'active')
+      .or(`user_id_a.eq.${authUserId},user_id_b.eq.${authUserId}`);
+
+    if (!relationships || relationships.length === 0) return "";
+
+    let sharedContext = "";
+
+    for (const rel of relationships) {
+      const partnerUUID = rel.user_id_a === authUserId ? rel.user_id_b : rel.user_id_a;
+      const partnerName = rel.contact_name || "Parceiro";
+      const settings = rel.settings || {};
+
+      // 2. Varre os módulos definidos dinamicamente (Agenda, Compras, Finanças...)
+      for (const mod of RELATIONSHIP_MODULES) {
+        if (settings[mod.settingsKey] === true) {
+          
+          // 3. Consulta a tabela do módulo para o ID do parceiro
+          const { data: items } = await supabase
+            .from(mod.tableName)
+            .select('*')
+            .eq('user_id', partnerUUID)
+            .order('created_at', { ascending: false })
+            .limit(5);
+
+          if (items && items.length > 0) {
+            sharedContext += `\n[${mod.contextLabel} DE ${partnerName.toUpperCase()}]:\n`;
+            items.forEach((item: any) => {
+              // Tentativa de puxar as nomenclaturas de diferentes tabelas
+              const detail = item.title || item.item || item.description || (item.amount ? `R$ ${item.amount}` : "Registro");
+              const date = item.start_at || item.transaction_date || item.created_at;
+              sharedContext += `- ${detail} ${date ? `(Data: ${new Date(date).toLocaleDateString('pt-BR')})` : ''}\n`;
+            });
+          }
+        }
+      }
+    }
+    return sharedContext;
+  } catch (e) {
+    console.error("[ModularContext] Erro na varredura de vínculos:", e);
+    return "";
+  }
+}
+
+// ============================================================
+// 4. MOTOR VETORIAL E MEMÓRIA (L3 -> HD)
+// ============================================================
+
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
     console.log('[Embedding] Gerando para:', text.substring(0, 60) + (text.length > 60 ? '...' : ''));
@@ -88,8 +146,6 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
 
     clearTimeout(timeout);
 
-    console.log('[Embedding] HTTP Status:', res.status);
-
     if (!res.ok) {
       const errorText = await res.text();
       console.error('[Embedding] Erro HTTP:', res.status, errorText);
@@ -117,106 +173,6 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
   }
 }
 
-// ============================================================
-// 4. MENSAGEIRO TELEGRAM
-// ============================================================
-export async function sendTelegram(chatId: string | number, text: string): Promise<void> {
-  try {
-    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
-    });
-  } catch (e) {
-    console.error("[Telegram] Erro ao enviar:", e);
-  }
-}
-
-// ============================================================
-// 5. GERENCIADOR DE SESSÃO
-// ============================================================
-export async function getOrCreateSession(userId: string): Promise<string> {
-  try {
-    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
-
-    const { data: existing } = await supabase
-      .from('sessions')
-      .select('id')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .gte('last_active', fourHoursAgo)
-      .order('last_active', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (existing) {
-      await supabase
-        .from('sessions')
-        .update({ last_active: new Date().toISOString() })
-        .eq('id', existing.id);
-      return existing.id;
-    }
-
-    await supabase
-      .from('sessions')
-      .update({ is_active: false })
-      .eq('user_id', userId)
-      .eq('is_active', true);
-
-    const { data: newSession } = await supabase
-      .from('sessions')
-      .insert({ user_id: userId, is_active: true })
-      .select('id')
-      .single(); 
-
-    return newSession?.id || 'default';
-  } catch (e) {
-    console.error("[Session] Erro getOrCreateSession:", e);
-    return 'default';
-  }
-}
-
-// ============================================================
-// 6. GERENCIADOR DE PERGUNTA PENDENTE
-// ============================================================
-export async function getPendingQuestion(userId: string): Promise<{ question: string | null; context: any }> {
-  try {
-    const { data } = await supabase
-      .from('users')
-      .select('pending_question, pending_context')
-      .eq('id', userId)
-      .maybeSingle();
-
-    return {
-      question: data?.pending_question || null,
-      context: data?.pending_context || null
-    };
-  } catch {
-    return { question: null, context: null };
-  }
-}
-
-export async function setPendingQuestion(userId: string, question: string | null, context: any = null): Promise<void> {
-  try {
-    await supabase
-      .from('users')
-      .update({
-        pending_question: question,
-        pending_context: context
-      })
-      .eq('id', userId);
-  } catch (e) {
-    console.error("[PendingQuestion] Erro setPendingQuestion:", e);
-  }
-}
-
-export async function clearPendingQuestion(userId: string): Promise<void> {
-  await setPendingQuestion(userId, null, null);
-}
-
-// ============================================================
-// 7. MOTOR DE CONSOLIDAÇÃO (RAM → L3 → HD)
-// ============================================================
 const MEMORIA_INVALIDA = [
   'Framework de 4 Etapas',
   'Como posso te ajudar a ser mais produtivo',
@@ -349,8 +305,9 @@ TAREFA: Integre as novas informações ao Dossiê existente.
 }
 
 // ============================================================
-// 8. BUSCA EVENTOS PROATIVOS
+// 6. UTILITÁRIOS E GERENCIADORES (Eventos, Interrupções)
 // ============================================================
+
 export async function getProactiveEvents(userId: string) {
   const hoje = new Date();
   const seteDiasDepois = new Date();
@@ -372,9 +329,6 @@ export async function getProactiveEvents(userId: string) {
   });
 }
 
-// ============================================================
-// 9. CHECAGEM DE INTERRUPTORES
-// ============================================================
 export async function checkSystemInterrupts(userId: string) {
   try {
     const agenda = await getGoogleContext();
@@ -390,9 +344,6 @@ export async function checkSystemInterrupts(userId: string) {
   }
 }
 
-// ============================================================
-// 10. REFORÇO DE MEMÓRIA
-// ============================================================
 export async function reinforceMemory(memoryId: string): Promise<void> {
   try {
     const { data } = await supabase
@@ -416,5 +367,105 @@ export async function reinforceMemory(memoryId: string): Promise<void> {
       .eq('id', memoryId);
   } catch (e) {
     console.error("[Memory] Erro reinforceMemory:", e);
+  }
+}
+
+// ============================================================
+// 7. GERENCIADOR DE SESSÃO
+// ============================================================
+
+export async function getOrCreateSession(userId: string): Promise<string> {
+  try {
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+
+    const { data: existing } = await supabase
+      .from('sessions')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .gte('last_active', fourHoursAgo)
+      .order('last_active', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existing) {
+      await supabase
+        .from('sessions')
+        .update({ last_active: new Date().toISOString() })
+        .eq('id', existing.id);
+      return existing.id;
+    }
+
+    await supabase
+      .from('sessions')
+      .update({ is_active: false })
+      .eq('user_id', userId)
+      .eq('is_active', true);
+
+    const { data: newSession } = await supabase
+      .from('sessions')
+      .insert({ user_id: userId, is_active: true })
+      .select('id')
+      .single(); 
+
+    return newSession?.id || 'default';
+  } catch (e) {
+    console.error("[Session] Erro getOrCreateSession:", e);
+    return 'default';
+  }
+}
+
+// ============================================================
+// 8. PERGUNTAS PENDENTES
+// ============================================================
+
+export async function getPendingQuestion(userId: string): Promise<{ question: string | null; context: any }> {
+  try {
+    const { data } = await supabase
+      .from('users')
+      .select('pending_question, pending_context')
+      .eq('id', userId)
+      .maybeSingle();
+
+    return {
+      question: data?.pending_question || null,
+      context: data?.pending_context || null
+    };
+  } catch {
+    return { question: null, context: null };
+  }
+}
+
+export async function setPendingQuestion(userId: string, question: string | null, context: any = null): Promise<void> {
+  try {
+    await supabase
+      .from('users')
+      .update({
+        pending_question: question,
+        pending_context: context
+      })
+      .eq('id', userId);
+  } catch (e) {
+    console.error("[PendingQuestion] Erro setPendingQuestion:", e);
+  }
+}
+
+export async function clearPendingQuestion(userId: string): Promise<void> {
+  await setPendingQuestion(userId, null, null);
+}
+
+// ============================================================
+// 9. MENSAGEIRO TELEGRAM
+// ============================================================
+
+export async function sendTelegram(chatId: string | number, text: string): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+    });
+  } catch (e) {
+    console.error("[Telegram] Erro ao enviar:", e);
   }
 }
