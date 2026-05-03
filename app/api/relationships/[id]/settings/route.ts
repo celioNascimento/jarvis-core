@@ -11,11 +11,27 @@ export async function PATCH(
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { id } = await params;
-  const { shopping_enabled } = await req.json();
+  
+  // A API recebe apenas o que mudou do App (ex: { agenda_enabled: true })
+  const partialSettings = await req.json();
 
+  // 1. Busca os settings atuais no banco
+  const { data: rel } = await supabase
+    .from('relationships')
+    .select('settings')
+    .eq('id', id)
+    .single();
+
+  // 2. Faz a mescla (merge) do histórico com a nova alteração
+  const mergedSettings = {
+    ...(rel?.settings || {}),
+    ...partialSettings
+  };
+
+  // 3. Salva o objeto consolidado
   const { error } = await supabase
     .from('relationships')
-    .update({ settings: { shopping_enabled } })
+    .update({ settings: mergedSettings })
     .eq('id', id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
