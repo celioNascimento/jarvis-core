@@ -1,146 +1,100 @@
-// ============================================================
-// app/api/calendar/events/route.ts
-// GET  /api/calendar/events?from=&to=&category=
-// POST /api/calendar/events
-// ============================================================
-
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import {
-  scheduleReminderOnQStash,
-  cancelReminderOnQStash,
-} from '@/lib/qstash';
+import { supabase } from '@/lib/jarvis';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-// ── helpers ─────────────────────────────────────────────────
-
-async function resolveUserId(authUserId: string): Promise<bigint | null> {
-  const { data } = await supabase
-    .schema('jarvis')
-    .from('users')
-    .select('id')
-    .eq('auth_user_id', authUserId)
-    .single();
-  return data?.id ?? null;
+// ── HELPER DE AUTENTICAÇÃO ────────────────────────────────────────────────────
+// Extrai o UUID do utilizador diretamente do cabeçalho de Autorização (JWT)
+async function getAuthUUID(req: NextRequest) {
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  if (!token) return null;
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data.user) return null;
+  return data.user.id;
 }
 
-async function scheduleRemindersForEvent(
-  eventId: string,
-  userId: string,
-  authUserId: string,
-  eventTitle: string
-) {
-  // 1. Pede ao Supabase para recriar os lembretes pendentes
-  const { data: reminders, error } = await supabase.rpc('upsert_event_reminders', {
-    p_event_id: eventId,
-  });
-
-  if (error || !reminders?.length) return;
-
-  // 2. Agenda cada lembrete no QStash e salva o messageId
-  for (const reminder of reminders) {
-    const messageId = await scheduleReminderOnQStash({
-      reminderId: reminder.reminder_id,
-      userId,
-      authUserId,
-      message: `Lembrete: ${eventTitle}`,
-      scheduledTime: reminder.scheduled_at,
-    });
-
-    if (messageId) {
-      await supabase
-        .from('jarvis.event_reminders')
-        .update({ qstash_message_id: messageId })
-        .eq('id', reminder.reminder_id);
-    }
-  }
-}
-
-// ── GET ─────────────────────────────────────────────────────
-
+// ── GET: BUSCAR EVENTOS (MEUS + COMPARTILHADOS COMIGO) ───────────────────────
 export async function GET(req: NextRequest) {
-  const { searchParams } = req.nextUrl;
-  const authUserId = req.headers.get('x-user-id');
-  if (!authUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const authUserId = await getAuthUUID(req);
+  if (!authUserId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-  const userId = await resolveUserId(authUserId);
-  if (!userId) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+  try {
+    // PASSO 1: Obter o ID Numérico (BigInt) do utilizador atual.
+    // É essencial porque os compartilhamentos (event_shares) usam o ID numérico.
+    const { data: userProfile } = await supabase
+      .schema('jarvis')
+      .from('users')
+      .select('id')
+      .eq('auth_user_id', authUserId)
+      .single();
 
-  const from = searchParams.get('from');
-  const to = searchParams.get('to');
-  const category = searchParams.get('category') ?? undefined;
+    const myBigIntId = userProfile?.id;
 
-  // Se não tiver range, usa próximos 30 dias
-  const fromDate = from ? new Date(from) : new Date();
-  const toDate = to ? new Date(to) : new Date(Date.now() + 30 * 86400_000);
+    // PASSO 2: Buscar IDs dos eventos EXPLICITAMENTE partilhados comigo
+    let sharedEventIds: string[] = [];
+    if (myBigIntId) {
+      const { data: shared } = await supabase
+        .schema('jarvis')
+        .from('event_shares')
+        .select('event_id')
+        .eq('shared_with_id', myBigIntId)
+        .eq('active', true);
+        
+      if (shared && shared.length > 0) {
+        sharedEventIds = shared.map(s => s.event_id);
+      }
+    }
 
-  const { data, error } = await supabase
-    .schema('jarvis')
-    .rpc('get_events_in_range', {
-      p_user_id: userId,
-      p_from: fromDate.toISOString(),
-      p_to: toDate.toISOString(),
-      p_category: category ?? null,
-    });
+    // PASSO 3: Montar a query segura (Meus eventos OU eventos na lista de permitidos)
+    let query = supabase.schema('jarvis').from('calendar_events').select('*');
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ events: data });
+    if (sharedEventIds.length > 0) {
+      const idsString = sharedEventIds.join(',');
+      query = query.or(`user_id.eq.${authUserId},id.in.(${idsString})`);
+    } else {
+      query = query.eq('user_id', authUserId);
+    }
+
+    // Executa a query ordenada por data
+    const { data: events, error } = await query.order('start_at', { ascending: true });
+    
+    if (error) throw error;
+
+    return NextResponse.json({ ok: true, events });
+  } catch (e: any) {
+    console.error('[Calendar GET Error]', e);
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
 }
 
-// ── POST ────────────────────────────────────────────────────
-
+// ── POST: CRIAR NOVO EVENTO ──────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
-  const authUserId = req.headers.get('x-user-id');
-  if (!authUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const authUserId = await getAuthUUID(req);
+  if (!authUserId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-  const userId = await resolveUserId(authUserId);
-  if (!userId) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+  try {
+    const body = await req.json();
 
-  const body = await req.json();
-  const {
-    title, description, location,
-    start_at, end_at, all_day,
-    color, category, entity_type, entity_id,
-    recurrence_rule, recurrence_end,
-    reminder_minutes,
-  } = body;
+    const { data, error } = await supabase
+      .schema('jarvis')
+      .from('calendar_events')
+      .insert({
+        user_id: authUserId,
+        title: body.title,
+        description: body.description,
+        location: body.location,
+        start_at: body.start_at,
+        end_at: body.end_at,
+        all_day: body.all_day,
+        category: body.category,
+        reminder_minutes: body.reminder_minutes,
+        source: 'lev'
+      })
+      .select()
+      .single();
 
-  if (!title || !start_at) {
-    return NextResponse.json({ error: 'title e start_at são obrigatórios' }, { status: 400 });
+    if (error) throw error;
+    return NextResponse.json({ ok: true, event: data });
+  } catch (e: any) {
+    console.error('[Calendar POST Error]', e);
+    return NextResponse.json({ error: e.message }, { status: 500 });
   }
-
-  const { data: event, error } = await supabase
-    .schema('jarvis')
-    .from('events')
-    .insert({
-      user_id: userId,
-      title, description, location,
-      start_at, end_at,
-      all_day: all_day ?? false,
-      color,
-      category: category ?? 'personal',
-      entity_type: entity_type ?? null,
-      entity_id: entity_id ?? null,
-      recurrence_rule: recurrence_rule ?? null,
-      recurrence_end: recurrence_end ?? null,
-      reminder_minutes: reminder_minutes ?? null,
-      source: 'lev',
-    })
-    .select()
-    .single();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-  // Agenda lembretes no QStash se houver
-  if (reminder_minutes?.length) {
-    await scheduleRemindersForEvent(
-      event.id, String(userId), authUserId, title
-    );
-  }
-
-  return NextResponse.json({ event }, { status: 201 });
 }
