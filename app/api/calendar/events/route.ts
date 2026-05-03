@@ -18,7 +18,6 @@ export async function GET(req: NextRequest) {
 
   try {
     // PASSO 1: Obter o ID Numérico (BigInt) do utilizador atual.
-    // É essencial porque os partilhamentos (event_shares) usam o ID numérico.
     const { data: userProfile } = await supabase
       .schema('jarvis')
       .from('users')
@@ -27,32 +26,34 @@ export async function GET(req: NextRequest) {
       .single();
 
     const myBigIntId = userProfile?.id;
+    
+    if (!myBigIntId) {
+      return NextResponse.json({ error: 'Perfil de utilizador não encontrado' }, { status: 404 });
+    }
 
     // PASSO 2: Buscar IDs dos eventos EXPLICITAMENTE partilhados comigo
     let sharedEventIds: string[] = [];
-    if (myBigIntId) {
-      const { data: shared } = await supabase
-        .schema('jarvis')
-        .from('event_shares')
-        .select('event_id')
-        .eq('shared_with_id', myBigIntId)
-        .eq('active', true);
-        
-      if (shared && shared.length > 0) {
-        sharedEventIds = shared.map(s => s.event_id);
-      }
+    const { data: shared } = await supabase
+      .schema('jarvis')
+      .from('event_shares')
+      .select('event_id')
+      .eq('shared_with_id', myBigIntId)
+      .eq('active', true);
+      
+    if (shared && shared.length > 0) {
+      sharedEventIds = shared.map(s => s.event_id);
     }
 
     // PASSO 3: Montar a query segura na tabela 'events'
     let query = supabase.schema('jarvis').from('events').select('*');
 
     if (sharedEventIds.length > 0) {
-      // Se houver eventos partilhados, faz a junção (OR)
-      const idsString = sharedEventIds.map(id => `'${id}'`).join(','); // Adiciona aspas para os UUIDs dos eventos
-      query = query.or(`user_id.eq.${authUserId},id.in.(${idsString})`);
+      // CORREÇÃO: Usar myBigIntId em vez de authUserId para casar com a coluna BIGINT
+      const idsString = sharedEventIds.map(id => `'${id}'`).join(',');
+      query = query.or(`user_id.eq.${myBigIntId},id.in.(${idsString})`);
     } else {
-      // Se não, traz apenas os meus
-      query = query.eq('user_id', authUserId);
+      // CORREÇÃO: Usar myBigIntId em vez de authUserId
+      query = query.eq('user_id', myBigIntId);
     }
 
     // Executa a query ordenada por data
