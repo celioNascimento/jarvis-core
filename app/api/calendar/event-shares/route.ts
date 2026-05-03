@@ -4,80 +4,95 @@ import { getUserFromToken } from '@/lib/auth';
 
 export async function GET(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  const userIdStr = await getUserFromToken(token); // Retorna BigInt em string
-  if (!userIdStr) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+  const userId = await getUserFromToken(token);
+  if (!userId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
   const event_id = searchParams.get('event_id');
-
   if (!event_id) return NextResponse.json({ error: 'event_id ausente' }, { status: 400 });
 
-  // 1. Busca os parceiros com calendário ativo (Chave Mestra)
-  const { data: rels } = await supabase
+  const { data: userRow } = await supabase
+    .from('users')
+    .select('auth_user_id')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (!userRow) return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
+
+  const { data: relationships } = await supabase
     .from('relationships')
     .select('user_id_a, user_id_b, contact_name, settings')
-    .eq('status', 'active');
+    .eq('status', 'active')
+    .or(`user_id_a.eq.${userRow.auth_user_id},user_id_b.eq.${userRow.auth_user_id}`);
 
-  const eligibleRels = (rels || []).filter(r => r.settings?.calendar_enabled);
+  const agendaRels = (relationships ?? []).filter(
+    r => r.settings?.agenda_enabled === true
+  );
 
-  // 2. Busca o ID do usuário autenticado para cruzamento
-  const { data: { user } } = await supabase.auth.getUser(token);
-  const authUuid = user?.id;
+  if (agendaRels.length === 0) {
+    return NextResponse.json({ ok: true, options: [] });
+  }
 
-  // 3. Busca permissões ativas para ESTE evento
+  const partnerUUIDs = agendaRels.map(r =>
+    r.user_id_a === userRow.auth_user_id ? r.user_id_b : r.user_id_a
+  );
+
+  const { data: partners } = await supabase
+    .from('users')
+    .select('id, auth_user_id, preferred_name, nickname, name')
+    .in('auth_user_id', partnerUUIDs);
+
+  const partnerBigintIds = (partners ?? []).map(p => p.id);
+
   const { data: shares } = await supabase
     .from('calendar_event_shares')
     .select('shared_with_id')
-    .eq('event_id', event_id);
+    .eq('event_id', event_id)
+    .in('shared_with_id', partnerBigintIds);
 
-  const activeIds = new Set((shares || []).map(s => String(s.shared_with_id)));
+  const activeIds = new Set((shares ?? []).map(s => String(s.shared_with_id)));
 
-  // 4. Monta as opções cruzando Auth UUID -> BigInt ID da tabela users
-  const options = await Promise.all(eligibleRels.map(async (r) => {
-    const partnerAuthUuid = r.user_id_a === authUuid ? r.user_id_b : r.user_id_a;
-    
-    // Converte o UUID do parceiro pro BigInt necessário no banco
-    const { data: partnerUser } = await supabase
-      .from('users')
-      .select('id')
-      .eq('auth_user_id', partnerAuthUuid)
-      .single();
-
-    if (!partnerUser) return null;
+  const options = agendaRels.map(rel => {
+    const partnerUUID = rel.user_id_a === userRow.auth_user_id ? rel.user_id_b : rel.user_id_a;
+    const partner = (partners ?? []).find(p => p.auth_user_id === partnerUUID);
+    if (!partner) return null;
 
     return {
-      user_id: partnerAuthUuid,
-      bigint_id: partnerUser.id,
-      contact_name: r.contact_name || 'Contato',
-      is_active: activeIds.has(String(partnerUser.id))
+      user_id: partner.auth_user_id,
+      bigint_id: partner.id,
+      contact_name: partner.preferred_name || partner.nickname || partner.name || rel.contact_name || 'Contato',
+      is_active: activeIds.has(String(partner.id)),
     };
-  }));
+  }).filter(Boolean);
 
-  return NextResponse.json({ ok: true, options: options.filter(Boolean) });
+  return NextResponse.json({ ok: true, options });
 }
 
 export async function POST(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  const userIdStr = await getUserFromToken(token);
-  if (!userIdStr) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+  const userId = await getUserFromToken(token);
+  if (!userId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
   const { event_id, shared_with_id, active } = await req.json();
 
+  if (!event_id || !shared_with_id || typeof active !== 'boolean') {
+    return NextResponse.json({ error: 'event_id, shared_with_id e active são obrigatórios' }, { status: 400 });
+  }
+
   if (active) {
-    // Liga a permissão
     const { error } = await supabase
       .from('calendar_event_shares')
-      .insert({ event_id, shared_with_id });
-      
-    if (error && error.code !== '23505') return NextResponse.json({ error: error.message }, { status: 500 });
+      .upsert(
+        { event_id, shared_with_id },
+        { onConflict: 'event_id,shared_with_id' }
+      );
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   } else {
-    // Desliga a permissão
     const { error } = await supabase
       .from('calendar_event_shares')
       .delete()
       .eq('event_id', event_id)
       .eq('shared_with_id', shared_with_id);
-      
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
