@@ -3,10 +3,9 @@ import { supabase } from '@/lib/jarvis';
 import { getUserFromToken } from '@/lib/auth';
 
 // ── GET /api/calendar/event-shares?event_id=xxx ───────────────────────────────
-// Retorna com quem um evento específico está compartilhado
 export async function GET(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  const userId = await getUserFromToken(token); // Retorna ID Numérico (BigInt)
+  const userId = await getUserFromToken(token);
   
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -14,7 +13,7 @@ export async function GET(req: NextRequest) {
   const eventId = searchParams.get('event_id');
   if (!eventId) return NextResponse.json({ error: 'event_id obrigatório' }, { status: 400 });
 
-  // 1. Verifica que o evento pertence ao usuário na tabela real ('events')
+  // 1. Verifica se o evento pertence ao usuário
   const { data: event } = await supabase
     .schema('jarvis')
     .from('events')
@@ -27,13 +26,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
   }
 
-  // 2. Busca com quem está compartilhado na tabela padronizada ('event_shares')
+  // 2. Busca compartilhamentos na tabela correta (sem procurar por 'active')
   const { data: shares } = await supabase
     .schema('jarvis')
-    .from('event_shares')
+    .from('calendar_event_shares')
     .select('shared_with_id')
-    .eq('event_id', eventId)
-    .eq('active', true);
+    .eq('event_id', eventId);
 
   if (!shares || shares.length === 0) {
     return NextResponse.json({ ok: true, shared_with: [] });
@@ -58,7 +56,6 @@ export async function GET(req: NextRequest) {
 }
 
 // ── POST /api/calendar/event-shares ──────────────────────────────────────────
-// Liga ou desliga o compartilhamento de um evento específico
 export async function POST(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   const userId = await getUserFromToken(token);
@@ -67,10 +64,10 @@ export async function POST(req: NextRequest) {
   const { event_id, shared_with_id, active } = await req.json();
 
   if (!event_id || !shared_with_id || typeof active !== 'boolean') {
-    return NextResponse.json({ error: 'event_id, shared_with_id e active são obrigatórios' }, { status: 400 });
+    return NextResponse.json({ error: 'Dados obrigatórios faltando' }, { status: 400 });
   }
 
-  // 1. Verifica que o evento pertence ao usuário ('events')
+  // 1. Verifica dono
   const { data: event } = await supabase
     .schema('jarvis')
     .from('events')
@@ -83,21 +80,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
   }
 
-  // 2. Salva a permissão na tabela padronizada ('event_shares')
+  // 2. Salva a permissão na tabela correta, removendo a referência à coluna 'active'
   if (active) {
     const { error } = await supabase
       .schema('jarvis')
-      .from('event_shares')
+      .from('calendar_event_shares')
       .upsert(
-        { event_id, shared_with_id, active: true },
+        { event_id, shared_with_id }, // <-- APENAS OS IDs AQUI
         { onConflict: 'event_id,shared_with_id' }
       );
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   } else {
-    // Se active for false, remove o registro para manter o banco limpo
+    // Se active for false, apagamos o registro
     const { error } = await supabase
       .schema('jarvis')
-      .from('event_shares')
+      .from('calendar_event_shares')
       .delete()
       .eq('event_id', event_id)
       .eq('shared_with_id', shared_with_id);
