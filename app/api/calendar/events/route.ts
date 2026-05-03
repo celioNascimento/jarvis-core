@@ -33,13 +33,17 @@ export async function GET(req: NextRequest) {
 
     // PASSO 2: Buscar IDs dos eventos EXPLICITAMENTE partilhados comigo
     let sharedEventIds: string[] = [];
-    const { data: shared } = await supabase
+    const { data: shared, error: sharedError } = await supabase
       .schema('jarvis')
-      .from('event_shares')
+      .from('calendar_event_shares') // <-- CORREÇÃO: Nome correto da tabela!
       .select('event_id')
-      .eq('shared_with_id', myBigIntId)
-      .eq('active', true);
+      .eq('shared_with_id', myBigIntId);
+      // Removido o .eq('active', true) porque esta tabela não utiliza a coluna active.
       
+    if (sharedError) {
+      console.error('[Calendar GET] Erro ao buscar permissões:', sharedError.message);
+    }
+
     if (shared && shared.length > 0) {
       sharedEventIds = shared.map(s => s.event_id);
     }
@@ -48,13 +52,14 @@ export async function GET(req: NextRequest) {
     let query = supabase.schema('jarvis').from('events').select('*');
 
     if (sharedEventIds.length > 0) {
-      // CORREÇÃO: Usar myBigIntId em vez de authUserId para casar com a coluna BIGINT
       const idsString = sharedEventIds.map(id => `'${id}'`).join(',');
       query = query.or(`user_id.eq.${myBigIntId},id.in.(${idsString})`);
     } else {
-      // CORREÇÃO: Usar myBigIntId em vez de authUserId
       query = query.eq('user_id', myBigIntId);
     }
+
+    // PASSO 4: ESCUDO DE DATA (Ignora eventos corrompidos como os de 1960/1970)
+    query = query.gte('start_at', '2020-01-01T00:00:00Z');
 
     // Executa a query ordenada por data
     const { data: events, error } = await query.order('start_at', { ascending: true });
@@ -76,7 +81,6 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    // Obter o ID numérico do criador para guardar na tabela events
     const { data: userProfile } = await supabase
       .schema('jarvis')
       .from('users')
@@ -90,9 +94,9 @@ export async function POST(req: NextRequest) {
 
     const { data, error } = await supabase
       .schema('jarvis')
-      .from('events') // <-- Corrigido para a tabela correta
+      .from('events')
       .insert({
-        user_id: userProfile.id, // A tabela events espera o ID numérico (bigint)
+        user_id: userProfile.id,
         title: body.title,
         description: body.description,
         location: body.location,
@@ -116,9 +120,6 @@ export async function POST(req: NextRequest) {
 
 // ── PUT: ATUALIZAR EVENTO ────────────────────────────────────────────────────
 export async function PUT(req: NextRequest) {
-    // Extraímos o ID da rota, assumindo que a chamada seja /api/calendar/events/[id]
-    // Como Next.js app router trata rotas dinâmicas noutro ficheiro, se o PUT estiver na rota raiz, 
-    // ele deve extrair o ID do corpo da requisição.
     const authUserId = await getAuthUUID(req);
     if (!authUserId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
@@ -128,7 +129,6 @@ export async function PUT(req: NextRequest) {
 
         if (!id) return NextResponse.json({ error: 'ID do evento obrigatório' }, { status: 400 });
 
-        // Validação de segurança: apenas o dono pode editar
         const { data: userProfile } = await supabase
             .schema('jarvis')
             .from('users')
@@ -175,7 +175,6 @@ export async function DELETE(req: NextRequest) {
 
         if (!id) return NextResponse.json({ error: 'ID do evento obrigatório' }, { status: 400 });
 
-        // Validação de segurança: apenas o dono pode apagar
         const { data: userProfile } = await supabase
             .schema('jarvis')
             .from('users')
