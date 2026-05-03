@@ -8,7 +8,7 @@ import { createClient } from '@supabase/supabase-js';
 import { getGoogleContext } from './google';
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; 
-import { RELATIONSHIP_MODULES } from '@/constants/modules';
+import { RELATIONSHIP_MODULES } from '../app/constants/modules';
 
 // ============================================================
 // 1. CONEXÃO CENTRAL COM O BANCO (SCHEMA JARVIS)
