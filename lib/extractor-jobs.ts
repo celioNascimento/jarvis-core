@@ -6,6 +6,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { safeParseJSON } from './extractor';
 import { callOpenRouter } from './jarvis';
+import { scheduleReminderOnQStash } from '@/lib/qstash';
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -151,15 +152,20 @@ export async function extractEvento(userId: string, userMessage: string): Promis
 // EXTRATOR: AGENDA → agenda
 // ============================================================
 
+// ============================================================
+// EXTRATOR: AGENDA → agenda + notificações QStash
+// ============================================================
+
 export async function extractAgenda(userId: string, userMessage: string): Promise<void> {
   const prompt = `Extraia compromissos com data E hora explícitas mencionados pelo USUÁRIO.
   Retorne APENAS JSON:
 
   Mensagem do usuário: "${userMessage}"
 
-  {"compromissos": [{"descricao": null, "data_hora": null, "categoria": null}]}
+  {"compromissos": [{"descricao": null, "data_hora": null, "categoria": null, "aviso_minutos": 30}]}
 
   data_hora: ISO 8601 fuso -03:00 (ex: "2026-03-10T10:00:00-03:00")
+  aviso_minutos: Tente inferir se o usuário pediu para ser avisado com antecedência. Se não mencionar, use 30.
   Categorias: Saúde|Trabalho|Escola|Família|Pessoal|Rotina
   Retorne compromissos: [] se nenhum mencionado`;
 
@@ -167,16 +173,59 @@ export async function extractAgenda(userId: string, userMessage: string): Promis
     const raw = await callAI(prompt, 250);
     const data = safeParseJSON(raw);
     if (!data) { console.error('[Extrator/agenda] JSON inválido:', raw.slice(0, 100)); return; }
+
+    // ── BUSCA O AUTH ID PARA O PUSH NOTIFICATION ──
+    const { data: userData } = await supabase.from('users').select('auth_user_id').eq('id', userId).single();
+    const authUserId = userData?.auth_user_id;
+
     for (const comp of (data.compromissos || [])) {
       if (!comp.descricao || !comp.data_hora) continue;
+
       const { data: ex } = await supabase.from('agenda').select('id')
         .eq('user_id', userId).eq('description', comp.descricao).eq('event_at', comp.data_hora).maybeSingle();
+
       if (!ex) {
+        // 1. Salva na tabela Agenda (para histórico/consultas do Jarvis)
         await supabase.from('agenda').insert({
           user_id: userId, description: comp.descricao,
           event_at: comp.data_hora, category: comp.categoria || 'Pessoal',
         });
-        console.log('[Extrator/agenda]', comp.descricao);
+        console.log('[Extrator/agenda] Salvo:', comp.descricao);
+
+        // 2. Cria a Notificação Ativa (Lembrete)
+        if (authUserId) {
+          const eventTime = new Date(comp.data_hora).getTime();
+          // Calcula o horário da notificação (ex: 30 min antes)
+          const delayMinutes = comp.aviso_minutos !== undefined ? comp.aviso_minutos : 30;
+          const notifyTime = new Date(eventTime - (delayMinutes * 60000)).toISOString();
+
+          // Só agenda se o evento for no futuro
+          if (new Date(notifyTime).getTime() > Date.now()) {
+            const { data: reminder, error: remError } = await supabase.from('reminders').insert({
+              user_id: Number(userId),
+              title: `📅 ${comp.descricao}`, // Ícone para diferenciar na tela do celular
+              type: 'agenda',
+              scheduled_time: notifyTime,
+              status: 'pending',
+              metadata: { auth_user_id: authUserId },
+            }).select('id').single();
+
+            if (!remError && reminder) {
+              const qstashId = await scheduleReminderOnQStash({
+                reminderId: String(reminder.id),
+                userId: userId,
+                authUserId: authUserId,
+                message: `📅 [Agenda] ${comp.descricao}`,
+                scheduledTime: notifyTime,
+              });
+
+              if (qstashId) {
+                await supabase.from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
+              }
+              console.log(`[Extrator/agenda] Push configurado para ${delayMinutes}min antes do evento.`);
+            }
+          }
+        }
       }
     }
   } catch (e) { console.error('[Extrator/agenda] Erro:', e); }
@@ -768,7 +817,7 @@ export async function extractShopping(userId: string, userMessage: string): Prom
     Se não identificar nenhum item claro, retorne {"items": []}.`;
 
     const aiResponse = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.1);
-    
+
     // ── AQUI ESTÁ A CORREÇÃO: Limpador de Markdown ──
     const cleanJson = aiResponse.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
     const data = JSON.parse(cleanJson);
