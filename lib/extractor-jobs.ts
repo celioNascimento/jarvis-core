@@ -755,13 +755,18 @@ export function getLifePhase(age: number | null): string {
   return 'adult';
 }
 
-export async function extractShopping(userId: string, userMessage: string): Promise<void> {
+export async function extractShopping(userId: string, userMessage: string, aiReply: string = ''): Promise<void> {
   try {
-    const prompt = `Você é o assistente Lev. Extraia os itens de compra da mensagem do usuário.
-    Mensagem: "${userMessage}"
+    const prompt = `Você é o assistente Lev. Extraia os itens de compra mencionados.
     
-    Retorne APENAS um JSON válido neste exato formato e NADA MAIS. 
-    NÃO USE blocos de código markdown (crases).
+    Mensagem do usuário: "${userMessage}"
+    ${aiReply ? `Resposta do assistente (use como contexto para identificar os itens detalhados): "${aiReply}"` : ''}
+    
+    REGRA DE DETALHAMENTO (CRÍTICA):
+    - NUNCA agrupe itens em categorias genéricas como "kit de skincare", "materiais de construção", ou "coisas de festa".
+    - Se a mensagem pedir para adicionar um grupo ("itens de skincare", "esses produtos"), extraia CADA PRODUTO INDIVIDUALMENTE varrendo o contexto da Resposta do assistente.
+    
+    Retorne APENAS um JSON válido neste exato formato e NADA MAIS:
     {"items": [{"item": "nome do item", "category": "mercado"}]}
     
     Categorias válidas: mercado, higiene, farmacia, academia, reforma, casa, roupas, tecnologia, outros.
@@ -769,11 +774,10 @@ export async function extractShopping(userId: string, userMessage: string): Prom
 
     const aiResponse = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.1);
     
-    // ── AQUI ESTÁ A CORREÇÃO: Limpador de Markdown ──
-    const cleanJson = aiResponse.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
-    const data = JSON.parse(cleanJson);
+    // ── CORREÇÃO: Utilizando o seu helper nativo da arquitetura ──
+    const data = safeParseJSON(aiResponse);
 
-    if (!data.items || data.items.length === 0) {
+    if (!data || !data.items || data.items.length === 0) {
       console.log('[Extrator/Shopping] Nenhum item detectado.');
       return;
     }
