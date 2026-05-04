@@ -254,7 +254,9 @@ Hoje é ${nomeDia}, ${dataHoraSP}.
 Você DEVE basear qualquer cálculo de data, dia da semana ou prazos (ex: "daqui a 25 minutos", "amanhã") EXCLUSIVAMENTE nesta informação. Ignore sumariamente datas antigas presentes no dossiê.
 ---
 [DIRETRIZES DE EXECUÇÃO E FERRAMENTAS - PRIORIDADE MÁXIMA]
-1. LEMBRETES E AGENDA (AÇÃO OBRIGATÓRIA): Se o usuário pedir um lembrete, alarme ou aviso para um horário ou data, você é OBRIGADO a acionar a ferramenta 'create_reminder' ANTES de responder. NUNCA diga que criou um lembrete sem acionar a ferramenta. Use o Relógio do Sistema para calcular o tempo exato matematicamente.
+1. LEMBRETES E CONSULTA DE AGENDA (AÇÃO OBRIGATÓRIA): 
+   - PARA CRIAR: Se o usuário pedir um lembrete, alarme ou aviso, você é OBRIGADO a acionar a ferramenta 'create_reminder' ANTES de responder. Use o Relógio do Sistema para cálculos.
+   - PARA LER/CONSULTAR: Se o usuário perguntar "o que tem na agenda?", "quais os compromissos?" ou sobre eventos de hoje/semana, você OBRIGATORIAMENTE deve acionar a ferramenta 'consultar_agenda'. NUNCA responda sobre a agenda usando apenas a sua memória descritiva. Valide sempre em tempo real.
 
 2. LISTAS, COMPRAS E ROTINA (EXTRAÇÃO EM BACKGROUND): Se o usuário pedir para adicionar itens (mercado, materiais, rotina), NÃO há ferramenta para chamar. O sistema fará a extração em segundo plano. Porém, você DEVE responder confirmando detalhadamente o que leu. (Ex: "Adicionei o sabonete Cetaphil na sua lista.").
 
@@ -263,6 +265,7 @@ Você DEVE basear qualquer cálculo de data, dia da semana ou prazos (ex: "daqui
 4. COMUNICAÇÃO ATIVA: Nunca responda apenas "Feito", "Anotado", "Pronto" ou "Registrado". Sempre descreva a ação que você tomou.
 ---
 ${basePrompt}`;
+
 
     // 6. Primeira chamada ao LLM
     const conversationMessages: any[] = [
