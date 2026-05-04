@@ -311,7 +311,7 @@ export async function extractPreferencia(userId: string, userMessage: string): P
 }
 
 // ============================================================
-// ATUALIZA L3 — users.current_context (Versão Polida V8.40)
+// ATUALIZA L3 — users.current_context (Com Vínculos Compartilhados)
 // ============================================================
 
 export async function updateL3(userId: string): Promise<void> {
@@ -322,18 +322,33 @@ export async function updateL3(userId: string): Promise<void> {
       timeZone: 'America/Sao_Paulo' 
     }).format(new Date());
 
+    // ── 1. BUSCA EVENTOS COMPARTILHADOS (Ex: Agenda da Giselle) ──
+    const { data: sharedWithMe } = await supabase
+      .from('event_shares')
+      .select('event_id')
+      .eq('shared_with_id', userId)
+      .eq('active', true);
+
+    const sharedIds = sharedWithMe?.map(s => s.event_id) || [];
+    
+    // Monta a string do filtro OR dinamicamente
+    const eventOrFilter = sharedIds.length > 0
+      ? `user_id.eq.${userId},id.in.(${sharedIds.join(',')})`
+      : `user_id.eq.${userId}`;
+
+    // ── 2. CARREGA TUDO EM PARALELO ──
     const [profRes, kidsRes, projRes, evRes, userRes] = await Promise.all([
       supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle(),
       supabase.from('children').select('name, birth_date, life_phase, gender').eq('parent_id', userId),
       supabase.from('projects').select('name, description, status').eq('user_id', userId).limit(10),
       
-      // ── FILTRO DE EVENTOS ATIVOS ──
+      // ── FILTRO DE EVENTOS (Próprios + Compartilhados) ──
       supabase.from('events')
         .select('title, start_at, emotional_weight')
-        .eq('user_id', userId)
+        .or(eventOrFilter) // Aplica a visão expandida
         .gte('start_at', today) // Ignora o passado
         .order('start_at', { ascending: true })
-        .limit(10),
+        .limit(15), // Aumentado levemente para caber os dois calendários
         
       supabase.from('users').select('current_context').eq('id', userId).single(),
     ]);
@@ -410,13 +425,12 @@ export async function updateL3(userId: string): Promise<void> {
 
     if (changed.length > 0) {
       await supabase.from('users').update({ current_context: ctx.trim() }).eq('id', userId);
-      console.log('[Extrator/L3] Memória atualizada:', changed.join(', '));
+      console.log('[Extrator/L3] Memória atualizada com eventos compartilhados:', changed.join(', '));
     }
   } catch (e) {
     console.error('[Extrator/L3] Erro crítico:', e);
   }
 }
-
 // ============================================================
 // HELPERS COMPARTILHADOS
 // ============================================================
