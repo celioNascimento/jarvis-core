@@ -318,10 +318,11 @@ ${basePrompt}`;
         0.7,
       );
 
-      assistantReply = secondResponse.content || `Comando executado com sucesso, Célio. Verifiquei os detalhes do(a) ${name.replace('_', ' ')} e já está tudo registado no sistema.`;
+      assistantReply = secondResponse.content || "Comando executado com sucesso, Célio. As informações já foram processadas e registradas no sistema.";
 
     } else {
-      assistantReply = firstResponse.content || "Entendido. Processei a informação, mas não consegui gerar um resumo textual. Podes confirmar se precisas de mais algum detalhe?";
+
+      assistantReply = firstResponse.content || "Entendido. Processei a informação, mas não consegui gerar um resumo textual. Pode confirmar se precisa de mais algum detalhe?";
     }
 
     await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => { });
