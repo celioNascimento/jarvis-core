@@ -2,7 +2,7 @@
 // app/api/reminders/fire/route.ts
 // Motor V8.15.0 — Disparo de Lembretes Híbridos com Segurança QStash (Schema Jarvis)
 // ============================================================
-
+export const runtime = 'edge';
 import { NextRequest, NextResponse } from 'next/server';
 import { Receiver } from '@upstash/qstash';
 import { supabase } from '@/lib/jarvis'; 
