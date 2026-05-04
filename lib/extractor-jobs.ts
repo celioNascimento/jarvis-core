@@ -311,17 +311,30 @@ export async function extractPreferencia(userId: string, userMessage: string): P
 }
 
 // ============================================================
-// ATUALIZA L3 — users.current_context
+// ATUALIZA L3 — users.current_context (Versão Polida V8.40)
 // ============================================================
 
 export async function updateL3(userId: string): Promise<void> {
   try {
+    // ── A GUILHOTINA DO TEMPO ──
+    // Gera a data de hoje no formato YYYY-MM-DD para o fuso correto
+    const today = new Intl.DateTimeFormat('en-CA', { 
+      timeZone: 'America/Sao_Paulo' 
+    }).format(new Date());
+
     const [profRes, kidsRes, projRes, evRes, userRes] = await Promise.all([
       supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle(),
       supabase.from('children').select('name, birth_date, life_phase, gender').eq('parent_id', userId),
       supabase.from('projects').select('name, description, status').eq('user_id', userId).limit(10),
-      supabase.from('events').select('title, event_date, emotional_weight')
-        .eq('user_id', userId).order('event_date').limit(10),
+      
+      // ── FILTRO DE EVENTOS ATIVOS ──
+      supabase.from('events')
+        .select('title, start_at, emotional_weight')
+        .eq('user_id', userId)
+        .gte('start_at', today) // Ignora o passado
+        .order('start_at', { ascending: true })
+        .limit(10),
+        
       supabase.from('users').select('current_context').eq('id', userId).single(),
     ]);
 
@@ -333,6 +346,7 @@ export async function updateL3(userId: string): Promise<void> {
 
     const patches: Record<string, string> = {};
 
+    // Mapeamento de Perfil
     if (p?.full_name) {
       patches['Nome'] = p.preferred_name
         ? `${p.full_name} (prefere: ${p.preferred_name})`
@@ -341,23 +355,13 @@ export async function updateL3(userId: string): Promise<void> {
     if (p?.gender) patches['Gênero'] = p.gender;
     if (p?.birth_date) patches['Nascimento'] = p.birth_date;
     if (p?.city) patches['Mora em'] = `${p.city}${p.state ? `, ${p.state}` : ''}`;
-    if (p?.birth_city) patches['Nasceu em'] = `${p.birth_city}${p.birth_state ? `, ${p.birth_state}` : ''}`;
     if (p?.phone) patches['Telefone'] = p.phone;
     if (p?.whatsapp) patches['WhatsApp'] = p.whatsapp;
     if (p?.spouse_name) patches['Cônjuge'] = `${p.spouse_name}${p.spouse_birthday ? ` (aniv: ${p.spouse_birthday})` : ''}`;
     if (p?.father_name) patches['Pai'] = p.father_name;
     if (p?.mother_name) patches['Mãe'] = p.mother_name;
-    if (p?.siblings_count !== null && p?.siblings_count !== undefined) {
-      patches['Irmãos'] = String(p.siblings_count);
-    }
     if (p?.profession) patches['Formação'] = p.profession;
-    if (p?.current_job) patches['Cargo'] = [
-      p.current_job,
-      p.company ? `@ ${p.company}` : null,
-      p.job_start_date ? `(início: ${p.job_start_date})` : null,
-    ].filter(Boolean).join(' ');
-    if (p?.education_level) patches['Escolaridade'] = p.education_level;
-    if (p?.schools?.length) patches['Escolas'] = p.schools.join(', ');
+    if (p?.current_job) patches['Cargo'] = `${p.current_job}${p.company ? ` @ ${p.company}` : ''}`;
     if (p?.faith_profile && p.faith_profile !== 'unknown') patches['Fé'] = p.faith_profile;
 
     if (kids.length > 0) {
@@ -365,10 +369,11 @@ export async function updateL3(userId: string): Promise<void> {
         const age = k.birth_date
           ? new Date().getFullYear() - new Date(k.birth_date).getFullYear()
           : null;
-        return `${k.name}${age ? ` (${age} anos)` : ''}${k.gender ? ` [${k.gender}]` : ''}`;
+        return `${k.name}${age !== null ? ` (${age} anos)` : ''}`;
       }).join(', ');
     }
 
+    // Aplica Patches no Contexto Principal
     const changed: string[] = [];
     for (const [key, val] of Object.entries(patches)) {
       const rx = new RegExp(`- ${key}: (.*)`, 'i');
@@ -380,41 +385,36 @@ export async function updateL3(userId: string): Promise<void> {
       changed.push(key);
     }
 
+    // Seção de Projetos
     if (proj.length > 0) {
       const block = proj.map((r: any) => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
       const section = `## PROJETOS\n${block}`;
       const existProj = /## PROJETOS[\s\S]*?(?=\n##|$)/i.exec(ctx)?.[0] || '';
       if (existProj !== section) {
-        ctx = existProj
-          ? ctx.replace(/## PROJETOS[\s\S]*?(?=\n##|$)/i, section)
-          : `${ctx}\n\n${section}`;
+        ctx = existProj ? ctx.replace(/## PROJETOS[\s\S]*?(?=\n##|$)/i, section) : `${ctx}\n\n${section}`;
         changed.push('Projetos');
       }
     }
 
+    // Seção de Datas Importantes (Apenas as que não passaram)
     const highEvs = evs.filter((e: any) => (e.emotional_weight || 0) >= 0.7);
     if (highEvs.length > 0) {
-      const block = highEvs.map((e: any) => `- ${e.title}: ${e.event_date}`).join('\n');
+      const block = highEvs.map((e: any) => `- ${e.title}: ${e.start_at}`).join('\n');
       const section = `## DATAS IMPORTANTES\n${block}`;
       const existDatas = /## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i.exec(ctx)?.[0] || '';
       if (existDatas !== section) {
-        ctx = existDatas
-          ? ctx.replace(/## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i, section)
-          : `${ctx}\n\n${section}`;
+        ctx = existDatas ? ctx.replace(/## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i, section) : `${ctx}\n\n${section}`;
         changed.push('Datas');
       }
     }
 
-    if (changed.length === 0) {
-      console.log('[Extrator/L3] Sem mudanças — update ignorado');
-      return;
+    if (changed.length > 0) {
+      await supabase.from('users').update({ current_context: ctx.trim() }).eq('id', userId);
+      console.log('[Extrator/L3] Memória atualizada:', changed.join(', '));
     }
-
-    const { error } = await supabase.from('users')
-      .update({ current_context: ctx.trim() }).eq('id', userId);
-    if (error) console.error('[Extrator/L3] Erro:', error);
-    else console.log('[Extrator/L3] Mudanças:', changed.join(', '));
-  } catch (e) { console.error('[Extrator/L3] Erro:', e); }
+  } catch (e) {
+    console.error('[Extrator/L3] Erro crítico:', e);
+  }
 }
 
 // ============================================================
