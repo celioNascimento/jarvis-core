@@ -822,16 +822,9 @@ export async function extractShopping(userId: string, userMessage: string, aiRep
     Se não identificar nenhum item claro, retorne {"items": []}.`;
 
     const aiResponse = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.1);
-<<<<<<< HEAD
-
-    // ── AQUI ESTÁ A CORREÇÃO: Limpador de Markdown ──
-    const cleanJson = aiResponse.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
-    const data = JSON.parse(cleanJson);
-=======
     
-    // ── CORREÇÃO: Utilizando o seu helper nativo da arquitetura ──
+    // ── CORREÇÃO: Utilizando o helper nativo da arquitetura ──
     const data = safeParseJSON(aiResponse);
->>>>>>> 4f419716da6d93511bdd62d5f6a5d47f22412c9f
 
     if (!data || !data.items || data.items.length === 0) {
       console.log('[Extrator/Shopping] Nenhum item detectado.');
