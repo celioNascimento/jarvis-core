@@ -171,14 +171,28 @@ export async function executeTool(
     case 'excluir_email':
       try { return await trashGoogleEmail(p.messageId); } catch (err: any) { return `Erro ao excluir: ${err.message}`; }
 
-    // ===================== MOTOR DE LEMBRETES (QSTASH) =====================
+    
+        // ===================== MOTOR DE LEMBRETES (QSTASH) =====================
     case 'create_reminder': {
       try {
         const title = p.title || p.message;
-        const scheduled_time = p.scheduled_time
-          || (p.delay_minutes
+        
+        // ─── BLINDAGEM DE FUSO HORÁRIO (UTC-3 / Brasil) ───
+        let scheduled_time = p.scheduled_time;
+        
+        if (scheduled_time) {
+          // Se a string veio limpa, sem offset (não termina em Z nem tem + ou - no final)
+          if (!/(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time)) {
+             scheduled_time += '-03:00'; // Força o fuso brasileiro
+          }
+          // Converte para o padrão Universal (UTC) exigido pelo Banco e pelo QStash
+          scheduled_time = new Date(scheduled_time).toISOString();
+        } else {
+          // Fallback para atraso relativo (Date.now() já é universal por natureza)
+          scheduled_time = p.delay_minutes
               ? new Date(Date.now() + p.delay_minutes * 60000).toISOString()
-              : new Date(Date.now() + 300000).toISOString());
+              : new Date(Date.now() + 300000).toISOString(); // Padrão: 5 min
+        }
 
         const { data: reminder, error } = await supabase
           .schema('jarvis')
@@ -221,38 +235,6 @@ export async function executeTool(
       } catch (err: any) { return `Erro ao criar lembrete: ${err.message}`; }
     }
 
-    case 'cancel_reminder': {
-      try {
-        const rid = p.reminder_id || p.reminderId;
-
-        const { data: rem } = await supabase
-          .schema('jarvis')
-          .from('reminders')
-          .select('qstash_message_id')
-          .eq('id', rid)
-          .maybeSingle();
-
-        if (rem?.qstash_message_id) {
-          await cancelReminderOnQStash(rem.qstash_message_id);
-        }
-
-        await supabase
-          .schema('jarvis')
-          .from('reminders')
-          .update({ status: 'cancelled' })
-          .eq('id', rid);
-
-        return 'Lembrete cancelado com sucesso.';
-      } catch (err: any) { return `Erro no cancelamento: ${err.message}`; }
-    }
-
-    case 'list_reminders': {
-      try {
-        const { data: rems } = await supabase.schema('jarvis').from('reminders').select('id, title, scheduled_time').eq('user_id', Number(numericUserIdStr)).eq('status', 'pending').order('scheduled_time', { ascending: true });
-        if (!rems?.length) return 'Você não tem lembretes pendentes.';
-        return rems.map(r => `• [ID ${r.id}] ${r.title} (${new Date(r.scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })})`).join('\n');
-      } catch (err: any) { return `Erro ao listar: ${err.message}`; }
-    }
 
     // ===================== EXPERTFROTAS (GESTÃO VEICULAR) =====================
     case 'registrar_abastecimento': {
