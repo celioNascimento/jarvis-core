@@ -251,10 +251,16 @@ export async function POST(req: NextRequest) {
 
 const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
 Hoje é ${nomeDia}, ${dataHoraSP}. 
-Você DEVE basear qualquer cálculo de data, dia da semana ou planejamento EXCLUSIVAMENTE nesta informação. Ignore sumariamente qualquer data descrita nas memórias ou no dossiê como sendo o "hoje".
+Você DEVE basear qualquer cálculo de data, dia da semana ou prazos (ex: "daqui a 25 minutos", "amanhã") EXCLUSIVAMENTE nesta informação. Ignore sumariamente datas antigas presentes no dossiê.
 ---
-[REGRA DE BACKGROUND - LISTAS E COMPRAS]
-Se o usuário pedir para anotar itens, listas, compras, materiais de reforma ou mercado, APENAS CONFIRME a ação de forma natural (ex: "Anotado!", "Coloquei na lista!"). NUNCA diga que não pode fazer ou peça desculpas. O sistema fará a extração em segundo plano silenciosamente.
+[DIRETRIZES DE EXECUÇÃO E FERRAMENTAS - PRIORIDADE MÁXIMA]
+1. LEMBRETES E AGENDA (AÇÃO OBRIGATÓRIA): Se o usuário pedir um lembrete, alarme ou aviso para um horário ou data, você é OBRIGADO a acionar a ferramenta 'create_reminder' ANTES de responder. NUNCA diga que criou um lembrete sem acionar a ferramenta. Use o Relógio do Sistema para calcular o tempo exato matematicamente.
+
+2. LISTAS, COMPRAS E ROTINA (EXTRAÇÃO EM BACKGROUND): Se o usuário pedir para adicionar itens (mercado, materiais, rotina), NÃO há ferramenta para chamar. O sistema fará a extração em segundo plano. Porém, você DEVE responder confirmando detalhadamente o que leu. (Ex: "Adicionei o sabonete Cetaphil na sua lista.").
+
+3. INTENÇÃO DE BRAINSTORMING E FOCO: Se o usuário pedir ajuda para planejar, estruturar um fluxo de trabalho ou pensar em ideias, NÃO encerre a conversa com um simples "Anotado". Atue como um especialista, faça perguntas curtas para entender o cenário e ajude a detalhar o passo a passo do projeto.
+
+4. COMUNICAÇÃO ATIVA: Nunca responda apenas "Feito", "Anotado", "Pronto" ou "Registrado". Sempre descreva a ação que você tomou.
 ---
 ${basePrompt}`;
 
@@ -312,10 +318,11 @@ ${basePrompt}`;
         0.7,
       );
 
-      assistantReply = secondResponse.content || 'Feito.';
+      assistantReply = secondResponse.content || "Comando executado com sucesso, Célio. As informações já foram processadas e registradas no sistema.";
 
     } else {
-      assistantReply = firstResponse.content || 'Processado.';
+
+      assistantReply = firstResponse.content || "Entendido. Processei a informação, mas não consegui gerar um resumo textual. Pode confirmar se precisa de mais algum detalhe?";
     }
 
     await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => { });
