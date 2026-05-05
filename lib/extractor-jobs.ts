@@ -149,10 +149,6 @@ export async function extractEvento(userId: string, userMessage: string): Promis
 }
 
 // ============================================================
-// EXTRATOR: AGENDA → agenda
-// ============================================================
-
-// ============================================================
 // EXTRATOR: AGENDA → agenda + notificações QStash
 // ============================================================
 
@@ -174,55 +170,79 @@ export async function extractAgenda(userId: string, userMessage: string): Promis
     const data = safeParseJSON(raw);
     if (!data) { console.error('[Extrator/agenda] JSON inválido:', raw.slice(0, 100)); return; }
 
-    // ── BUSCA O AUTH ID PARA O PUSH NOTIFICATION ──
     const { data: userData } = await supabase.from('users').select('auth_user_id').eq('id', userId).single();
     const authUserId = userData?.auth_user_id;
 
     for (const comp of (data.compromissos || [])) {
       if (!comp.descricao || !comp.data_hora) continue;
 
+      // ── Checa duplicata na tabela agenda (legada) ──
       const { data: ex } = await supabase.from('agenda').select('id')
         .eq('user_id', userId).eq('description', comp.descricao).eq('event_at', comp.data_hora).maybeSingle();
 
       if (!ex) {
-        // 1. Salva na tabela Agenda (para histórico/consultas do Jarvis)
+        // 1. Salva na tabela agenda (legada — mantida para compatibilidade)
         await supabase.from('agenda').insert({
-          user_id: userId, description: comp.descricao,
-          event_at: comp.data_hora, category: comp.categoria || 'Pessoal',
+          user_id: userId,
+          description: comp.descricao,
+          event_at: comp.data_hora,
+          category: comp.categoria || 'Pessoal',
         });
-        console.log('[Extrator/agenda] Salvo:', comp.descricao);
+        console.log('[Extrator/agenda] Salvo em agenda:', comp.descricao);
 
-        // 2. Cria a Notificação Ativa (Lembrete)
+        // 2. Salva em jarvis.events (fonte principal do calendário)
+        const startAt = new Date(comp.data_hora);
+        const endAt   = new Date(startAt.getTime() + 3600000); // +1h padrão
+
+        const { error: evError } = await supabase
+          .schema('jarvis')
+          .from('events')
+          .insert({
+            user_id:          Number(userId),
+            title:            comp.descricao,
+            start_at:         startAt.toISOString(),
+            end_at:           endAt.toISOString(),
+            all_day:          false,
+            category:         mapCategoriaToCategory(comp.categoria),
+            source:           'lev',
+            reminder_minutes: [comp.aviso_minutos ?? 30],
+          });
+
+        if (evError) {
+          console.error('[Extrator/agenda] Erro ao salvar em jarvis.events:', evError.message);
+        } else {
+          console.log('[Extrator/agenda] Salvo em jarvis.events:', comp.descricao);
+        }
+
+        // 3. Cria lembrete + agenda no QStash
         if (authUserId) {
-          const eventTime = new Date(comp.data_hora).getTime();
-          // Calcula o horário da notificação (ex: 30 min antes)
+          const eventTime   = startAt.getTime();
           const delayMinutes = comp.aviso_minutos !== undefined ? comp.aviso_minutos : 30;
-          const notifyTime = new Date(eventTime - (delayMinutes * 60000)).toISOString();
+          const notifyTime  = new Date(eventTime - delayMinutes * 60000).toISOString();
 
-          // Só agenda se o evento for no futuro
           if (new Date(notifyTime).getTime() > Date.now()) {
             const { data: reminder, error: remError } = await supabase.from('reminders').insert({
-              user_id: Number(userId),
-              title: `📅 ${comp.descricao}`, // Ícone para diferenciar na tela do celular
-              type: 'agenda',
+              user_id:        Number(userId),
+              title:          `📅 ${comp.descricao}`,
+              type:           'agenda',
               scheduled_time: notifyTime,
-              status: 'pending',
-              metadata: { auth_user_id: authUserId },
+              status:         'pending',
+              metadata:       { auth_user_id: authUserId },
             }).select('id').single();
 
             if (!remError && reminder) {
               const qstashId = await scheduleReminderOnQStash({
-                reminderId: String(reminder.id),
-                userId: userId,
-                authUserId: authUserId,
-                message: `📅 [Agenda] ${comp.descricao}`,
+                reminderId:    String(reminder.id),
+                userId:        userId,
+                authUserId:    authUserId,
+                message:       `📅 [Agenda] ${comp.descricao}`,
                 scheduledTime: notifyTime,
               });
 
               if (qstashId) {
                 await supabase.from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
               }
-              console.log(`[Extrator/agenda] Push configurado para ${delayMinutes}min antes do evento.`);
+              console.log(`[Extrator/agenda] Push configurado para ${delayMinutes}min antes.`);
             }
           }
         }
@@ -230,6 +250,7 @@ export async function extractAgenda(userId: string, userMessage: string): Promis
     }
   } catch (e) { console.error('[Extrator/agenda] Erro:', e); }
 }
+
 
 // ============================================================
 // EXTRATOR: ROTINA → user_profiles.personality_notes
@@ -896,4 +917,16 @@ export async function extractShoppingLinks(userId: string, userMessage: string):
   } catch (e) {
     console.error('[Extrator/Links] Erro:', e);
   }
+}
+// ── Helper: mapeia categoria PT → slug do banco ──
+function mapCategoriaToCategory(cat: string | null): string {
+  const map: Record<string, string> = {
+    'Saúde':    'health',
+    'Trabalho': 'work',
+    'Escola':   'school',
+    'Família':  'family',
+    'Pessoal':  'personal',
+    'Rotina':   'personal',
+  };
+  return map[cat ?? ''] ?? 'personal';
 }
