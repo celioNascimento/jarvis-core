@@ -139,54 +139,56 @@ export async function executeTool(
         if (error) throw error;
 
         return `Entendido, Célio. Diretriz aplicada com sucesso: "${p.content}". A partir de agora, seguirei essa regra em nossas interações.`;
-      } catch (err: any) { 
-        return `Erro técnico ao salvar diretriz: ${err.message}`; 
+      } catch (err: any) {
+        return `Erro técnico ao salvar diretriz: ${err.message}`;
       }
     }
 
     // ===================== AGENDA LEV + GOOGLE + OUTLOOK =====================
     case 'consultar_agenda': {
-  try {
-    const [levRes, googleRes, outlookRes] = await Promise.allSettled([
-      supabase
-        .schema('jarvis')
-        .rpc('get_calendar_context_for_jarvis', {
-          p_user_id: Number(numericUserIdStr),
-          p_days: p.dias || 7,
-        }),
-      getGoogleContext().catch(() => null),
-      getMicrosoftCalendarContext().catch(() => null),
-    ]);
+      try {
+        const [levRes, googleRes, outlookRes] = await Promise.allSettled([
+          supabase
+            .schema('jarvis')
+            .rpc('get_calendar_context_for_jarvis', {
+              p_user_id: Number(numericUserIdStr),
+              p_days: p.dias || 7,
+            }),
+          getGoogleContext().catch(() => null),
+          getMicrosoftCalendarContext().catch(() => null),
+        ]);
 
-    const lev = levRes.status === 'fulfilled' && levRes.value.data
-      ? levRes.value.data
-      : 'Nenhum evento encontrado na Agenda Lev.';
+        const lev = levRes.status === 'fulfilled' && levRes.value.data
+          ? levRes.value.data
+          : 'Nenhum evento encontrado na Agenda Lev.';
 
-    const google = googleRes.status === 'fulfilled' && googleRes.value
-      ? googleRes.value
-      : null;
+        const google = googleRes.status === 'fulfilled' && googleRes.value
+          ? googleRes.value
+          : null;
 
-    const outlook = outlookRes.status === 'fulfilled' && outlookRes.value
-      ? outlookRes.value
-      : null;
+        const outlook = outlookRes.status === 'fulfilled' && outlookRes.value
+          ? outlookRes.value
+          : null;
 
-    let result = `[AGENDA LEV - FONTE PRINCIPAL]\n${lev}`;
-    if (google) result += `\n\n[GOOGLE CALENDAR]\n${google}`;
-    if (outlook) result += `\n\n[OUTLOOK]\n${outlook}`;
+        let result = `[AGENDA LEV - FONTE PRINCIPAL]\n${lev}`;
+        if (google) result += `\n\n[GOOGLE CALENDAR]\n${google}`;
+        if (outlook) result += `\n\n[OUTLOOK]\n${outlook}`;
 
-    return result;
-  } catch (err) {
-    return 'Erro ao consultar agenda.';
-  }
+        return result;
+      } catch (err) {
+        return 'Erro ao consultar agenda.';
+      }
     }
+
+
     case 'salvar_evento': {
       try {
         const anoAtual = new Date().getFullYear();
         let rawDate = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
 
-        // ── CORREÇÃO DE ANO ──
+        // ── CORREÇÃO DE ANO (Garante 2026 e evita datas de 2024) ──
         const anoEvento = parseInt(rawDate.substring(0, 4));
-        if (anoEvento > 0 && anoEvento < anoAtual) {
+        if (anoEvento > 0 && (anoEvento < anoAtual || isNaN(anoEvento))) {
           rawDate = String(anoAtual) + rawDate.substring(4);
         }
 
@@ -196,10 +198,10 @@ export async function executeTool(
 
         const startDate = new Date(withOffset);
         if (isNaN(startDate.getTime())) {
-          return `Erro: data inválida — "${p.event_date}". Mande a data completa.`;
+          return `Erro: data inválida — "${p.event_date}". Por favor, informe dia e hora.`;
         }
 
-        // Definimos o fim como 1h após o início para checagem de conflito
+        // Janela de 1 hora para detecção de conflito
         const endDate = new Date(startDate.getTime() + 3600000);
         const startISO = startDate.toISOString();
         const endISO = endDate.toISOString();
@@ -215,84 +217,82 @@ export async function executeTool(
             .gt('end_at', startISO);
 
           if (conflitos && conflitos.length > 0) {
-            return `[ALERTA DE CONFLITO] Célio, notei que você já tem "${conflitos[0].title}" nesse horário. Deseja que eu agende mesmo assim (diga "forçar") ou prefere outro horário?`;
+            const horaConflito = new Date(conflitos[0].start_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            return `[ALERTA DE CONFLITO] Célio, notei que às ${horaConflito} você já tem "${conflitos[0].title}". Deseja agendar mesmo assim? (Diga "pode forçar" para ignorar).`;
           }
         }
 
-        // ── PERSISTÊNCIA ──
+        // ── PERSISTÊNCIA NO BANCO ──
         const { error } = await supabase
           .schema('jarvis')
           .from('events')
           .insert({
-            user_id:          Number(numericUserIdStr),
-            title:            p.title || p.summary,
-            start_at:         startISO,
-            end_at:           endISO,
-            all_day:          false,
-            category:         p.category || 'personal',
-            source:           'lev',
+            user_id: Number(numericUserIdStr),
+            title: p.title || p.summary,
+            start_at: startISO,
+            end_at: endISO,
+            all_day: false,
+            category: p.category || 'personal',
+            source: 'lev',
             reminder_minutes: [p.reminderMinutes ?? 30],
-            notes:            p.notes || null,
+            notes: p.notes || null,
           });
 
         if (error) throw error;
 
-        return `Evento "${p.title || p.summary}" salvo para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}. Radar de conflitos: Limpo.`;
+        return `Evento "${p.title || p.summary}" salvo com sucesso para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}. Radar de conflitos: Limpo.`;
       } catch (err: any) {
         return `Erro ao salvar evento: ${err.message}`;
       }
     }
-      
-  
 
+    case 'criar_evento_agenda': {
+      try {
+        return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
+      } catch (err: any) {
+        return `Erro no Google: ${err.message}`;
+      }
+    }
 
-case 'criar_evento_agenda': {
-  try {
-    return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
-  } catch (err: any) {
-    return `Erro no Google: ${err.message}`;
-  }
-}
-  
     case 'listar_emails_recentes':
       try { return await getRecentEmails(p.filtro, 5, true); } catch (err: any) { return `Erro no Gmail: ${err.message}`; }
 
     case 'excluir_email':
       try { return await trashGoogleEmail(p.messageId); } catch (err: any) { return `Erro ao excluir: ${err.message}`; }
 
-    
-        // ===================== MOTOR DE LEMBRETES (QSTASH) =====================
+
+    // ===================== MOTOR DE LEMBRETES (QSTASH) =====================
     case 'create_reminder': {
       try {
         const title = p.title || p.message;
-        
+
         // ─── BLINDAGEM DE FUSO HORÁRIO (UTC-3 / Brasil) ───
         let scheduled_time = p.scheduled_time;
-        
+
         if (scheduled_time) {
           // Se a string veio limpa, sem offset (não termina em Z nem tem + ou - no final)
           if (!/(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time)) {
-             scheduled_time += '-03:00'; // Força o fuso brasileiro
+            scheduled_time += '-03:00'; // Força o fuso brasileiro
           }
           // Converte para o padrão Universal (UTC) exigido pelo Banco e pelo QStash
           scheduled_time = new Date(scheduled_time).toISOString();
         } else {
           // Fallback para atraso relativo (Date.now() já é universal por natureza)
           scheduled_time = p.delay_minutes
-              ? new Date(Date.now() + p.delay_minutes * 60000).toISOString()
-              : new Date(Date.now() + 300000).toISOString(); // Padrão: 5 min
+            ? new Date(Date.now() + p.delay_minutes * 60000).toISOString()
+            : new Date(Date.now() + 300000).toISOString(); // Padrão: 5 min
         }
 
         const { data: reminder, error } = await supabase
           .schema('jarvis')
           .from('reminders')
           .insert({
-            user_id:        Number(numericUserIdStr),
+            user_id: Number(numericUserIdStr),
             title,
-            type:           p.type || 'temporary',
+            type: p.type || 'temporary',
             scheduled_time,
-            status:         'pending',
-            metadata:       { auth_user_id: authUserId },
+            status: 'pending',
+            metadata: { auth_user_id: authUserId },
           })
           .select('id')
           .single();
@@ -300,10 +300,10 @@ case 'criar_evento_agenda': {
         if (error) throw error;
 
         const qstashId = await scheduleReminderOnQStash({
-          reminderId:    String(reminder.id),
-          userId:        numericUserIdStr,
+          reminderId: String(reminder.id),
+          userId: numericUserIdStr,
           authUserId,
-          message:       title,
+          message: title,
           scheduledTime: scheduled_time,
         });
 
@@ -317,33 +317,33 @@ case 'criar_evento_agenda': {
 
         const dtFormatted = new Date(scheduled_time).toLocaleString('pt-BR', {
           timeZone: 'America/Sao_Paulo',
-          hour:     '2-digit',
-          minute:   '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
         });
         return `Lembrete agendado: "${title}" às ${dtFormatted}.`;
       } catch (err: any) { return `Erro ao criar lembrete: ${err.message}`; }
     }
 
     case 'consultar_lembretes': {
-  try {
-    const { data: reminders } = await supabase
-      .schema('jarvis')
-      .from('reminders')
-      .select('title, scheduled_time, status')
-      .eq('user_id', Number(numericUserIdStr))
-      .eq('status', 'pending')
-      .gte('scheduled_time', new Date().toISOString())
-      .order('scheduled_time', { ascending: true });
+      try {
+        const { data: reminders } = await supabase
+          .schema('jarvis')
+          .from('reminders')
+          .select('title, scheduled_time, status')
+          .eq('user_id', Number(numericUserIdStr))
+          .eq('status', 'pending')
+          .gte('scheduled_time', new Date().toISOString())
+          .order('scheduled_time', { ascending: true });
 
-    if (!reminders?.length) return "Você não tem lembretes pendentes para o futuro.";
-    
-    return reminders.map(r => {
-      const dt = new Date(r.scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-      return `- ${r.title} (${dt})`;
-    }).join('\n');
-  } catch (err) { return "Erro ao ler tabela de lembretes."; }
+        if (!reminders?.length) return "Você não tem lembretes pendentes para o futuro.";
+
+        return reminders.map(r => {
+          const dt = new Date(r.scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+          return `- ${r.title} (${dt})`;
+        }).join('\n');
+      } catch (err) { return "Erro ao ler tabela de lembretes."; }
     }
-      
+
 
     // ===================== EXPERTFROTAS (GESTÃO VEICULAR) =====================
     case 'registrar_abastecimento': {
