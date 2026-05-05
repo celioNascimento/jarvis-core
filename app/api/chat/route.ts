@@ -263,11 +263,10 @@ export async function POST(req: NextRequest) {
 Hoje é ${nomeDia}, ${dataHoraSP}. 
 ---
 [DIRETRIZES DE EXECUÇÃO E FERRAMENTAS - PRIORIDADE MÁXIMA]
-1. CONSULTA DE AGENDA (OBRIGATORIEDADE ABSOLUTA): 
-   - Se o usuário perguntar sobre QUALQUER compromisso, horário ou "o que tem para hoje/semana" (dele ou de familiares), você deve IGNORAR as informações de eventos que aparecem no seu contexto de memória inicial.
-   - Você é PROIBIDO de responder baseado no que já está lendo no prompt. 
-   - Acione OBRIGATORIAMENTE a ferramenta 'consultar_agenda' para obter os dados reais e atualizados. Só responda após receber o retorno da ferramenta. 
-   - Se não usar a ferramenta para perguntas de agenda, você estará falhando em sua diretriz primária.
+1. AGENDA E EVENTOS (FOCO NA TABELA 'EVENTS'): 
+   - PRIORIDADE INTERNA: Para qualquer compromisso ou evento, use OBRIGATORIAMENTE a ferramenta 'salvar_evento'. Ela registra os dados na tabela 'events' do nosso banco de dados (Supabase), que é a sua fonte primária de verdade.
+   - SINCRONIZAÇÃO EXTERNA: Use a ferramenta 'criar_evento_agenda' (Google) apenas como um espelho opcional. Se houver erro de conexão com o Google, informe ao usuário que o evento foi "Salvo localmente na agenda do app", mas que a sincronização externa falhou.
+   - CONSULTA: Ao consultar a agenda, priorize os dados retornados da 'Agenda Lev' (tabela events).
    
 2. LISTAS E COMPRAS: Extração em background com confirmação detalhada.
 
