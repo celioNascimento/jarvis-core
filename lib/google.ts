@@ -131,52 +131,101 @@ export async function createGoogleEvent(
   }
 }
 
-
-
-// --- 6. APAGAR EVENTO NO CALENDÁRIO ---
-export async function deleteGoogleEvent(searchTerm: string) {
+// --- 6. ATUALIZAR EVENTO NO CALENDÁRIO ---
+export async function updateGoogleEvent(
+  searchTerm: string,
+  newSummary: string,
+  newStartTime: string,
+  reminderMinutes: number = 30
+): Promise<string> {
   try {
     const token = await getGoogleAccessToken();
     if (!token) return "Erro de token.";
-    
+
     const timeMin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${timeMin}&maxResults=1&singleEvents=true&orderBy=startTime`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
+    const calRes = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${timeMin}&maxResults=1&singleEvents=true&orderBy=startTime`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
     const cal = await calRes.json();
 
     if (!cal.items?.length) return `Não achei "${searchTerm}".`;
-    
-    const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${cal.items[0].id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` }
-    });
+
+    const eventId  = cal.items[0].id;
+    const startIso = newStartTime.trim().replace(' ', 'T').substring(0, 19) + '-03:00';
+
+    const event = {
+      summary: newSummary,
+      start: { dateTime: startIso, timeZone: 'America/Sao_Paulo' },
+      end:   { dateTime: new Date(new Date(startIso).getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
+      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
+    };
+
+    const res = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(event)
+      }
+    );
+
+    return res.ok ? `Corrigido: ${newSummary}` : "Falha API Google.";
+  } catch (err) {
+    console.error('[Google] Erro ao atualizar evento:', err);
+    return "Erro interno ao atualizar.";
+  }
+}
+
+// --- 7. APAGAR EVENTO NO CALENDÁRIO ---
+export async function deleteGoogleEvent(searchTerm: string): Promise<string> {
+  try {
+    const token = await getGoogleAccessToken();
+    if (!token) return "Erro de token.";
+
+    const timeMin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const calRes = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${timeMin}&maxResults=1&singleEvents=true&orderBy=startTime`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const cal = await calRes.json();
+
+    if (!cal.items?.length) return `Não achei "${searchTerm}".`;
+
+    const res = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/primary/events/${cal.items[0].id}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+    );
 
     return res.ok ? `Removido: "${searchTerm}".` : "Falha ao apagar.";
   } catch (err) {
+    console.error('[Google] Erro ao apagar evento:', err);
     return "Erro interno ao deletar.";
   }
 }
 
-// --- 7. MOVER EMAIL PARA LIXEIRA (GMAIL) ---
-export async function trashGoogleEmail(messageId: string) {
+// --- 8. MOVER EMAIL PARA LIXEIRA (GMAIL) ---
+export async function trashGoogleEmail(messageId: string): Promise<string> {
   try {
     const token = await getGoogleAccessToken();
     if (!token) return "Erro de token.";
 
-    const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/trash`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` }
-    });
+    const res = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/trash`,
+      { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+    );
 
-    return res.ok ? `Email enviado para a lixeira com sucesso.` : "Falha ao apagar email. Verifique as permissões.";
+    return res.ok
+      ? `Email enviado para a lixeira com sucesso.`
+      : "Falha ao apagar email. Verifique as permissões.";
   } catch (err) {
+    console.error('[Google] Erro ao mover email:', err);
     return "Erro interno ao apagar email.";
   }
 }
 
-// --- 8. SINCRONIZAÇÃO HÍBRIDA (GOOGLE -> LEV) ---
-export async function syncGoogleCalendarToLev(userId: bigint) {
+// --- 9. SINCRONIZAÇÃO HÍBRIDA (GOOGLE -> LEV) ---
+export async function syncGoogleCalendarToLev(userId: bigint): Promise<boolean> {
   try {
     const token = await getGoogleAccessToken();
     if (!token) {
@@ -184,49 +233,44 @@ export async function syncGoogleCalendarToLev(userId: bigint) {
       return false;
     }
 
-    const timeMin = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const timeMin = new Date(Date.now() - 7  * 24 * 60 * 60 * 1000).toISOString();
     const timeMax = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
     const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&orderBy=startTime`;
 
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
 
     if (!res.ok) throw new Error(`Google API falhou com status ${res.status}`);
 
-    const data = await res.json();
+    const data  = await res.json();
     const items = data.items || [];
 
     if (items.length === 0) return true;
 
     const payload = items.map((item: any) => {
       const isAllDay = !!item.start.date;
-      const startAt = item.start.dateTime || `${item.start.date}T00:00:00Z`;
-      const endAt = item.end.dateTime || `${item.end.date}T00:00:00Z`;
+      const startAt  = item.start.dateTime || `${item.start.date}T00:00:00Z`;
+      const endAt    = item.end.dateTime   || `${item.end.date}T00:00:00Z`;
 
       return {
-        user_id: userId,
-        title: item.summary || 'Evento Sem Título',
-        description: item.description || null,
-        location: item.location || null,
-        start_at: startAt,
-        end_at: endAt,
-        all_day: isAllDay,
-        source: 'google',
-        external_id: item.id,
-        category: 'personal',
-        synced_at: new Date().toISOString()
+        user_id:    userId,
+        title:      item.summary  || 'Evento Sem Título',
+        description:item.description || null,
+        location:   item.location || null,
+        start_at:   startAt,
+        end_at:     endAt,
+        all_day:    isAllDay,
+        source:     'google',
+        external_id:item.id,
+        category:   'personal',
+        synced_at:  new Date().toISOString(),
       };
     });
 
     const { error } = await supabase
       .schema('jarvis')
       .from('events')
-      .upsert(payload, { 
-        onConflict: 'user_id, source, external_id', 
-        ignoreDuplicates: false 
-      });
+      .upsert(payload, { onConflict: 'user_id, source, external_id', ignoreDuplicates: false });
 
     if (error) {
       console.error('[Sync] Erro no Upsert do Supabase:', error.message);
