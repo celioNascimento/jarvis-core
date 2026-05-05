@@ -216,16 +216,19 @@ export async function POST(req: NextRequest) {
     }
 
     // 5. Composição do Prompt
-  const coreTools = [
-  'salvar_evento', 
-  'consultar_agenda', // <--- ADICIONE ESTA LINHA
-  'create_reminder', 
-  'searchWeb', 
-  'buscar_memoria_longa', 
-  'adicionar_diretriz_dinamica'
-];
+    const coreTools = [
+      'salvar_evento', 
+      'consultar_agenda', 
+      'create_reminder', 
+      'searchWeb', 
+      'buscar_memoria_longa', 
+      'adicionar_diretriz_dinamica'
+    ];
+
+    const toolsHabilitadas = ALL_TOOLS.filter(t =>
       coreTools.includes(t.function.name) || activeTools.includes(t.function.name)
     );
+    
 
     const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
     const diasDaSemana = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
