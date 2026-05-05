@@ -168,12 +168,26 @@ export async function executeTool(
     }
   case 'salvar_evento': {
   try {
-    const startIso = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
-    const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(startIso)
-      ? startIso
-      : startIso + '-03:00';
+    const anoAtual = new Date().getFullYear();
+    let rawDate = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
+
+    // Safeguard: corrige ano errado igual ao extractAgenda
+    const anoEvento = parseInt(rawDate.substring(0, 4));
+    if (anoEvento > 0 && anoEvento < anoAtual) {
+      console.warn(`[salvar_evento] Ano inválido (${anoEvento}), corrigindo para ${anoAtual}`);
+      rawDate = String(anoAtual) + rawDate.substring(4);
+    }
+
+    const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(rawDate)
+      ? rawDate
+      : rawDate + '-03:00';
+
     const startDate = new Date(withOffset);
-    const endDate   = new Date(startDate.getTime() + 3600000);
+    if (isNaN(startDate.getTime())) {
+      return `Erro: data inválida recebida — "${p.event_date}". Tente novamente informando a data completa.`;
+    }
+
+    const endDate = new Date(startDate.getTime() + 3600000);
 
     const { error } = await supabase
       .schema('jarvis')
@@ -192,7 +206,7 @@ export async function executeTool(
 
     if (error) throw error;
 
-    return `Evento "${p.title || p.summary}" salvo na agenda.`;
+    return `Evento "${p.title || p.summary}" salvo na agenda para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.`;
   } catch (err: any) {
     return `Erro ao salvar evento: ${err.message}`;
   }
