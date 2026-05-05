@@ -151,8 +151,12 @@ export async function extractEvento(userId: string, userMessage: string): Promis
 // ============================================================
 // EXTRATOR: AGENDA → agenda + notificações QStash
 // ============================================================
-
+ 
 export async function extractAgenda(userId: string, userMessage: string): Promise<void> {
+  const anoAtual = new Date().getFullYear();
+  const mesAtual = String(new Date().getMonth() + 1).padStart(2, '0');
+  const diaAtual = String(new Date().getDate()).padStart(2, '0');
+
   const prompt = `Extraia compromissos com data E hora explícitas mencionados pelo USUÁRIO.
   Retorne APENAS JSON:
 
@@ -160,7 +164,15 @@ export async function extractAgenda(userId: string, userMessage: string): Promis
 
   {"compromissos": [{"descricao": null, "data_hora": null, "categoria": null, "aviso_minutos": 30}]}
 
-  data_hora: ISO 8601 fuso -03:00 (ex: "2026-03-10T10:00:00-03:00")
+  ANO ATUAL: ${anoAtual}. Data de hoje: ${anoAtual}-${mesAtual}-${diaAtual}.
+  data_hora: ISO 8601 fuso -03:00. SEMPRE use o ano ${anoAtual} a menos que o usuário mencione outro ano explicitamente.
+  
+  EXEMPLOS DE CONVERSÃO (ano atual = ${anoAtual}):
+  - "sexta às 9h" ou "dia 08/05 às 9h" → "${anoAtual}-05-08T09:00:00-03:00"
+  - "amanhã às 14h" → "${anoAtual}-${mesAtual}-${String(new Date().getDate() + 1).padStart(2, '0')}T14:00:00-03:00"
+  - "segunda que vem às 10h" → calcule a data correta em ${anoAtual}
+  - NUNCA gere datas em 2024 ou anos anteriores
+
   aviso_minutos: Tente inferir se o usuário pediu para ser avisado com antecedência. Se não mencionar, use 30.
   Categorias: Saúde|Trabalho|Escola|Família|Pessoal|Rotina
   Retorne compromissos: [] se nenhum mencionado`;
@@ -170,88 +182,116 @@ export async function extractAgenda(userId: string, userMessage: string): Promis
     const data = safeParseJSON(raw);
     if (!data) { console.error('[Extrator/agenda] JSON inválido:', raw.slice(0, 100)); return; }
 
-    const { data: userData } = await supabase.from('users').select('auth_user_id').eq('id', userId).single();
+    const { data: userData } = await supabase
+      .from('users')
+      .select('auth_user_id')
+      .eq('id', userId)
+      .single();
     const authUserId = userData?.auth_user_id;
 
     for (const comp of (data.compromissos || [])) {
       if (!comp.descricao || !comp.data_hora) continue;
 
-      // ── Checa duplicata na tabela agenda (legada) ──
-      const { data: ex } = await supabase.from('agenda').select('id')
-        .eq('user_id', userId).eq('description', comp.descricao).eq('event_at', comp.data_hora).maybeSingle();
+      // Garante que o ano não seja anterior ao atual
+      const dataHora = comp.data_hora as string;
+      const anoEvento = parseInt(dataHora.substring(0, 4));
+      if (anoEvento < anoAtual) {
+        console.warn(`[Extrator/agenda] Ano inválido (${anoEvento}), corrigindo para ${anoAtual}:`, comp.descricao);
+        comp.data_hora = String(anoAtual) + dataHora.substring(4);
+      }
 
-      if (!ex) {
-        // 1. Salva na tabela agenda (legada — mantida para compatibilidade)
-        await supabase.from('agenda').insert({
-          user_id: userId,
-          description: comp.descricao,
-          event_at: comp.data_hora,
-          category: comp.categoria || 'Pessoal',
+      const startAt = new Date(comp.data_hora);
+      if (isNaN(startAt.getTime())) {
+        console.error('[Extrator/agenda] data_hora inválida:', comp.data_hora);
+        continue;
+      }
+
+      const endAt = new Date(startAt.getTime() + 3600000);
+
+      // ── Checa duplicata em jarvis.events ──
+      const { data: exEvents } = await supabase
+        .schema('jarvis')
+        .from('events')
+        .select('id')
+        .eq('user_id', Number(userId))
+        .eq('title', comp.descricao)
+        .eq('start_at', startAt.toISOString())
+        .maybeSingle();
+
+      if (exEvents) {
+        console.log('[Extrator/agenda] Duplicata ignorada:', comp.descricao);
+        continue;
+      }
+
+      // 1. Salva em jarvis.events (fonte principal)
+      const { error: evError } = await supabase
+        .schema('jarvis')
+        .from('events')
+        .insert({
+          user_id:          Number(userId),
+          title:            comp.descricao,
+          start_at:         startAt.toISOString(),
+          end_at:           endAt.toISOString(),
+          all_day:          false,
+          category:         mapCategoriaToCategory(comp.categoria),
+          source:           'lev',
+          reminder_minutes: [comp.aviso_minutos ?? 30],
         });
-        console.log('[Extrator/agenda] Salvo em agenda:', comp.descricao);
 
-        // 2. Salva em jarvis.events (fonte principal do calendário)
-        const startAt = new Date(comp.data_hora);
-        const endAt   = new Date(startAt.getTime() + 3600000); // +1h padrão
+      if (evError) {
+        console.error('[Extrator/agenda] Erro ao salvar em jarvis.events:', evError.message);
+        continue;
+      }
 
-        const { error: evError } = await supabase
-          .schema('jarvis')
-          .from('events')
-          .insert({
-            user_id:          Number(userId),
-            title:            comp.descricao,
-            start_at:         startAt.toISOString(),
-            end_at:           endAt.toISOString(),
-            all_day:          false,
-            category:         mapCategoriaToCategory(comp.categoria),
-            source:           'lev',
-            reminder_minutes: [comp.aviso_minutos ?? 30],
-          });
+      console.log('[Extrator/agenda] Salvo em jarvis.events:', comp.descricao);
 
-        if (evError) {
-          console.error('[Extrator/agenda] Erro ao salvar em jarvis.events:', evError.message);
-        } else {
-          console.log('[Extrator/agenda] Salvo em jarvis.events:', comp.descricao);
-        }
+      // 2. Cria lembrete + QStash
+      if (authUserId) {
+        const delayMinutes = comp.aviso_minutos ?? 30;
+        const notifyTime  = new Date(startAt.getTime() - delayMinutes * 60000).toISOString();
 
-        // 3. Cria lembrete + agenda no QStash
-        if (authUserId) {
-          const eventTime   = startAt.getTime();
-          const delayMinutes = comp.aviso_minutos !== undefined ? comp.aviso_minutos : 30;
-          const notifyTime  = new Date(eventTime - delayMinutes * 60000).toISOString();
-
-          if (new Date(notifyTime).getTime() > Date.now()) {
-            const { data: reminder, error: remError } = await supabase.from('reminders').insert({
+        if (new Date(notifyTime).getTime() > Date.now()) {
+          const { data: reminder, error: remError } = await supabase
+            .schema('jarvis')
+            .from('reminders')
+            .insert({
               user_id:        Number(userId),
               title:          `📅 ${comp.descricao}`,
               type:           'agenda',
               scheduled_time: notifyTime,
               status:         'pending',
               metadata:       { auth_user_id: authUserId },
-            }).select('id').single();
+            })
+            .select('id')
+            .single();
 
-            if (!remError && reminder) {
-              const qstashId = await scheduleReminderOnQStash({
-                reminderId:    String(reminder.id),
-                userId:        userId,
-                authUserId:    authUserId,
-                message:       `📅 [Agenda] ${comp.descricao}`,
-                scheduledTime: notifyTime,
-              });
+          if (!remError && reminder) {
+            const qstashId = await scheduleReminderOnQStash({
+              reminderId:    String(reminder.id),
+              userId:        userId,
+              authUserId:    authUserId,
+              message:       `📅 [Agenda] ${comp.descricao}`,
+              scheduledTime: notifyTime,
+            });
 
-              if (qstashId) {
-                await supabase.from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
-              }
-              console.log(`[Extrator/agenda] Push configurado para ${delayMinutes}min antes.`);
+            if (qstashId) {
+              await supabase
+                .schema('jarvis')
+                .from('reminders')
+                .update({ qstash_message_id: qstashId })
+                .eq('id', reminder.id);
             }
+            console.log(`[Extrator/agenda] Push configurado para ${delayMinutes}min antes.`);
           }
         }
       }
     }
-  } catch (e) { console.error('[Extrator/agenda] Erro:', e); }
+  } catch (e) {
+    console.error('[Extrator/agenda] Erro:', e);
+  }
 }
-
-
+      
+            
 // ============================================================
 // EXTRATOR: ROTINA → user_profiles.personality_notes
 // ============================================================
