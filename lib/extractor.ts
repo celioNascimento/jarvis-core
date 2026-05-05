@@ -112,7 +112,13 @@ const EXTRACTION_MODULES = [
     promptDesc: 'anotação de itens de mercado, farmácia, materiais de reforma',
     match: (ctx: string[], msg: string) => ctx.includes('compras') || /comprar|anota|lista|falta|acabou|mercado|reforma|academia/i.test(msg),
     run: (userId: string, msg: string, aiReply: string, gaps: DetectedGap[]) => extractShopping(userId, msg, aiReply)
-  }
+  },
+  {
+    id: 'lembrete_urgente',
+    promptDesc: 'lembretes que o usuário diz ser urgentes, importantes ou que não pode esquecer de jeito nenhum',
+    match: (ctx: string[], msg: string) => /urgente|importante|não esquece|prioridade|pelo amor de deus|atenção/i.test(msg),
+    run: (userId: string, msg: string, aiReply: string, gaps: DetectedGap[]) => extractLembreteUrgente(userId, msg)
+  },
 ];
 
 // ============================================================
@@ -723,4 +729,25 @@ Tipos aceitos: spouse|child|parent|sibling|friend|other`;
       await upsertAlias(userId, a.apelido, a.tipo || 'other', null, a.nome_real || null);
     }
   } catch (e) { console.error('[Extrator/Alias] Erro:', e); }
+}
+
+async function extractLembreteUrgente(userId: string, userMessage: string): Promise<void> {
+  const prompt = `Analise se o usuário está pedindo um lembrete CRÍTICO.
+Mensagem: "${userMessage}"
+Retorne JSON: {"is_urgent": true, "title": "Título curto", "time": "ISO 8601 ou null"}`;
+
+  try {
+    const raw = await callAI(prompt, 200);
+    const data = safeParseJSON(raw);
+    if (data?.is_urgent) {
+      await supabase.from('reminders').insert({
+        user_id: Number(userId),
+        title: data.title,
+        status: 'pending',
+        type: 'temporary',
+        relevance_score: 1.0, // 👈 O segredo para ele "se importar"
+        scheduled_time: data.time || new Date(Date.now() + 60*60*1000).toISOString()
+      });
+    }
+  } catch (e) { console.error('[Extrator/Urgencia] Erro:', e); }
 }
