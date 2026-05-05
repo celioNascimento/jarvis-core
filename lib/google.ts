@@ -99,33 +99,82 @@ export async function getGoogleContext() {
 }
 
 // --- 5. CRIAR EVENTO NO CALENDÁRIO ---
-export async function createGoogleEvent(summary: string, startTime: string, reminderMinutes: number = 30) {
+export async function createGoogleEvent(
+  summary: string,
+  startTime: string,
+  reminderMinutes: number = 30,
+  userId?: bigint  // ← adicionar este parâmetro
+) {
+  const startIso = startTime.trim().replace(' ', 'T').substring(0, 19) + '-03:00';
+  const startDate = new Date(startIso);
+
+  // Sempre salva em jarvis.events primeiro
+  if (userId) {
+    const { error: dbError } = await supabase
+      .schema('jarvis')
+      .from('events')
+      .insert({
+        user_id: userId,
+        title: summary,
+        start_at: startDate.toISOString(),
+        end_at: new Date(startDate.getTime() + 3600000).toISOString(),
+        all_day: false,
+        category: 'personal',
+        source: 'lev',
+        reminder_minutes: [reminderMinutes],
+      });
+
+    if (dbError) {
+      console.error('[Calendar] Erro ao salvar em jarvis.events:', dbError.message);
+    } else {
+      console.log('[Calendar] Salvo em jarvis.events:', summary);
+    }
+  }
+
+  // Tenta Google Calendar — falha não impede o salvamento local
   try {
     const token = await getGoogleAccessToken();
-    if (!token) return "Erro: Token ausente.";
-    
-    const startIso = startTime.trim().replace(' ', 'T').substring(0, 19) + '-03:00';
-    const startDate = new Date(startIso);
-    
+    if (!token) return userId ? `Agendado localmente: ${summary}` : "Erro: Token ausente.";
+
     const event = {
       summary,
       start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
       end:   { dateTime: new Date(startDate.getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
       reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
     };
-    
+
     const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(event)
     });
 
-    return res.ok ? `Agendado: ${summary}` : "Falha API Google.";
+    if (res.ok) {
+      // Atualiza o registro com o external_id do Google
+      if (userId) {
+        const googleEvent = await res.json();
+        await supabase
+          .schema('jarvis')
+          .from('events')
+          .update({ 
+            source: 'google', 
+            external_id: googleEvent.id,
+            synced_at: new Date().toISOString()
+          })
+          .eq('user_id', userId)
+          .eq('title', summary)
+          .eq('start_at', startDate.toISOString());
+      }
+      return `Agendado: ${summary}`;
+    }
+
+    return userId ? `Agendado localmente: ${summary}` : "Falha API Google.";
+
   } catch (err) {
-    return "Erro interno ao agendar.";
+    console.error('[Calendar] Google falhou, mas evento já salvo localmente:', err);
+    return userId ? `Agendado localmente: ${summary}` : "Erro interno ao agendar.";
   }
 }
-
 // --- 6. ATUALIZAR EVENTO NO CALENDÁRIO ---
 export async function updateGoogleEvent(searchTerm: string, newSummary: string, newStartTime: string, reminderMinutes: number = 30) {
   try {
