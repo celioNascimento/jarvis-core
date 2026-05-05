@@ -146,11 +146,46 @@ export async function executeTool(
       } catch (err) { return 'Erro ao consolidar agendas.'; }
     }
 
-    case 'salvar_evento':
-    
-    case 'criar_evento_agenda':
-      try { return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30); } catch (err: any) { return `Erro no Google: ${err.message}`; }
+  case 'salvar_evento': {
+  try {
+    const startIso = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
+    const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(startIso)
+      ? startIso
+      : startIso + '-03:00';
+    const startDate = new Date(withOffset);
+    const endDate   = new Date(startDate.getTime() + 3600000);
 
+    const { error } = await supabase
+      .schema('jarvis')
+      .from('events')
+      .insert({
+        user_id:          Number(numericUserIdStr),
+        title:            p.title || p.summary,
+        start_at:         startDate.toISOString(),
+        end_at:           endDate.toISOString(),
+        all_day:          false,
+        category:         p.category || 'personal',
+        source:           'lev',
+        reminder_minutes: [p.reminderMinutes ?? 30],
+        notes:            p.notes || null,
+      });
+
+    if (error) throw error;
+
+    return `Evento "${p.title || p.summary}" salvo na agenda.`;
+  } catch (err: any) {
+    return `Erro ao salvar evento: ${err.message}`;
+  }
+}
+
+case 'criar_evento_agenda': {
+  try {
+    return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
+  } catch (err: any) {
+    return `Erro no Google: ${err.message}`;
+  }
+}
+  
     case 'listar_emails_recentes':
       try { return await getRecentEmails(p.filtro, 5, true); } catch (err: any) { return `Erro no Gmail: ${err.message}`; }
 
