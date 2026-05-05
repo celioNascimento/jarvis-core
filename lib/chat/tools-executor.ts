@@ -146,22 +146,8 @@ export async function executeTool(
       } catch (err) { return 'Erro ao consolidar agendas.'; }
     }
 
-    case 'salvar_evento': {
-      try {
-        const { data: event, error } = await supabase.schema('jarvis').from('events').insert({
-          user_id: Number(numericUserIdStr),
-          title: p.title,
-          start_at: p.event_date,
-          description: p.notes || null,
-          category: p.category || 'personal',
-          source: 'lev'
-        }).select().single();
-        if (error) throw error;
-        const dt = new Date(p.event_date).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-        return `Compromisso "${p.title}" agendado com sucesso para ${dt}.`;
-      } catch (err: any) { return `Erro ao salvar evento: ${err.message}`; }
-    }
-
+    case 'salvar_evento':
+    
     case 'criar_evento_agenda':
       try { return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30); } catch (err: any) { return `Erro no Google: ${err.message}`; }
 
