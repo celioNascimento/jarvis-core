@@ -149,30 +149,35 @@ export async function createGoogleEvent(
       body: JSON.stringify(event)
     });
 
-    if (res.ok) {
-      // Atualiza o registro com o external_id do Google
-      if (userId) {
-        const googleEvent = await res.json();
-        await supabase
-          .schema('jarvis')
-          .from('events')
-          .update({ 
-            source: 'google', 
-            external_id: googleEvent.id,
-            synced_at: new Date().toISOString()
-          })
-          .eq('user_id', userId)
-          .eq('title', summary)
-          .eq('start_at', startDate.toISOString());
-      }
-      return `Agendado: ${summary}`;
-    }
+export async function createGoogleEvent(
+  summary: string,
+  startTime: string,
+  reminderMinutes: number = 30
+): Promise<string> {
+  try {
+    const token = await getGoogleAccessToken();
+    if (!token) return "Erro: Token do Google ausente.";
 
-    return userId ? `Agendado localmente: ${summary}` : "Falha API Google.";
+    const startIso  = startTime.trim().replace(' ', 'T').substring(0, 19) + '-03:00';
+    const startDate = new Date(startIso);
 
+    const event = {
+      summary,
+      start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
+      end:   { dateTime: new Date(startDate.getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
+      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
+    };
+
+    const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(event)
+    });
+
+    return res.ok ? `Agendado no Google: ${summary}` : "Falha na API do Google.";
   } catch (err) {
-    console.error('[Calendar] Google falhou, mas evento já salvo localmente:', err);
-    return userId ? `Agendado localmente: ${summary}` : "Erro interno ao agendar.";
+    console.error('[Google] Erro ao criar evento:', err);
+    return "Erro interno ao agendar no Google.";
   }
 }
 // --- 6. ATUALIZAR EVENTO NO CALENDÁRIO ---
