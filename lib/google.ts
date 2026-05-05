@@ -97,59 +97,8 @@ export async function getGoogleContext() {
     return "Erro ao recuperar agenda.";
   }
 }
-}
 
 // --- 5. CRIAR EVENTO NO CALENDÁRIO ---
-export async function createGoogleEvent(
-  summary: string,
-  startTime: string,
-  reminderMinutes: number = 30,
-  userId?: bigint  // ← adicionar este parâmetro
-) {
-  const startIso = startTime.trim().replace(' ', 'T').substring(0, 19) + '-03:00';
-  const startDate = new Date(startIso);
-
-  // Sempre salva em jarvis.events primeiro
-  if (userId) {
-    const { error: dbError } = await supabase
-      .schema('jarvis')
-      .from('events')
-      .insert({
-        user_id: userId,
-        title: summary,
-        start_at: startDate.toISOString(),
-        end_at: new Date(startDate.getTime() + 3600000).toISOString(),
-        all_day: false,
-        category: 'personal',
-        source: 'lev',
-        reminder_minutes: [reminderMinutes],
-      });
-
-    if (dbError) {
-      console.error('[Calendar] Erro ao salvar em jarvis.events:', dbError.message);
-    } else {
-      console.log('[Calendar] Salvo em jarvis.events:', summary);
-    }
-  }
-
-  // Tenta Google Calendar — falha não impede o salvamento local
-  try {
-    const token = await getGoogleAccessToken();
-    if (!token) return userId ? `Agendado localmente: ${summary}` : "Erro: Token ausente.";
-
-    const event = {
-      summary,
-      start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
-      end:   { dateTime: new Date(startDate.getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
-      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
-    };
-
-    const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(event)
-    });
-
 export async function createGoogleEvent(
   summary: string,
   startTime: string,
@@ -181,43 +130,10 @@ export async function createGoogleEvent(
     return "Erro interno ao agendar no Google.";
   }
 }
-// --- 6. ATUALIZAR EVENTO NO CALENDÁRIO ---
-export async function updateGoogleEvent(searchTerm: string, newSummary: string, newStartTime: string, reminderMinutes: number = 30) {
-  try {
-    const token = await getGoogleAccessToken();
-    if (!token) return "Erro de token.";
-    
-    const timeMin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const calRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${timeMin}&maxResults=1&singleEvents=true&orderBy=startTime`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const cal = await calRes.json();
 
-    if (!cal.items?.length) return `Não achei "${searchTerm}".`;
-    
-    const eventId = cal.items[0].id;
-    const startIso = newStartTime.trim().replace(' ', 'T').substring(0, 19) + '-03:00';
-    
-    const event = {
-      summary: newSummary,
-      start: { dateTime: startIso, timeZone: 'America/Sao_Paulo' },
-      end:   { dateTime: new Date(new Date(startIso).getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
-      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
-    };
-    
-    const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(event)
-    });
 
-    return res.ok ? `Corrigido: ${newSummary}` : "Falha API Google.";
-  } catch (err) {
-    return "Erro interno ao atualizar.";
-  }
-}
 
-// --- 7. APAGAR EVENTO NO CALENDÁRIO ---
+// --- 6. APAGAR EVENTO NO CALENDÁRIO ---
 export async function deleteGoogleEvent(searchTerm: string) {
   try {
     const token = await getGoogleAccessToken();
@@ -242,7 +158,7 @@ export async function deleteGoogleEvent(searchTerm: string) {
   }
 }
 
-// --- 8. MOVER EMAIL PARA LIXEIRA (GMAIL) ---
+// --- 7. MOVER EMAIL PARA LIXEIRA (GMAIL) ---
 export async function trashGoogleEmail(messageId: string) {
   try {
     const token = await getGoogleAccessToken();
@@ -259,7 +175,7 @@ export async function trashGoogleEmail(messageId: string) {
   }
 }
 
-// --- 9. SINCRONIZAÇÃO HÍBRIDA (GOOGLE -> LEV) ---
+// --- 8. SINCRONIZAÇÃO HÍBRIDA (GOOGLE -> LEV) ---
 export async function syncGoogleCalendarToLev(userId: bigint) {
   try {
     const token = await getGoogleAccessToken();
