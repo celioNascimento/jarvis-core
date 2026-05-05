@@ -97,6 +97,7 @@ export async function getGoogleContext() {
     return "Erro ao recuperar agenda.";
   }
 }
+}
 
 // --- 5. CRIAR EVENTO NO CALENDÁRIO ---
 export async function createGoogleEvent(
