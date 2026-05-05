@@ -290,6 +290,26 @@ case 'criar_evento_agenda': {
       } catch (err: any) { return `Erro ao criar lembrete: ${err.message}`; }
     }
 
+    case 'consultar_lembretes': {
+  try {
+    const { data: reminders } = await supabase
+      .schema('jarvis')
+      .from('reminders')
+      .select('title, scheduled_time, status')
+      .eq('user_id', Number(numericUserIdStr))
+      .eq('status', 'pending')
+      .gte('scheduled_time', new Date().toISOString())
+      .order('scheduled_time', { ascending: true });
+
+    if (!reminders?.length) return "Você não tem lembretes pendentes para o futuro.";
+    
+    return reminders.map(r => {
+      const dt = new Date(r.scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+      return `- ${r.title} (${dt})`;
+    }).join('\n');
+  } catch (err) { return "Erro ao ler tabela de lembretes."; }
+    }
+      
 
     // ===================== EXPERTFROTAS (GESTÃO VEICULAR) =====================
     case 'registrar_abastecimento': {
