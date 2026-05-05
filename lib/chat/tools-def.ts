@@ -16,11 +16,13 @@ export const tools = [
       },
     },
   },
-  {
+    {
     type: 'function',
     function: {
       name: 'consultar_agenda',
-      description: 'Obtém eventos do Google Calendar e Outlook para os próximos dias',
+      description: 'Consulta a Agenda Mestra (Lev/Supabase) e sincroniza com Google/Outlook. ' +
+                   'ESTA É A ÚNICA FONTE PARA VER EVENTOS NA TABELA EVENTS DO APP. ' +
+                   'Use sempre que o usuário perguntar por compromissos, horários ou "o que tenho hoje".',
       parameters: {
         type: 'object',
         properties: {
@@ -29,6 +31,7 @@ export const tools = [
       },
     },
   },
+  
   {
     type: 'function',
     function: {
