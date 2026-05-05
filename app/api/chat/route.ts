@@ -259,8 +259,20 @@ export async function POST(req: NextRequest) {
       dynamicGuidelines: dynamicGuidelinesBlock,
     });
 
+const { data: urgentes } = await supabase
+  .schema('jarvis')
+  .from('reminders')
+  .select('title')
+  .eq('user_id', user.id)
+  .eq('status', 'pending')
+  .gte('relevance_score', 0.8) // Só o que é CRÍTICO
+  .lte('scheduled_time', new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString());
 
-    const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
+const alertaUrgencia = urgentes?.length 
+  ? `[FOCO TOTAL - LEMBRETES CRÍTICOS]: Você deve mencionar e priorizar estes itens: ${urgentes.map(u => u.title).join(', ')}`
+  : '';
+    
+const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
 Hoje é ${nomeDia}, ${dataHoraSP}. 
 ---
 [DIRETRIZES DE EXECUÇÃO E FERRAMENTAS - PRIORIDADE MÁXIMA]
@@ -269,6 +281,7 @@ Hoje é ${nomeDia}, ${dataHoraSP}.
    - SINCRONIZAÇÃO EXTERNA: Use a ferramenta 'criar_evento_agenda' (Google) apenas como um espelho opcional. Se houver erro de conexão com o Google, informe ao usuário que o evento foi "Salvo localmente na agenda do app", mas que a sincronização externa falhou.
    - CONSULTA: Ao consultar a agenda, priorize os dados retornados da 'Agenda Lev' (tabela events).
    - Para ler lembretes, ignore sua memória de longo prazo e use OBRIGATORIAMENTE a ferramenta 'consultar_lembretes'.
+   - Sempre que houver itens no bloco [FOCO TOTAL], aja como um mentor preocupado. Não apenas responda o usuário, mas relacione as respostas dele com esses compromissos críticos. Se ele estiver 'procrastinando' em ideias novas, lembre-o educadamente dos itens de alta relevância.
    
 2. LISTAS E COMPRAS: Extração em background com confirmação detalhada.
 
