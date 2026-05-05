@@ -258,47 +258,53 @@ export async function POST(req: NextRequest) {
       intent: 'personal',
       dynamicGuidelines: dynamicGuidelinesBlock,
     });
-// --- INJEÇÃO DE CONSCIÊNCIA (ALERTA DE LEMBRETES) ---
-    let alertaUrgencia = '';
-    try {
-      // Definimos a janela de 24h para o radar
-      const amanha = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+// --- INJEÇÃO DE CONSCIÊNCIA (ALERTA DE LEMBRETES CRÍTICOS) ---
+let alertaUrgencia = '';
+try {
+  // Janela de 24h ajustada para o fuso de Londrina
+  const janelaFutura = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-      const { data: urgentes, error: errorReminders } = await supabase
-        .schema('jarvis')
-        .from('reminders')
-        .select('title')
-        .eq('user_id', Number(user.id)) // Garante que o BigInt seja tratado
-        .eq('status', 'pending')
-        .gte('relevance_score', 0.8) // Filtra o que é importante
-        .lte('scheduled_time', amanha);
+  const { data: urgentes, error: errorReminders } = await supabase
+    .schema('jarvis')
+    .from('reminders')
+    .select('title, scheduled_time')
+    .eq('user_id', Number(user.id))
+    .eq('status', 'pending')
+    .gte('relevance_score', 0.8) // Filtra apenas o que é prioridade máxima
+    .lte('scheduled_time', janelaFutura)
+    .order('scheduled_time', { ascending: true });
 
-      if (!errorReminders && urgentes && urgentes.length > 0) {
-        alertaUrgencia = `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]: Célio tem lembretes CRÍTICOS para as próximas 24h: ${urgentes.map(u => u.title).join(', ')}. Como assistente preocupado, você deve integrar esses tópicos na conversa se houver qualquer brecha, garantindo que ele não esqueça.`;
-      }
-    } catch (err) {
-      console.error('[RadarReminders] Erro silencioso para não quebrar o chat:', err);
-    }
-    
+  if (!errorReminders && urgentes && urgentes.length > 0) {
+    alertaUrgencia = `
+[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]
+Célio, existem pendências CRÍTICAS que exigem sua atenção imediata:
+${urgentes.map(u => `- ${u.title}`).join('\n')}
+
+DIRETRIZ DE ZELADORIA: O usuário possui TDAH e pode se dispersar. Como assistente mentor, sua missão é impedir que ele ignore esses itens. Se ele iniciar novos assuntos irrelevantes, faça uma ponte elegante para garantir que essas prioridades estão sob controle. Não seja apenas informativo, seja proativo.`;
+  }
+} catch (err) {
+  console.error('[RadarReminders] Erro:', err);
+}
+
 const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
 Hoje é ${nomeDia}, ${dataHoraSP}. 
+${alertaUrgencia} 
+
 ---
 [DIRETRIZES DE EXECUÇÃO E FERRAMENTAS - PRIORIDADE MÁXIMA]
-1. AGENDA E EVENTOS (FOCO NA TABELA 'EVENTS'): 
-   - FONTE DE VERDADE: Para qualquer compromisso ou evento, use OBRIGATORIAMENTE a ferramenta 'salvar_evento'. Ela registra os dados na tabela 'events' (Supabase), nossa fonte primária.
-   - SINCRONIZAÇÃO EXTERNA: Use 'criar_evento_agenda' (Google) apenas como espelho. Se falhar, informe: "Salvo localmente na Agenda Lev, mas a sincronização Google falhou".
-   - CONSULTA: Priorize sempre os dados da 'Agenda Lev' (tabela events).
-   - LEMBRETES: Ignore sua memória L3/Dossiê para lembretes. Use OBRIGATORIAMENTE a ferramenta 'consultar_lembretes' para ver o que está pendente no banco.
-   - POSTURA DE MENTOR (ZELADORIA): Sempre que houver itens no bloco [ESTADO DE ALERTA], aja como um mentor preocupado. Não seja passivo. Relacione as respostas com esses compromissos críticos. Se houver procrastinação ou mudança de assunto, traga-o de volta para as prioridades com elegância.
-   
-2. LISTAS E COMPRAS: Extração em background. Confirme os itens adicionados com rigor técnico.
+1. AGENDA E LEMBRETES (RIGOR TÉCNICO): 
+   - FONTE DE VERDADE: Use OBRIGATORIAMENTE a ferramenta 'salvar_evento' para a tabela 'events' (Supabase). É nossa base primária.
+   - SINCRONIZAÇÃO: 'criar_evento_agenda' (Google) é apenas um espelho. Em caso de falha de token, reporte: "Salvo localmente na Agenda Lev, sincronização Google pendente".
+   - LEITURA OBRIGATÓRIA: Jamais confie na sua memória L3/Dossiê para compromissos. Sempre que perguntado, use as ferramentas 'consultar_agenda' e 'consultar_lembretes'.
+   - POSTURA DE MENTOR: Se houver conteúdo no bloco [ESTADO DE ALERTA], você tem permissão (e dever) de interromper fluxos de conversa menos importantes para manter o Célio no trilho das prioridades.
 
-3. BRAINSTORMING: Atue como especialista. Desafie ideias, faça perguntas e não seja apenas um repositório de anotações.
+2. LISTAS E COMPRAS (BACKGROUND): Extração silenciosa. Responda confirmando os itens exatos capturados (ex: "Entendido, adicionei [Item] para [Lugar]").
 
-4. COMUNICAÇÃO: Proibido responder apenas "Feito" ou "Anotado". Descreva brevemente o que foi realizado para garantir transparência.
+3. BRAINSTORMING E EXPERT FROTAS: Atue como especialista técnico. Desafie a viabilidade, faça perguntas curtas e estruturadas. Não aceite ordens vagas; ajude a detalhar o passo a passo.
+
+4. PROTOCOLO DE SAÍDA: Proibido responder apenas "Feito", "Pronto" ou "Anotado". Descreva a ação técnica realizada para manter o registro de consciência do sistema.
 ---
-${basePrompt}
-${alertaUrgencia}`; // <--- Injeção dinâmica de lembretes críticos
+${basePrompt}`;
 
 
     // 6. Primeira chamada ao LLM
