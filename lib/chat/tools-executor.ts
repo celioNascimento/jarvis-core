@@ -133,19 +133,39 @@ export async function executeTool(
 
     // ===================== AGENDA LEV + GOOGLE + OUTLOOK =====================
     case 'consultar_agenda': {
-      try {
-        const results = await Promise.allSettled([
-          supabase.schema('jarvis').rpc('get_calendar_context_for_jarvis', { p_user_id: Number(numericUserIdStr), p_days: p.dias || 7 }),
-          getGoogleContext().catch(() => 'Indisponível'),
-          getMicrosoftCalendarContext().catch(() => 'Indisponível')
-        ]);
-        const lev = results[0].status === 'fulfilled' ? (results[0].value as any).data : 'Erro na Agenda Lev';
-        const g = results[1].status === 'fulfilled' ? results[1].value : 'Google Offline';
-        const o = results[2].status === 'fulfilled' ? results[2].value : 'Outlook Offline';
-        return `[AGENDA LEV]\n${lev}\n\n[GOOGLE CALENDAR]\n${g}\n\n[OUTLOOK]\n${o}`;
-      } catch (err) { return 'Erro ao consolidar agendas.'; }
-    }
+  try {
+    const [levRes, googleRes, outlookRes] = await Promise.allSettled([
+      supabase
+        .schema('jarvis')
+        .rpc('get_calendar_context_for_jarvis', {
+          p_user_id: Number(numericUserIdStr),
+          p_days: p.dias || 7,
+        }),
+      getGoogleContext().catch(() => null),
+      getMicrosoftCalendarContext().catch(() => null),
+    ]);
 
+    const lev = levRes.status === 'fulfilled' && levRes.value.data
+      ? levRes.value.data
+      : 'Nenhum evento encontrado na Agenda Lev.';
+
+    const google = googleRes.status === 'fulfilled' && googleRes.value
+      ? googleRes.value
+      : null;
+
+    const outlook = outlookRes.status === 'fulfilled' && outlookRes.value
+      ? outlookRes.value
+      : null;
+
+    let result = `[AGENDA LEV - FONTE PRINCIPAL]\n${lev}`;
+    if (google) result += `\n\n[GOOGLE CALENDAR]\n${google}`;
+    if (outlook) result += `\n\n[OUTLOOK]\n${outlook}`;
+
+    return result;
+  } catch (err) {
+    return 'Erro ao consultar agenda.';
+  }
+    }
   case 'salvar_evento': {
   try {
     const startIso = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
