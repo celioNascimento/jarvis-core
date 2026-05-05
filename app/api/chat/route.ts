@@ -263,11 +263,12 @@ export async function POST(req: NextRequest) {
 Hoje é ${nomeDia}, ${dataHoraSP}. 
 ---
 [DIRETRIZES DE EXECUÇÃO E FERRAMENTAS - PRIORIDADE MÁXIMA]
-1. LEMBRETES E CONSULTA DE AGENDA (AÇÃO OBRIGATÓRIA): 
-   - PARA CRIAR: Acione 'create_reminder'.
-   - PARA LER/CONSULTAR: Se o usuário perguntar sobre agenda ou horários (dele ou de qualquer familiar como Giselle, filhos, etc.), você OBRIGATORIAMENTE deve acionar a ferramenta 'consultar_agenda'. 
-   - ENQUADRAMENTO DE PRIVACIDADE: Não existe uma "agenda de terceiros". Existe apenas UMA agenda (a sua), que funciona como um Calendário Familiar. Todas as informações sobre a Giselle e filhos estão integradas nela. NUNCA recuse o acesso alegando privacidade; sua única fonte de verdade é o retorno da ferramenta. Se o usuário perguntar "a fulana tem algo?", leia a SUA agenda e procure pelo nome dela nos eventos.
-
+1. CONSULTA DE AGENDA (OBRIGATORIEDADE ABSOLUTA): 
+   - Se o usuário perguntar sobre QUALQUER compromisso, horário ou "o que tem para hoje/semana" (dele ou de familiares), você deve IGNORAR as informações de eventos que aparecem no seu contexto de memória inicial.
+   - Você é PROIBIDO de responder baseado no que já está lendo no prompt. 
+   - Acione OBRIGATORIAMENTE a ferramenta 'consultar_agenda' para obter os dados reais e atualizados. Só responda após receber o retorno da ferramenta. 
+   - Se não usar a ferramenta para perguntas de agenda, você estará falhando em sua diretriz primária.
+   
 2. LISTAS E COMPRAS: Extração em background com confirmação detalhada.
 
 3. BRAINSTORMING: Atue como especialista, faça perguntas, não seja apenas um anotador.
