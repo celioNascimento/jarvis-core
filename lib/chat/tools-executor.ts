@@ -18,6 +18,19 @@ import {
   executeListarOrcamentos,
 } from '@/lib/finances/executor';
 
+async function detectarConflitos(userId: number, inicio: string, fim: string) {
+  const { data: conflitos } = await supabase
+    .schema('jarvis')
+    .from('events')
+    .select('title, start_at')
+    .eq('user_id', userId)
+    .lt('start_at', fim)
+    .gt('end_at', inicio);
+
+  return conflitos || [];
+}
+
+
 // ─── HELPERS DE INFRAESTRUTURA ──────────────────────────────────────────────
 
 function assertNumericUserId(id: string, context: string): void {
@@ -166,51 +179,72 @@ export async function executeTool(
     return 'Erro ao consultar agenda.';
   }
     }
-  case 'salvar_evento': {
-  try {
-    const anoAtual = new Date().getFullYear();
-    let rawDate = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
+    case 'salvar_evento': {
+      try {
+        const anoAtual = new Date().getFullYear();
+        let rawDate = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
 
-    // Safeguard: corrige ano errado igual ao extractAgenda
-    const anoEvento = parseInt(rawDate.substring(0, 4));
-    if (anoEvento > 0 && anoEvento < anoAtual) {
-      console.warn(`[salvar_evento] Ano inválido (${anoEvento}), corrigindo para ${anoAtual}`);
-      rawDate = String(anoAtual) + rawDate.substring(4);
+        // ── CORREÇÃO DE ANO ──
+        const anoEvento = parseInt(rawDate.substring(0, 4));
+        if (anoEvento > 0 && anoEvento < anoAtual) {
+          rawDate = String(anoAtual) + rawDate.substring(4);
+        }
+
+        const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(rawDate)
+          ? rawDate
+          : rawDate + '-03:00';
+
+        const startDate = new Date(withOffset);
+        if (isNaN(startDate.getTime())) {
+          return `Erro: data inválida — "${p.event_date}". Mande a data completa.`;
+        }
+
+        // Definimos o fim como 1h após o início para checagem de conflito
+        const endDate = new Date(startDate.getTime() + 3600000);
+        const startISO = startDate.toISOString();
+        const endISO = endDate.toISOString();
+
+        // ── RADAR DE CONFLITOS (AQUI ELE COMEÇA A SE IMPORTAR) ──
+        if (!p.force) {
+          const { data: conflitos } = await supabase
+            .schema('jarvis')
+            .from('events')
+            .select('title, start_at')
+            .eq('user_id', Number(numericUserIdStr))
+            .lt('start_at', endISO)
+            .gt('end_at', startISO);
+
+          if (conflitos && conflitos.length > 0) {
+            return `[ALERTA DE CONFLITO] Célio, notei que você já tem "${conflitos[0].title}" nesse horário. Deseja que eu agende mesmo assim (diga "forçar") ou prefere outro horário?`;
+          }
+        }
+
+        // ── PERSISTÊNCIA ──
+        const { error } = await supabase
+          .schema('jarvis')
+          .from('events')
+          .insert({
+            user_id:          Number(numericUserIdStr),
+            title:            p.title || p.summary,
+            start_at:         startISO,
+            end_at:           endISO,
+            all_day:          false,
+            category:         p.category || 'personal',
+            source:           'lev',
+            reminder_minutes: [p.reminderMinutes ?? 30],
+            notes:            p.notes || null,
+          });
+
+        if (error) throw error;
+
+        return `Evento "${p.title || p.summary}" salvo para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}. Radar de conflitos: Limpo.`;
+      } catch (err: any) {
+        return `Erro ao salvar evento: ${err.message}`;
+      }
     }
+      
+  
 
-    const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(rawDate)
-      ? rawDate
-      : rawDate + '-03:00';
-
-    const startDate = new Date(withOffset);
-    if (isNaN(startDate.getTime())) {
-      return `Erro: data inválida recebida — "${p.event_date}". Tente novamente informando a data completa.`;
-    }
-
-    const endDate = new Date(startDate.getTime() + 3600000);
-
-    const { error } = await supabase
-      .schema('jarvis')
-      .from('events')
-      .insert({
-        user_id:          Number(numericUserIdStr),
-        title:            p.title || p.summary,
-        start_at:         startDate.toISOString(),
-        end_at:           endDate.toISOString(),
-        all_day:          false,
-        category:         p.category || 'personal',
-        source:           'lev',
-        reminder_minutes: [p.reminderMinutes ?? 30],
-        notes:            p.notes || null,
-      });
-
-    if (error) throw error;
-
-    return `Evento "${p.title || p.summary}" salvo na agenda para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.`;
-  } catch (err: any) {
-    return `Erro ao salvar evento: ${err.message}`;
-  }
-}
 
 case 'criar_evento_agenda': {
   try {
