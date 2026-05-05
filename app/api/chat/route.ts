@@ -222,6 +222,7 @@ export async function POST(req: NextRequest) {
       'create_reminder', 
       'searchWeb', 
       'buscar_memoria_longa', 
+      'consultar_lembretes',
       'adicionar_diretriz_dinamica'
     ];
 
@@ -267,6 +268,7 @@ Hoje é ${nomeDia}, ${dataHoraSP}.
    - PRIORIDADE INTERNA: Para qualquer compromisso ou evento, use OBRIGATORIAMENTE a ferramenta 'salvar_evento'. Ela registra os dados na tabela 'events' do nosso banco de dados (Supabase), que é a sua fonte primária de verdade.
    - SINCRONIZAÇÃO EXTERNA: Use a ferramenta 'criar_evento_agenda' (Google) apenas como um espelho opcional. Se houver erro de conexão com o Google, informe ao usuário que o evento foi "Salvo localmente na agenda do app", mas que a sincronização externa falhou.
    - CONSULTA: Ao consultar a agenda, priorize os dados retornados da 'Agenda Lev' (tabela events).
+   - Para ler lembretes, ignore sua memória de longo prazo e use OBRIGATORIAMENTE a ferramenta 'consultar_lembretes'.
    
 2. LISTAS E COMPRAS: Extração em background com confirmação detalhada.
 
