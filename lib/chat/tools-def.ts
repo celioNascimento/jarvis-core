@@ -44,25 +44,27 @@ export const tools = [
   },
 
   // ── AGENDA PRÓPRIA (jarvis) ────────────────────────────────────────────────
-  {
-    type: 'function',
-    function: {
-      name: 'salvar_evento',
-      description:
-        'Salva um compromisso na AGENDA PRÓPRIA (jarvis.agenda). Use para consultas, reuniões, aulas, aniversários.',
-      parameters: {
-        type: 'object',
-        properties: {
-          title: { type: 'string' },
-          event_date: { type: 'string', description: 'ISO: YYYY-MM-DDTHH:mm:00' },
-          category: { type: 'string' },
-          notes: { type: 'string' },
-          is_recurring: { type: 'boolean' },
-        },
-        required: ['title', 'event_date'],
+{
+  type: 'function',
+  function: {
+    name: 'salvar_evento',
+    description:
+      'Salva um compromisso na agenda interna do app (jarvis.events). ' +
+      'Use para consultas, reuniões, aulas, compromissos pessoais. ' +
+      'NÃO use criar_evento_agenda a menos que o usuário peça explicitamente o Google Calendar.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title:         { type: 'string', description: 'Título do evento' },
+        event_date:    { type: 'string', description: 'Data e hora ISO 8601, ex: 2026-05-08T09:00:00-03:00' },
+        category:      { type: 'string', description: 'Categoria: health, work, school, family, personal' },
+        notes:         { type: 'string', description: 'Observações opcionais' },
+        reminderMinutes: { type: 'integer', description: 'Minutos de antecedência para lembrete (padrão 30)' },
       },
+      required: ['title', 'event_date'],
     },
   },
+},
 
   // ── GOOGLE CALENDAR ────────────────────────────────────────────────────────
   {
