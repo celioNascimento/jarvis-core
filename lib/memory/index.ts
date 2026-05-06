@@ -1,4 +1,4 @@
-// lib/memory/index.ts — V2.2.0 (RIGOR TOTAL: Fix Implicit Any + TS Strict Build)
+// lib/memory/index.ts — V2.2.1 (Fix: ContextType cast)
 import { supabase } from '@/lib/jarvis';
 import { compressToSummary, semanticRamCompression, RAM_MAX_CHARS } from '@/lib/chat/ram';
 import { detectTopicShiftWithL4 } from '@/lib/chat/context-classifier';
@@ -7,6 +7,7 @@ import { buildRecommendationsBlock, buildTopicBlock } from '@/lib/extractor-jobs
 import { planContextualBlocks } from '@/lib/chat/context-classifier';
 import { generateEmbedding } from '@/lib/jarvis';
 import { indexL3Chunks } from '@/lib/chat/l3-chunks';
+import type { ContextType } from '@/lib/chat/context-classifier'; // ← import do tipo
 
 // ─── Interfaces e Tipos ──────────────────────────────────────────────────────
 
@@ -73,7 +74,10 @@ async function readRAM(options: MemoryReadOptions, hdBlock: string, injectedHist
     if (historySession.length === 0) return { recentPairs: [], ramBlock: '', sessionId: safeSessionId };
 
     const hasEnoughHistory = historySession.length >= 2;
-    const shiftDetected = hasEnoughHistory ? await detectTopicShiftWithL4(userId, contexts) : false;
+    // FIX: cast contexts para ContextType[] para satisfazer a assinatura de detectTopicShiftWithL4
+    const shiftDetected = hasEnoughHistory
+      ? await detectTopicShiftWithL4(userId, contexts as ContextType[])
+      : false;
     
     const recentPairs = [...historySession].slice(0, shiftDetected ? 1 : 4).reverse().flatMap((h: any) => [
       { role: 'user' as const, content: h.content || '' },
@@ -110,7 +114,6 @@ async function readHD(userId: string, queryEmbedding: number[] | null, contexts:
     query_embedding: queryEmbedding, match_threshold: 0.22, match_count: 8
   });
   
-  // FIX: Definindo o tipo explicitamente para evitar Implicit Any no map
   const memories: MemoryItem[] = (search || []).map((r: any) => ({ 
     id: r.id, 
     summary: r.summary, 
