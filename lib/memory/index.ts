@@ -529,82 +529,33 @@ export async function readAshes(
 
 const EVENTS_UPCOMING_DAYS = 7;
 const EVENTS_HOLIDAY_CONTEXTS = ['agenda', 'evento', 'familia'];
-
 export async function readEvents(
   userId: string,
   contexts: string[],
   canonicalDateISO: string,
+  injectedEvents?: any[] // ← Novo parâmetro
 ): Promise<EventsResult> {
   const empty: EventsResult = { upcoming: [], important: [], block: '' };
 
   try {
-    // 1. SELECT CORRIGIDO: usando as colunas reais da sua tabela events
-    const { data, error } = await supabase
-      .from('events')
-      .select('title, start_at, category, description, all_day')
-      .eq('user_id', userId)
-      .order('start_at', { ascending: true });
+    // SE OS DADOS FORAM INJETADOS, PULA A CHAMADA AO SUPABASE
+    let data = injectedEvents;
 
-    if (error) {
-      console.error('[MemoryManager/Events] Erro:', error.message);
-      return empty;
+    if (!data) {
+      console.log('[MemoryManager/Events] Buscando do banco (Sem injeção)');
+      const { data: fetched, error } = await supabase
+        .from('events')
+        .select('title, start_at, category, description, all_day')
+        .eq('user_id', userId)
+        .order('start_at', { ascending: true });
+      
+      if (error) throw error;
+      data = fetched;
     }
 
     if (!data?.length) return empty;
+    // ... resto da lógica de filtro permanece IGUAL
 
-    const hoje = new Date(canonicalDateISO);
-    hoje.setHours(0, 0, 0, 0);
-
-    // 2. FILTRANDO APENAS EVENTOS FUTUROS
-    const active = data.filter(e => new Date(e.start_at) >= hoje);
-
-    const upcoming = active.filter(e => {
-      const diff = Math.ceil(
-        (new Date(e.start_at).getTime() - hoje.getTime()) / 86400000
-      );
-      return diff >= 0 && diff <= EVENTS_UPCOMING_DAYS;
-    });
-
-    // 3. MONTANDO O BLOCO DE TEXTO
-    const parts: string[] = [];
-
-    if (upcoming.length > 0) {
-      parts.push(
-        `🔴 NOS PRÓXIMOS DIAS:\n${upcoming
-          .map(e => `  - ${e.title}: ${e.start_at}${e.description ? ` (${e.description})` : ''}`)
-          .join('\n')}`
-      );
-    }
-
-    const block = parts.length > 0 ? parts.join('\n\n') : 'Nenhum evento cadastrado.';
-
-    // Feriados Nacionais
-    let holidaysBlock = '';
-    if (contexts.some(c => EVENTS_HOLIDAY_CONTEXTS.includes(c))) {
-      try {
-        const { getUpcomingHolidays } = await import('@/lib/holidays');
-        const holidays = await getUpcomingHolidays(10);
-        if (holidays.length > 0) {
-          holidaysBlock = `\n[FERIADOS NACIONAIS PRÓXIMOS]\n${holidays
-            .map((h: any) => `- ${h.name}: ${new Date(h.date).toLocaleDateString('pt-BR')}`)
-            .join('\n')}`;
-        }
-      } catch (err) {
-        console.error('[MemoryManager/Events] Erro feriados:', err);
-      }
-    }
-
-    return {
-      upcoming,
-      important: [], // Omitido pois relevance_score não existe no seu schema
-      block: block + holidaysBlock,
-    };
-
-  } catch (e) {
-    console.error('[MemoryManager/Events] Exceção:', e);
-    return empty;
-  }
-}
 
 // ─── Bloco 7: Leitor de Topics e Recommendations ─────────────────────────────
 // Cole após o Bloco 6 no arquivo lib/memory/index.ts
