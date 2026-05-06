@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V12.5.0 (RIGOR TOTAL: Strict Role Guard + God RPC + Geo-Precision + Dedup 60s)
+// app/api/chat/route.ts — V12.5.1 (RIGOR TOTAL: Modular Geo-Precision + God RPC + Strict History)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -14,11 +14,12 @@ import { executeTool } from '@/lib/chat/tools-executor';
 import OpenAI from 'openai';
 import { extractAndSummarize } from '@/lib/extractor';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
-import {
-  resolveLocation,
-  buildGeoBlock,
-  normalizeLocationForModules,
-  type UserLocation,
+
+// ✅ IMPORTAÇÃO DO ESPECIALISTA (Certifique-se que o arquivo existe em lib/geo-resolver.ts)
+import { 
+  resolveLocation, 
+  normalizeLocationForModules, 
+  buildGeoBlock 
 } from '@/lib/geo-resolver';
 
 export const maxDuration = 60;
@@ -30,7 +31,7 @@ const redis = new Redis({
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 });
 
-// ─── Constantes Globais de Rigor ─────────────────────────────────────────────
+// ─── Constantes Globais ──────────────────────────────────────────────────────
 const MAX_MSG_CHARS = 800;
 const FAMILY_DATE_SIGNALS = [
   /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
@@ -42,42 +43,29 @@ async function generateTTS(text: string, voice: string = 'alloy'): Promise<strin
   try {
     const cleanText = text.replace(/[*#_~]/g, '').trim();
     if (!cleanText) return null;
-
-    const mp3 = await openai.audio.speech.create({
-      model: 'tts-1',
-      voice: voice as any,
-      input: cleanText,
-    });
-
-    const buffer = Buffer.from(await mp3.arrayBuffer());
-    return buffer.toString('base64');
+    const mp3 = await openai.audio.speech.create({ model: 'tts-1', voice: voice as any, input: cleanText });
+    return Buffer.from(await mp3.arrayBuffer()).toString('base64');
   } catch (e) {
     console.error('[TTS Error]:', e);
     return null;
   }
 }
 
-// ─── Handler principal (POST) ────────────────────────────────────────────────
+// ─── Handler principal ────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
   try {
-    // 1. Parse do Body (FormData para Mobile / JSON para Web)
-    const body = await (req.headers.get('content-type')?.includes('multipart')
-      ? req.formData()
-      : req.json());
-
+    // 1. Parse do Body
+    const body = await (req.headers.get('content-type')?.includes('multipart') ? req.formData() : req.json());
     const message = (body instanceof FormData ? body.get('message') as string : body.message) || '';
     const userEmail = body instanceof FormData ? body.get('userEmail') as string : body.userEmail;
     const speak = body instanceof FormData ? body.get('speak') === 'true' : !!body.speak;
-    const incomingSessionId = body instanceof FormData
-      ? (body.get('sessionId') as string | null)
-      : (body.sessionId as string | null);
+    const incomingSessionId = body instanceof FormData ? (body.get('sessionId') as string | null) : (body.sessionId as string | null);
     const userLocation = body instanceof FormData ? null : body.location;
 
     // 2. Resolve Usuário e Sessão
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
-
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
     // ── 3. DEDUPLICAÇÃO GLOBAL (Janela 60s) ──
@@ -88,7 +76,6 @@ export async function POST(req: NextRequest) {
 
     const isFirst = await redis.set(dedupKey, '1', { nx: true, ex: 60 });
     if (!isFirst) {
-      console.warn('[Dedup] Retry detectado, recuperando cache...');
       for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 1500));
         const cached = await redis.get<string>(replyKey);
@@ -96,22 +83,18 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── 4. PARALELISMO DE ELITE: GOD RPC + GEO-RESOLUTION ──
-    // resolveLocation (V12.2.2) usa BBOX Guard contra erros de cidade (Cornélio Procópio)
+    // ── 4. EXECUÇÃO PARALELA: GOD RPC + GEO-PRECISION ──
     const [resolvedLocation, { data: masterContext, error: rpcError }] = await Promise.all([
       resolveLocation(userLocation),
-      supabase.rpc('get_consolidated_context', {
-        p_user_id: user.id,
-        p_session_id: sessionId,
-      }),
+      supabase.rpc('get_consolidated_context', { p_user_id: user.id, p_session_id: sessionId }),
     ]);
 
     if (rpcError) console.error('[RPC FATAL]:', rpcError.message);
 
+    // Normalização para loadActiveModules e buildDynamicContext
     const normalizedLocation = normalizeLocationForModules(resolvedLocation);
 
-    // ── 5. RECENT HISTORY (FIX: Proteção Estrita contra Colisão de Roles) ──
-    // Garante alternância User -> Assistant para evitar Erro 400 no OpenRouter
+    // ── 5. HISTÓRICO (FIX: Strict Alternation User <-> Assistant) ──
     const rawHistory = masterContext?.history || [];
     const recentHistory: any[] = [];
     let lastAddedRole: string | null = null;
@@ -129,38 +112,32 @@ export async function POST(req: NextRequest) {
         lastAddedRole = 'assistant';
       }
     }
-    // Se o último do histórico for 'user', removemos para não colidir com a mensagem atual
     if (lastAddedRole === 'user') recentHistory.pop();
 
-    // ── 6. PROCESSAMENTO DE INTELIGÊNCIA ──
+    // ── 6. PROCESSAMENTO PARALELO (Embeddings + Contexto) ──
     const [queryEmbedding, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       llmGateway.isOverloaded(),
       classifyContextWithL4(message, String(user.id)),
     ]);
 
+    // ── 7. MEMÓRIA E SCORE EMOCIONAL ──
     const memory = await MemoryManager.read({
-      userId: String(user.id), authUserId: user.auth_user_id, sessionId, message,
-      contexts, emotionalScore: 0, authorName: user.nickname,
-      assistantName: user.assistant_name, queryEmbedding, masterContext,
+      userId: String(user.id), authUserId: user.auth_user_id, sessionId, message, contexts,
+      emotionalScore: 0, authorName: user.nickname, assistantName: user.assistant_name,
+      queryEmbedding, masterContext,
     });
 
-    const emotional = await computeEmotionalScore(
-      message, String(user.id), memory.hd.memories ?? [], memory.ram.ramBlock ?? ''
-    );
+    const emotional = await computeEmotionalScore(message, String(user.id), memory.hd.memories ?? [], memory.ram.ramBlock ?? '');
 
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
-      {
-        userId: String(user.id), authUserId: user.auth_user_id, message, contexts,
-        emotionalScore: emotional.score, location: normalizedLocation, masterContext,
-      },
+      { userId: String(user.id), authUserId: user.auth_user_id, message, contexts, emotionalScore: emotional.score, location: normalizedLocation, masterContext },
       user.plan || 'free', 'google/gemini-2.0-flash-001'
     );
 
-    const finalModel = (typeof resolvedModel === 'string' && resolvedModel.length > 0)
-      ? resolvedModel : 'google/gemini-2.0-flash-001';
+    const finalModel = (typeof resolvedModel === 'string' && resolvedModel.length > 0) ? resolvedModel : 'google/gemini-2.0-flash-001';
 
-    // ── 7. RADAR DE AFETO ──
+    // ── 8. RADAR DE AFETO ──
     let filteredL3 = memory.l3.content;
     const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
     const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentHistory.map(h => h.content).join(' ') + message));
@@ -169,18 +146,16 @@ export async function POST(req: NextRequest) {
       filteredL3 = filteredL3.replace(/##\s*(datas?|aniversário|famil[íi]a|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '').trim();
     }
 
-    // ── 8. COMPOSIÇÃO DE PROMPT E GEO-CONSCIÊNCIA ──
+    // ── 9. COMPOSIÇÃO DE PROMPT E GEO-CONSCIÊNCIA ──
     const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
-      userId: String(user.id), authUserId: user.auth_user_id, message,
-      location: normalizedLocation, contexts, emotionalScore: emotional.score, masterContext,
+      userId: String(user.id), authUserId: user.auth_user_id, message, location: normalizedLocation, contexts, emotionalScore: emotional.score, masterContext,
     });
 
-    const geoContextBlock = buildGeoBlock(resolvedLocation);
+    const geoBlock = buildGeoBlock(resolvedLocation);
     const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-    const guidelines = (masterContext?.guidelines || []).map((g: any) => `- ${g.content}`).join('\n');
     const urgentes = (masterContext?.reminders || []).map((u: any) => u.title).join(', ');
 
-    const systemPrompt = `[HORA]: ${nowSP.toLocaleString('pt-BR')}\n${geoContextBlock}\n${contextText}\n${urgentes ? `[URGENTE]: ${urgentes}` : ''}\n---\n${composeSystemPrompt({
+    const systemPrompt = `[HORA]: ${nowSP.toLocaleString('pt-BR')}\n${geoBlock}\n${contextText}\n${urgentes ? `[URGENTE]: Pendências: ${urgentes}` : ''}\n---\n${composeSystemPrompt({
       assistantName: user.assistant_name, authorName: user.nickname, isLikelyNoise: message.length < 15,
       isSystemStressed: isStressed, emotionalScore: emotional.score, detectedContexts: contexts,
       contextBlocks, memoryBlocks: {
@@ -189,13 +164,13 @@ export async function POST(req: NextRequest) {
         topics: masterContext?.topics || memory.topics.relatedTopicsBlock,
       },
       canonicalDateTimeBlock: nowSP.toLocaleString('pt-BR'), canonicalDateISO: nowSP.toISOString().split('T')[0],
-      systemWarning: '', intent: 'personal', dynamicGuidelines: guidelines,
+      systemWarning: '', intent: 'personal', dynamicGuidelines: (masterContext?.guidelines || []).map((g: any) => `- ${g.content}`).join('\n'),
     })}
 [DIRETRIZES TÉCNICAS]
 1. Use 'salvar_evento' como fonte primária.
 2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda "Pronto".`;
 
-    // ── 9. CICLO DE EXECUÇÃO LLM ──
+    // ── 10. CICLO LLM ──
     const toolsHabilitadas = ALL_TOOLS.filter(t => activeTools.includes(t.function.name) || dynamicTools.includes(t.function.name));
     const conversationMessages = [{ role: 'system', content: systemPrompt }, ...recentHistory, { role: 'user', content: message }];
 
@@ -213,7 +188,7 @@ export async function POST(req: NextRequest) {
       assistantReply = secondResponse.content || assistantReply;
     }
 
-    // ── 10. FINALIZAÇÃO E BACKGROUND (FIRE & FORGET) ──
+    // ── 11. FINALIZAÇÃO E BACKGROUND ──
     await redis.set(replyKey, assistantReply, { ex: 60 }).catch(() => {});
     
     (async () => {
