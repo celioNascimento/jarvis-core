@@ -170,39 +170,115 @@ export async function POST(req: NextRequest) {
 1. Use 'salvar_evento' como fonte primária.
 2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda "Pronto".`;
 
-    // ── 10. CICLO LLM ──
-    const toolsHabilitadas = ALL_TOOLS.filter(t => activeTools.includes(t.function.name) || dynamicTools.includes(t.function.name));
-    const conversationMessages = [{ role: 'system', content: systemPrompt }, ...recentHistory, { role: 'user', content: message }];
+        // ── 10. COMPOSIÇÃO DE PROMPT E GEO-CONSCIÊNCIA (RIGOR: GPS OVERRIDE) ──
+    const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+    const dataHoraSP = nowSP.toLocaleString('pt-BR');
+    
+    // Pega o label preciso (Rua/Bairro) vindo do seu geo-resolver.ts
+    const geoBlock = buildGeoBlock(resolvedLocation);
 
-    const firstResponse = await callOpenRouterWithPriority(1, 'never', requestSignature, conversationMessages, toolsHabilitadas, finalModel, 0.7);
+    // 🚨 BLINDAGEM ANTI-CORNÉLIO: Se o GPS estiver ativo, ele anula o erro do histórico
+    const gpsOverrideInstruction = resolvedLocation 
+      ? `\n[DIRETRIZ CRÍTICA]: O usuário está REALMENTE em: ${resolvedLocation.label || 'Londrina'}. Ignore qualquer endereço divergente mencionado no histórico anterior.`
+      : '';
+
+    const systemPrompt = `[RELÓGIO DO SISTEMA]: ${dataHoraSP}
+${geoBlock}${gpsOverrideInstruction}
+${contextText}${alertaUrgencia}
+---
+${basePrompt}
+[DIRETRIZES DE RIGOR TÉCNICO]
+1. LOCALIZAÇÃO: Use o bloco [LOCALIZAÇÃO] acima como VERDADE ABSOLUTA. Não peça coordenadas se o bloco estiver presente.
+2. PROTOCOLO: Atue como arquiteto do Expert Frotas. Jamais responda apenas "Pronto".`;
+
+    // ── 11. CICLO DE EXECUÇÃO LLM ─────────────────────────────────────────────
+    const toolsHabilitadas = ALL_TOOLS.filter(t => 
+      activeTools.includes(t.function.name) || 
+      dynamicTools.includes(t.function.name)
+    );
+
+    const conversationMessages = [
+      { role: 'system', content: systemPrompt }, 
+      ...recentHistory, 
+      { role: 'user', content: message }
+    ];
+
+    const firstResponse = await callOpenRouterWithPriority(
+      1, 
+      'never', 
+      requestSignature, 
+      conversationMessages, 
+      toolsHabilitadas, 
+      finalModel, 
+      0.7
+    );
 
     let assistantReply = firstResponse.content || "Entendido.";
 
+    // Processamento de Tool Calls (Execução de Funções)
     if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
-      const toolResults = await Promise.all(firstResponse.toolCalls.map(async (tc) => ({ tc, result: await executeTool(tc, user.auth_user_id, String(user.id)) })));
-      const secondResponse = await callOpenRouterWithPriority(1, 'never', `${requestSignature}_synth`, [
-        ...conversationMessages,
-        { role: 'assistant', content: firstResponse.content || null, tool_calls: firstResponse.toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } })) },
-        ...toolResults.map(({ tc, result }) => ({ role: 'tool', tool_call_id: tc.id, content: result }))
-      ], [], finalModel, 0.7);
+      const toolResults = await Promise.all(
+        firstResponse.toolCalls.map(async (tc) => ({ 
+          tc, 
+          result: await executeTool(tc, user.auth_user_id, String(user.id)) 
+        }))
+      );
+
+      const secondResponse = await callOpenRouterWithPriority(
+        1, 
+        'never', 
+        `${requestSignature}_synth`, 
+        [
+          ...conversationMessages,
+          { 
+            role: 'assistant', 
+            content: firstResponse.content || null, 
+            tool_calls: firstResponse.toolCalls.map(tc => ({ 
+              id: tc.id, 
+              type: 'function', 
+              function: { name: tc.function.name, arguments: tc.function.arguments } 
+            })) 
+          },
+          ...toolResults.map(({ tc, result }) => ({ 
+            role: 'tool', 
+            tool_call_id: tc.id, 
+            content: result 
+          }))
+        ], 
+        [], 
+        finalModel, 
+        0.7
+      );
       assistantReply = secondResponse.content || assistantReply;
     }
 
-    // ── 11. FINALIZAÇÃO E BACKGROUND ──
+    // ── 12. FINALIZAÇÃO E BACKGROUND (FIRE AND FORGET) ───────────────────────
+    // Cache da resposta para evitar processamento duplicado em retries
     await redis.set(replyKey, assistantReply, { ex: 60 }).catch(() => {});
     
+    // Tarefas assíncronas: Salvar no cérebro e extrair memórias
     (async () => {
       supabase.from('brain').insert({
-        user_id: Number(user.id), session_id: sessionId, content: message, category: message.length < 15 ? 'noise' : 'info',
+        user_id: Number(user.id), 
+        session_id: sessionId, 
+        content: message, 
+        category: message.length < 15 ? 'noise' : 'info',
         metadata: { role: 'user', ai_reply: assistantReply, contexts, model: finalModel }
-      }).then(() => {});
-      extractAndSummarize(String(user.id), user.nickname, message, assistantReply).catch(() => {});
+      }).then(({ error }) => { if (error) console.error('[Brain Save Error]:', error.message); });
+
+      extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply)
+        .catch(e => console.error('[Background Extractor Error]:', e));
     })();
 
+    // Geração de áudio se solicitado
     const audioBase64 = speak ? await generateTTS(assistantReply, user.preferred_voice || 'alloy') : null;
 
     return NextResponse.json({
-      reply: assistantReply, audioBase64, ok: true, sessionId, performance: `${Date.now() - startTime}ms`,
+      reply: assistantReply,
+      audioBase64,
+      ok: true,
+      sessionId,
+      performance: `${Date.now() - startTime}ms`,
     });
 
   } catch (e: any) {
