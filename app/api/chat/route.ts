@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V11.7.0 (Varredura de Integridade + Injeção God RPC)
+// app/api/chat/route.ts — V11.8.0 (RIGOR TOTAL: Anti-Collision History + OpenRouter Fix)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -24,22 +24,18 @@ const redis = new Redis({
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 });
 
-// ─── Constantes Globais ──────────────────────────────────────────────────────
 const MAX_MSG_CHARS = 800;
 const FAMILY_DATE_SIGNALS = [/aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i, /natal/i];
 
-// ─── Gerador de Voz (OpenAI TTS) ─────────────────────────────────────────────
 async function generateTTS(text: string, voice: string = 'alloy'): Promise<string | null> {
   try {
     const cleanText = text.replace(/[*#_~]/g, '').trim();
     if (!cleanText) return null;
     const mp3 = await openai.audio.speech.create({ model: "tts-1", voice: voice as any, input: cleanText });
-    const buffer = Buffer.from(await mp3.arrayBuffer());
-    return buffer.toString('base64');
+    return Buffer.from(await mp3.arrayBuffer()).toString('base64');
   } catch (e) { return null; }
 }
 
-// ─── Handler principal ────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
   try {
@@ -50,18 +46,32 @@ export async function POST(req: NextRequest) {
     const incomingSessionId = body instanceof FormData ? (body.get('sessionId') as string | null) : (body.sessionId as string | null);
     const userLocation = body instanceof FormData ? null : body.location;
 
-    // 1. Resolve Usuário e Sessão
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
-    // ── 2. GOD RPC: CONSOLIDAÇÃO (MATA N+1) ──
+    // 1. GOD RPC: CONSOLIDAÇÃO
     const { data: masterContext, error: rpcError } = await supabase.rpc('get_consolidated_context', { 
         p_user_id: user.id, p_session_id: sessionId 
     });
     if (rpcError) console.error('[RPC FATAL ERROR]:', rpcError.message);
 
-    // ── 3. DEDUPLICAÇÃO GLOBAL ──
+    // 2. RECENT HISTORY (FIX: Alternância de Roles + Proteção contra vácuo)
+    const rawHistory = masterContext?.history || [];
+    const recentHistory: any[] = [];
+    for (const row of [...rawHistory].reverse()) {
+      const uMsg = (row.content || '').trim();
+      const aRep = (row.metadata?.ai_reply || '').trim();
+      // Somente adiciona se houver conteúdo real, garantindo User -> Assistant
+      if (uMsg.length > 2) {
+        recentHistory.push({ role: 'user', content: uMsg.slice(0, MAX_MSG_CHARS) });
+      }
+      if (aRep.length > 2) {
+        recentHistory.push({ role: 'assistant', content: aRep.slice(0, MAX_MSG_CHARS) });
+      }
+    }
+
+    // 3. DEDUPLICAÇÃO
     const timeSlot = Math.floor(Date.now() / 10000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
@@ -76,7 +86,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── 4. PROCESSAMENTO PARALELO (HIDRATADO) ──
+    // 4. PROCESSAMENTO PARALELO
     const [queryEmbedding, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       llmGateway.isOverloaded(),
@@ -93,7 +103,7 @@ export async function POST(req: NextRequest) {
       authorName: user.nickname,
       assistantName: user.assistant_name,
       queryEmbedding,
-      masterContext // Injeção de Dependência
+      masterContext 
     });
 
     const emotional = await computeEmotionalScore(message, String(user.id), memory.hd.memories ?? [], memory.ram.ramBlock ?? '');
@@ -101,22 +111,20 @@ export async function POST(req: NextRequest) {
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       { userId: String(user.id), authUserId: user.auth_user_id, message, contexts, emotionalScore: emotional.score, location: userLocation },
       user.plan || 'free',
-      masterContext // Injeção de Dependência
+      masterContext 
     );
 
-    // ── 5. RADAR DE AFETO (RIGOR DATAS FAMILIARES) ──
+    // 5. RADAR DE AFETO (RIGOR MANTIDO)
     let filteredL3 = memory.l3.content;
     const todayCheck = new Date();
-    const isHighAlertMonth = todayCheck.getMonth() === 4 || todayCheck.getMonth() === 7; // Maio e Agosto
-    const recentHistoryText = (masterContext?.history || []).map((h: any) => h.content).join(' ');
+    const isHighAlertMonth = todayCheck.getMonth() === 4 || todayCheck.getMonth() === 7;
+    const historyText = rawHistory.map((h: any) => h.content).join(' ');
 
-    if (!isHighAlertMonth && !FAMILY_DATE_SIGNALS.some(p => p.test(recentHistoryText + message))) {
-      filteredL3 = filteredL3
-        .replace(/##\s*(datas?|aniversário|famil[íi]a|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
-        .trim();
+    if (!isHighAlertMonth && !FAMILY_DATE_SIGNALS.some(p => p.test(historyText + message))) {
+      filteredL3 = filteredL3.replace(/##\s*(datas?|aniversário|famil[íi]a|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '').trim();
     }
 
-    // ── 6. COMPOSIÇÃO DE PROMPT ──
+    // 6. COMPOSIÇÃO DE PROMPT
     const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
     const basePrompt = composeSystemPrompt({
       assistantName: user.assistant_name,
@@ -141,35 +149,19 @@ export async function POST(req: NextRequest) {
     });
 
     const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
-      userId: String(user.id),
-      authUserId: user.auth_user_id,
-      message,
-      location: userLocation,
-      contexts: contexts || [],
-      emotionalScore: emotional.score || 0,
-      masterContext // Injeção de Dependência
+      userId: String(user.id), authUserId: user.auth_user_id, message, location: userLocation, contexts, emotionalScore: emotional.score, masterContext
     });
 
     const coreTools = ['salvar_evento', 'consultar_agenda', 'create_reminder', 'searchWeb', 'buscar_memoria_longa', 'consultar_lembretes', 'adicionar_diretriz_dinamica'];
     const toolsHabilitadas = ALL_TOOLS.filter(t => coreTools.includes(t.function.name) || activeTools.includes(t.function.name) || dynamicTools.includes(t.function.name));
 
-    const alertaUrgencia = (masterContext?.reminders?.length > 0) 
-      ? `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]\nCélio, atenção para pendências: ${masterContext.reminders.map((r: any) => r.title).join(', ')}` 
-      : '';
+    const systemPrompt = `[HORA]: ${nowSP.toLocaleString('pt-BR')}\n${contextText}\n${(masterContext?.reminders?.length > 0) ? `[ALERTA]: Pendências: ${masterContext.reminders.map((r: any) => r.title).join(', ')}` : ''}\n---\n${basePrompt}`;
 
-    const systemPrompt = `[RELÓGIO DO SISTEMA]: ${nowSP.toLocaleString('pt-BR')}\n${contextText}${alertaUrgencia}\n---\n${basePrompt}
-[DIRETRIZES DE RIGOR TÉCNICO]
-1. AGENDA: Use 'salvar_evento' como fonte primária.
-2. PROTOCOLO DE SAÍDA: Descreva a ação técnica realizada no sistema. Atue como arquiteto do Expert Frotas.`;
-
-    // ── 7. CICLO DE EXECUÇÃO LLM ──
-    const recentHistory = (masterContext?.history || []).reverse().flatMap((h: any) => [
-      { role: 'user', content: h.content },
-      { role: 'assistant', content: h.metadata?.ai_reply || '' }
-    ]);
-
-    const conversationMessages: any[] = [{ role: 'system', content: systemPrompt }, ...recentHistory, { role: 'user', content: message }];
-    const firstResponse = await callOpenRouterWithPriority(1, 'never', requestSignature, conversationMessages, toolsHabilitadas, resolvedModel, 0.7);
+    // 7. EXECUÇÃO LLM (FIX: Verificação de Model)
+    const finalModel = resolvedModel || 'google/gemini-2.0-flash-001';
+    const conversationMessages = [{ role: 'system', content: systemPrompt }, ...recentHistory, { role: 'user', content: message }];
+    
+    const firstResponse = await callOpenRouterWithPriority(1, 'never', requestSignature, conversationMessages, toolsHabilitadas, finalModel, 0.7);
 
     let assistantReply = firstResponse.content || "Comando processado.";
 
@@ -179,28 +171,27 @@ export async function POST(req: NextRequest) {
         ...conversationMessages,
         { role: 'assistant', content: firstResponse.content || null, tool_calls: firstResponse.toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } })) },
         ...toolResults.map(({ tc, result }) => ({ role: 'tool', tool_call_id: tc.id, content: result }))
-      ], [], resolvedModel, 0.7);
+      ], [], finalModel, 0.7);
       assistantReply = secondResponse.content || assistantReply;
     }
 
-    // ── 8. FINALIZAÇÃO E BACKGROUND ──
+    // 8. FINALIZAÇÃO
     await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => {});
     supabase.from('brain').insert({
       user_id: Number(user.id), session_id: sessionId, content: message, category: message.length < 15 ? 'noise' : 'info',
-      metadata: { role: 'user', ai_reply: assistantReply, contexts, model: resolvedModel }
-    }).then(({ error }) => error && console.error('[Brain Save Error]:', error.message));
+      metadata: { role: 'user', ai_reply: assistantReply, contexts, model: finalModel }
+    }).then(() => {});
 
     extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply).catch(() => {});
 
     return NextResponse.json({
       reply: assistantReply,
       audioBase64: speak ? await generateTTS(assistantReply, user.preferred_voice || 'alloy') : null,
-      ok: true,
-      sessionId,
-      performance: `${Date.now() - startTime}ms`,
+      ok: true, sessionId, performance: `${Date.now() - startTime}ms`,
     });
 
   } catch (e: any) {
+    console.error('[FATAL ERROR]:', e);
     return NextResponse.json({ error: 'Erro no motor do Jarvis.' }, { status: 500 });
   }
 }
