@@ -284,10 +284,11 @@ DIRETRIZ DE ZELADORIA: O usuário possui TDAH e pode se dispersar. Como assisten
       dynamicTools.includes(t.function.name)
     );
 
-    const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
+const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
 Hoje é ${nomeDia}, ${dataHoraSP}. 
 
 ${contextText}
+${alertaUrgencia}
 
 ---
 [DIRETRIZES DE EXECUÇÃO E FERRAMENTAS - PRIORIDADE MÁXIMA]
