@@ -1,3 +1,4 @@
+
 // app/api/chat/route.ts — V12.2.1 (FIX: UserLocation → latitude/longitude mapping para loadActiveModules)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
