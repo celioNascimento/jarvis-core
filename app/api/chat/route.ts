@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V11.8.0 (RIGOR TOTAL: Anti-Collision History + OpenRouter Fix)
+// app/api/chat/route.ts — V11.9.0 (RIGOR TOTAL: God RPC + TS Fix Build + Radar de Afeto + Redis Loop + Anti-Collision History + OpenRouter Fix)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -12,7 +12,7 @@ import { tools as ALL_TOOLS } from '@/lib/chat/tools-def';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import { executeTool } from '@/lib/chat/tools-executor';
 import OpenAI from 'openai';
-import { extractAndSummarize } from '@/lib/extractor'; 
+import { extractAndSummarize } from '@/lib/extractor';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
 
 export const maxDuration = 60;
@@ -24,39 +24,66 @@ const redis = new Redis({
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 });
 
+// ─── Constantes Globais ──────────────────────────────────────────────────────
 const MAX_MSG_CHARS = 800;
-const FAMILY_DATE_SIGNALS = [/aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i, /natal/i];
+const FAMILY_DATE_SIGNALS = [
+  /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
+  /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
+];
 
+// ─── Gerador de Voz (OpenAI TTS) ─────────────────────────────────────────────
 async function generateTTS(text: string, voice: string = 'alloy'): Promise<string | null> {
   try {
     const cleanText = text.replace(/[*#_~]/g, '').trim();
     if (!cleanText) return null;
-    const mp3 = await openai.audio.speech.create({ model: "tts-1", voice: voice as any, input: cleanText });
-    return Buffer.from(await mp3.arrayBuffer()).toString('base64');
-  } catch (e) { return null; }
+
+    const mp3 = await openai.audio.speech.create({
+      model: 'tts-1',
+      voice: voice as any,
+      input: cleanText,
+    });
+
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+    return buffer.toString('base64');
+  } catch (e) {
+    console.error('[TTS Error]:', e);
+    return null;
+  }
 }
 
+// ─── Handler principal ────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
   try {
-    const body = await (req.headers.get('content-type')?.includes('multipart') ? req.formData() : req.json());
+    // 1. Parse do Body
+    const body = await (req.headers.get('content-type')?.includes('multipart')
+      ? req.formData()
+      : req.json());
+
     const message = (body instanceof FormData ? body.get('message') as string : body.message) || '';
     const userEmail = body instanceof FormData ? body.get('userEmail') as string : body.userEmail;
     const speak = body instanceof FormData ? body.get('speak') === 'true' : !!body.speak;
-    const incomingSessionId = body instanceof FormData ? (body.get('sessionId') as string | null) : (body.sessionId as string | null);
+    const incomingSessionId = body instanceof FormData
+      ? (body.get('sessionId') as string | null)
+      : (body.sessionId as string | null);
     const userLocation = body instanceof FormData ? null : body.location;
 
+    // 2. Resolve Usuário (BIGINT)
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
+
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
-    // 1. GOD RPC: CONSOLIDAÇÃO
-    const { data: masterContext, error: rpcError } = await supabase.rpc('get_consolidated_context', { 
-        p_user_id: user.id, p_session_id: sessionId 
-    });
+    // ── 3. GOD RPC: CONSOLIDAÇÃO DE CONTEXTO (MATA N+1) ───────────────────────
+    const { data: masterContext, error: rpcError } = await supabase
+      .rpc('get_consolidated_context', {
+        p_user_id: user.id,
+        p_session_id: sessionId,
+      });
+
     if (rpcError) console.error('[RPC FATAL ERROR]:', rpcError.message);
 
-    // 2. RECENT HISTORY (FIX: Alternância de Roles + Proteção contra vácuo)
+    // ── 4. RECENT HISTORY (FIX: Alternância de Roles + Proteção contra vácuo) ─
     const rawHistory = masterContext?.history || [];
     const recentHistory: any[] = [];
     for (const row of [...rawHistory].reverse()) {
@@ -71,14 +98,25 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 3. DEDUPLICAÇÃO
+    const guidelines = masterContext?.guidelines || [];
+    const dynamicGuidelinesBlock = guidelines.map((g: any) => `- ${g.content}`).join('\n') || '';
+
+    const urgentes = masterContext?.reminders || [];
+    let alertaUrgencia = '';
+    if (urgentes && urgentes.length > 0) {
+      alertaUrgencia = `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]\nCélio, atenção para pendências críticas:\n${urgentes.map((u: any) => `- ${u.title}`).join('\n')}`;
+    }
+
+    // ── 5. DEDUPLICAÇÃO GLOBAL (LOOP DE ESPERA RIGOROSO) ──────────────────────
     const timeSlot = Math.floor(Date.now() / 10000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
     const replyKey = `chat_reply:${requestSignature}`;
+
     const isFirst = await redis.set(dedupKey, '1', { nx: true, ex: 30 });
 
     if (!isFirst) {
+      console.warn('[Dedup] Retry detectado, aguardando cache...');
       for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 1500));
         const cached = await redis.get<string>(replyKey);
@@ -86,13 +124,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4. PROCESSAMENTO PARALELO
+    // ── 6. FASE 1: PROCESSAMENTO PARALELO (Embeddings + Contexto) ────────────
     const [queryEmbedding, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       llmGateway.isOverloaded(),
       classifyContextWithL4(message, String(user.id)),
     ]);
 
+    // ── 7. FASE 2: MEMÓRIA E SCORE EMOCIONAL ─────────────────────────────────
     const memory = await MemoryManager.read({
       userId: String(user.id),
       authUserId: user.auth_user_id,
@@ -103,29 +142,57 @@ export async function POST(req: NextRequest) {
       authorName: user.nickname,
       assistantName: user.assistant_name,
       queryEmbedding,
-      masterContext 
+      masterContext,
     });
 
-    const emotional = await computeEmotionalScore(message, String(user.id), memory.hd.memories ?? [], memory.ram.ramBlock ?? '');
-
-    const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
-      { userId: String(user.id), authUserId: user.auth_user_id, message, contexts, emotionalScore: emotional.score, location: userLocation },
-      user.plan || 'free',
-      masterContext 
+    const emotional = await computeEmotionalScore(
+      message,
+      String(user.id),
+      memory.hd.memories ?? [],
+      memory.ram.ramBlock ?? '',
     );
 
-    // 5. RADAR DE AFETO (RIGOR MANTIDO)
+    // ── 8. MÓDULOS ATIVOS (FIX: masterContext no objeto, model string como 3º arg) ─
+    const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
+      {
+        userId: String(user.id),
+        authUserId: user.auth_user_id,
+        message,
+        contexts,
+        emotionalScore: emotional.score,
+        location: userLocation,
+        masterContext, // ← passado dentro do objeto de parâmetros, não como 3º argumento
+      },
+      user.plan || 'free',
+      'google/gemini-2.0-flash-001', // ← model string sempre como 3º argumento
+    );
+
+    // Fallback de segurança para o modelo — garante que OpenRouter nunca receba objeto/undefined
+    const finalModel: string = (typeof resolvedModel === 'string' && resolvedModel.trim().length > 0)
+      ? resolvedModel
+      : 'google/gemini-2.0-flash-001';
+
+    // ── 9. RADAR DE AFETO (RIGOR DATAS FAMILIARES) ───────────────────────────
     let filteredL3 = memory.l3.content;
     const todayCheck = new Date();
     const isHighAlertMonth = todayCheck.getMonth() === 4 || todayCheck.getMonth() === 7;
-    const historyText = rawHistory.map((h: any) => h.content).join(' ');
 
-    if (!isHighAlertMonth && !FAMILY_DATE_SIGNALS.some(p => p.test(historyText + message))) {
-      filteredL3 = filteredL3.replace(/##\s*(datas?|aniversário|famil[íi]a|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '').trim();
+    // Usa rawHistory (fonte original) para varredura de sinais, assim como recentHistory
+    const historyText = rawHistory.map((h: any) => h.content).join(' ');
+    const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(historyText + ' ' + message));
+
+    if (!isHighAlertMonth && !hasFamilySignal) {
+      filteredL3 = filteredL3
+        .replace(/##\s*(datas?|aniversário|comemoração|evento importante)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
+        .replace(/##\s*(famil[íi]a|cônjuge|esposa|marido|filho|parente)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
+        .trim();
     }
 
-    // 6. COMPOSIÇÃO DE PROMPT
-    const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+    // ── 10. COMPOSIÇÃO DE PROMPT E GEO-CONSCIÊNCIA ───────────────────────────
+    const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+    const dataHoraSP = nowSP.toLocaleString('pt-BR');
+    const dataIsoSP = nowSP.toISOString().split('T')[0];
+
     const basePrompt = composeSystemPrompt({
       assistantName: user.assistant_name,
       authorName: user.nickname,
@@ -141,53 +208,121 @@ export async function POST(req: NextRequest) {
         relationship: memory.relationship.block.slice(0, 2000),
         topics: memory.topics.relatedTopicsBlock,
       },
-      canonicalDateTimeBlock: nowSP.toLocaleString('pt-BR'),
-      canonicalDateISO: nowSP.toISOString().split('T')[0],
+      canonicalDateTimeBlock: dataHoraSP,
+      canonicalDateISO: dataIsoSP,
       systemWarning: '',
       intent: 'personal',
-      dynamicGuidelines: (masterContext?.guidelines || []).map((g: any) => `- ${g.content}`).join('\n'),
+      dynamicGuidelines: dynamicGuidelinesBlock,
     });
 
+    // buildDynamicContext: masterContext omitido — só passa se a assinatura da função aceitar
     const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
-      userId: String(user.id), authUserId: user.auth_user_id, message, location: userLocation, contexts, emotionalScore: emotional.score, masterContext
+      userId: String(user.id),
+      authUserId: user.auth_user_id,
+      message,
+      location: userLocation,
+      contexts: contexts || [],
+      emotionalScore: emotional.score || 0,
     });
 
-    const coreTools = ['salvar_evento', 'consultar_agenda', 'create_reminder', 'searchWeb', 'buscar_memoria_longa', 'consultar_lembretes', 'adicionar_diretriz_dinamica'];
-    const toolsHabilitadas = ALL_TOOLS.filter(t => coreTools.includes(t.function.name) || activeTools.includes(t.function.name) || dynamicTools.includes(t.function.name));
+    const coreTools = [
+      'salvar_evento',
+      'consultar_agenda',
+      'create_reminder',
+      'searchWeb',
+      'buscar_memoria_longa',
+      'consultar_lembretes',
+      'adicionar_diretriz_dinamica',
+    ];
+    const toolsHabilitadas = ALL_TOOLS.filter(t =>
+      coreTools.includes(t.function.name) ||
+      activeTools.includes(t.function.name) ||
+      dynamicTools.includes(t.function.name),
+    );
 
-    const systemPrompt = `[HORA]: ${nowSP.toLocaleString('pt-BR')}\n${contextText}\n${(masterContext?.reminders?.length > 0) ? `[ALERTA]: Pendências: ${masterContext.reminders.map((r: any) => r.title).join(', ')}` : ''}\n---\n${basePrompt}`;
+    const systemPrompt = `[RELÓGIO DO SISTEMA]: ${dataHoraSP}\n${contextText}${alertaUrgencia}\n---\n${basePrompt}
+[DIRETRIZES DE RIGOR TÉCNICO]
+1. AGENDA: Use 'salvar_evento' (Supabase) como fonte primária.
+2. MENTOR: Interrompa fluxos se houver alertas de urgência.
+3. PROTOCOLO DE SAÍDA: Proibido responder apenas "Pronto" ou "Anotado". Descreva a ação técnica realizada no sistema. Atue como arquiteto do Expert Frotas.`;
 
-    // 7. EXECUÇÃO LLM (FIX: Verificação de Model)
-    const finalModel = resolvedModel || 'google/gemini-2.0-flash-001';
-    const conversationMessages = [{ role: 'system', content: systemPrompt }, ...recentHistory, { role: 'user', content: message }];
-    
-    const firstResponse = await callOpenRouterWithPriority(1, 'never', requestSignature, conversationMessages, toolsHabilitadas, finalModel, 0.7);
+    // ── 11. CICLO DE EXECUÇÃO LLM ─────────────────────────────────────────────
+    const conversationMessages: any[] = [
+      { role: 'system', content: systemPrompt },
+      ...recentHistory,
+      { role: 'user', content: message },
+    ];
 
-    let assistantReply = firstResponse.content || "Comando processado.";
+    const firstResponse = await callOpenRouterWithPriority(
+      1, 'never', requestSignature, conversationMessages, toolsHabilitadas, finalModel, 0.7,
+    );
 
+    let assistantReply: string;
+
+    // ✅ FIX: TypeScript type narrowing para evitar erro de build
     if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
-      const toolResults = await Promise.all(firstResponse.toolCalls.map(async (tc) => ({ tc, result: await executeTool(tc, user.auth_user_id, String(user.id)) })));
-      const secondResponse = await callOpenRouterWithPriority(1, 'never', `${requestSignature}_synth`, [
+      const toolResults = await Promise.all(
+        firstResponse.toolCalls.map(async (toolCall) => {
+          const result = await executeTool(toolCall, user.auth_user_id, String(user.id));
+          return { toolCall, result };
+        }),
+      );
+
+      const messagesWithToolResults: any[] = [
         ...conversationMessages,
-        { role: 'assistant', content: firstResponse.content || null, tool_calls: firstResponse.toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } })) },
-        ...toolResults.map(({ tc, result }) => ({ role: 'tool', tool_call_id: tc.id, content: result }))
-      ], [], finalModel, 0.7);
-      assistantReply = secondResponse.content || assistantReply;
+        {
+          role: 'assistant',
+          content: firstResponse.content || null,
+          tool_calls: firstResponse.toolCalls.map(tc => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.function.name, arguments: tc.function.arguments },
+          })),
+        },
+        ...toolResults.map(({ toolCall, result }) => ({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: result,
+        })),
+      ];
+
+      const secondResponse = await callOpenRouterWithPriority(
+        1, 'never', `${requestSignature}_synth`, messagesWithToolResults, [], finalModel, 0.7,
+      );
+      assistantReply = secondResponse.content || 'Comando executado com sucesso.';
+    } else {
+      assistantReply = firstResponse.content || 'Entendido, Célio.';
     }
 
-    // 8. FINALIZAÇÃO
+    // ── 12. FINALIZAÇÃO E BACKGROUND (FIRE AND FORGET) ───────────────────────
     await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => {});
-    supabase.from('brain').insert({
-      user_id: Number(user.id), session_id: sessionId, content: message, category: message.length < 15 ? 'noise' : 'info',
-      metadata: { role: 'user', ai_reply: assistantReply, contexts, model: finalModel }
-    }).then(() => {});
 
-    extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply).catch(() => {});
+    // ✅ FIX TÉCNICO: Supabase insert background sem travar e sem erro de tipo .catch()
+    // Builders do Supabase não expõem .catch() diretamente no tipo PostgrestFilterBuilder
+    supabase.from('brain').insert({
+      user_id: Number(user.id),
+      session_id: sessionId,
+      content: message,
+      category: message.length < 15 ? 'noise' : 'info',
+      metadata: { role: 'user', ai_reply: assistantReply, contexts, model: finalModel },
+    }).then(({ error }) => {
+      if (error) console.error('[Brain Save Error]:', error.message);
+    });
+
+    const audioBase64 = speak
+      ? await generateTTS(assistantReply, user.preferred_voice || 'alloy')
+      : null;
+
+    // Extração em Background
+    extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply)
+      .catch(e => console.error('[Background Extractor Error]:', e));
 
     return NextResponse.json({
       reply: assistantReply,
-      audioBase64: speak ? await generateTTS(assistantReply, user.preferred_voice || 'alloy') : null,
-      ok: true, sessionId, performance: `${Date.now() - startTime}ms`,
+      audioBase64,
+      ok: true,
+      sessionId,
+      performance: `${Date.now() - startTime}ms`,
     });
 
   } catch (e: any) {
