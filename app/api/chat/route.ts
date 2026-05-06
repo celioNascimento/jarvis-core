@@ -14,6 +14,7 @@ import { executeTool } from '@/lib/chat/tools-executor';
 import OpenAI from 'openai';
 import { getUserFromToken } from '@/lib/auth';
 import { extractAndSummarize } from '@/lib/extractor'; // ✅ IMPORT DO EXTRATOR ADICIONADO
+import { buildDynamicContext } from '@/lib/chat/context-builder';
 
 export const maxDuration = 60;
 
@@ -180,7 +181,7 @@ export async function POST(req: NextRequest) {
       memory.ram.ramBlock ?? '',
     );
 
-    // ── Carregamento Modular ─────────────────────────────────────────────────
+    // ── Carregamento Modular Original ────────────────────────────────────────
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       {
         userId: String(user.id),
@@ -215,22 +216,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5. Composição do Prompt
-    const coreTools = [
-      'salvar_evento', 
-      'consultar_agenda', 
-      'create_reminder', 
-      'searchWeb', 
-      'buscar_memoria_longa', 
-      'consultar_lembretes',
-      'adicionar_diretriz_dinamica'
-    ];
-
-    const toolsHabilitadas = ALL_TOOLS.filter(t =>
-      coreTools.includes(t.function.name) || activeTools.includes(t.function.name)
-    );
-    
-
     const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
     const diasDaSemana = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
     const nomeDia = diasDaSemana[nowSP.getDay()];
@@ -258,37 +243,39 @@ export async function POST(req: NextRequest) {
       intent: 'personal',
       dynamicGuidelines: dynamicGuidelinesBlock,
     });
-// --- INJEÇÃO DE CONSCIÊNCIA (ALERTA DE LEMBRETES CRÍTICOS) ---
-let alertaUrgencia = '';
-try {
-  // Janela de 24h ajustada para o fuso de Londrina
-  const janelaFutura = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-  const { data: urgentes, error: errorReminders } = await supabase
-    .schema('jarvis')
-    .from('reminders')
-    .select('title, scheduled_time')
-    .eq('user_id', Number(user.id))
-    .eq('status', 'pending')
-    .gte('relevance_score', 0.8) // Filtra apenas o que é prioridade máxima
-    .lte('scheduled_time', janelaFutura)
-    .order('scheduled_time', { ascending: true });
+    // ── INJEÇÃO DE CONSCIÊNCIA DINÂMICA (MAESTRO) ────────────────────────────
+    const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
+      userId: String(user.id),
+      authUserId: user.auth_user_id,
+      message,
+      location: body.location || null,
+      contexts: contexts || [],
+      emotionalScore: emotional.score || 0
+    });
 
-  if (!errorReminders && urgentes && urgentes.length > 0) {
-    alertaUrgencia = `
-[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]
-Célio, existem pendências CRÍTICAS que exigem sua atenção imediata:
-${urgentes.map(u => `- ${u.title}`).join('\n')}
+    // 5. Composição do Prompt
+    const coreTools = [
+      'salvar_evento', 
+      'consultar_agenda', 
+      'create_reminder', 
+      'searchWeb', 
+      'buscar_memoria_longa', 
+      'consultar_lembretes',
+      'adicionar_diretriz_dinamica'
+    ];
 
-DIRETRIZ DE ZELADORIA: O usuário possui TDAH e pode se dispersar. Como assistente mentor, sua missão é impedir que ele ignore esses itens. Se ele iniciar novos assuntos irrelevantes, faça uma ponte elegante para garantir que essas prioridades estão sob controle. Não seja apenas informativo, seja proativo.`;
-  }
-} catch (err) {
-  console.error('[RadarReminders] Erro:', err);
-}
+    // O sistema agora mescla as ferramentas Core, as do loadActiveModules antigo e as do novo Maestro
+    const toolsHabilitadas = ALL_TOOLS.filter(t =>
+      coreTools.includes(t.function.name) || 
+      activeTools.includes(t.function.name) || 
+      dynamicTools.includes(t.function.name)
+    );
 
-const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
+    const systemPrompt = `[RELÓGIO DO SISTEMA - LEI ABSOLUTA]
 Hoje é ${nomeDia}, ${dataHoraSP}. 
-${alertaUrgencia} 
+
+${contextText}
 
 ---
 [DIRETRIZES DE EXECUÇÃO E FERRAMENTAS - PRIORIDADE MÁXIMA]
@@ -296,7 +283,7 @@ ${alertaUrgencia}
    - FONTE DE VERDADE: Use OBRIGATORIAMENTE a ferramenta 'salvar_evento' para a tabela 'events' (Supabase). É nossa base primária.
    - SINCRONIZAÇÃO: 'criar_evento_agenda' (Google) é apenas um espelho. Em caso de falha de token, reporte: "Salvo localmente na Agenda Lev, sincronização Google pendente".
    - LEITURA OBRIGATÓRIA: Jamais confie na sua memória L3/Dossiê para compromissos. Sempre que perguntado, use as ferramentas 'consultar_agenda' e 'consultar_lembretes'.
-   - POSTURA DE MENTOR: Se houver conteúdo no bloco [ESTADO DE ALERTA], você tem permissão (e dever) de interromper fluxos de conversa menos importantes para manter o Célio no trilho das prioridades.
+   - POSTURA DE MENTOR: Se houver conteúdo no bloco de prioridade/alerta dinâmico acima, você tem permissão (e dever) de interromper fluxos de conversa menos importantes para manter o Célio no trilho das prioridades.
 
 2. LISTAS E COMPRAS (BACKGROUND): Extração silenciosa. Responda confirmando os itens exatos capturados (ex: "Entendido, adicionei [Item] para [Lugar]").
 
@@ -305,7 +292,6 @@ ${alertaUrgencia}
 4. PROTOCOLO DE SAÍDA: Proibido responder apenas "Feito", "Pronto" ou "Anotado". Descreva a ação técnica realizada para manter o registro de consciência do sistema.
 ---
 ${basePrompt}`;
-
 
     // 6. Primeira chamada ao LLM
     const conversationMessages: any[] = [
@@ -397,7 +383,7 @@ ${basePrompt}`;
     // ── ✅ 10. EXTRAÇÃO DE DADOS EM BACKGROUND (A MÁGICA ACONTECE AQUI) ──
     // O sistema dispara o extrator em segundo plano para anotar as informações (Compras, Perfil, Projetos)
     // Usamos String(user.id) garantindo que o BigInt correto seja passado.
-   await extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply);
+    await extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply);
 
     // 11. RESPOSTA FINAL
     return NextResponse.json({
