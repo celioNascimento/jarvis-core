@@ -14,10 +14,10 @@ import { executeTool } from '@/lib/chat/tools-executor';
 import OpenAI from 'openai';
 import { extractAndSummarize } from '@/lib/extractor';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
-import { 
-  resolveLocation, 
-  normalizeLocationForModules, 
-  buildGeoBlock 
+import {
+  resolveLocation,
+  normalizeLocationForModules,
+  buildGeoBlock
 } from '@/lib/geo-resolver';
 import { verificarAlertasDeProximidade } from '@/lib/geo'; // RADAR PROATIVO
 
@@ -69,16 +69,32 @@ export async function POST(req: NextRequest) {
 
     const rawLocation = isMultipart ? body.get('location') : body.location;
     let userLocation = null;
+
     if (rawLocation) {
       try {
-        userLocation = typeof rawLocation === 'string' ? JSON.parse(rawLocation) : rawLocation;
+        const parsed = typeof rawLocation === 'string' ? JSON.parse(rawLocation) : rawLocation;
+
+        // ── NORMALIZAÇÃO UNIVERSAL ──
+        // Intercepta e converte 'latitude' para 'lat', não importa como o celular mandou
+        if (parsed && typeof parsed === 'object') {
+          userLocation = {
+            lat: parsed.lat ?? parsed.latitude,
+            lng: parsed.lng ?? parsed.longitude ?? parsed.lon,
+            label: parsed.label,
+            city: parsed.city
+          };
+        }
       } catch (e) {
-        userLocation = rawLocation;
+        console.warn('[Parser] Erro ao processar location JSON');
       }
     }
 
     // 1.1 LOG DE RIGOR
-    console.log(`[DEBUG GPS] Payload Identificado:`, { hasLocation: !!userLocation, lat: userLocation?.lat, lng: userLocation?.lng });
+    console.log(`[DEBUG GPS] Payload Identificado:`, {
+      hasLocation: !!userLocation,
+      lat: userLocation?.lat,
+      lng: userLocation?.lng
+    });
 
     // ── 2. Resolve Usuário e Sessão ──
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
@@ -176,7 +192,7 @@ export async function POST(req: NextRequest) {
     const urgentes = (masterContext?.reminders || []).map((u: any) => u.title).join(', ');
 
     // Se o GPS chegou com sucesso, o Jarvis proíbe a adivinhação baseada no histórico
-    const gpsOverrideInstruction = resolvedLocation 
+    const gpsOverrideInstruction = resolvedLocation
       ? `\n[DIRETRIZ CRÍTICA]: O usuário está REALMENTE em: ${resolvedLocation.label || 'Londrina'}. Ignore qualquer endereço divergente do histórico.`
       : `\n[STATUS GPS]: INDISPONÍVEL. Proibido tentar adivinhar a localização atual baseando-se no histórico. Se questionado, diga que não tem o sinal GPS no momento.`;
 
@@ -185,16 +201,16 @@ ${geoBlock}${gpsOverrideInstruction}${alertaRadar}
 ${contextText}${urgentes ? `\n[URGENTE]: Pendências: ${urgentes}` : ''}
 ---
 ${composeSystemPrompt({
-  assistantName: user.assistant_name, authorName: user.nickname, isLikelyNoise: message.length < 15,
-  isSystemStressed: isStressed, emotionalScore: emotional.score, detectedContexts: contexts,
-  contextBlocks, memoryBlocks: {
-    truncatedL3: filteredL3.slice(0, 3000), truncatedHd: memory.hd.block.slice(0, 4000),
-    truncatedEvents: memory.events.block.slice(0, 2000), relationship: memory.relationship.block.slice(0, 2000),
-    topics: masterContext?.topics || memory.topics.relatedTopicsBlock,
-  },
-  canonicalDateTimeBlock: dataHoraSP, canonicalDateISO: nowSP.toISOString().split('T')[0],
-  systemWarning: '', intent: 'personal', dynamicGuidelines: (masterContext?.guidelines || []).map((g: any) => `- ${g.content}`).join('\n'),
-})}
+      assistantName: user.assistant_name, authorName: user.nickname, isLikelyNoise: message.length < 15,
+      isSystemStressed: isStressed, emotionalScore: emotional.score, detectedContexts: contexts,
+      contextBlocks, memoryBlocks: {
+        truncatedL3: filteredL3.slice(0, 3000), truncatedHd: memory.hd.block.slice(0, 4000),
+        truncatedEvents: memory.events.block.slice(0, 2000), relationship: memory.relationship.block.slice(0, 2000),
+        topics: masterContext?.topics || memory.topics.relatedTopicsBlock,
+      },
+      canonicalDateTimeBlock: dataHoraSP, canonicalDateISO: nowSP.toISOString().split('T')[0],
+      systemWarning: '', intent: 'personal', dynamicGuidelines: (masterContext?.guidelines || []).map((g: any) => `- ${g.content}`).join('\n'),
+    })}
 [DIRETRIZES DE RIGOR TÉCNICO]
 1. Use 'salvar_evento' como fonte primária.
 2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda "Pronto".`;
@@ -217,14 +233,14 @@ ${composeSystemPrompt({
     }
 
     // ── 12. FINALIZAÇÃO E BACKGROUND (Memória Longa) ──
-    await redis.set(replyKey, assistantReply, { ex: 60 }).catch(() => {});
-    
+    await redis.set(replyKey, assistantReply, { ex: 60 }).catch(() => { });
+
     (async () => {
       supabase.from('brain').insert({
         user_id: Number(user.id), session_id: sessionId, content: message, category: message.length < 15 ? 'noise' : 'info',
         metadata: { role: 'user', ai_reply: assistantReply, contexts, model: finalModel }
       }).then(({ error }) => { if (error) console.error('[Brain Save Error]:', error.message); });
-      
+
       extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply).catch(e => console.error('[Background Extractor Error]:', e));
     })();
 
