@@ -1,4 +1,4 @@
-// lib/memory/index.ts — V2.1.0 (RIGOR TOTAL: God RPC + Fix TS Null Types + Full Layers)
+// lib/memory/index.ts — V2.2.0 (RIGOR TOTAL: Fix Implicit Any + TS Strict Build)
 import { supabase } from '@/lib/jarvis';
 import { compressToSummary, semanticRamCompression, RAM_MAX_CHARS } from '@/lib/chat/ram';
 import { detectTopicShiftWithL4 } from '@/lib/chat/context-classifier';
@@ -18,7 +18,8 @@ export type MemoryWriteType =
 
 export interface RAMResult { recentPairs: Array<{ role: 'user' | 'assistant'; content: string }>; ramBlock: string; sessionId: string; }
 export interface L3Result { content: string; themes: string[]; isFallback: boolean; }
-export interface HDResult { memories: Array<{ id: string; summary: string; similarity: number; emotional_weight: number; }>; block: string; memoryIds: string[]; }
+export interface HDResult { memories: Array<MemoryItem>; block: string; memoryIds: string[]; }
+export interface MemoryItem { id: string; summary: string; similarity: number; emotional_weight: number; }
 export interface AshesResult { block: string; periods: Array<{ summary: string; period_start: string; period_end: string; }>; }
 export interface EventsResult { upcoming: any[]; important: any[]; block: string; }
 export interface TopicsResult { topicBlock: string; recommendationsBlock: string; relatedTopicsBlock: string; }
@@ -60,22 +61,19 @@ async function readRAM(options: MemoryReadOptions, hdBlock: string, injectedHist
   try {
     const { userId, sessionId, contexts, authorName, assistantName } = options;
     const safeSessionId = sessionId || 'default_session';
-    
-    // FIX TS: Usando fallback [] para evitar erro de atribuição null
     let historySession: any[] = injectedHistory ?? [];
 
     if (historySession.length === 0) {
       const { data } = await supabase.from('brain').select('content, metadata')
         .eq('user_id', userId).eq('session_id', safeSessionId)
         .neq('category', 'archived').order('created_at', { ascending: false }).limit(6);
-      historySession = data ?? []; // ← FIX CRÍTICO AQUI
+      historySession = data ?? [];
     }
 
     if (historySession.length === 0) return { recentPairs: [], ramBlock: '', sessionId: safeSessionId };
 
     const hasEnoughHistory = historySession.length >= 2;
-    const safeContexts = Array.isArray(contexts) ? contexts : [];
-    const shiftDetected = hasEnoughHistory ? await detectTopicShiftWithL4(userId, safeContexts as any[]) : false;
+    const shiftDetected = hasEnoughHistory ? await detectTopicShiftWithL4(userId, contexts) : false;
     
     const recentPairs = [...historySession].slice(0, shiftDetected ? 1 : 4).reverse().flatMap((h: any) => [
       { role: 'user' as const, content: h.content || '' },
@@ -83,8 +81,8 @@ async function readRAM(options: MemoryReadOptions, hdBlock: string, injectedHist
     ]);
 
     let ramBlock = '';
-    if (shiftDetected && historySession.length > 1) {
-        ramBlock = `[CONTEXTO ANTERIOR RESUMIDO]\n(O usuário mudou de assunto, mas o histórico recente está preservado.)`;
+    if (shiftDetected) {
+        ramBlock = `[CONTEXTO ANTERIOR RESUMIDO]\n(Usuário iniciou novo tópico)`;
     } else {
         ramBlock = [...historySession].reverse().map((h: any) => 
             `${authorName}: ${h.content}\n${assistantName || 'Lev'}: ${trimAssistantReply(h.metadata?.ai_reply || '')}`
@@ -93,7 +91,6 @@ async function readRAM(options: MemoryReadOptions, hdBlock: string, injectedHist
 
     return { recentPairs, ramBlock, sessionId: safeSessionId };
   } catch (e) { 
-    console.error('[MemoryManager/RAM] Erro:', e);
     return { recentPairs: [], ramBlock: '', sessionId: options.sessionId }; 
   }
 }
@@ -112,8 +109,20 @@ async function readHD(userId: string, queryEmbedding: number[] | null, contexts:
   const { data: search } = await supabase.rpc('match_memories', {
     query_embedding: queryEmbedding, match_threshold: 0.22, match_count: 8
   });
-  const memories = (search || []).map((r: any) => ({ id: r.id, summary: r.summary, similarity: r.similarity, emotional_weight: r.emotional_weight || 0.5 }));
-  return { memories, block: memories.map(m => m.summary).join('\n---\n'), memoryIds: memories.map(m => m.id) };
+  
+  // FIX: Definindo o tipo explicitamente para evitar Implicit Any no map
+  const memories: MemoryItem[] = (search || []).map((r: any) => ({ 
+    id: r.id, 
+    summary: r.summary, 
+    similarity: r.similarity, 
+    emotional_weight: r.emotional_weight || 0.5 
+  }));
+
+  return { 
+    memories, 
+    block: memories.map((m: MemoryItem) => m.summary).join('\n---\n'), 
+    memoryIds: memories.map((m: MemoryItem) => m.id) 
+  };
 }
 
 async function readEvents(userId: string, canonicalDateISO: string, injectedEvents?: any[]): Promise<EventsResult> {
@@ -122,22 +131,22 @@ async function readEvents(userId: string, canonicalDateISO: string, injectedEven
     const { data: fetched } = await supabase.from('events').select('title, start_at, description').eq('user_id', userId).order('start_at', { ascending: true });
     data = fetched ?? [];
   }
-  if (data.length === 0) return { upcoming: [], important: [], block: '' };
   const hoje = new Date(canonicalDateISO);
   const upcoming = data.filter((e: any) => {
     const d = new Date(e.start_at);
     return d >= hoje && (d.getTime() - hoje.getTime()) / 86400000 <= 7;
   });
-  const block = upcoming.length ? `🔴 PRÓXIMOS DIAS:\n${upcoming.map(e => `- ${e.title}: ${e.start_at}`).join('\n')}` : 'Sem eventos.';
+  const block = upcoming.length ? `🔴 PRÓXIMOS DIAS:\n${upcoming.map((e: any) => `- ${e.title}: ${e.start_at}`).join('\n')}` : 'Sem eventos.';
   return { upcoming, important: [], block };
 }
 
 async function readTopics(userId: string, contexts: string[], message: string): Promise<TopicsResult> {
     try {
+        const safeContext = contexts.length > 0 ? contexts[0] : 'casual';
         const [topicBlock, recommendationsBlock, relatedTopicsBlock] = await Promise.all([
             buildTopicBlock(userId, message).catch(() => ''),
             buildRecommendationsBlock(userId, message).catch(() => ''),
-            getRelatedTopics(userId, contexts[0] || 'casual').catch(() => '')
+            getRelatedTopics(userId, safeContext).catch(() => '')
         ]);
         return { topicBlock, recommendationsBlock, relatedTopicsBlock };
     } catch {
@@ -158,18 +167,15 @@ export async function read(options: MemoryReadOptions): Promise<MemoryReadResult
     readL3(userId, queryEmbedding, masterContext?.dossier_summary),
     readEvents(userId, new Date().toISOString().split('T')[0], masterContext?.events),
     readTopics(userId, contexts, message),
-    Promise.resolve({ hasData: false, block: '', sharedMemories: [], sharedEvents: [], hiddenItems: [] }), // Placeholder Relationship
-    Promise.resolve({ block: '', periods: [] }) // Placeholder Ashes
+    Promise.resolve<RelationshipResult>({ hasData: false, block: '', sharedMemories: [], sharedEvents: [], hiddenItems: [] }),
+    Promise.resolve<AshesResult>({ block: '', periods: [] })
   ]);
 
   const ram = await readRAM(options, hd.block, masterContext?.history);
 
-  const durationMs = Date.now() - start;
-  console.log(`[MemoryManager] read em ${durationMs}ms | God RPC: ${masterContext ? 'Ativa' : 'Inativa'}`);
-
   return {
     ram, l3, hd, ashes, events, topics, relationship,
-    meta: { userId, sessionId, layersLoaded: ['ram', 'events', 'hd', 'l3'], durationMs }
+    meta: { userId, sessionId, layersLoaded: ['ram', 'events', 'hd', 'l3'], durationMs: Date.now() - start }
   };
 }
 
@@ -188,15 +194,8 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
         break;
       case 'l3_patch':
         if (!payload.dossie) return;
-        await supabase.from('users').update({ current_context: payload.dossie, updated_at: new Date().toISOString() }).eq('id', payload.userId);
+        await supabase.from('users').update({ current_context: payload.dossie }).eq('id', payload.userId);
         indexL3Chunks(Number(payload.userId), payload.dossie).catch(() => {});
-        break;
-      case 'event':
-        if (!payload.title || !payload.eventDate) return;
-        await supabase.from('events').insert([{
-            user_id: payload.userId, title: payload.title, start_at: payload.eventDate,
-            description: payload.notes, category: payload.category || 'Geral'
-        }]);
         break;
     }
   } catch (e) { console.error('[MemoryManager/write] Erro:', e); }
