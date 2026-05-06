@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V12.6.0 (RIGOR TOTAL: Universal Extractor + Shopping Radar + GPS Override)
+// app/api/chat/route.ts — V12.6.2 (RIGOR TOTAL: Código Completo + Universal Extractor + Radar + Strict History + Tools Loop)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -19,8 +19,7 @@ import {
   normalizeLocationForModules, 
   buildGeoBlock 
 } from '@/lib/geo-resolver';
-// ✅ IMPORTAÇÃO DO RADAR PROATIVO
-import { verificarAlertasDeProximidade } from '@/lib/geo'; 
+import { verificarAlertasDeProximidade } from '@/lib/geo'; // RADAR PROATIVO
 
 export const maxDuration = 60;
 
@@ -42,7 +41,11 @@ async function generateTTS(text: string, voice: string = 'alloy'): Promise<strin
   try {
     const cleanText = text.replace(/[*#_~]/g, '').trim();
     if (!cleanText) return null;
-    const mp3 = await openai.audio.speech.create({ model: 'tts-1', voice: voice as any, input: cleanText });
+    const mp3 = await openai.audio.speech.create({
+      model: 'tts-1',
+      voice: voice as any,
+      input: cleanText,
+    });
     return Buffer.from(await mp3.arrayBuffer()).toString('base64');
   } catch (e) {
     console.error('[TTS Error]:', e);
@@ -59,10 +62,10 @@ export async function POST(req: NextRequest) {
     const isMultipart = contentType.includes('multipart');
     const body = await (isMultipart ? req.formData() : req.json());
 
-    const message = (isMultipart ? body.get('message') : body.message) || '';
-    const userEmail = (isMultipart ? body.get('userEmail') : body.userEmail) || '';
+    const message = (isMultipart ? body.get('message') as string : body.message) || '';
+    const userEmail = (isMultipart ? body.get('userEmail') as string : body.userEmail) || '';
     const speak = isMultipart ? body.get('speak') === 'true' : !!body.speak;
-    const incomingSessionId = isMultipart ? body.get('sessionId') : body.sessionId;
+    const incomingSessionId = isMultipart ? (body.get('sessionId') as string | null) : (body.sessionId as string | null);
 
     const rawLocation = isMultipart ? body.get('location') : body.location;
     let userLocation = null;
@@ -70,24 +73,23 @@ export async function POST(req: NextRequest) {
       try {
         userLocation = typeof rawLocation === 'string' ? JSON.parse(rawLocation) : rawLocation;
       } catch (e) {
-        console.warn('[Parser] Erro ao processar location JSON');
-        userLocation = null;
+        userLocation = rawLocation;
       }
     }
 
     // 1.1 LOG DE RIGOR
     console.log(`[DEBUG GPS] Payload Identificado:`, { hasLocation: !!userLocation, lat: userLocation?.lat, lng: userLocation?.lng });
 
-    // 2. Resolve Usuário e Sessão
+    // ── 2. Resolve Usuário e Sessão ──
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
-    // 3. Deduplicação Global
+    // ── 3. Deduplicação Global (Janela 60s) ──
     const timeSlot = Math.floor(Date.now() / 60000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 40)).toString('base64')}_${timeSlot}`;
-    const replyKey = `chat_reply:${requestSignature}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
+    const replyKey = `chat_reply:${requestSignature}`;
 
     const isFirst = await redis.set(dedupKey, '1', { nx: true, ex: 60 });
     if (!isFirst) {
@@ -98,7 +100,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4. Execução Paralela: God RPC + Geo-Precision
+    // ── 4. Execução Paralela: God RPC + Geo-Precision ──
     const [resolvedLocation, { data: masterContext, error: rpcError }] = await Promise.all([
       resolveLocation(userLocation),
       supabase.rpc('get_consolidated_context', { p_user_id: user.id, p_session_id: sessionId }),
@@ -107,7 +109,7 @@ export async function POST(req: NextRequest) {
 
     const normalizedLocation = normalizeLocationForModules(resolvedLocation);
 
-    // 5. Histórico (Strict Alternation)
+    // ── 5. Histórico (Strict Alternation contra Erro 400) ──
     const rawHistory = masterContext?.history || [];
     const recentHistory: any[] = [];
     let lastAddedRole: string | null = null;
@@ -125,7 +127,7 @@ export async function POST(req: NextRequest) {
     }
     if (lastAddedRole === 'user') recentHistory.pop();
 
-    // 6. Inteligência e Contexto
+    // ── 6. Processamento de Inteligência Paralelo ──
     const [queryEmbedding, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       llmGateway.isOverloaded(),
@@ -145,39 +147,48 @@ export async function POST(req: NextRequest) {
       user.plan || 'free', 'google/gemini-2.0-flash-001'
     );
 
-    // 7. Radar Proativo (Shopping List / Reminders)
-    let alertaProximidade = '';
+    const finalModel = (typeof resolvedModel === 'string' && resolvedModel.length > 0) ? resolvedModel : 'google/gemini-2.0-flash-001';
+
+    // ── 7. Radar Proativo (Shopping List) ──
+    let alertaRadar = '';
     if (resolvedLocation?.lat && resolvedLocation?.lng) {
-       const alerta = await verificarAlertasDeProximidade(String(user.id), Number(resolvedLocation.lat), Number(resolvedLocation.lng));
-       if (alerta.temAlerta) {
-         alertaProximidade = `\n[ALERTA RADAR]: ${alerta.mensagem}`;
-       }
+      const radar = await verificarAlertasDeProximidade(String(user.id), Number(resolvedLocation.lat), Number(resolvedLocation.lng));
+      if (radar.temAlerta) alertaRadar = `\n[ALERTA RADAR]: ${radar.mensagem}`;
     }
 
-    // 8. Contexto Dinâmico (Injeção masterContext)
+    // ── 8. Radar de Afeto ──
+    let filteredL3 = memory.l3.content;
+    const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
+    const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentHistory.map(h => h.content).join(' ') + message));
+    if (!isHighAlertMonth && !hasFamilySignal) {
+      filteredL3 = filteredL3.replace(/##\s*(datas?|aniversário|famil[íi]a|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '').trim();
+    }
+
+    // ── 9. Contexto Dinâmico ──
     const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
       userId: String(user.id), authUserId: user.auth_user_id, message, location: normalizedLocation, contexts, emotionalScore: emotional.score, masterContext,
     });
 
-    // 9. Composição de Prompt e GPS Override
+    // ── 10. COMPOSIÇÃO DE PROMPT (Com GPS Override Blindado) ──
     const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
     const dataHoraSP = nowSP.toLocaleString('pt-BR');
     const geoBlock = buildGeoBlock(resolvedLocation);
     const urgentes = (masterContext?.reminders || []).map((u: any) => u.title).join(', ');
 
+    // Se o GPS chegou com sucesso, o Jarvis proíbe a adivinhação baseada no histórico
     const gpsOverrideInstruction = resolvedLocation 
-      ? `\n[DIRETRIZ CRÍTICA]: O usuário está REALMENTE em: ${resolvedLocation.label || 'Londrina'}. Ignore o histórico se divergir.`
-      : '';
+      ? `\n[DIRETRIZ CRÍTICA]: O usuário está REALMENTE em: ${resolvedLocation.label || 'Londrina'}. Ignore qualquer endereço divergente do histórico.`
+      : `\n[STATUS GPS]: INDISPONÍVEL. Proibido tentar adivinhar a localização atual baseando-se no histórico. Se questionado, diga que não tem o sinal GPS no momento.`;
 
     const systemPrompt = `[RELÓGIO DO SISTEMA]: ${dataHoraSP}
-${geoBlock}${gpsOverrideInstruction}${alertaProximidade}
-${contextText}${urgentes ? `\n[URGENTE]: ${urgentes}` : ''}
+${geoBlock}${gpsOverrideInstruction}${alertaRadar}
+${contextText}${urgentes ? `\n[URGENTE]: Pendências: ${urgentes}` : ''}
 ---
 ${composeSystemPrompt({
   assistantName: user.assistant_name, authorName: user.nickname, isLikelyNoise: message.length < 15,
   isSystemStressed: isStressed, emotionalScore: emotional.score, detectedContexts: contexts,
   contextBlocks, memoryBlocks: {
-    truncatedL3: memory.l3.content.slice(0, 3000), truncatedHd: memory.hd.block.slice(0, 4000),
+    truncatedL3: filteredL3.slice(0, 3000), truncatedHd: memory.hd.block.slice(0, 4000),
     truncatedEvents: memory.events.block.slice(0, 2000), relationship: memory.relationship.block.slice(0, 2000),
     topics: masterContext?.topics || memory.topics.relatedTopicsBlock,
   },
@@ -188,11 +199,11 @@ ${composeSystemPrompt({
 1. Use 'salvar_evento' como fonte primária.
 2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda "Pronto".`;
 
-    // 10. Execução LLM
+    // ── 11. CICLO LLM (Com Execução de Ferramentas) ──
     const toolsHabilitadas = ALL_TOOLS.filter(t => activeTools.includes(t.function.name) || dynamicTools.includes(t.function.name));
     const conversationMessages = [{ role: 'system', content: systemPrompt }, ...recentHistory, { role: 'user', content: message }];
 
-    const firstResponse = await callOpenRouterWithPriority(1, 'never', requestSignature, conversationMessages, toolsHabilitadas, (typeof resolvedModel === 'string' ? resolvedModel : 'google/gemini-2.0-flash-001'), 0.7);
+    const firstResponse = await callOpenRouterWithPriority(1, 'never', requestSignature, conversationMessages, toolsHabilitadas, finalModel, 0.7);
     let assistantReply = firstResponse.content || "Entendido.";
 
     if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
@@ -201,18 +212,20 @@ ${composeSystemPrompt({
         ...conversationMessages,
         { role: 'assistant', content: firstResponse.content || null, tool_calls: firstResponse.toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } })) },
         ...toolResults.map(({ tc, result }) => ({ role: 'tool', tool_call_id: tc.id, content: result }))
-      ], [], (typeof resolvedModel === 'string' ? resolvedModel : 'google/gemini-2.0-flash-001'), 0.7);
+      ], [], finalModel, 0.7);
       assistantReply = secondResponse.content || assistantReply;
     }
 
-    // 11. Finalização
+    // ── 12. FINALIZAÇÃO E BACKGROUND (Memória Longa) ──
     await redis.set(replyKey, assistantReply, { ex: 60 }).catch(() => {});
+    
     (async () => {
       supabase.from('brain').insert({
         user_id: Number(user.id), session_id: sessionId, content: message, category: message.length < 15 ? 'noise' : 'info',
-        metadata: { role: 'user', ai_reply: assistantReply, contexts, model: (typeof resolvedModel === 'string' ? resolvedModel : 'google/gemini-2.0-flash-001') }
-      }).then(() => {});
-      extractAndSummarize(String(user.id), user.nickname, message, assistantReply).catch(() => {});
+        metadata: { role: 'user', ai_reply: assistantReply, contexts, model: finalModel }
+      }).then(({ error }) => { if (error) console.error('[Brain Save Error]:', error.message); });
+      
+      extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply).catch(e => console.error('[Background Extractor Error]:', e));
     })();
 
     const audioBase64 = speak ? await generateTTS(assistantReply, user.preferred_voice || 'alloy') : null;
