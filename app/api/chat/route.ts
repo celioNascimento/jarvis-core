@@ -121,16 +121,28 @@ export async function POST(req: NextRequest) {
 
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
-    // ── BUSCA DIRETRIZES DINÂMICAS ───────────────────────────────────────────
-    const { data: guidelines } = await supabase
-      .schema('jarvis')
-      .from('dynamic_guidelines')
-      .select('content')
-      .eq('user_id', user.id)
-      .eq('active', true);
+        // ── MASTER RPC: CONSOLIDAÇÃO DE DADOS (Fim do N+1) ──────────────────────
+    // Em uma única viagem de rede de ~40ms, pegamos Diretrizes, Agenda e Lembretes.
+    const { data: masterContext, error: rpcError } = await supabase
+      .rpc('get_consolidated_context', { p_user_id: Number(user.id) });
 
-    const dynamicGuidelinesBlock = guidelines?.map(g => `- ${g.content}`).join('\n') || '';
+    if (rpcError) console.error('[RPC Error]:', rpcError);
 
+    // 1. Mantemos o dynamicGuidelinesBlock vivo e rápido
+    const guidelines = masterContext?.guidelines || [];
+    const dynamicGuidelinesBlock = guidelines.map((g: any) => `- ${g.content}`).join('\n') || '';
+
+    // 2. Extraímos os Lembretes Urgentes (Rigor de TDAH) sem fazer outra chamada
+    const urgentes = masterContext?.reminders || [];
+    let alertaUrgencia = '';
+    if (urgentes.length > 0) {
+      alertaUrgencia = `
+[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]
+Célio, existem pendências CRÍTICAS que exigem sua atenção:
+${urgentes.map((u: any) => `- ${u.title}`).join('\n')}
+DIRETRIZ DE ZELADORIA: O usuário possui TDAH e pode se dispersar. Como assistente mentor, sua missão é impedir que ele ignore esses itens.`;
+    }
+    
     // ── DEDUPLICAÇÃO GLOBAL ──────────────────────────────────────────────────
     const timeSlot = Math.floor(Date.now() / 10000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
