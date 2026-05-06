@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V11.9.0 (RIGOR TOTAL: God RPC + TS Fix Build + Radar de Afeto + Redis Loop + Anti-Collision History + OpenRouter Fix)
+// app/api/chat/route.ts — V12.2.0 (RIGOR TOTAL: God RPC + TS Fix Build + Radar de Afeto + Redis Loop + Anti-Collision History + OpenRouter Fix + buildDynamicContext masterContext Injection + Dedup Window 60s + Reverse Geocoding Paralelo + Geo-Label no Prompt)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -51,6 +51,39 @@ async function generateTTS(text: string, voice: string = 'alloy'): Promise<strin
   }
 }
 
+
+// ─── Geocodificação Reversa (Nominatim — sem custo, sem API key) ─────────────────
+interface UserLocation {
+  lat?: number;
+  lng?: number;
+  label?: string;
+  city?: string;
+  state?: string;
+  [key: string]: any;
+}
+
+async function resolveLocation(raw: UserLocation | null): Promise<UserLocation | null> {
+  if (!raw?.lat || !raw?.lng) return raw;
+  // Se já vier com label resolvido pelo cliente, não repete a chamada
+  if (raw.label && !/^-?\d/.test(raw.label)) return raw;
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${raw.lat}&lon=${raw.lng}&format=json&accept-language=pt-BR`,
+      { headers: { 'User-Agent': 'JarvisApp/1.0' }, signal: AbortSignal.timeout(3000) },
+    );
+    if (!res.ok) return raw;
+    const geo = await res.json();
+    return {
+      ...raw,
+      label: geo.display_name || `${raw.lat}, ${raw.lng}`,
+      city: geo.address?.city || geo.address?.town || geo.address?.municipality || geo.address?.village || '',
+      state: geo.address?.state || '',
+    };
+  } catch {
+    // Fallback silencioso: continua com coordenadas brutas
+    return raw;
+  }
+}
 // ─── Handler principal ────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
@@ -74,12 +107,17 @@ export async function POST(req: NextRequest) {
 
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
-    // ── 3. GOD RPC: CONSOLIDAÇÃO DE CONTEXTO (MATA N+1) ───────────────────────
-    const { data: masterContext, error: rpcError } = await supabase
-      .rpc('get_consolidated_context', {
+    // ── 2b + 3. GEOCODIFICAÇÃO REVERSA + GOD RPC EM PARALELO ───────────────────
+    // resolveLocation e get_consolidated_context rodam simultaneamente.
+    // Elimina ~200-400ms de latência sequencial que existia na V12.1.
+    // AbortSignal.timeout(3000) garante que geo nunca bloqueia o RPC.
+    const [resolvedLocation, { data: masterContext, error: rpcError }] = await Promise.all([
+      resolveLocation(userLocation),
+      supabase.rpc('get_consolidated_context', {
         p_user_id: user.id,
         p_session_id: sessionId,
-      });
+      }),
+    ]);
 
     if (rpcError) console.error('[RPC FATAL ERROR]:', rpcError.message);
 
@@ -108,7 +146,8 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 5. DEDUPLICAÇÃO GLOBAL (LOOP DE ESPERA RIGOROSO) ──────────────────────
-    const timeSlot = Math.floor(Date.now() / 10000);
+    // FIX: Janela de 60s (era 10s) — cobre qualquer retry agressivo do okhttp Android
+    const timeSlot = Math.floor(Date.now() / 60000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
     const replyKey = `chat_reply:${requestSignature}`;
@@ -160,7 +199,7 @@ export async function POST(req: NextRequest) {
         message,
         contexts,
         emotionalScore: emotional.score,
-        location: userLocation,
+        location: resolvedLocation,
         masterContext, // ← passado dentro do objeto de parâmetros, não como 3º argumento
       },
       user.plan || 'free',
@@ -215,14 +254,16 @@ export async function POST(req: NextRequest) {
       dynamicGuidelines: dynamicGuidelinesBlock,
     });
 
-    // buildDynamicContext: masterContext omitido — só passa se a assinatura da função aceitar
+    // buildDynamicContext: masterContext injetado para eliminar consulta redundante ao banco
+    // (favorite_places já vem hidratado pelo God RPC — evita o último vazamento de N+1)
     const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
       userId: String(user.id),
       authUserId: user.auth_user_id,
       message,
-      location: userLocation,
+      location: resolvedLocation,
       contexts: contexts || [],
       emotionalScore: emotional.score || 0,
+      masterContext,
     });
 
     const coreTools = [
@@ -240,7 +281,19 @@ export async function POST(req: NextRequest) {
       dynamicTools.includes(t.function.name),
     );
 
-    const systemPrompt = `[RELÓGIO DO SISTEMA]: ${dataHoraSP}\n${contextText}${alertaUrgencia}\n---\n${basePrompt}
+    // Bloco de geo-consciência: usa nome humano do local (label) se disponível,
+    // senão cidade/estado, senão coordenadas brutas como último fallback.
+    // Garante que o LLM nunca diz 'latitude -23.31' quando sabe o nome do local.
+    const geoBlock = (() => {
+      if (!resolvedLocation) return '';
+      const { lat, lng, label, city, state } = resolvedLocation as UserLocation;
+      if (label && !/^-?\d/.test(label)) return `[LOCALIZAÇÃO ATUAL]: ${label}`;
+      if (city) return `[LOCALIZAÇÃO ATUAL]: ${city}${state ? `, ${state}` : ''}`;
+      if (lat && lng) return `[LOCALIZAÇÃO ATUAL]: coordenadas ${Number(lat).toFixed(4)}, ${Number(lng).toFixed(4)}`;
+      return '';
+    })();
+
+    const systemPrompt = `[RELÓGIO DO SISTEMA]: ${dataHoraSP}\n${geoBlock ? geoBlock + '\n' : ''}${contextText}${alertaUrgencia}\n---\n${basePrompt}
 [DIRETRIZES DE RIGOR TÉCNICO]
 1. AGENDA: Use 'salvar_evento' (Supabase) como fonte primária.
 2. MENTOR: Interrompa fluxos se houver alertas de urgência.
