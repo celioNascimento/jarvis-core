@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V9.5.0 (FULL: God RPC + Radar de Afeto + Background Extractor)
+// app/api/chat/route.ts — V9.6.0 (RIGOR TOTAL: God RPC + Geo-Consciência + Radar de Afeto)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -24,7 +24,7 @@ const redis = new Redis({
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 });
 
-// ─── Constantes e Sinais ──────────────────────────────────────────────────────
+// ─── Constantes Globais e Sinais de Contexto ─────────────────────────────────
 const MAX_MSG_CHARS = 800;
 const FAMILY_DATE_SIGNALS = [
   /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
@@ -51,20 +51,23 @@ async function generateTTS(text: string, voice: string = 'alloy'): Promise<strin
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
   try {
+    // 1. Captura de Payload (Multipart ou JSON)
     const body = await (req.headers.get('content-type')?.includes('multipart') ? req.formData() : req.json());
     
     const message = body instanceof FormData ? body.get('message') as string : body.message;
     const userEmail = body instanceof FormData ? body.get('userEmail') as string : body.userEmail;
     const speak = body instanceof FormData ? body.get('speak') === 'true' : !!body.speak;
     const incomingSessionId = body instanceof FormData ? (body.get('sessionId') as string | null) : (body.sessionId as string | null);
+    const userLocation = body instanceof FormData ? null : body.location; // Suporte a GPS do App
 
-    // 1. Resolve Usuário e Sessão
+    // 2. Resolve Usuário e Sessão
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
 
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
-    // ── 2. GOD RPC: UNIFICAÇÃO DE CONTEXTO (MATA MÚLTIPLAS QUERIES) ──────────
+    // ── 3. GOD RPC: UNIFICAÇÃO DE CONTEXTO (MATA 30+ QUERIES) ─────────────────
+    // Buscamos Histórico, Diretrizes, Lembretes, Rotinas e Localizações em 1 pulso.
     const { data: masterContext, error: rpcError } = await supabase
       .rpc('get_consolidated_context', { 
         p_user_id: user.id, 
@@ -73,25 +76,32 @@ export async function POST(req: NextRequest) {
 
     if (rpcError) console.error('[RPC FATAL ERROR]:', rpcError.message);
 
-    // A. Hidratação do Histórico (Substitui getRecentMessages)
+    // A. Hidratação do Histórico (Mata o getRecentMessages)
     const rawHistory = masterContext?.history || [];
     const recentHistory: any[] = [];
     for (const row of [...rawHistory].reverse()) {
-      if (row.content?.length > 3) recentHistory.push({ role: 'user', content: row.content.slice(0, MAX_MSG_CHARS) });
-      if (row.metadata?.ai_reply?.length > 3) recentHistory.push({ role: 'assistant', content: row.metadata.ai_reply.slice(0, MAX_MSG_CHARS) });
+      const userMsg = (row.content || '').trim();
+      const aiReply = (row.metadata?.ai_reply || '').trim();
+      if (userMsg.length > 3) recentHistory.push({ role: 'user', content: userMsg.slice(0, MAX_MSG_CHARS) });
+      if (aiReply.length > 3) recentHistory.push({ role: 'assistant', content: aiReply.slice(0, MAX_MSG_CHARS) });
     }
 
-    // B. Hidratação de Diretrizes e Alertas de TDAH
+    // B. Hidratação de Diretrizes Dinâmicas
     const guidelines = masterContext?.guidelines || [];
     const dynamicGuidelinesBlock = guidelines.map((g: any) => `- ${g.content}`).join('\n') || '';
     
+    // C. Hidratação do Radar de Urgência (TDAH + Compras)
     const urgentes = masterContext?.reminders || [];
     let alertaUrgencia = '';
     if (urgentes.length > 0) {
-      alertaUrgencia = `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]\nCélio, atenção imediata para pendências críticas:\n${urgentes.map((u: any) => `- ${u.title}`).join('\n')}`;
+      alertaUrgencia = `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]\nCélio, atenção para:\n${urgentes.map((u: any) => `- ${u.title}`).join('\n')}`;
     }
 
-    // ── 3. DEDUPLICAÇÃO GLOBAL (UPSTASH) ─────────────────────────────────────
+    // D. Hidratação de Rotinas e Localizações (Mata chamadas extras no Prompt Engine)
+    const userRoutines = masterContext?.routines || [];
+    const savedLocations = masterContext?.locations || [];
+
+    // ── 4. DEDUPLICAÇÃO GLOBAL (UPSTASH REDIS) ───────────────────────────────
     const timeSlot = Math.floor(Date.now() / 10000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
@@ -99,41 +109,38 @@ export async function POST(req: NextRequest) {
 
     const isFirst = await redis.set(dedupKey, '1', { nx: true, ex: 30 });
     if (!isFirst) {
-      const cached = await redis.get<string>(replyKey);
-      if (cached) return NextResponse.json({ reply: cached, ok: true, sessionId, performance: '0ms (dedup)' });
+      console.warn('[Dedup] Retry detectado, aguardando cache...');
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 1500));
+        const cached = await redis.get<string>(replyKey);
+        if (cached) return NextResponse.json({ reply: cached, ok: true, sessionId, performance: '0ms (dedup)' });
+      }
     }
 
-    // ── 4. FASE 1: PROCESSAMENTO PARALELO ────────────────────────────────────
+    // ── 5. FASE 1: PROCESSAMENTO PARALELO (Embeddings + Contexto) ────────────
     const [queryEmbedding, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       llmGateway.isOverloaded(),
       classifyContextWithL4(message, String(user.id)),
     ]);
 
-    // ── 5. FASE 2: MEMÓRIA E SCORE EMOCIONAL ─────────────────────────────────
+    // ── 6. FASE 2: MEMÓRIA, EMOÇÃO E MÓDULOS ─────────────────────────────────
     const memory = await MemoryManager.read({
-      userId: String(user.id),
-      authUserId: user.auth_user_id,
-      sessionId,
-      message,
-      contexts,
-      emotionalScore: 0,
-      authorName: user.nickname,
-      assistantName: user.assistant_name,
-      queryEmbedding,
+      userId: String(user.id), authUserId: user.auth_user_id, sessionId,
+      message, contexts, emotionalScore: 0, authorName: user.nickname,
+      assistantName: user.assistant_name, queryEmbedding,
     });
 
     const emotional = await computeEmotionalScore(
       message, String(user.id), memory.hd.memories ?? [], memory.ram.ramBlock ?? ''
     );
 
-    // ── 6. CARREGAMENTO MODULAR E RADAR DE AFETO ─────────────────────────────
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       { userId: String(user.id), authUserId: user.auth_user_id, message, contexts, emotionalScore: emotional.score },
       user.plan || 'free', 'google/gemini-2.0-flash-001'
     );
 
-    // Lógica Guard L3 (Meses de Alerta: Maio e Agosto)
+    // ── 7. RADAR DE AFETO (RIGOR DATAS FAMILIARES) ───────────────────────────
     let filteredL3 = memory.l3.content;
     const todayCheck = new Date();
     const isHighAlertMonth = todayCheck.getMonth() === 4 || todayCheck.getMonth() === 7;
@@ -150,7 +157,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── 7. COMPOSIÇÃO DO PROMPT (ENGINES) ────────────────────────────────────
+    // ── 8. COMPOSIÇÃO DE PROMPT E GEO-CONSCIÊNCIA ────────────────────────────
     const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
     const dataHoraSP = nowSP.toLocaleString('pt-BR');
     const dataIsoSP = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
@@ -169,7 +176,7 @@ export async function POST(req: NextRequest) {
 
     const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
       userId: String(user.id), authUserId: user.auth_user_id, message,
-      location: body.location || null, contexts: contexts || [], emotionalScore: emotional.score || 0
+      location: userLocation, contexts: contexts || [], emotionalScore: emotional.score || 0
     });
 
     const coreTools = ['salvar_evento', 'consultar_agenda', 'create_reminder', 'searchWeb', 'buscar_memoria_longa', 'consultar_lembretes', 'adicionar_diretriz_dinamica'];
@@ -181,11 +188,12 @@ export async function POST(req: NextRequest) {
 
 [DIRETRIZES DE RIGOR TÉCNICO]
 1. AGENDA: Use 'salvar_evento' (Supabase) como fonte primária.
-2. MENTOR: Interrompa fluxos se houver alertas de urgência. 
-3. EXPERT FROTAS: Desafie a viabilidade técnica, seja denso.
-4. PROTOCOLO DE SAÍDA: Proibido responder apenas "Pronto". Descreva a ação realizada.`;
+2. MENTOR: Interrompa fluxos se houver alertas de urgência (Lembretes/Agenda).
+3. GEO-CONSCIÊNCIA: Se o usuário estiver perto de um local salvo ou mercado e houver lista pendente, avise-o.
+4. EXPERT FROTAS: Atue como arquiteto de software. Desafie decisões, exija detalhes.
+5. PROTOCOLO DE SAÍDA: Proibido responder apenas "Anotado" ou "Pronto". Descreva o que foi alterado no sistema.`;
 
-    // ── 8. CICLO DE EXECUÇÃO LLM ─────────────────────────────────────────────
+    // ── 9. CICLO DE EXECUÇÃO LLM (OPENROUTER) ────────────────────────────────
     const conversationMessages: any[] = [
       { role: 'system', content: systemPrompt }, ...recentHistory, { role: 'user', content: message }
     ];
@@ -203,25 +211,25 @@ export async function POST(req: NextRequest) {
         { role: 'assistant', content: firstResponse.content || null, tool_calls: firstResponse.toolCalls },
         ...toolResults.map(tr => ({ role: 'tool', tool_call_id: tr.toolCall.id, content: tr.result }))
       ], [], resolvedModel, 0.7);
-      assistantReply = secondResponse.content || "Comando processado no sistema.";
+      assistantReply = secondResponse.content || "Comando executado com sucesso.";
     } else {
       assistantReply = firstResponse.content || "Entendido, Célio.";
     }
 
-    // ── 9. FINALIZAÇÃO E BACKGROUND ──────────────────────────────────────────
+    // ── 10. FINALIZAÇÃO E BACKGROUND (FIRE AND FORGET) ───────────────────────
     await redis.set(replyKey, assistantReply, { ex: 30 });
     
-    // Salvamento no Brain (Não bloqueia a resposta)
+    // Registro Silencioso no Brain
     supabase.from('brain').insert({
       user_id: Number(user.id), session_id: sessionId, content: message, category: message.length < 15 ? 'noise' : 'info',
       metadata: { role: 'user', ai_reply: assistantReply, contexts, model: resolvedModel }
-    }).catch(e => console.error('[DB Error]:', e));
+    }).catch(e => console.error('[Brain Save Error]:', e));
 
     const audioBase64 = speak ? await generateTTS(assistantReply, user.preferred_voice || 'alloy') : null;
 
-    // ✅ EXTRAÇÃO DE DADOS EM BACKGROUND (Desbloqueado)
+    // ✅ EXTRAÇÃO EM BACKGROUND (Sem travar a resposta principal)
     extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply)
-      .catch(e => console.error('[Extractor Error]:', e));
+      .catch(e => console.error('[Background Extractor Error]:', e));
 
     return NextResponse.json({
       reply: assistantReply, audioBase64, ok: true, sessionId, performance: `${Date.now() - startTime}ms`
@@ -229,6 +237,6 @@ export async function POST(req: NextRequest) {
 
   } catch (e: any) {
     console.error('[FATAL ERROR]:', e);
-    return NextResponse.json({ error: 'Erro no motor do Jarvis.' }, { status: 500 });
+    return NextResponse.json({ error: 'Erro crítico no Jarvis.' }, { status: 500 });
   }
 }
