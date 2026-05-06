@@ -1,5 +1,4 @@
-
-// lib/modules/registry.ts
+// lib/modules/registry.ts — V10.0.0 (God RPC Hydration + Zero Redundancy)
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
 import { waitUntil } from '@vercel/functions'; 
@@ -12,6 +11,7 @@ import { ModuloVeiculos } from './modules/veiculos';
 import { ModuloFoco } from './modules/foco';
 import { ModuloRotinas } from './modules/rotinas';
 import { ModuloAgenda } from './modules/agenda';
+import { ModuloLocalizacao } from './modules/localizacao'; // Certifique-se de que está aqui
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -23,30 +23,44 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloVeiculos,
   ModuloFoco,
   ModuloRotinas,
-  ModuloAgenda
+  ModuloAgenda,
+  ModuloLocalizacao
 ];
 
+/**
+ * Carrega módulos ativos usando Injeção de Dependência da God RPC
+ */
 export async function loadActiveModules(
-  opts: ModuleConditionOpts,
+  opts: ModuleConditionOpts & { masterContext?: any }, // ← Adicionamos o masterContext aqui
   userPlan: string,
   baseModel: string,
 ) {
-  // 1. Busca módulos habilitados no Redis/DB
-  const cacheKey = `modules_enabled:${opts.userId}`;
-  let enabledIds = await redis.get<string[]>(cacheKey);
-  
-  if (!enabledIds) {
-    const { data } = await supabase.schema('jarvis').from('user_modules').select('module_id').eq('user_id', opts.userId).eq('enabled', true);
-    enabledIds = data?.map(r => r.module_id) || [];
-    await redis.set(cacheKey, enabledIds, { ex: 300 });
+  // ── 1. IDENTIFICAÇÃO DE MÓDULOS (HIDRATAÇÃO) ──
+  // Prioridade: God RPC > Redis > Supabase
+  let enabledIds: string[] | null = null;
+
+  if (opts.masterContext?.modules) {
+    // Se a God RPC trouxe os módulos, usamos eles instantaneamente (0ms latência extra)
+    enabledIds = opts.masterContext.modules.map((m: any) => m.module_id);
+    console.debug(`[ModuleRegistry] Hidratação via God RPC: ${enabledIds?.length} módulos.`);
+  } else {
+    // Fallback: Busca no Redis ou DB se a RPC falhar
+    const cacheKey = `modules_enabled:${opts.userId}`;
+    enabledIds = await redis.get<string[]>(cacheKey);
+    
+    if (!enabledIds) {
+      const { data } = await supabase.schema('jarvis').from('user_modules').select('module_id').eq('user_id', opts.userId).eq('is_active', true);
+      enabledIds = data?.map(r => r.module_id) || [];
+      await redis.set(cacheKey, enabledIds, { ex: 300 });
+    }
   }
 
-  // 2. Filtra por Plano e Trigger (Contexto/Keywords/Always)
+  // ── 2. FILTRAGEM POR PLANO E TRIGGER ──
   const activeModules = await Promise.all(ALL_MODULES.map(async mod => {
     if (!enabledIds?.includes(mod.id)) return null;
     
     // Check de Plano (Hierarquia simples)
-    const planOrder = ['free', 'personal', 'family', 'family_plus'];
+    const planOrder = ['free', 'personal', 'family', 'family_plus', 'ultra'];
     if (planOrder.indexOf(userPlan) < planOrder.indexOf(mod.plan)) return null;
 
     const { trigger } = mod;
@@ -61,34 +75,39 @@ export async function loadActiveModules(
 
   const finalModules = activeModules.filter(Boolean) as ModuleDefinition[];
 
-  // 3. Carrega blocos de contexto em paralelo
+  // ── 3. CONSTRUÇÃO DE CONTEXTO EM PARALELO ──
   const results = await Promise.all(finalModules.map(async mod => {
     const start = Date.now();
     try {
+      // Passamos o 'opts' completo (que agora contém o masterContext) para cada módulo
       const block = await mod.buildContextBlock(opts);
       
-      // Telemetria via waitUntil blindada com função anônima async (IIFE)
-      // Isso força a entrega de uma Promise para o Vercel, resolvendo o erro "void".
-     waitUntil(
+      // Telemetria assíncrona (não trava a resposta principal)
+      waitUntil(
         (async () => {
           await recordModuleMetrics(mod.id, Number(opts.userId), {
             latencyMs: Date.now() - start,
             tokens: Math.ceil(block.length / 4),
             activated: block.length > 0
-          });
+          }).catch(e => console.error('[Metrics Error]', e));
         })()
       );
 
-      return { block, tools: mod.tools, model: mod.preferredModel };
+      return { block, tools: mod.tools || [], model: mod.preferredModel };
     } catch (e) {
       console.error(`[ModuleRegistry] Erro em ${mod.id}:`, e);
       return { block: '', tools: [], model: 'flash' };
     }
   }));
 
+  // ── 4. RESOLUÇÃO DE MODELO (UPGRADE DINÂMICO) ──
+  // Se qualquer módulo ativo exigir o modelo 'pro', fazemos o upgrade da sessão
+  const needsPro = results.some(r => r.model === 'pro');
+  const finalModel = needsPro ? 'google/gemini-2.0-pro-exp-02-05' : baseModel;
+
   return {
     contextBlocks: results.map(r => r.block).filter(Boolean),
     activeTools: [...new Set(results.flatMap(r => r.tools))],
-    resolvedModel: baseModel // Aqui você pode implementar a lógica de upgrade de modelo se necessário
+    resolvedModel: finalModel
   };
 }
