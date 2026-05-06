@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V11.5.0 (RIGOR TOTAL: God RPC + TS Fix Build + Radar de Afeto + Redis Loop)
+// app/api/chat/route.ts — V11.7.0 (Varredura de Integridade + Injeção God RPC)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -26,92 +26,49 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 });
 
 // ─── Constantes Globais ──────────────────────────────────────────────────────
 const MAX_MSG_CHARS = 800;
-const FAMILY_DATE_SIGNALS = [
-  /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
-  /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
-];
+const FAMILY_DATE_SIGNALS = [/aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i, /natal/i];
 
 // ─── Gerador de Voz (OpenAI TTS) ─────────────────────────────────────────────
 async function generateTTS(text: string, voice: string = 'alloy'): Promise<string | null> {
   try {
     const cleanText = text.replace(/[*#_~]/g, '').trim();
     if (!cleanText) return null;
-
-    const mp3 = await openai.audio.speech.create({
-      model: "tts-1",
-      voice: voice as any,
-      input: cleanText,
-    });
-
+    const mp3 = await openai.audio.speech.create({ model: "tts-1", voice: voice as any, input: cleanText });
     const buffer = Buffer.from(await mp3.arrayBuffer());
     return buffer.toString('base64');
-  } catch (e) {
-    console.error('[TTS Error]:', e);
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
 // ─── Handler principal ────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
   try {
-    // 1. Parse do Body
-    const body = await (req.headers.get('content-type')?.includes('multipart')
-      ? req.formData()
-      : req.json());
-
+    const body = await (req.headers.get('content-type')?.includes('multipart') ? req.formData() : req.json());
     const message = (body instanceof FormData ? body.get('message') as string : body.message) || '';
     const userEmail = body instanceof FormData ? body.get('userEmail') as string : body.userEmail;
     const speak = body instanceof FormData ? body.get('speak') === 'true' : !!body.speak;
-    const incomingSessionId = body instanceof FormData
-      ? (body.get('sessionId') as string | null)
-      : (body.sessionId as string | null);
+    const incomingSessionId = body instanceof FormData ? (body.get('sessionId') as string | null) : (body.sessionId as string | null);
     const userLocation = body instanceof FormData ? null : body.location;
 
-    // 2. Resolve Usuário (BIGINT)
+    // 1. Resolve Usuário e Sessão
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
-
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
-    // ── 3. GOD RPC: CONSOLIDAÇÃO DE CONTEXTO (MATA N+1) ───────────────────────
-    const { data: masterContext, error: rpcError } = await supabase
-      .rpc('get_consolidated_context', { 
-        p_user_id: user.id, 
-        p_session_id: sessionId 
-      });
-
+    // ── 2. GOD RPC: CONSOLIDAÇÃO (MATA N+1) ──
+    const { data: masterContext, error: rpcError } = await supabase.rpc('get_consolidated_context', { 
+        p_user_id: user.id, p_session_id: sessionId 
+    });
     if (rpcError) console.error('[RPC FATAL ERROR]:', rpcError.message);
 
-    // Hidratação do Histórico
-    const rawHistory = masterContext?.history || [];
-    const recentHistory: any[] = [];
-    for (const row of [...rawHistory].reverse()) {
-      const uMsg = (row.content || '').trim();
-      const aRep = (row.metadata?.ai_reply || '').trim();
-      if (uMsg.length > 3) recentHistory.push({ role: 'user', content: uMsg.slice(0, MAX_MSG_CHARS) });
-      if (aRep.length > 3) recentHistory.push({ role: 'assistant', content: aRep.slice(0, MAX_MSG_CHARS) });
-    }
-
-    const guidelines = masterContext?.guidelines || [];
-    const dynamicGuidelinesBlock = guidelines.map((g: any) => `- ${g.content}`).join('\n') || '';
-
-    const urgentes = masterContext?.reminders || [];
-    let alertaUrgencia = '';
-    if (urgentes && urgentes.length > 0) {
-      alertaUrgencia = `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]\nCélio, atenção para pendências críticas:\n${urgentes.map((u: any) => `- ${u.title}`).join('\n')}`;
-    }
-
-    // ── 4. DEDUPLICAÇÃO GLOBAL (LOOP DE ESPERA RIGOROSO) ──────────────────────
+    // ── 3. DEDUPLICAÇÃO GLOBAL ──
     const timeSlot = Math.floor(Date.now() / 10000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
     const replyKey = `chat_reply:${requestSignature}`;
-
     const isFirst = await redis.set(dedupKey, '1', { nx: true, ex: 30 });
 
     if (!isFirst) {
-      console.warn('[Dedup] Retry detectado, aguardando cache...');
       for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 1500));
         const cached = await redis.get<string>(replyKey);
@@ -119,14 +76,13 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── 5. FASE 1: PROCESSAMENTO PARALELO (Embeddings + Contexto) ────────────
+    // ── 4. PROCESSAMENTO PARALELO (HIDRATADO) ──
     const [queryEmbedding, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       llmGateway.isOverloaded(),
       classifyContextWithL4(message, String(user.id)),
     ]);
 
-    // ── 6. FASE 2: MEMÓRIA E SCORE EMOCIONAL ─────────────────────────────────
     const memory = await MemoryManager.read({
       userId: String(user.id),
       authUserId: user.auth_user_id,
@@ -137,51 +93,31 @@ export async function POST(req: NextRequest) {
       authorName: user.nickname,
       assistantName: user.assistant_name,
       queryEmbedding,
+      masterContext // Injeção de Dependência
     });
 
-    const emotional = await computeEmotionalScore(
-      message,
-      String(user.id),
-      memory.hd.memories ?? [],
-      memory.ram.ramBlock ?? '',
+    const emotional = await computeEmotionalScore(message, String(user.id), memory.hd.memories ?? [], memory.ram.ramBlock ?? '');
+
+    const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
+      { userId: String(user.id), authUserId: user.auth_user_id, message, contexts, emotionalScore: emotional.score, location: userLocation },
+      user.plan || 'free',
+      masterContext // Injeção de Dependência
     );
 
-const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
-  {
-    userId: String(user.id),
-    authUserId: user.auth_user_id,
-    message,
-    contexts,
-    emotionalScore: emotional.score,
-    location: userLocation,
-    masterContext, // ← AQUI ESTÁ O SEGREDO!
-  },
-  user.plan || 'free',
-  'google/gemini-2.0-flash-001'
-);
-
-    // ── 7. RADAR DE AFETO (RIGOR DATAS FAMILIARES) ───────────────────────────
+    // ── 5. RADAR DE AFETO (RIGOR DATAS FAMILIARES) ──
     let filteredL3 = memory.l3.content;
     const todayCheck = new Date();
-    const isHighAlertMonth = todayCheck.getMonth() === 4 || todayCheck.getMonth() === 7;
+    const isHighAlertMonth = todayCheck.getMonth() === 4 || todayCheck.getMonth() === 7; // Maio e Agosto
+    const recentHistoryText = (masterContext?.history || []).map((h: any) => h.content).join(' ');
 
-    if (recentHistory.length > 0 || isHighAlertMonth) {
-      const recentText = recentHistory.map(m => m.content).join(' ');
-      const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentText)) || FAMILY_DATE_SIGNALS.some(p => p.test(message));
-
-      if (!hasFamilySignal && !isHighAlertMonth) {
-        filteredL3 = filteredL3
-          .replace(/##\s*(datas?|aniversário|comemoração|evento importante)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
-          .replace(/##\s*(famil[íi]a|cônjuge|esposa|marido|filho|parente)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
-          .trim();
-      }
+    if (!isHighAlertMonth && !FAMILY_DATE_SIGNALS.some(p => p.test(recentHistoryText + message))) {
+      filteredL3 = filteredL3
+        .replace(/##\s*(datas?|aniversário|famil[íi]a|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
+        .trim();
     }
 
-    // ── 8. COMPOSIÇÃO DE PROMPT E GEO-CONSCIÊNCIA ────────────────────────────
+    // ── 6. COMPOSIÇÃO DE PROMPT ──
     const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
-    const dataHoraSP = nowSP.toLocaleString('pt-BR');
-    const dataIsoSP = nowSP.toISOString().split('T')[0];
-
     const basePrompt = composeSystemPrompt({
       assistantName: user.assistant_name,
       authorName: user.nickname,
@@ -197,11 +133,11 @@ const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
         relationship: memory.relationship.block.slice(0, 2000),
         topics: memory.topics.relatedTopicsBlock,
       },
-      canonicalDateTimeBlock: dataHoraSP,
-      canonicalDateISO: dataIsoSP,
+      canonicalDateTimeBlock: nowSP.toLocaleString('pt-BR'),
+      canonicalDateISO: nowSP.toISOString().split('T')[0],
       systemWarning: '',
       intent: 'personal',
-      dynamicGuidelines: dynamicGuidelinesBlock,
+      dynamicGuidelines: (masterContext?.guidelines || []).map((g: any) => `- ${g.content}`).join('\n'),
     });
 
     const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
@@ -210,97 +146,61 @@ const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       message,
       location: userLocation,
       contexts: contexts || [],
-      emotionalScore: emotional.score || 0
+      emotionalScore: emotional.score || 0,
+      masterContext // Injeção de Dependência
     });
 
     const coreTools = ['salvar_evento', 'consultar_agenda', 'create_reminder', 'searchWeb', 'buscar_memoria_longa', 'consultar_lembretes', 'adicionar_diretriz_dinamica'];
-    const toolsHabilitadas = ALL_TOOLS.filter(t =>
-      coreTools.includes(t.function.name) || 
-      activeTools.includes(t.function.name) || 
-      dynamicTools.includes(t.function.name)
-    );
+    const toolsHabilitadas = ALL_TOOLS.filter(t => coreTools.includes(t.function.name) || activeTools.includes(t.function.name) || dynamicTools.includes(t.function.name));
 
-    const systemPrompt = `[RELÓGIO DO SISTEMA]: ${dataHoraSP}\n${contextText}${alertaUrgencia}\n---\n${basePrompt}
+    const alertaUrgencia = (masterContext?.reminders?.length > 0) 
+      ? `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]\nCélio, atenção para pendências: ${masterContext.reminders.map((r: any) => r.title).join(', ')}` 
+      : '';
+
+    const systemPrompt = `[RELÓGIO DO SISTEMA]: ${nowSP.toLocaleString('pt-BR')}\n${contextText}${alertaUrgencia}\n---\n${basePrompt}
 [DIRETRIZES DE RIGOR TÉCNICO]
-1. AGENDA: Use 'salvar_evento' (Supabase) como fonte primária.
-2. MENTOR: Interrompa fluxos se houver alertas de urgência.
-3. PROTOCOLO DE SAÍDA: Proibido responder apenas "Pronto" ou "Anotado". Descreva a ação técnica realizada no sistema. Atue como arquiteto do Expert Frotas.`;
+1. AGENDA: Use 'salvar_evento' como fonte primária.
+2. PROTOCOLO DE SAÍDA: Descreva a ação técnica realizada no sistema. Atue como arquiteto do Expert Frotas.`;
 
-    // ── 9. CICLO DE EXECUÇÃO LLM ─────────────────────────────────────────────
-    const conversationMessages: any[] = [
-      { role: 'system', content: systemPrompt },
-      ...recentHistory,
-      { role: 'user', content: message },
-    ];
+    // ── 7. CICLO DE EXECUÇÃO LLM ──
+    const recentHistory = (masterContext?.history || []).reverse().flatMap((h: any) => [
+      { role: 'user', content: h.content },
+      { role: 'assistant', content: h.metadata?.ai_reply || '' }
+    ]);
 
+    const conversationMessages: any[] = [{ role: 'system', content: systemPrompt }, ...recentHistory, { role: 'user', content: message }];
     const firstResponse = await callOpenRouterWithPriority(1, 'never', requestSignature, conversationMessages, toolsHabilitadas, resolvedModel, 0.7);
 
-    let assistantReply: string;
+    let assistantReply = firstResponse.content || "Comando processado.";
 
-    // ✅ FIX: TypeScript type narrowing para evitar erro de build
     if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
-      const toolResults = await Promise.all(
-        firstResponse.toolCalls.map(async (toolCall) => {
-          const result = await executeTool(toolCall, user.auth_user_id, String(user.id));
-          return { toolCall, result };
-        })
-      );
-
-      const messagesWithToolResults: any[] = [
+      const toolResults = await Promise.all(firstResponse.toolCalls.map(async (tc) => ({ tc, result: await executeTool(tc, user.auth_user_id, String(user.id)) })));
+      const secondResponse = await callOpenRouterWithPriority(1, 'never', `${requestSignature}_synth`, [
         ...conversationMessages,
-        {
-          role: 'assistant',
-          content: firstResponse.content || null,
-          tool_calls: firstResponse.toolCalls.map(tc => ({
-            id: tc.id,
-            type: 'function',
-            function: { name: tc.function.name, arguments: tc.function.arguments },
-          })),
-        },
-        ...toolResults.map(({ toolCall, result }) => ({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          content: result,
-        })),
-      ];
-
-      const secondResponse = await callOpenRouterWithPriority(1, 'never', `${requestSignature}_synth`, messagesWithToolResults, [], resolvedModel, 0.7);
-      assistantReply = secondResponse.content || "Comando executado com sucesso.";
-    } else {
-      assistantReply = firstResponse.content || "Entendido, Célio.";
+        { role: 'assistant', content: firstResponse.content || null, tool_calls: firstResponse.toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } })) },
+        ...toolResults.map(({ tc, result }) => ({ role: 'tool', tool_call_id: tc.id, content: result }))
+      ], [], resolvedModel, 0.7);
+      assistantReply = secondResponse.content || assistantReply;
     }
 
-    // ── 10. FINALIZAÇÃO E BACKGROUND (FIRE AND FORGET) ───────────────────────
+    // ── 8. FINALIZAÇÃO E BACKGROUND ──
     await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => {});
-
-    // ✅ FIX TÉCNICO: Supabase insert background sem travar e sem erro de tipo .catch()
-    // Builders do Supabase não expõem .catch() diretamente no tipo PostgrestFilterBuilder
     supabase.from('brain').insert({
-      user_id: Number(user.id),
-      session_id: sessionId,
-      content: message,
-      category: message.length < 15 ? 'noise' : 'info',
-      metadata: { role: 'user', ai_reply: assistantReply, contexts, model: resolvedModel },
-    }).then(({ error }) => {
-      if (error) console.error('[Brain Save Error]:', error.message);
-    });
+      user_id: Number(user.id), session_id: sessionId, content: message, category: message.length < 15 ? 'noise' : 'info',
+      metadata: { role: 'user', ai_reply: assistantReply, contexts, model: resolvedModel }
+    }).then(({ error }) => error && console.error('[Brain Save Error]:', error.message));
 
-    const audioBase64 = speak ? await generateTTS(assistantReply, user.preferred_voice || 'alloy') : null;
-
-    // Extração em Background
-    extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply)
-      .catch(e => console.error('[Background Extractor Error]:', e));
+    extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply).catch(() => {});
 
     return NextResponse.json({
       reply: assistantReply,
-      audioBase64,
+      audioBase64: speak ? await generateTTS(assistantReply, user.preferred_voice || 'alloy') : null,
       ok: true,
       sessionId,
       performance: `${Date.now() - startTime}ms`,
     });
 
   } catch (e: any) {
-    console.error('[FATAL ERROR]:', e);
     return NextResponse.json({ error: 'Erro no motor do Jarvis.' }, { status: 500 });
   }
 }
