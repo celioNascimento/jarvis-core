@@ -146,17 +146,19 @@ export async function POST(req: NextRequest) {
       memory.ram.ramBlock ?? '',
     );
 
-    const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
-      {
-        userId: String(user.id),
-        authUserId: user.auth_user_id,
-        message,
-        contexts,
-        emotionalScore: emotional.score,
-      },
-      user.plan || 'free',
-      'google/gemini-2.0-flash-001',
-    );
+const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
+  {
+    userId: String(user.id),
+    authUserId: user.auth_user_id,
+    message,
+    contexts,
+    emotionalScore: emotional.score,
+    location: userLocation,
+    masterContext, // ← AQUI ESTÁ O SEGREDO!
+  },
+  user.plan || 'free',
+  'google/gemini-2.0-flash-001'
+);
 
     // ── 7. RADAR DE AFETO (RIGOR DATAS FAMILIARES) ───────────────────────────
     let filteredL3 = memory.l3.content;
