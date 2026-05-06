@@ -1,5 +1,4 @@
-
-// app/api/chat/route.ts — V12.2.1 (FIX: UserLocation → latitude/longitude mapping para loadActiveModules)
+// app/api/chat/route.ts — V12.2.2 (FIX: UserLocation { lat,lng } → normalizedLocation { latitude,longitude } para loadActiveModules e buildDynamicContext)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -52,8 +51,7 @@ async function generateTTS(text: string, voice: string = 'alloy'): Promise<strin
   }
 }
 
-
-// ─── Geocodificação Reversa (Nominatim — sem custo, sem API key) ─────────────────
+// ─── Geocodificação Reversa (Nominatim — sem custo, sem API key) ──────────────
 interface UserLocation {
   lat?: number;
   lng?: number;
@@ -65,7 +63,6 @@ interface UserLocation {
 
 async function resolveLocation(raw: UserLocation | null): Promise<UserLocation | null> {
   if (!raw?.lat || !raw?.lng) return raw;
-  // Se já vier com label resolvido pelo cliente, não repete a chamada
   if (raw.label && !/^-?\d/.test(raw.label)) return raw;
   try {
     const res = await fetch(
@@ -81,27 +78,8 @@ async function resolveLocation(raw: UserLocation | null): Promise<UserLocation |
       state: geo.address?.state || '',
     };
   } catch {
-    // Fallback silencioso: continua com coordenadas brutas
     return raw;
   }
-}
-
-// ─── Normaliza UserLocation → formato { latitude, longitude } esperado por loadActiveModules ──
-// UserLocation usa { lat, lng } (padrão Expo/React Native GPS)
-// loadActiveModules espera { latitude, longitude } (padrão Web Geolocation API)
-// Este helper faz a ponte sem mutar o objeto original, preservando todos os campos extras
-// (label, city, state, etc.) que podem ser consumidos pelo buildDynamicContext.
-function normalizeLocationForModules(
-  loc: UserLocation | null,
-): { latitude: number; longitude: number; label?: string; city?: string; state?: string } | null {
-  if (!loc?.lat || !loc?.lng) return null;
-  return {
-    latitude: loc.lat,
-    longitude: loc.lng,
-    label: loc.label,
-    city: loc.city,
-    state: loc.state,
-  };
 }
 
 // ─── Handler principal ────────────────────────────────────────────────────────
@@ -127,10 +105,7 @@ export async function POST(req: NextRequest) {
 
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
-    // ── 2b + 3. GEOCODIFICAÇÃO REVERSA + GOD RPC EM PARALELO ───────────────────
-    // resolveLocation e get_consolidated_context rodam simultaneamente.
-    // Elimina ~200-400ms de latência sequencial que existia na V12.1.
-    // AbortSignal.timeout(3000) garante que geo nunca bloqueia o RPC.
+    // ── 2b + 3. GEOCODIFICAÇÃO REVERSA + GOD RPC EM PARALELO ──────────────────
     const [resolvedLocation, { data: masterContext, error: rpcError }] = await Promise.all([
       resolveLocation(userLocation),
       supabase.rpc('get_consolidated_context', {
@@ -141,13 +116,26 @@ export async function POST(req: NextRequest) {
 
     if (rpcError) console.error('[RPC FATAL ERROR]:', rpcError.message);
 
-    // ── 4. RECENT HISTORY (FIX: Alternância de Roles + Proteção contra vácuo) ─
+    // ── NORMALIZAÇÃO DE LOCALIZAÇÃO ───────────────────────────────────────────
+    // UserLocation usa { lat, lng } (Expo/React Native).
+    // loadActiveModules e buildDynamicContext esperam { latitude, longitude }.
+    // normalizedLocation faz a ponte. resolvedLocation fica intacto para o geoBlock.
+    const normalizedLocation = resolvedLocation?.lat && resolvedLocation?.lng
+      ? {
+          latitude: resolvedLocation.lat,
+          longitude: resolvedLocation.lng,
+          label: resolvedLocation.label,
+          city: resolvedLocation.city,
+          state: resolvedLocation.state,
+        }
+      : null;
+
+    // ── 4. RECENT HISTORY ─────────────────────────────────────────────────────
     const rawHistory = masterContext?.history || [];
     const recentHistory: any[] = [];
     for (const row of [...rawHistory].reverse()) {
       const uMsg = (row.content || '').trim();
       const aRep = (row.metadata?.ai_reply || '').trim();
-      // Somente adiciona se houver conteúdo real, garantindo User -> Assistant
       if (uMsg.length > 2) {
         recentHistory.push({ role: 'user', content: uMsg.slice(0, MAX_MSG_CHARS) });
       }
@@ -165,8 +153,7 @@ export async function POST(req: NextRequest) {
       alertaUrgencia = `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]\nCélio, atenção para pendências críticas:\n${urgentes.map((u: any) => `- ${u.title}`).join('\n')}`;
     }
 
-    // ── 5. DEDUPLICAÇÃO GLOBAL (LOOP DE ESPERA RIGOROSO) ──────────────────────
-    // FIX: Janela de 60s (era 10s) — cobre qualquer retry agressivo do okhttp Android
+    // ── 5. DEDUPLICAÇÃO GLOBAL (janela 60s — cobre retries agressivos do okhttp) ─
     const timeSlot = Math.floor(Date.now() / 60000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
@@ -183,14 +170,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── 6. FASE 1: PROCESSAMENTO PARALELO (Embeddings + Contexto) ────────────
+    // ── 6. PROCESSAMENTO PARALELO (Embeddings + Contexto) ────────────────────
     const [queryEmbedding, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       llmGateway.isOverloaded(),
       classifyContextWithL4(message, String(user.id)),
     ]);
 
-    // ── 7. FASE 2: MEMÓRIA E SCORE EMOCIONAL ─────────────────────────────────
+    // ── 7. MEMÓRIA E SCORE EMOCIONAL ──────────────────────────────────────────
     const memory = await MemoryManager.read({
       userId: String(user.id),
       authUserId: user.auth_user_id,
@@ -212,9 +199,6 @@ export async function POST(req: NextRequest) {
     );
 
     // ── 8. MÓDULOS ATIVOS ─────────────────────────────────────────────────────
-    // FIX V12.2.1: UserLocation usa { lat, lng } mas loadActiveModules espera { latitude, longitude }.
-    // normalizeLocationForModules faz a conversão sem mutar resolvedLocation,
-    // que continua sendo usado com { lat, lng } em buildDynamicContext e no geoBlock abaixo.
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       {
         userId: String(user.id),
@@ -222,24 +206,21 @@ export async function POST(req: NextRequest) {
         message,
         contexts,
         emotionalScore: emotional.score,
-        location: normalizeLocationForModules(resolvedLocation), // ← conversão lat/lng → latitude/longitude
+        location: normalizedLocation,   // ✅ { latitude, longitude }
         masterContext,
       },
       user.plan || 'free',
       'google/gemini-2.0-flash-001',
     );
 
-    // Fallback de segurança para o modelo — garante que OpenRouter nunca receba objeto/undefined
     const finalModel: string = (typeof resolvedModel === 'string' && resolvedModel.trim().length > 0)
       ? resolvedModel
       : 'google/gemini-2.0-flash-001';
 
-    // ── 9. RADAR DE AFETO (RIGOR DATAS FAMILIARES) ───────────────────────────
+    // ── 9. RADAR DE AFETO ─────────────────────────────────────────────────────
     let filteredL3 = memory.l3.content;
     const todayCheck = new Date();
     const isHighAlertMonth = todayCheck.getMonth() === 4 || todayCheck.getMonth() === 7;
-
-    // Usa rawHistory (fonte original) para varredura de sinais, assim como recentHistory
     const historyText = rawHistory.map((h: any) => h.content).join(' ');
     const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(historyText + ' ' + message));
 
@@ -277,14 +258,11 @@ export async function POST(req: NextRequest) {
       dynamicGuidelines: dynamicGuidelinesBlock,
     });
 
-    // buildDynamicContext: masterContext injetado para eliminar consulta redundante ao banco
-    // (favorite_places já vem hidratado pelo God RPC — evita o último vazamento de N+1)
-    // Usa resolvedLocation com { lat, lng } — buildDynamicContext não foi afetado pelo fix
     const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
       userId: String(user.id),
       authUserId: user.auth_user_id,
       message,
-      location: resolvedLocation,
+      location: normalizedLocation,   // ✅ { latitude, longitude }
       contexts: contexts || [],
       emotionalScore: emotional.score || 0,
       masterContext,
@@ -305,9 +283,7 @@ export async function POST(req: NextRequest) {
       dynamicTools.includes(t.function.name),
     );
 
-    // Bloco de geo-consciência: usa nome humano do local (label) se disponível,
-    // senão cidade/estado, senão coordenadas brutas como último fallback.
-    // Garante que o LLM nunca diz 'latitude -23.31' quando sabe o nome do local.
+    // geoBlock: usa { lat, lng } de resolvedLocation — formato original do Expo
     const geoBlock = (() => {
       if (!resolvedLocation) return '';
       const { lat, lng, label, city, state } = resolvedLocation as UserLocation;
@@ -336,7 +312,6 @@ export async function POST(req: NextRequest) {
 
     let assistantReply: string;
 
-    // ✅ FIX: TypeScript type narrowing para evitar erro de build
     if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
       const toolResults = await Promise.all(
         firstResponse.toolCalls.map(async (toolCall) => {
@@ -371,11 +346,9 @@ export async function POST(req: NextRequest) {
       assistantReply = firstResponse.content || 'Entendido, Célio.';
     }
 
-    // ── 12. FINALIZAÇÃO E BACKGROUND (FIRE AND FORGET) ───────────────────────
+    // ── 12. FINALIZAÇÃO E BACKGROUND ─────────────────────────────────────────
     await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => {});
 
-    // ✅ FIX TÉCNICO: Supabase insert background sem travar e sem erro de tipo .catch()
-    // Builders do Supabase não expõem .catch() diretamente no tipo PostgrestFilterBuilder
     supabase.from('brain').insert({
       user_id: Number(user.id),
       session_id: sessionId,
@@ -390,7 +363,6 @@ export async function POST(req: NextRequest) {
       ? await generateTTS(assistantReply, user.preferred_voice || 'alloy')
       : null;
 
-    // Extração em Background
     extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply)
       .catch(e => console.error('[Background Extractor Error]:', e));
 
