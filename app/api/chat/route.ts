@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V12.2.0 (RIGOR TOTAL: God RPC + TS Fix Build + Radar de Afeto + Redis Loop + Anti-Collision History + OpenRouter Fix + buildDynamicContext masterContext Injection + Dedup Window 60s + Reverse Geocoding Paralelo + Geo-Label no Prompt)
+// app/api/chat/route.ts — V12.2.1 (FIX: UserLocation → latitude/longitude mapping para loadActiveModules)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -84,6 +84,25 @@ async function resolveLocation(raw: UserLocation | null): Promise<UserLocation |
     return raw;
   }
 }
+
+// ─── Normaliza UserLocation → formato { latitude, longitude } esperado por loadActiveModules ──
+// UserLocation usa { lat, lng } (padrão Expo/React Native GPS)
+// loadActiveModules espera { latitude, longitude } (padrão Web Geolocation API)
+// Este helper faz a ponte sem mutar o objeto original, preservando todos os campos extras
+// (label, city, state, etc.) que podem ser consumidos pelo buildDynamicContext.
+function normalizeLocationForModules(
+  loc: UserLocation | null,
+): { latitude: number; longitude: number; label?: string; city?: string; state?: string } | null {
+  if (!loc?.lat || !loc?.lng) return null;
+  return {
+    latitude: loc.lat,
+    longitude: loc.lng,
+    label: loc.label,
+    city: loc.city,
+    state: loc.state,
+  };
+}
+
 // ─── Handler principal ────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
@@ -191,7 +210,10 @@ export async function POST(req: NextRequest) {
       memory.ram.ramBlock ?? '',
     );
 
-    // ── 8. MÓDULOS ATIVOS (FIX: masterContext no objeto, model string como 3º arg) ─
+    // ── 8. MÓDULOS ATIVOS ─────────────────────────────────────────────────────
+    // FIX V12.2.1: UserLocation usa { lat, lng } mas loadActiveModules espera { latitude, longitude }.
+    // normalizeLocationForModules faz a conversão sem mutar resolvedLocation,
+    // que continua sendo usado com { lat, lng } em buildDynamicContext e no geoBlock abaixo.
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       {
         userId: String(user.id),
@@ -199,11 +221,11 @@ export async function POST(req: NextRequest) {
         message,
         contexts,
         emotionalScore: emotional.score,
-        location: resolvedLocation,
-        masterContext, // ← passado dentro do objeto de parâmetros, não como 3º argumento
+        location: normalizeLocationForModules(resolvedLocation), // ← conversão lat/lng → latitude/longitude
+        masterContext,
       },
       user.plan || 'free',
-      'google/gemini-2.0-flash-001', // ← model string sempre como 3º argumento
+      'google/gemini-2.0-flash-001',
     );
 
     // Fallback de segurança para o modelo — garante que OpenRouter nunca receba objeto/undefined
@@ -256,6 +278,7 @@ export async function POST(req: NextRequest) {
 
     // buildDynamicContext: masterContext injetado para eliminar consulta redundante ao banco
     // (favorite_places já vem hidratado pelo God RPC — evita o último vazamento de N+1)
+    // Usa resolvedLocation com { lat, lng } — buildDynamicContext não foi afetado pelo fix
     const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
       userId: String(user.id),
       authUserId: user.auth_user_id,
