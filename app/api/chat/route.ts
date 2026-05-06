@@ -121,28 +121,31 @@ export async function POST(req: NextRequest) {
 
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
-        // ── MASTER RPC: CONSOLIDAÇÃO DE DADOS (Fim do N+1) ──────────────────────
-    // Em uma única viagem de rede de ~40ms, pegamos Diretrizes, Agenda e Lembretes.
+    
+    // ── MASTER RPC: CONSOLIDAÇÃO DE DADOS (Fim do N+1) ──────────────────────
+    // Enviamos o user.id diretamente para não quebrar a assinatura BIGINT do Postgres
     const { data: masterContext, error: rpcError } = await supabase
-      .rpc('get_consolidated_context', { p_user_id: Number(user.id) });
+      .rpc('get_consolidated_context', { p_user_id: user.id });
 
-    if (rpcError) console.error('[RPC Error]:', rpcError);
+    if (rpcError) {
+      console.error('[RPC FATAL ERROR]:', rpcError.message, rpcError.details, rpcError.hint);
+    }
 
-    // 1. Mantemos o dynamicGuidelinesBlock vivo e rápido
+    // 1. Diretrizes dinâmicas extraídas do pacotão
     const guidelines = masterContext?.guidelines || [];
     const dynamicGuidelinesBlock = guidelines.map((g: any) => `- ${g.content}`).join('\n') || '';
 
-    // 2. Extraímos os Lembretes Urgentes (Rigor de TDAH) sem fazer outra chamada
+    // 2. Alerta de urgência extraído do pacotão (Radar de TDAH)
     const urgentes = masterContext?.reminders || [];
     let alertaUrgencia = '';
-    if (urgentes.length > 0) {
-      alertaUrgencia = `
-[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]
+    if (urgentes && urgentes.length > 0) {
+      alertaUrgencia = `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]
 Célio, existem pendências CRÍTICAS que exigem sua atenção:
 ${urgentes.map((u: any) => `- ${u.title}`).join('\n')}
 DIRETRIZ DE ZELADORIA: O usuário possui TDAH e pode se dispersar. Como assistente mentor, sua missão é impedir que ele ignore esses itens.`;
     }
-    
+    // ────────────────────────────────────────────────────────────────────────
+
     // ── DEDUPLICAÇÃO GLOBAL ──────────────────────────────────────────────────
     const timeSlot = Math.floor(Date.now() / 10000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
