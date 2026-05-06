@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V12.6.2 (RIGOR TOTAL: Código Completo + Universal Extractor + Radar + Strict History + Tools Loop)
+// app/api/chat/route.ts — V12.6.3 (RIGOR TOTAL: Fortaleza Restaurada + Universal Extractor + Radar)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -19,7 +19,7 @@ import {
   normalizeLocationForModules,
   buildGeoBlock
 } from '@/lib/geo-resolver';
-import { verificarAlertasDeProximidade } from '@/lib/geo'; // RADAR PROATIVO
+import { verificarAlertasDeProximidade } from '@/lib/geo';
 
 export const maxDuration = 60;
 
@@ -88,7 +88,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 1.1 LOG DE RIGOR
     console.log(`[DEBUG GPS] Payload Identificado:`, {
       hasLocation: !!userLocation,
       lat: userLocation?.lat,
@@ -124,7 +123,7 @@ export async function POST(req: NextRequest) {
 
     const normalizedLocation = normalizeLocationForModules(resolvedLocation);
 
-    // ── 5. Histórico (Strict Alternation contra Erro 400) ──
+    // ── 5. Histórico (Strict Alternation) ──
     const rawHistory = masterContext?.history || [];
     const recentHistory: any[] = [];
     let lastAddedRole: string | null = null;
@@ -164,7 +163,7 @@ export async function POST(req: NextRequest) {
 
     const finalModel = (typeof resolvedModel === 'string' && resolvedModel.length > 0) ? resolvedModel : 'google/gemini-2.0-flash-001';
 
-    // ── 7. Radar Proativo (Shopping List) ──
+    // ── 7. Radar Proativo ──
     let alertaRadar = '';
     if (resolvedLocation?.lat && resolvedLocation?.lng) {
       const radar = await verificarAlertasDeProximidade(String(user.id), Number(resolvedLocation.lat), Number(resolvedLocation.lng));
@@ -184,7 +183,7 @@ export async function POST(req: NextRequest) {
       userId: String(user.id), authUserId: user.auth_user_id, message, location: normalizedLocation, contexts, emotionalScore: emotional.score, masterContext,
     });
 
-    // ── 10. COMPOSIÇÃO DE PROMPT (Com GPS Override Blindado) ──
+    // ── 10. COMPOSIÇÃO DE PROMPT ──
     const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
     const dataHoraSP = nowSP.toLocaleString('pt-BR');
     const geoBlock = buildGeoBlock(resolvedLocation);
@@ -230,7 +229,7 @@ ${composeSystemPrompt({
       assistantReply = secondResponse.content || assistantReply;
     }
 
-    // ── 12. FINALIZAÇÃO E BACKGROUND (Memória Longa) ──
+    // ── 12. FINALIZAÇÃO E BACKGROUND ──
     await redis.set(replyKey, assistantReply, { ex: 60 }).catch(() => { });
 
     (async () => {
