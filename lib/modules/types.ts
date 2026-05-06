@@ -1,9 +1,10 @@
+// lib/modules/types.ts — V2.0.0 (God RPC Types + Plan Hierarchy)
 import type { ContextType } from '@/lib/chat/context-classifier';
 
 export interface ModuleTrigger {
-  contexts?: ContextType[];           // contextos que ativam
-  keywords?: RegExp;                  // regex sobre a mensagem
-  always?: boolean;                   // carrega sempre (ex: localização se disponível)
+  contexts?: ContextType[];           // Contextos que ativam
+  keywords?: RegExp;                  // Regex sobre a mensagem
+  always?: boolean;                   // Carrega sempre (ex: localização)
   condition?: (opts: ModuleConditionOpts) => boolean | Promise<boolean>;
 }
 
@@ -14,6 +15,8 @@ export interface ModuleConditionOpts {
   location?: { latitude: number; longitude: number } | null;
   contexts: ContextType[];
   emotionalScore: number;
+  // ── A INJEÇÃO DE RIGOR ──
+  masterContext?: any; // ← Dados da God RPC (Histórico, Agenda, Locais, etc.)
 }
 
 export interface ModuleMetrics {
@@ -23,18 +26,17 @@ export interface ModuleMetrics {
   lastUsed?: string;
 }
 
-export type PreferredModel = 'flash' | 'pro' | 'sonnet';
+// Expandido para incluir o modelo Ultra/Pro mais recente
+export type PreferredModel = 'flash' | 'pro' | 'sonnet' | 'ultra';
 
 export interface ModuleDefinition {
   id: string;
-  label: string;                      // nome legível: "Finanças"
-  preferredModel: PreferredModel;     // modelo que esse módulo funciona melhor
-  plan: 'free' | 'personal' | 'family' | 'family_plus'; // plano mínimo
+  label: string;
+  preferredModel: PreferredModel;
+  // Incluído 'ultra' e 'family_plus' para bater com o seu User Summary
+  plan: 'free' | 'personal' | 'family' | 'family_plus' | 'pro' | 'ultra'; 
   trigger: ModuleTrigger;
-  // Bloco de contexto para o prompt — retorna '' se não há dados
   buildContextBlock: (opts: ModuleConditionOpts) => Promise<string>;
-  // Tools que o LLM pode chamar quando esse módulo está ativo
-  tools: string[];                    // nomes das tools em tools-def.ts
-  // Métricas iniciais (atualizado em runtime pelo metrics.ts)
+  tools: string[];
   metrics: ModuleMetrics;
 }
