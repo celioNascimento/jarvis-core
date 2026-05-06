@@ -91,6 +91,27 @@ function buildHumanLabel(address: NominatimAddress, displayName: string): string
  * Se o resultado do Nominatim estiver a mais de `MAX_DRIFT_KM` das coords
  * originais, ele é descartado e usamos o fallback de coordenadas.
  */
+// ─── Normaliza UserLocation → formato esperado pelos módulos ──────────────────
+export function normalizeLocationForModules(
+  loc: UserLocation | null,
+): { latitude: number; longitude: number; label?: string; city?: string; state?: string } | null {
+  if (!loc) return null;
+
+  const lat = typeof loc.lat === 'string' ? parseFloat(loc.lat) : loc.lat;
+  const lng = typeof loc.lng === 'string' ? parseFloat(loc.lng) : loc.lng;
+
+  if (!isFinite(lat) || !isFinite(lng)) return null;
+
+  return {
+    latitude: lat,
+    longitude: lng,
+    label: loc.label,
+    city: loc.city,
+    state: loc.state,
+  };
+}
+
+
 export async function resolveLocation(
   raw: UserLocation | null
 ): Promise<UserLocation | null> {
