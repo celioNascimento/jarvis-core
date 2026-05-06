@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V12.5.2 (RIGOR TOTAL: Fixed Duplicates + GPS Override + Modular Geo)
+// app/api/chat/route.ts — V12.5.3 (RIGOR TOTAL: Unificação de Prompt + Blindagem Anti-Redeclaração)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -17,7 +17,8 @@ import { buildDynamicContext } from '@/lib/chat/context-builder';
 import { 
   resolveLocation, 
   normalizeLocationForModules, 
-  buildGeoBlock 
+  buildGeoBlock,
+  formatLocationForPrompt
 } from '@/lib/geo-resolver';
 
 export const maxDuration = 60;
@@ -29,28 +30,22 @@ const redis = new Redis({
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 });
 
-// ─── Constantes Globais ──────────────────────────────────────────────────────
 const MAX_MSG_CHARS = 800;
 const FAMILY_DATE_SIGNALS = [
   /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
   /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
 ];
 
-/**
- * ─── Gerador de Voz (OpenAI TTS) ─────────────────────────────────────────────
- * Localização correta: Fora do Handler POST.
- */
+// ─── Gerador de Voz (OpenAI TTS) ─────────────────────────────────────────────
 async function generateTTS(text: string, voice: string = 'alloy'): Promise<string | null> {
   try {
     const cleanText = text.replace(/[*#_~]/g, '').trim();
     if (!cleanText) return null;
-
     const mp3 = await openai.audio.speech.create({
       model: 'tts-1',
       voice: voice as any,
       input: cleanText,
     });
-
     return Buffer.from(await mp3.arrayBuffer()).toString('base64');
   } catch (e) {
     console.error('[TTS Error]:', e);
@@ -70,14 +65,8 @@ export async function POST(req: NextRequest) {
     const incomingSessionId = body instanceof FormData ? (body.get('sessionId') as string | null) : (body.sessionId as string | null);
     const userLocation = body instanceof FormData ? null : body.location;
 
-  // ── 1.1 LOG DE RIGOR (Temporário para Debug de GPS) ──
-  console.log(`[DEBUG GPS] Payload recebido:`, {
-  hasLocation: !!userLocation,
-  lat: userLocation?.lat,
-  lng: userLocation?.lng,
-  message: message.substring(0, 20)
-  });
-    
+    // ── 1.1 LOG DE RIGOR (Debug de GPS) ──
+    console.log(`[DEBUG GPS] Payload:`, { hasLocation: !!userLocation, lat: userLocation?.lat, lng: userLocation?.lng });
 
     // 2. Resolve Usuário e Sessão
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
@@ -126,7 +115,7 @@ export async function POST(req: NextRequest) {
     }
     if (lastAddedRole === 'user') recentHistory.pop();
 
-    // 6. Processamento Paralelo Inteligente
+    // 6. Processamento de Inteligência
     const [queryEmbedding, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       llmGateway.isOverloaded(),
@@ -161,13 +150,12 @@ export async function POST(req: NextRequest) {
       userId: String(user.id), authUserId: user.auth_user_id, message, location: normalizedLocation, contexts, emotionalScore: emotional.score, masterContext,
     });
 
-    // 9. COMPOSIÇÃO DE PROMPT FINAL (MATA DUPLICATAS + GPS OVERRIDE)
+    // 9. COMPOSIÇÃO UNIFICADA DE PROMPT (MATA DUPLICATAS)
     const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
     const dataHoraSP = nowSP.toLocaleString('pt-BR');
     const geoBlock = buildGeoBlock(resolvedLocation);
     const urgentes = (masterContext?.reminders || []).map((u: any) => u.title).join(', ');
 
-    // Blindagem Anti-Cornélio Procópio
     const gpsOverrideInstruction = resolvedLocation 
       ? `\n[DIRETRIZ CRÍTICA]: O usuário está REALMENTE em: ${resolvedLocation.label || 'Londrina'}. Ignore qualquer endereço divergente do histórico.`
       : '';
@@ -189,7 +177,7 @@ ${composeSystemPrompt({
 })}
 [DIRETRIZES DE RIGOR TÉCNICO]
 1. Use 'salvar_evento' como fonte primária.
-2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda apenas "Pronto".`;
+2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda "Pronto".`;
 
     // 10. Ciclo LLM
     const toolsHabilitadas = ALL_TOOLS.filter(t => activeTools.includes(t.function.name) || dynamicTools.includes(t.function.name));
@@ -220,9 +208,7 @@ ${composeSystemPrompt({
 
     const audioBase64 = speak ? await generateTTS(assistantReply, user.preferred_voice || 'alloy') : null;
 
-    return NextResponse.json({
-      reply: assistantReply, audioBase64, ok: true, sessionId, performance: `${Date.now() - startTime}ms`,
-    });
+    return NextResponse.json({ reply: assistantReply, audioBase64, ok: true, sessionId, performance: `${Date.now() - startTime}ms` });
 
   } catch (e: any) {
     console.error('[FATAL ERROR]:', e);
