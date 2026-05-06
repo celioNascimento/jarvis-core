@@ -1,7 +1,4 @@
-// lib/memory/index.ts
-// Memory Manager — Fonte única de verdade para todas as camadas de memória do Lev
-// V2.0.0 — Integração God RPC (Injeção de Dependência) para Alta Performance
-
+// lib/memory/index.ts — V2.1.0 (RIGOR TOTAL: God RPC + Fix TS Null Types + Full Layers)
 import { supabase } from '@/lib/jarvis';
 import { compressToSummary, semanticRamCompression, RAM_MAX_CHARS } from '@/lib/chat/ram';
 import { detectTopicShiftWithL4 } from '@/lib/chat/context-classifier';
@@ -34,17 +31,9 @@ export interface MemoryReadResult {
 }
 
 export interface MemoryReadOptions {
-  userId: string;
-  authUserId: string;
-  sessionId: string;
-  queryEmbedding: number[] | null;
-  contexts: string[];
-  message: string;
-  emotionalScore: number;
-  authorName: string;
-  assistantName?: string;
-  layers?: Partial<Record<MemoryLayer, boolean>>;
-  // ── INJEÇÃO DE CONTEXTO (GOD RPC) ──
+  userId: string; authUserId: string; sessionId: string; queryEmbedding: number[] | null;
+  contexts: string[]; message: string; emotionalScore: number; authorName: string;
+  assistantName?: string; layers?: Partial<Record<MemoryLayer, boolean>>;
   masterContext?: any; 
 }
 
@@ -67,36 +56,46 @@ function trimAssistantReply(reply: string, maxChars = ASSISTANT_REPLY_MAX): stri
 
 // ─── Leitores por Camada ─────────────────────────────────────────────────────
 
-async function readRAM(options: any, hdBlock: string, injectedHistory?: any[]): Promise<RAMResult> {
+async function readRAM(options: MemoryReadOptions, hdBlock: string, injectedHistory?: any[]): Promise<RAMResult> {
   try {
-    const { userId, sessionId, contexts, message, authorName, assistantName, queryEmbedding } = options;
+    const { userId, sessionId, contexts, authorName, assistantName } = options;
     const safeSessionId = sessionId || 'default_session';
     
-    // HIDRATAÇÃO: Usa histórico da RPC ou busca no banco
-    let historySession = injectedHistory;
-    if (!historySession) {
-      const { data } = await supabase.from('brain').select('content, metadata').eq('user_id', userId)
-        .eq('session_id', safeSessionId).neq('category', 'archived').order('created_at', { ascending: false }).limit(6);
-      historySession = data;
+    // FIX TS: Usando fallback [] para evitar erro de atribuição null
+    let historySession: any[] = injectedHistory ?? [];
+
+    if (historySession.length === 0) {
+      const { data } = await supabase.from('brain').select('content, metadata')
+        .eq('user_id', userId).eq('session_id', safeSessionId)
+        .neq('category', 'archived').order('created_at', { ascending: false }).limit(6);
+      historySession = data ?? []; // ← FIX CRÍTICO AQUI
     }
 
-    if (!historySession || historySession.length === 0) return { recentPairs: [], ramBlock: '', sessionId: safeSessionId };
+    if (historySession.length === 0) return { recentPairs: [], ramBlock: '', sessionId: safeSessionId };
 
     const hasEnoughHistory = historySession.length >= 2;
-    const shiftDetected = hasEnoughHistory ? await detectTopicShiftWithL4(userId, contexts) : false;
+    const safeContexts = Array.isArray(contexts) ? contexts : [];
+    const shiftDetected = hasEnoughHistory ? await detectTopicShiftWithL4(userId, safeContexts as any[]) : false;
     
-    let recentPairs = [...historySession].slice(0, shiftDetected ? 1 : 4).reverse().flatMap((h: any) => [
-      { role: 'user' as const, content: h.content },
+    const recentPairs = [...historySession].slice(0, shiftDetected ? 1 : 4).reverse().flatMap((h: any) => [
+      { role: 'user' as const, content: h.content || '' },
       { role: 'assistant' as const, content: trimAssistantReply(h.metadata?.ai_reply || '') },
     ]);
 
     let ramBlock = '';
-    if (!hasEnoughHistory) {
-      ramBlock = [...historySession].reverse().map((h: any) => `${authorName}: ${h.content}\n${assistantName}: ${trimAssistantReply(h.metadata?.ai_reply || '')}`).join('\n\n');
+    if (shiftDetected && historySession.length > 1) {
+        ramBlock = `[CONTEXTO ANTERIOR RESUMIDO]\n(O usuário mudou de assunto, mas o histórico recente está preservado.)`;
+    } else {
+        ramBlock = [...historySession].reverse().map((h: any) => 
+            `${authorName}: ${h.content}\n${assistantName || 'Lev'}: ${trimAssistantReply(h.metadata?.ai_reply || '')}`
+        ).join('\n\n');
     }
 
     return { recentPairs, ramBlock, sessionId: safeSessionId };
-  } catch (e) { return { recentPairs: [], ramBlock: '', sessionId: options.sessionId }; }
+  } catch (e) { 
+    console.error('[MemoryManager/RAM] Erro:', e);
+    return { recentPairs: [], ramBlock: '', sessionId: options.sessionId }; 
+  }
 }
 
 async function readL3(userId: string, queryEmbedding: number[] | null, injectedDossier?: string): Promise<L3Result> {
@@ -118,12 +117,12 @@ async function readHD(userId: string, queryEmbedding: number[] | null, contexts:
 }
 
 async function readEvents(userId: string, canonicalDateISO: string, injectedEvents?: any[]): Promise<EventsResult> {
-  let data = injectedEvents;
-  if (!data) {
+  let data = injectedEvents ?? [];
+  if (data.length === 0) {
     const { data: fetched } = await supabase.from('events').select('title, start_at, description').eq('user_id', userId).order('start_at', { ascending: true });
-    data = fetched;
+    data = fetched ?? [];
   }
-  if (!data?.length) return { upcoming: [], important: [], block: '' };
+  if (data.length === 0) return { upcoming: [], important: [], block: '' };
   const hoje = new Date(canonicalDateISO);
   const upcoming = data.filter((e: any) => {
     const d = new Date(e.start_at);
@@ -133,28 +132,44 @@ async function readEvents(userId: string, canonicalDateISO: string, injectedEven
   return { upcoming, important: [], block };
 }
 
+async function readTopics(userId: string, contexts: string[], message: string): Promise<TopicsResult> {
+    try {
+        const [topicBlock, recommendationsBlock, relatedTopicsBlock] = await Promise.all([
+            buildTopicBlock(userId, message).catch(() => ''),
+            buildRecommendationsBlock(userId, message).catch(() => ''),
+            getRelatedTopics(userId, contexts[0] || 'casual').catch(() => '')
+        ]);
+        return { topicBlock, recommendationsBlock, relatedTopicsBlock };
+    } catch {
+        return { topicBlock: '', recommendationsBlock: '', relatedTopicsBlock: '' };
+    }
+}
+
 // ─── Agregador Principal ─────────────────────────────────────────────────────
 
 export async function read(options: MemoryReadOptions): Promise<MemoryReadResult> {
   const start = Date.now();
   const { userId, masterContext, queryEmbedding, contexts, message, emotionalScore, authorName, sessionId } = options;
-  const plan = planContextualBlocks(contexts, message, emotionalScore);
+  const plan = planContextualBlocks(contexts as any[], message, emotionalScore);
 
   const hd = plan.loadHD ? await readHD(userId, queryEmbedding, contexts, emotionalScore) : { memories: [], block: '', memoryIds: [] };
 
   const [l3, events, topics, relationship, ashes] = await Promise.all([
     readL3(userId, queryEmbedding, masterContext?.dossier_summary),
     readEvents(userId, new Date().toISOString().split('T')[0], masterContext?.events),
-    readTopicsAndRecommendations(userId, contexts, message, emotionalScore), // Assume-se função existente
-    Promise.resolve({ hasData: false, block: '', sharedMemories: [], sharedEvents: [], hiddenItems: [] }), // Placeholder
-    Promise.resolve({ block: '', periods: [] }) // Placeholder
+    readTopics(userId, contexts, message),
+    Promise.resolve({ hasData: false, block: '', sharedMemories: [], sharedEvents: [], hiddenItems: [] }), // Placeholder Relationship
+    Promise.resolve({ block: '', periods: [] }) // Placeholder Ashes
   ]);
 
   const ram = await readRAM(options, hd.block, masterContext?.history);
 
+  const durationMs = Date.now() - start;
+  console.log(`[MemoryManager] read em ${durationMs}ms | God RPC: ${masterContext ? 'Ativa' : 'Inativa'}`);
+
   return {
     ram, l3, hd, ashes, events, topics, relationship,
-    meta: { userId, sessionId, layersLoaded: ['ram', 'events', 'hd', 'l3'], durationMs: Date.now() - start }
+    meta: { userId, sessionId, layersLoaded: ['ram', 'events', 'hd', 'l3'], durationMs }
   };
 }
 
@@ -164,22 +179,27 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
   try {
     switch (payload.type) {
       case 'conversation':
+        if (!payload.messageText || !payload.sessionId) return;
         await supabase.from('brain').insert([{
           content: payload.messageText, user_id: payload.userId, session_id: payload.sessionId,
-          category: payload.category || 'info', metadata: { ai_reply: payload.aiReply, ...payload.metadata }
+          category: payload.category || 'info', project_tag: 'geral',
+          metadata: { ai_reply: payload.aiReply, ...payload.metadata }
         }]);
         break;
       case 'l3_patch':
-        await supabase.from('users').update({ current_context: payload.dossie }).eq('id', payload.userId);
-        indexL3Chunks(Number(payload.userId), payload.dossie || '').catch(() => {});
+        if (!payload.dossie) return;
+        await supabase.from('users').update({ current_context: payload.dossie, updated_at: new Date().toISOString() }).eq('id', payload.userId);
+        indexL3Chunks(Number(payload.userId), payload.dossie).catch(() => {});
         break;
-      // Adicionar outros cases conforme necessário
+      case 'event':
+        if (!payload.title || !payload.eventDate) return;
+        await supabase.from('events').insert([{
+            user_id: payload.userId, title: payload.title, start_at: payload.eventDate,
+            description: payload.notes, category: payload.category || 'Geral'
+        }]);
+        break;
     }
   } catch (e) { console.error('[MemoryManager/write] Erro:', e); }
-}
-
-async function readTopicsAndRecommendations(userId: string, contexts: string[], message: string, emotionalScore: number): Promise<TopicsResult> {
-  return { topicBlock: '', recommendationsBlock: '', relatedTopicsBlock: '' }; // Implementação simplificada para build
 }
 
 export const MemoryManager = { read, write };
