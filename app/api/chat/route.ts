@@ -115,37 +115,47 @@ export async function POST(req: NextRequest) {
       ? (body.get('sessionId') as string | null)
       : (body.sessionId as string | null);
 
-    // 1. Resolve Usuário (AQUI JÁ TEMOS O BIGINT EM user.id)
-    const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
-    if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
-
-    const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
-
-    
-    // ── MASTER RPC: CONSOLIDAÇÃO DE DADOS (Fim do N+1) ──────────────────────
-    // Enviamos o user.id diretamente para não quebrar a assinatura BIGINT do Postgres
+    // ── GOD RPC: UNIFICAÇÃO TOTAL DE CONTEXTO (Histórico + Agenda + Módulos) ──
     const { data: masterContext, error: rpcError } = await supabase
-      .rpc('get_consolidated_context', { p_user_id: user.id });
+      .rpc('get_consolidated_context', { 
+        p_user_id: user.id, 
+        p_session_id: sessionId 
+      });
 
     if (rpcError) {
-      console.error('[RPC FATAL ERROR]:', rpcError.message, rpcError.details, rpcError.hint);
+      console.error('[RPC FATAL ERROR]:', rpcError.message);
     }
 
-    // 1. Diretrizes dinâmicas extraídas do pacotão
+    // 1. HIDRATAÇÃO DO HISTÓRICO (Mata o 'getRecentMessages')
+    const rawHistory = masterContext?.history || [];
+    const recentHistory = [];
+    // Inverte para manter a ordem cronológica correta (User -> Assistant)
+    for (const row of [...rawHistory].reverse()) {
+      if (row.content?.length > 3) {
+        recentHistory.push({ role: 'user', content: row.content.slice(0, 800) });
+      }
+      if (row.metadata?.ai_reply?.length > 3) {
+        recentHistory.push({ role: 'assistant', content: row.metadata.ai_reply.slice(0, 800) });
+      }
+    }
+
+    // 2. HIDRATAÇÃO DAS DIRETRIZES
     const guidelines = masterContext?.guidelines || [];
     const dynamicGuidelinesBlock = guidelines.map((g: any) => `- ${g.content}`).join('\n') || '';
 
-    // 2. Alerta de urgência extraído do pacotão (Radar de TDAH)
+    // 3. HIDRATAÇÃO DO RADAR DE URGÊNCIA (Lembretes)
     const urgentes = masterContext?.reminders || [];
     let alertaUrgencia = '';
     if (urgentes && urgentes.length > 0) {
-      alertaUrgencia = `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]
-Célio, existem pendências CRÍTICAS que exigem sua atenção:
-${urgentes.map((u: any) => `- ${u.title}`).join('\n')}
-DIRETRIZ DE ZELADORIA: O usuário possui TDAH e pode se dispersar. Como assistente mentor, sua missão é impedir que ele ignore esses itens.`;
+      alertaUrgencia = `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]\nCélio, atenção para:\n${urgentes.map((u: any) => `- ${u.title}`).join('\n')}`;
     }
-    // ────────────────────────────────────────────────────────────────────────
 
+    // 4. HIDRATAÇÃO DE MÓDULOS PERIFÉRICOS (Routines e Locations)
+    // Esses blocos podem ser injetados direto no systemPrompt ou contextBlocks
+    const userRoutines = masterContext?.routines || [];
+    const savedLocations = masterContext?.locations || [];
+    // ────────────────────────────────────────────────────────────────────────
+    
     // ── DEDUPLICAÇÃO GLOBAL ──────────────────────────────────────────────────
     const timeSlot = Math.floor(Date.now() / 10000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
