@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — V11.0.0 (RIGOR TOTAL: God RPC + Fix TS Build + Radar de Afeto)
+// app/api/chat/route.ts — V11.5.0 (RIGOR TOTAL: God RPC + TS Fix Build + Radar de Afeto + Redis Loop)
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
@@ -24,10 +24,8 @@ const redis = new Redis({
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 });
 
-// ─── Constantes Globais e Sinais de Contexto ─────────────────────────────────
-const MAX_HISTORY_TURNS = 6;
+// ─── Constantes Globais ──────────────────────────────────────────────────────
 const MAX_MSG_CHARS = 800;
-
 const FAMILY_DATE_SIGNALS = [
   /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
   /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
@@ -54,10 +52,10 @@ async function generateTTS(text: string, voice: string = 'alloy'): Promise<strin
 }
 
 // ─── Handler principal ────────────────────────────────────────────────────────
-
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
   try {
+    // 1. Parse do Body
     const body = await (req.headers.get('content-type')?.includes('multipart')
       ? req.formData()
       : req.json());
@@ -70,14 +68,13 @@ export async function POST(req: NextRequest) {
       : (body.sessionId as string | null);
     const userLocation = body instanceof FormData ? null : body.location;
 
-    // 1. Resolve Usuário (BIGINT)
+    // 2. Resolve Usuário (BIGINT)
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
 
     const sessionId = incomingSessionId || await getOrCreateSession(String(user.id));
 
-    // ── 2. GOD RPC: UNIFICAÇÃO DE CONTEXTO (MATA N+1) ───────────────────────
-    // Buscamos Histórico, Diretrizes, Lembretes, Rotinas e Localizações em 1 pulso.
+    // ── 3. GOD RPC: CONSOLIDAÇÃO DE CONTEXTO (MATA N+1) ───────────────────────
     const { data: masterContext, error: rpcError } = await supabase
       .rpc('get_consolidated_context', { 
         p_user_id: user.id, 
@@ -86,7 +83,7 @@ export async function POST(req: NextRequest) {
 
     if (rpcError) console.error('[RPC FATAL ERROR]:', rpcError.message);
 
-    // A. Hidratação do Histórico (Mata o getRecentMessages)
+    // Hidratação do Histórico
     const rawHistory = masterContext?.history || [];
     const recentHistory: any[] = [];
     for (const row of [...rawHistory].reverse()) {
@@ -96,18 +93,16 @@ export async function POST(req: NextRequest) {
       if (aRep.length > 3) recentHistory.push({ role: 'assistant', content: aRep.slice(0, MAX_MSG_CHARS) });
     }
 
-    // B. Hidratação de Diretrizes
     const guidelines = masterContext?.guidelines || [];
     const dynamicGuidelinesBlock = guidelines.map((g: any) => `- ${g.content}`).join('\n') || '';
 
-    // C. Hidratação do Radar de Urgência (TDAH)
     const urgentes = masterContext?.reminders || [];
     let alertaUrgencia = '';
     if (urgentes && urgentes.length > 0) {
       alertaUrgencia = `\n[ESTADO DE ALERTA - PRIORIDADE MÁXIMA]\nCélio, atenção para pendências críticas:\n${urgentes.map((u: any) => `- ${u.title}`).join('\n')}`;
     }
 
-    // ── 3. DEDUPLICAÇÃO GLOBAL (LOOP DE ESPERA RIGOROSO) ──────────────────────
+    // ── 4. DEDUPLICAÇÃO GLOBAL (LOOP DE ESPERA RIGOROSO) ──────────────────────
     const timeSlot = Math.floor(Date.now() / 10000);
     const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 50)).toString('base64')}_${timeSlot}`;
     const dedupKey = `chat_dedup:${requestSignature}`;
@@ -122,17 +117,16 @@ export async function POST(req: NextRequest) {
         const cached = await redis.get<string>(replyKey);
         if (cached) return NextResponse.json({ reply: cached, ok: true, sessionId, performance: '0ms (dedup)' });
       }
-      console.warn('[Dedup] Timeout esperando cache. Processando novamente.');
     }
 
-    // ── 4. FASE 1: PROCESSAMENTO PARALELO (Embeddings + Contexto) ────────────
+    // ── 5. FASE 1: PROCESSAMENTO PARALELO (Embeddings + Contexto) ────────────
     const [queryEmbedding, isStressed, contexts] = await Promise.all([
       getCachedEmbedding(message).catch(() => null),
       llmGateway.isOverloaded(),
       classifyContextWithL4(message, String(user.id)),
     ]);
 
-    // ── 5. FASE 2: MEMÓRIA CARREGADA ─────────────────────────────────────────
+    // ── 6. FASE 2: MEMÓRIA E SCORE EMOCIONAL ─────────────────────────────────
     const memory = await MemoryManager.read({
       userId: String(user.id),
       authUserId: user.auth_user_id,
@@ -145,7 +139,6 @@ export async function POST(req: NextRequest) {
       queryEmbedding,
     });
 
-    // ── 6. FASE 3: SCORE EMOCIONAL ───────────────────────────────────────────
     const emotional = await computeEmotionalScore(
       message,
       String(user.id),
@@ -153,7 +146,6 @@ export async function POST(req: NextRequest) {
       memory.ram.ramBlock ?? '',
     );
 
-    // ── 7. CARREGAMENTO MODULAR E RADAR DE AFETO ─────────────────────────────
     const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
       {
         userId: String(user.id),
@@ -166,17 +158,16 @@ export async function POST(req: NextRequest) {
       'google/gemini-2.0-flash-001',
     );
 
-    // Lógica Guard L3 (Meses de Alerta: Maio e Agosto)
+    // ── 7. RADAR DE AFETO (RIGOR DATAS FAMILIARES) ───────────────────────────
     let filteredL3 = memory.l3.content;
     const todayCheck = new Date();
     const isHighAlertMonth = todayCheck.getMonth() === 4 || todayCheck.getMonth() === 7;
 
     if (recentHistory.length > 0 || isHighAlertMonth) {
       const recentText = recentHistory.map(m => m.content).join(' ');
-      const historyHasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentText));
-      const messageHasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(message));
+      const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentText)) || FAMILY_DATE_SIGNALS.some(p => p.test(message));
 
-      if (!historyHasFamilySignal && !messageHasFamilySignal && !isHighAlertMonth) {
+      if (!hasFamilySignal && !isHighAlertMonth) {
         filteredL3 = filteredL3
           .replace(/##\s*(datas?|aniversário|comemoração|evento importante)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
           .replace(/##\s*(famil[íi]a|cônjuge|esposa|marido|filho|parente)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
@@ -230,7 +221,7 @@ export async function POST(req: NextRequest) {
     const systemPrompt = `[RELÓGIO DO SISTEMA]: ${dataHoraSP}\n${contextText}${alertaUrgencia}\n---\n${basePrompt}
 [DIRETRIZES DE RIGOR TÉCNICO]
 1. AGENDA: Use 'salvar_evento' (Supabase) como fonte primária.
-2. MENTOR: Interrompa fluxos se houver alertas de urgência (Lembretes/Agenda).
+2. MENTOR: Interrompa fluxos se houver alertas de urgência.
 3. PROTOCOLO DE SAÍDA: Proibido responder apenas "Pronto" ou "Anotado". Descreva a ação técnica realizada no sistema. Atue como arquiteto do Expert Frotas.`;
 
     // ── 9. CICLO DE EXECUÇÃO LLM ─────────────────────────────────────────────
@@ -246,8 +237,6 @@ export async function POST(req: NextRequest) {
 
     // ✅ FIX: TypeScript type narrowing para evitar erro de build
     if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
-      console.log(`[Tools] ${firstResponse.toolCalls.length} tool(s) detectada(s)`);
-
       const toolResults = await Promise.all(
         firstResponse.toolCalls.map(async (toolCall) => {
           const result = await executeTool(toolCall, user.auth_user_id, String(user.id));
@@ -282,18 +271,21 @@ export async function POST(req: NextRequest) {
     // ── 10. FINALIZAÇÃO E BACKGROUND (FIRE AND FORGET) ───────────────────────
     await redis.set(replyKey, assistantReply, { ex: 30 }).catch(() => {});
 
-    // Registro no Brain (Silencioso)
+    // ✅ FIX TÉCNICO: Supabase insert background sem travar e sem erro de tipo .catch()
+    // Builders do Supabase não expõem .catch() diretamente no tipo PostgrestFilterBuilder
     supabase.from('brain').insert({
       user_id: Number(user.id),
       session_id: sessionId,
       content: message,
       category: message.length < 15 ? 'noise' : 'info',
       metadata: { role: 'user', ai_reply: assistantReply, contexts, model: resolvedModel },
-    }).catch(e => console.error('[Brain Save Error]:', e));
+    }).then(({ error }) => {
+      if (error) console.error('[Brain Save Error]:', error.message);
+    });
 
     const audioBase64 = speak ? await generateTTS(assistantReply, user.preferred_voice || 'alloy') : null;
 
-    // ✅ EXTRAÇÃO EM BACKGROUND (Desbloqueado)
+    // Extração em Background
     extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply)
       .catch(e => console.error('[Background Extractor Error]:', e));
 
