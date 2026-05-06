@@ -70,6 +70,15 @@ export async function POST(req: NextRequest) {
     const incomingSessionId = body instanceof FormData ? (body.get('sessionId') as string | null) : (body.sessionId as string | null);
     const userLocation = body instanceof FormData ? null : body.location;
 
+  // ── 1.1 LOG DE RIGOR (Temporário para Debug de GPS) ──
+  console.log(`[DEBUG GPS] Payload recebido:`, {
+  hasLocation: !!userLocation,
+  lat: userLocation?.lat,
+  lng: userLocation?.lng,
+  message: message.substring(0, 20)
+  });
+    
+
     // 2. Resolve Usuário e Sessão
     const { data: user } = await supabase.from('users').select('*').eq('email', userEmail).single();
     if (!user) return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
