@@ -75,7 +75,6 @@ export async function POST(req: NextRequest) {
         const parsed = typeof rawLocation === 'string' ? JSON.parse(rawLocation) : rawLocation;
 
         // ── NORMALIZAÇÃO UNIVERSAL ──
-        // Intercepta e converte 'latitude' para 'lat', não importa como o celular mandou
         if (parsed && typeof parsed === 'object') {
           userLocation = {
             lat: parsed.lat ?? parsed.latitude,
@@ -191,7 +190,6 @@ export async function POST(req: NextRequest) {
     const geoBlock = buildGeoBlock(resolvedLocation);
     const urgentes = (masterContext?.reminders || []).map((u: any) => u.title).join(', ');
 
-    // Se o GPS chegou com sucesso, o Jarvis proíbe a adivinhação baseada no histórico
     const gpsOverrideInstruction = resolvedLocation
       ? `\n[DIRETRIZ CRÍTICA]: O usuário está REALMENTE em: ${resolvedLocation.label || 'Londrina'}. Ignore qualquer endereço divergente do histórico.`
       : `\n[STATUS GPS]: INDISPONÍVEL. Proibido tentar adivinhar a localização atual baseando-se no histórico. Se questionado, diga que não tem o sinal GPS no momento.`;
