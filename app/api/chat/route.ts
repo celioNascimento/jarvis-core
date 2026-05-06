@@ -396,10 +396,11 @@ ${basePrompt}`;
     const userVoice = user.preferred_voice || 'alloy';
     const audioBase64 = speak ? await generateTTS(assistantReply, userVoice) : null;
 
-    // ── ✅ 10. EXTRAÇÃO DE DADOS EM BACKGROUND (A MÁGICA ACONTECE AQUI) ──
-    // O sistema dispara o extrator em segundo plano para anotar as informações (Compras, Perfil, Projetos)
-    // Usamos String(user.id) garantindo que o BigInt correto seja passado.
-    await extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply);
+    // ── ✅ 10. EXTRAÇÃO DE DADOS EM BACKGROUND (Desbloqueado) ──
+    // O 'await' foi removido. O servidor Vercel inicia o LLM em segundo plano,
+    // mas não prende a requisição, liberando a tela do celular instantaneamente.
+    extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply)
+      .catch(e => console.error('[Background Extractor Error]:', e));
 
     // 11. RESPOSTA FINAL
     return NextResponse.json({
@@ -409,7 +410,7 @@ ${basePrompt}`;
       sessionId,
       performance: `${Date.now() - startTime}ms`,
     });
-
+    
   } catch (e: any) {
     console.error('[FATAL]', e);
     return NextResponse.json(
