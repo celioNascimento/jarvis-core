@@ -219,16 +219,27 @@ ${composeSystemPrompt({
     const firstResponse = await callOpenRouterWithPriority(1, 'never', requestSignature, conversationMessages, toolsHabilitadas, finalModel, 0.7);
     let assistantReply = firstResponse.content || "Entendido.";
 
-    if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
-      const toolResults = await Promise.all(firstResponse.toolCalls.map(async (tc) => ({ tc, result: await executeTool(tc, user.auth_user_id, String(user.id)) })));
+   if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
+      // 1ª CORREÇÃO (Linha 223): Adição de (tc: any)
+      const toolResults = await Promise.all(
+        firstResponse.toolCalls.map(async (tc: any) => ({ 
+          tc, 
+          result: await executeTool(tc, user.auth_user_id, String(user.id)) 
+        }))
+      );
+      
       const secondResponse = await callOpenRouterWithPriority(1, 'never', `${requestSignature}_synth`, [
         ...conversationMessages,
-        { role: 'assistant', content: firstResponse.content || null, tool_calls: firstResponse.toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } })) },
-        ...toolResults.map(({ tc, result }) => ({ role: 'tool', tool_call_id: tc.id, content: result }))
-      ], [], finalModel, 0.7);
-      assistantReply = secondResponse.content || assistantReply;
-    }
-
+        { 
+          role: 'assistant', 
+          content: firstResponse.content || null, 
+          // 2ª CORREÇÃO (Linha 226): Adição de (tc: any) para evitar o próximo erro
+          tool_calls: firstResponse.toolCalls.map((tc: any) => ({ 
+            id: tc.id, 
+            type: 'function', 
+            function: { name: tc.function.name, arguments: tc.function.arguments } 
+          })) 
+        },
     // ── 12. FINALIZAÇÃO E BACKGROUND ──
     await redis.set(replyKey, assistantReply, { ex: 60 }).catch(() => { });
 
