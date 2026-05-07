@@ -219,27 +219,38 @@ ${composeSystemPrompt({
     const firstResponse = await callOpenRouterWithPriority(1, 'never', requestSignature, conversationMessages, toolsHabilitadas, finalModel, 0.7);
     let assistantReply = firstResponse.content || "Entendido.";
 
-   if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
-      // 1ª CORREÇÃO (Linha 223): Adição de (tc: any)
+    if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
+      // 1ª CORREÇÃO: Adição de (tc: any)
       const toolResults = await Promise.all(
-        firstResponse.toolCalls.map(async (tc: any) => ({ 
-          tc, 
-          result: await executeTool(tc, user.auth_user_id, String(user.id)) 
+        firstResponse.toolCalls.map(async (tc: any) => ({
+          tc,
+          result: await executeTool(tc, user.auth_user_id, String(user.id))
         }))
       );
-      
+
+      // Chamada secundária com array de mensagens completo e fechamentos corretos
       const secondResponse = await callOpenRouterWithPriority(1, 'never', `${requestSignature}_synth`, [
         ...conversationMessages,
-        { 
-          role: 'assistant', 
-          content: firstResponse.content || null, 
-          // 2ª CORREÇÃO (Linha 226): Adição de (tc: any) para evitar o próximo erro
-          tool_calls: firstResponse.toolCalls.map((tc: any) => ({ 
-            id: tc.id, 
-            type: 'function', 
-            function: { name: tc.function.name, arguments: tc.function.arguments } 
-          })) 
+        {
+          role: 'assistant',
+          content: firstResponse.content || null,
+          // 2ª CORREÇÃO: Adição de (tc: any)
+          tool_calls: firstResponse.toolCalls.map((tc: any) => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.function.name, arguments: tc.function.arguments }
+          }))
         },
+        // 3ª CORREÇÃO: Injeção do resultado das ferramentas de volta no LLM e (tr: any)
+        ...toolResults.map((tr: any) => ({
+          role: 'tool',
+          tool_call_id: tr.tc.id,
+          content: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result)
+        }))
+      ], toolsHabilitadas, finalModel, 0.7);
+
+      assistantReply = secondResponse.content || "Entendido.";
+    }
     // ── 12. FINALIZAÇÃO E BACKGROUND ──
     await redis.set(replyKey, assistantReply, { ex: 60 }).catch(() => { });
 
