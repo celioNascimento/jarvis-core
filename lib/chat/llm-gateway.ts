@@ -1,7 +1,6 @@
 // lib/chat/llm-gateway.ts
-// Motor V10.0.0 — Serverless-safe: payload 100% serializado no Redis.
-//   Qualquer container pode consumir qualquer task da fila sem depender
-//   de estado local (sem pendingExecutors, sem closures em RAM).
+// Motor V10.0.1 — Serverless-safe: payload 100% serializado no Redis.
+// API Pública ajustada: isOverloaded exposto para rotas externas.
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
@@ -127,6 +126,15 @@ class Gatekeeper {
 
   // ── API pública ───────────────────────────────────────────────────────────
 
+  /**
+   * Verifica se o sistema atingiu o limite de concorrência.
+   * Exposto publicamente para rotas que precisam tomar decisões de load shedding.
+   */
+  async isOverloaded(): Promise<boolean> {
+    try { return ((await redis.get<number>(ACTIVE_KEY)) ?? 0) >= MAX_CONCURRENT; }
+    catch { return false; }
+  }
+
   async enqueue(task: LLMTask): Promise<any> {
     const dk = dedupKey(task.id, task.dedupPayload);
 
@@ -185,11 +193,6 @@ class Gatekeeper {
 
   private async isBreakerOpen(): Promise<boolean> {
     try { return (await redis.get(BREAKER_KEY)) === 'open'; }
-    catch { return false; }
-  }
-
-  private async isOverloaded(): Promise<boolean> {
-    try { return ((await redis.get<number>(ACTIVE_KEY)) ?? 0) >= MAX_CONCURRENT; }
     catch { return false; }
   }
 
