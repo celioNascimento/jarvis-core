@@ -7,7 +7,7 @@
 import { supabase } from '@/lib/jarvis';
 import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
 import { getGoogleContext, createGoogleEvent, trashGoogleEmail } from '@/lib/google';
-import { scheduleReminderOnQStash } from '@/lib/qstash';
+import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
 
 // ─── consultar_agenda ─────────────────────────────────────────────────────────
 
@@ -268,5 +268,43 @@ export async function executeConsultarLembretes(
       .join('\n');
   } catch {
     return 'Erro ao ler tabela de lembretes.';
+  }
+}
+// ─── deletar_evento ───────────────────────────────────────────────────────────
+
+export async function executeDeletarEvento(
+  p: { query: string },
+  _authUserId: string,
+  numericUserId: string
+): Promise<string> {
+  try {
+    const { error } = await supabase.schema('jarvis').from('events')
+      .delete().eq('user_id', Number(numericUserId)).ilike('title', `%${p.query}%`);
+    return error ? 'Erro ao deletar.' : `Eventos relacionados a "${p.query}" foram removidos.`;
+  } catch {
+    return 'Falha na exclusão.';
+  }
+}
+
+// ─── cancelar_lembrete ────────────────────────────────────────────────────────
+
+export async function executeCancelarLembrete(
+  p: { query: string },
+  _authUserId: string,
+  numericUserId: string
+): Promise<string> {
+  try {
+    const { data: r } = await supabase.schema('jarvis').from('reminders')
+      .select('id, qstash_message_id, title').eq('user_id', Number(numericUserId))
+      .ilike('title', `%${p.query}%`).eq('status', 'pending').maybeSingle();
+
+    if (!r) return `Nenhum lembrete pendente encontrado com o título "${p.query}".`;
+
+    if (r.qstash_message_id) await cancelReminderOnQStash(r.qstash_message_id);
+    await supabase.schema('jarvis').from('reminders').update({ status: 'cancelled' }).eq('id', r.id);
+
+    return `Lembrete "${r.title}" cancelado com sucesso.`;
+  } catch {
+    return 'Erro ao cancelar lembrete.';
   }
 }
