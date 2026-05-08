@@ -217,10 +217,11 @@ ${composeSystemPrompt({
     const conversationMessages = [{ role: 'system', content: systemPrompt }, ...recentHistory, { role: 'user', content: message }];
 
     const firstResponse = await callOpenRouterWithPriority(1, 'never', requestSignature, conversationMessages, toolsHabilitadas, finalModel, 0.7);
-    let assistantReply = firstResponse.content || "Entendido.";
+    
+    let assistantReply = "";
 
     if (firstResponse.toolCalls && firstResponse.toolCalls.length > 0) {
-      // 1ª CORREÇÃO: Adição de (tc: any)
+      // 1ª CORREÇÃO: Tipagem (tc: any) para o compilador
       const toolResults = await Promise.all(
         firstResponse.toolCalls.map(async (tc: any) => ({
           tc,
@@ -228,47 +229,74 @@ ${composeSystemPrompt({
         }))
       );
 
-      // Chamada secundária com array de mensagens completo e fechamentos corretos
+      // 2ª CORREÇÃO: Fechamento de sintaxe e injeção de resultados
       const secondResponse = await callOpenRouterWithPriority(1, 'never', `${requestSignature}_synth`, [
         ...conversationMessages,
         {
           role: 'assistant',
           content: firstResponse.content || null,
-          // 2ª CORREÇÃO: Adição de (tc: any)
           tool_calls: firstResponse.toolCalls.map((tc: any) => ({
             id: tc.id,
             type: 'function',
             function: { name: tc.function.name, arguments: tc.function.arguments }
           }))
         },
-        // 3ª CORREÇÃO: Injeção do resultado das ferramentas de volta no LLM e (tr: any)
         ...toolResults.map((tr: any) => ({
           role: 'tool',
           tool_call_id: tr.tc.id,
           content: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result)
         }))
-      ], [], finalModel, 0.7); // <- CORREÇÃO APLICADA AQUI: Array vazio para ferramentas.
+      ], [], finalModel, 0.7); // Array vazio de ferramentas para evitar loops infinitos
 
-      assistantReply = secondResponse.content || "Entendido.";
+      assistantReply = secondResponse.content || "";
+    } else {
+      assistantReply = firstResponse.content || "";
     }
+
+    // ── FALLBACK DE EMERGÊNCIA (A "Bronca" no Motor para evitar o "Entendido.") ──
+    if (!assistantReply.trim() || assistantReply === "Entendido.") {
+      console.warn("[Gatekeeper] Resposta vazia ou genérica detectada. Forçando síntese final...");
+      const emergencyResponse = await callOpenRouterWithPriority(1, 'never', `${requestSignature}_panic`, [
+        ...conversationMessages,
+        { 
+          role: 'system', 
+          content: "SINTETIZE AGORA: Você obteve dados de ferramentas, mas sua resposta está vazia. Descreva os resultados de forma direta, técnica e proativa como Arquiteto do sistema." 
+        }
+      ], [], finalModel, 0.3);
+      assistantReply = emergencyResponse.content || "Sistema processou a demanda, mas a síntese final falhou. Por favor, tente novamente.";
+    }
+
     // ── 12. FINALIZAÇÃO E BACKGROUND ──
     await redis.set(replyKey, assistantReply, { ex: 60 }).catch(() => { });
 
     (async () => {
+      // Registro no cérebro (Brain)
       supabase.from('brain').insert({
-        user_id: Number(user.id), session_id: sessionId, content: message, category: message.length < 15 ? 'noise' : 'info',
+        user_id: Number(user.id), 
+        session_id: sessionId, 
+        content: message, 
+        category: message.length < 15 ? 'noise' : 'info',
         metadata: { role: 'user', ai_reply: assistantReply, contexts, model: finalModel }
       }).then(({ error }) => { if (error) console.error('[Brain Save Error]:', error.message); });
 
-      extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply).catch(e => console.error('[Background Extractor Error]:', e));
+      // Extração de memórias em background
+      extractAndSummarize(String(user.id), user.nickname || 'Usuário', message, assistantReply)
+        .catch(e => console.error('[Background Extractor Error]:', e));
     })();
 
     const audioBase64 = speak ? await generateTTS(assistantReply, user.preferred_voice || 'alloy') : null;
 
-    return NextResponse.json({ reply: assistantReply, audioBase64, ok: true, sessionId, performance: `${Date.now() - startTime}ms` });
+    return NextResponse.json({ 
+      reply: assistantReply, 
+      audioBase64, 
+      ok: true, 
+      sessionId, 
+      performance: `${Date.now() - startTime}ms` 
+    });
 
   } catch (e: any) {
     console.error('[FATAL ERROR]:', e);
     return NextResponse.json({ error: 'Erro no motor do Jarvis.' }, { status: 500 });
   }
 }
+
