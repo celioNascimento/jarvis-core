@@ -9,7 +9,7 @@ export const ModuloAgenda: ModuleDefinition = {
   plan: 'free',
   trigger: {
     always: true, // Agenda deve estar sempre no contexto
-    contexts: ['agenda', 'evento', 'lembrete'], // Adicionado 'lembrete' para garantir ativação
+    contexts: ['agenda', 'evento'], // 👈 REMOVIDO o 'lembrete' daqui para respeitar a Tipagem
     keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos|lembrete|me lembra|avisar/i
   },
   buildContextBlock: async (opts) => {
@@ -31,10 +31,10 @@ export const ModuloAgenda: ModuleDefinition = {
   tools: [
     'salvar_evento', 
     'consultar_agenda',
-    'deletar_evento',      // 👈 Nome corrigido
+    'deletar_evento',
     'create_reminder',
-    'cancelar_lembrete',   // 👈 Nome corrigido
-    'consultar_lembretes'  // 👈 Nome corrigido
+    'cancelar_lembrete',
+    'consultar_lembretes'
   ],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
