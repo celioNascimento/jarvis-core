@@ -1,6 +1,6 @@
 // lib/chat/tools-executor.ts
 // Motor V8.21.1 — Edição Titã (ExpertFrotas, Finance, Agenda Lev & TDAH)
-// Blindagem de Schemas, Idempotência e Correção de Sintaxe
+// Blindagem de Schemas, Idempotência e Correção de Sintaxe (Fuso e Cron Integrados)
 
 import { supabase } from '@/lib/jarvis';
 import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
@@ -17,6 +17,19 @@ import {
   executeCriarOrcamento,
   executeListarOrcamentos,
 } from '@/lib/finances/executor';
+
+// ─── HELPER DE RECORRÊNCIA (CRON) ───────────────────────────────────────────
+const getCronExpression = (freq: string, time: Date) => {
+  const m = time.getMinutes();
+  const h = time.getHours();
+  switch (freq) {
+    case 'daily':    return `${m} ${h} * * *`;
+    case 'weekdays': return `${m} ${h} * * 1-5`;
+    case 'weekly':   return `${m} ${h} * * ${time.getDay()}`;
+    case 'monthly':  return `${m} ${h} ${time.getDate()} * *`;
+    default: return null;
+  }
+};
 
 async function detectarConflitos(userId: number, inicio: string, fim: string) {
   const { data: conflitos } = await supabase
@@ -127,7 +140,7 @@ export async function executeTool(
     case 'adicionar_diretriz_dinamica': {
       try {
         const { error } = await supabase
-          .schema('jarvis') // <--- ISSO É VITAL
+          .schema('jarvis')
           .from('dynamic_guidelines')
           .insert({
             user_id: Number(numericUserIdStr),
@@ -137,7 +150,6 @@ export async function executeTool(
           });
 
         if (error) throw error;
-
         return `Entendido, Célio. Diretriz aplicada com sucesso: "${p.content}". A partir de agora, seguirei essa regra em nossas interações.`;
       } catch (err: any) {
         return `Erro técnico ao salvar diretriz: ${err.message}`;
@@ -180,41 +192,28 @@ export async function executeTool(
       }
     }
 
-
     case 'salvar_evento': {
       try {
-        const anoAtual = new Date().getFullYear();
+        const agora = new Date();
         let rawDate = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
 
-        // ── CORREÇÃO DE ANO (Garante 2026 e evita datas de 2024) ──
-        const anoEvento = parseInt(rawDate.substring(0, 4));
-        if (anoEvento > 0 && (anoEvento < anoAtual || isNaN(anoEvento))) {
-          rawDate = String(anoAtual) + rawDate.substring(4);
+        if (rawDate.length <= 5 && rawDate.includes(':')) {
+           const hoje = agora.toLocaleDateString('en-CA'); 
+           rawDate = `${hoje}T${rawDate}:00`;
         }
 
-        const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(rawDate)
-          ? rawDate
-          : rawDate + '-03:00';
+        const dateString = /(Z|[+-]\d{2}:\d{2})$/.test(rawDate) ? rawDate : `${rawDate}-03:00`;
+        const startDate = new Date(dateString);
+        
+        if (isNaN(startDate.getTime())) return `Erro: data inválida — "${p.event_date}".`;
 
-        const startDate = new Date(withOffset);
-        if (isNaN(startDate.getTime())) {
-          return `Erro: data inválida — "${p.event_date}". Por favor, informe dia e hora.`;
-        }
-
-        // Janela de 1 hora para detecção de conflito
-        const endDate = new Date(startDate.getTime() + 3600000);
         const startISO = startDate.toISOString();
-        const endISO = endDate.toISOString();
+        const endISO = new Date(startDate.getTime() + (p.duration_minutes || 60) * 60000).toISOString();
 
-        // ── RADAR DE CONFLITOS (AQUI ELE COMEÇA A SE IMPORTAR) ──
         if (!p.force) {
-          const { data: conflitos } = await supabase
-            .schema('jarvis')
-            .from('events')
-            .select('title, start_at')
-            .eq('user_id', Number(numericUserIdStr))
-            .lt('start_at', endISO)
-            .gt('end_at', startISO);
+          const { data: conflitos } = await supabase.schema('jarvis').from('events')
+            .select('title, start_at').eq('user_id', Number(numericUserIdStr))
+            .lt('start_at', endISO).gt('end_at', startISO);
 
           if (conflitos && conflitos.length > 0) {
             const horaConflito = new Date(conflitos[0].start_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -222,36 +221,34 @@ export async function executeTool(
           }
         }
 
-        // ── PERSISTÊNCIA NO BANCO ──
-        const { error } = await supabase
-          .schema('jarvis')
-          .from('events')
-          .insert({
-            user_id: Number(numericUserIdStr),
-            title: p.title || p.summary,
-            start_at: startISO,
-            end_at: endISO,
-            all_day: false,
-            category: p.category || 'personal',
-            source: 'lev',
-            reminder_minutes: [p.reminderMinutes ?? 30],
-            notes: p.notes || null,
-          });
+        const { error } = await supabase.schema('jarvis').from('events').insert({
+          user_id: Number(numericUserIdStr),
+          title: p.title || p.summary,
+          start_at: startISO,
+          end_at: endISO,
+          all_day: !!p.all_day,
+          category: p.category || 'personal',
+          source: 'lev', // 👈 SANEAMENTO DE EDIÇÃO NO APP
+          reminder_minutes: [p.reminderMinutes ?? 30],
+          notes: p.notes || null,
+        });
 
         if (error) throw error;
-
         return `Evento "${p.title || p.summary}" salvo com sucesso para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}. Radar de conflitos: Limpo.`;
-      } catch (err: any) {
-        return `Erro ao salvar evento: ${err.message}`;
-      }
+      } catch (err: any) { return `Erro ao salvar evento: ${err.message}`; }
+    }
+
+    case 'deletar_evento': {
+      try {
+        const { error } = await supabase.schema('jarvis').from('events')
+          .delete().eq('user_id', Number(numericUserIdStr)).ilike('title', `%${p.query}%`);
+        return error ? 'Erro ao deletar.' : `Eventos relacionados a "${p.query}" foram removidos.`;
+      } catch { return 'Falha na exclusão.'; }
     }
 
     case 'criar_evento_agenda': {
-      try {
-        return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
-      } catch (err: any) {
-        return `Erro no Google: ${err.message}`;
-      }
+      try { return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30); } 
+      catch (err: any) { return `Erro no Google: ${err.message}`; }
     }
 
     case 'listar_emails_recentes':
@@ -265,70 +262,60 @@ export async function executeTool(
     case 'create_reminder': {
       try {
         const title = p.title || p.message;
-
-        // ─── BLINDAGEM DE FUSO HORÁRIO (UTC-3 / Brasil) ───
         let scheduled_time = p.scheduled_time;
+        const agora = new Date();
 
-        if (scheduled_time) {
-          // Se a string veio limpa, sem offset (não termina em Z nem tem + ou - no final)
-          if (!/(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time)) {
-            scheduled_time += '-03:00'; // Força o fuso brasileiro
-          }
-          // Converte para o padrão Universal (UTC) exigido pelo Banco e pelo QStash
-          scheduled_time = new Date(scheduled_time).toISOString();
+        if (scheduled_time && scheduled_time.length <= 5 && scheduled_time.includes(':')) {
+          const hoje = agora.toLocaleDateString('en-CA');
+          const dataRef = new Date(`${hoje}T${scheduled_time}:00-03:00`);
+          if (dataRef.getTime() <= agora.getTime()) dataRef.setDate(dataRef.getDate() + 1);
+          scheduled_time = dataRef.toISOString();
+        } else if (scheduled_time) {
+          const dateString = /(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time) ? scheduled_time : `${scheduled_time}-03:00`;
+          scheduled_time = new Date(dateString).toISOString();
         } else {
-          // Fallback para atraso relativo (Date.now() já é universal por natureza)
-          scheduled_time = p.delay_minutes
-            ? new Date(Date.now() + p.delay_minutes * 60000).toISOString()
-            : new Date(Date.now() + 300000).toISOString(); // Padrão: 5 min
+          scheduled_time = new Date(agora.getTime() + (p.delay_minutes || 5) * 60000).toISOString();
         }
 
-        const { data: reminder, error } = await supabase
-          .schema('jarvis')
-          .from('reminders')
-          .insert({
-            user_id: Number(numericUserIdStr),
-            title,
-            type: p.type || 'temporary',
-            scheduled_time,
-            status: 'pending',
-            metadata: { auth_user_id: authUserId },
-          })
-          .select('id')
-          .single();
+        let frequency = p.frequency || null;
+        if (frequency?.toLowerCase().includes('útil') || frequency === 'segunda a sexta') frequency = 'weekdays';
+
+        const { data: reminder, error } = await supabase.schema('jarvis').from('reminders').insert({
+          user_id: Number(numericUserIdStr),
+          title,
+          type: p.type || 'temporary',
+          scheduled_time,
+          frequency,
+          status: 'pending',
+          source: 'lev', // 👈 SANEAMENTO
+          metadata: { auth_user_id: authUserId },
+        }).select('id').single();
 
         if (error) throw error;
+
+        const cron = frequency ? getCronExpression(frequency, new Date(scheduled_time)) : null;
 
         const qstashId = await scheduleReminderOnQStash({
           reminderId: String(reminder.id),
           userId: numericUserIdStr,
           authUserId,
           message: title,
-          scheduledTime: scheduled_time,
+          scheduledTime: cron ? null : scheduled_time,
+          cron // 👈 REPASSA O CRON PARA O QSTASH
         });
 
         if (qstashId) {
-          await supabase
-            .schema('jarvis')
-            .from('reminders')
-            .update({ qstash_message_id: qstashId })
-            .eq('id', reminder.id);
+          await supabase.schema('jarvis').from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
         }
 
-        const dtFormatted = new Date(scheduled_time).toLocaleString('pt-BR', {
-          timeZone: 'America/Sao_Paulo',
-          hour: '2-digit',
-          minute: '2-digit',
-        });
-        return `Lembrete agendado: "${title}" às ${dtFormatted}.`;
+        const dtFormatted = new Date(scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+        return `Lembrete agendado: "${title}" às ${dtFormatted}${frequency ? ` (${frequency})` : ''}.`;
       } catch (err: any) { return `Erro ao criar lembrete: ${err.message}`; }
     }
 
     case 'consultar_lembretes': {
       try {
-        const { data: reminders } = await supabase
-          .schema('jarvis')
-          .from('reminders')
+        const { data: reminders } = await supabase.schema('jarvis').from('reminders')
           .select('title, scheduled_time, status')
           .eq('user_id', Number(numericUserIdStr))
           .eq('status', 'pending')
@@ -336,12 +323,26 @@ export async function executeTool(
           .order('scheduled_time', { ascending: true });
 
         if (!reminders?.length) return "Você não tem lembretes pendentes para o futuro.";
-
         return reminders.map(r => {
           const dt = new Date(r.scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
           return `- ${r.title} (${dt})`;
         }).join('\n');
       } catch (err) { return "Erro ao ler tabela de lembretes."; }
+    }
+
+    case 'cancelar_lembrete': {
+      try {
+        const { data: r } = await supabase.schema('jarvis').from('reminders')
+          .select('id, qstash_message_id, title').eq('user_id', Number(numericUserIdStr))
+          .ilike('title', `%${p.query}%`).eq('status', 'pending').maybeSingle();
+
+        if (!r) return `Nenhum lembrete pendente encontrado com o título "${p.query}".`;
+
+        if (r.qstash_message_id) await cancelReminderOnQStash(r.qstash_message_id);
+        await supabase.schema('jarvis').from('reminders').update({ status: 'cancelled' }).eq('id', r.id);
+
+        return `Lembrete "${r.title}" cancelado com sucesso.`;
+      } catch { return 'Erro ao cancelar lembrete.'; }
     }
 
 
