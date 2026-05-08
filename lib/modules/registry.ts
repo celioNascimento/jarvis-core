@@ -1,4 +1,4 @@
-// lib/modules/registry.ts — V10.0.0 (God RPC Hydration + Zero Redundancy)
+// lib/modules/registry.ts — V10.1.0 (God RPC Hydration + Zero Redundancy)
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
 import { waitUntil } from '@vercel/functions'; 
@@ -6,12 +6,13 @@ import type { ModuleDefinition, ModuleConditionOpts } from './types';
 import { recordModuleMetrics } from './metrics';
 
 // Importação dos Módulos Especialistas
-import { ModuloFinancas } from './modules/financas';
-import { ModuloVeiculos } from './modules/veiculos';
-import { ModuloFoco } from './modules/foco';
-import { ModuloRotinas } from './modules/rotinas';
-import { ModuloAgenda } from './modules/agenda';
-import { ModuloLocalizacao } from './modules/localizacao'; // Certifique-se de que está aqui
+import { ModuloFinancas }    from './modules/financas';
+import { ModuloVeiculos }    from './modules/veiculos';
+import { ModuloFoco }        from './modules/foco';
+import { ModuloRotinas }     from './modules/rotinas';
+import { ModuloAgenda }      from './modules/agenda';
+import { ModuloLocalizacao } from './modules/localizacao';
+import { ModuloProjetos }    from './modules/projetos';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -24,14 +25,15 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloFoco,
   ModuloRotinas,
   ModuloAgenda,
-  ModuloLocalizacao
+  ModuloLocalizacao,
+  ModuloProjetos,
 ];
 
 /**
  * Carrega módulos ativos usando Injeção de Dependência da God RPC
  */
 export async function loadActiveModules(
-  opts: ModuleConditionOpts & { masterContext?: any }, // ← Adicionamos o masterContext aqui
+  opts: ModuleConditionOpts & { masterContext?: any },
   userPlan: string,
   baseModel: string,
 ) {
@@ -40,16 +42,19 @@ export async function loadActiveModules(
   let enabledIds: string[] | null = null;
 
   if (opts.masterContext?.modules) {
-    // Se a God RPC trouxe os módulos, usamos eles instantaneamente (0ms latência extra)
     enabledIds = opts.masterContext.modules.map((m: any) => m.module_id);
     console.debug(`[ModuleRegistry] Hidratação via God RPC: ${enabledIds?.length} módulos.`);
   } else {
-    // Fallback: Busca no Redis ou DB se a RPC falhar
     const cacheKey = `modules_enabled:${opts.userId}`;
     enabledIds = await redis.get<string[]>(cacheKey);
     
     if (!enabledIds) {
-      const { data } = await supabase.schema('jarvis').from('user_modules').select('module_id').eq('user_id', opts.userId).eq('is_active', true);
+      const { data } = await supabase
+        .schema('jarvis')
+        .from('user_modules')
+        .select('module_id')
+        .eq('user_id', opts.userId)
+        .eq('is_active', true);
       enabledIds = data?.map(r => r.module_id) || [];
       await redis.set(cacheKey, enabledIds, { ex: 300 });
     }
@@ -59,7 +64,6 @@ export async function loadActiveModules(
   const activeModules = await Promise.all(ALL_MODULES.map(async mod => {
     if (!enabledIds?.includes(mod.id)) return null;
     
-    // Check de Plano (Hierarquia simples)
     const planOrder = ['free', 'personal', 'family', 'family_plus', 'ultra'];
     if (planOrder.indexOf(userPlan) < planOrder.indexOf(mod.plan)) return null;
 
@@ -79,10 +83,8 @@ export async function loadActiveModules(
   const results = await Promise.all(finalModules.map(async mod => {
     const start = Date.now();
     try {
-      // Passamos o 'opts' completo (que agora contém o masterContext) para cada módulo
       const block = await mod.buildContextBlock(opts);
       
-      // Telemetria assíncrona (não trava a resposta principal)
       waitUntil(
         (async () => {
           await recordModuleMetrics(mod.id, Number(opts.userId), {
@@ -101,13 +103,12 @@ export async function loadActiveModules(
   }));
 
   // ── 4. RESOLUÇÃO DE MODELO (UPGRADE DINÂMICO) ──
-  // Se qualquer módulo ativo exigir o modelo 'pro', fazemos o upgrade da sessão
   const needsPro = results.some(r => r.model === 'pro');
   const finalModel = needsPro ? 'google/gemini-2.0-pro-exp-02-05' : baseModel;
 
   return {
     contextBlocks: results.map(r => r.block).filter(Boolean),
     activeTools: [...new Set(results.flatMap(r => r.tools))],
-    resolvedModel: finalModel
+    resolvedModel: finalModel,
   };
 }

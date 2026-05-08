@@ -124,6 +124,7 @@ export async function GET(req: NextRequest) {
         .from('config')
         .select('value')
         .eq('key', `last_location_${numericUserId}`)
+        .limit(1)
         .maybeSingle();
 
       if (locData?.value) {
