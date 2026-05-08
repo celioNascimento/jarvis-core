@@ -338,6 +338,45 @@ export const tools = [
       }
     }
   },
+    // --- ADICIONE ESTES TRÊS ---
+
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_lembretes',
+      description: 'Lista todos os lembretes pendentes do usuário.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cancelar_lembrete',
+      description: 'Cancela um lembrete pendente baseado no título.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Título ou parte do título do lembrete' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'deletar_evento',
+      description: 'Remove um evento da agenda (jarvis.events) baseado no título.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Título ou parte do título do evento' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+
   {
     type: 'function',
     function: {
