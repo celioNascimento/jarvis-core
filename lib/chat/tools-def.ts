@@ -191,25 +191,64 @@ export const tools = [
     },
   },
 
-  {
-    type: 'function',
-    function: {
-      name: 'create_reminder',
-      description: "Cria um lembrete (tempo ou local). Use quando ouvir 'me lembra' ou 'avisa'.",
-      parameters: {
-        type: 'object',
-        properties: {
-          title: { type: 'string' },
-          type: { type: 'string', enum: ['temporary', 'agenda', 'recurring', 'location'] },
-          delay_minutes: { type: 'integer' },
-          scheduled_time: { type: 'string' },
-          frequency: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
-          location_trigger: { type: 'string' },
-        },
-        required: ['title', 'type'],
+  // Localize 'create_reminder' e substitua por este
+{
+  type: 'function',
+  function: {
+    name: 'create_reminder',
+    description: "Cria um lembrete (tempo ou local). Use quando ouvir 'me lembra' ou 'avisa'.",
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        type: { type: 'string', enum: ['temporary', 'agenda', 'recurring', 'location'] },
+        delay_minutes: { type: 'integer' },
+        scheduled_time: { type: 'string' },
+        frequency: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'weekdays'] }, // FIX: Adicionado weekdays
+        location_trigger: { type: 'string' },
       },
+      required: ['title', 'type'],
     },
   },
+},
+// ADICIONE ESTES TRÊS LOGO ABAIXO:
+{
+  type: 'function',
+  function: {
+    name: 'consultar_lembretes',
+    description: 'Lista todos os lembretes pendentes do usuário.',
+    parameters: { type: 'object', properties: {} },
+  },
+},
+{
+  type: 'function',
+  function: {
+    name: 'cancelar_lembrete',
+    description: 'Cancela um lembrete pendente baseado no título.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Título ou parte do título do lembrete' },
+      },
+      required: ['query'],
+    },
+  },
+},
+{
+  type: 'function',
+  function: {
+    name: 'deletar_evento',
+    description: 'Remove um evento da agenda baseado no título.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Título ou parte do título do evento' },
+      },
+      required: ['query'],
+    },
+  },
+},
+
 
    {
     type: 'function',
