@@ -9,6 +9,18 @@ import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
 import { getGoogleContext, createGoogleEvent, trashGoogleEmail } from '@/lib/google';
 import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
 
+const getCronExpression = (freq: string, time: Date) => {
+  const m = time.getMinutes();
+  const h = time.getHours();
+  switch (freq) {
+    case 'daily': return `${m} ${h} * * *`;
+    case 'weekdays': return `${m} ${h} * * 1-5`; // 1 a 5 = Seg a Sex
+    case 'weekly': return `${m} ${h} * * ${time.getDay()}`;
+    case 'monthly': return `${m} ${h} ${time.getDate()} * *`;
+    default: return null;
+  }
+};
+
 // ─── consultar_agenda ─────────────────────────────────────────────────────────
 
 export async function executeConsultarAgenda(
@@ -168,8 +180,6 @@ export async function executeExcluirEmail(
 
 // ─── create_reminder ──────────────────────────────────────────────────────────
 
-// ─── create_reminder ──────────────────────────────────────────────────────────
-
 export async function executeCreateReminder(
   p: {
     title?: string;
@@ -188,32 +198,42 @@ export async function executeCreateReminder(
 
     let scheduled_time = p.scheduled_time;
     const agora = new Date();
+    
+    // Tratamento e Normalização da Frequência
+    let freq = p.frequency;
+    if (freq?.toLowerCase().includes('útil') || freq?.toLowerCase().includes('semana')) {
+      freq = 'weekdays';
+    }
 
     if (scheduled_time) {
-      // 1. O LLM enviou APENAS a hora? (ex: "06:10" ou "06:10:00")
+      // 1. O LLM enviou APENAS a hora?
       if (scheduled_time.length <= 8 && scheduled_time.includes(':')) {
-        const hoje = agora.toLocaleDateString('en-CA'); // Retorna "YYYY-MM-DD"
-
-        // Garante que o formato tenha segundos para o Date() não reclamar
+        const hoje = agora.toLocaleDateString('en-CA'); 
         const timeStr = scheduled_time.length <= 5 ? `${scheduled_time}:00` : scheduled_time;
-
         const dataRef = new Date(`${hoje}T${timeStr}-03:00`);
-
+        
         // Se a hora já passou hoje, agenda para amanhã
         if (dataRef.getTime() <= agora.getTime()) {
           dataRef.setDate(dataRef.getDate() + 1);
         }
+
+        // 🚨 INTELIGÊNCIA DO FINAL DE SEMANA: Se for dia útil, pula Sab e Dom
+        if (freq === 'weekdays') {
+          if (dataRef.getDay() === 6) dataRef.setDate(dataRef.getDate() + 2); // Sábado vira Segunda
+          if (dataRef.getDay() === 0) dataRef.setDate(dataRef.getDate() + 1); // Domingo vira Segunda
+        }
+
         scheduled_time = dataRef.toISOString();
-      }
+      } 
       // 2. O LLM enviou a data completa
       else {
-        const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time)
-          ? scheduled_time
+        const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time) 
+          ? scheduled_time 
           : `${scheduled_time}-03:00`;
         scheduled_time = new Date(withOffset).toISOString();
       }
     } else {
-      // 3. Fallback de delay_minutes
+      // 3. Fallback
       scheduled_time = new Date(agora.getTime() + (p.delay_minutes || 5) * 60000).toISOString();
     }
 
@@ -221,24 +241,29 @@ export async function executeCreateReminder(
       .schema('jarvis')
       .from('reminders')
       .insert({
-        user_id: Number(numericUserId),
+        user_id:        Number(numericUserId),
         title,
-        type: p.type || 'temporary',
+        type:           p.type || (freq ? 'recurring' : 'temporary'), // 👈 Salva o tipo correto
+        frequency:      freq || null,                                 // 👈 Salva a frequência no banco
         scheduled_time,
-        status: 'pending',
-        metadata: { auth_user_id: authUserId },
+        status:         'pending',
+        metadata:       { auth_user_id: authUserId },
       })
       .select('id')
       .single();
 
     if (error) throw error;
 
+    // Converte para CRON se houver frequência
+    const cron = freq ? getCronExpression(freq, new Date(scheduled_time)) : null;
+
     const qstashId = await scheduleReminderOnQStash({
-      reminderId: String(reminder.id),
-      userId: numericUserId,
+      reminderId:    String(reminder.id),
+      userId:        numericUserId,
       authUserId,
-      message: title,
-      scheduledTime: scheduled_time,
+      message:       title,
+      scheduledTime: cron ? null : scheduled_time, // Se for Cron, não usa o delay simples
+      cron:          cron                          // 👈 Passa a recorrência pro QStash
     });
 
     if (qstashId) {
@@ -251,12 +276,12 @@ export async function executeCreateReminder(
 
     const dtFormatted = new Date(scheduled_time).toLocaleString('pt-BR', {
       timeZone: 'America/Sao_Paulo',
-      hour: '2-digit',
-      minute: '2-digit',
+      hour:     '2-digit',
+      minute:   '2-digit',
+      weekday:  'long', // Adiciona o nome do dia na resposta pra IA ter certeza
     });
-
-    // Sucesso explícito para a IA não se confundir
-    return `[SUCESSO] Lembrete agendado: "${title}" às ${dtFormatted}.`;
+    
+    return `[SUCESSO] Lembrete agendado: "${title}" para ${dtFormatted}${freq ? ` (Repetição: ${freq})` : ''}. Diga que está confirmado.`;
   } catch (err: any) {
     return `Erro crítico ao criar lembrete: ${err.message}`;
   }
