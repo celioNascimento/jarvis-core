@@ -30,9 +30,18 @@ export interface RawLocation {
   city?: string;
 }
 
-export interface NormalizedLocation {
+// O que vem do body — lat/lng podem ser null se não vieram
+export interface ParsedLocation {
   lat: number | null;
   lng: number | null;
+  label?: string;
+  city?: string;
+}
+
+// O que o resolveLocation aceita — lat/lng são string | number (sem null)
+export interface UserLocation {
+  lat: string | number;
+  lng: string | number;
   label?: string;
   city?: string;
 }
@@ -56,7 +65,7 @@ export interface ChatRequestContext {
   };
 
   // Localização
-  rawLocation: NormalizedLocation | null;
+  rawLocation: ParsedLocation | null;
   resolvedLocation: Awaited<ReturnType<typeof resolveLocation>>;
   normalizedLocation: ReturnType<typeof normalizeLocationForModules>;
 
@@ -72,7 +81,7 @@ export interface ChatRequestContext {
 
 // ─── Parser de localização ────────────────────────────────────────────────────
 
-function parseLocation(raw: unknown): NormalizedLocation | null {
+function parseLocation(raw: unknown): ParsedLocation | null {
   if (!raw) return null;
   try {
     const parsed: RawLocation =
@@ -89,6 +98,13 @@ function parseLocation(raw: unknown): NormalizedLocation | null {
   }
 }
 
+// Converte ParsedLocation (lat pode ser null) → UserLocation (lat nunca null)
+// para passar ao resolveLocation sem erro de tipo.
+function toUserLocation(loc: ParsedLocation | null): UserLocation | null {
+  if (!loc || loc.lat == null || loc.lng == null) return null;
+  return { lat: loc.lat, lng: loc.lng, label: loc.label, city: loc.city };
+}
+
 // ─── Extrator de body (multipart ou JSON) ─────────────────────────────────────
 
 async function extractBody(req: NextRequest): Promise<{
@@ -96,7 +112,7 @@ async function extractBody(req: NextRequest): Promise<{
   userEmail: string;
   speak: boolean;
   sessionId: string | null;
-  rawLocation: NormalizedLocation | null;
+  rawLocation: ParsedLocation | null;
 }> {
   const contentType = req.headers.get('content-type') || '';
   const isMultipart = contentType.includes('multipart');
@@ -178,8 +194,8 @@ export async function buildRequestContext(
   // 4. Dedup
   const dedup = await checkDedup(sessionId, message);
 
-  // 5. Geo (em paralelo com o dedup — já foi resolvido, só normaliza)
-  const resolvedLocation = await resolveLocation(rawLocation);
+  // 5. Geo — converte para UserLocation antes de passar ao resolveLocation
+  const resolvedLocation = await resolveLocation(toUserLocation(rawLocation));
   const normalizedLocation = normalizeLocationForModules(resolvedLocation);
 
   // 6. Assinatura da request (usada pelo LLM Gateway)
