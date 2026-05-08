@@ -32,6 +32,7 @@ export type ContextType =
   | 'tdah'
   | 'retrospecto'
   | 'veiculos'
+  |'planejamento'
   | 'foco';
 
 const ALL_CONTEXTS: ContextType[] = [
