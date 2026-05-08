@@ -180,33 +180,35 @@ export async function executeTool(
       }
     }
 
-
-    case 'salvar_evento': {
+      case 'salvar_evento': {
       try {
         const anoAtual = new Date().getFullYear();
         let rawDate = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
 
-        // ── CORREÇÃO DE ANO (Garante 2026 e evita datas de 2024) ──
+        // ── 1. CORREÇÃO DE DATA/HORA (HH:mm -> ISO) ──
+        if (rawDate.length <= 5 && rawDate.includes(':')) {
+           const hoje = new Date().toISOString().split('T')[0];
+           rawDate = `${hoje}T${rawDate}:00`;
+        }
+
+        // ── 2. RIGOR DE ANO (Garante 2026) ──
         const anoEvento = parseInt(rawDate.substring(0, 4));
-        if (anoEvento > 0 && (anoEvento < anoAtual || isNaN(anoEvento))) {
+        if (isNaN(anoEvento) || anoEvento < anoAtual) {
           rawDate = String(anoAtual) + rawDate.substring(4);
         }
 
-        const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(rawDate)
-          ? rawDate
-          : rawDate + '-03:00';
-
+        const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(rawDate) ? rawDate : rawDate + '-03:00';
         const startDate = new Date(withOffset);
+        
         if (isNaN(startDate.getTime())) {
-          return `Erro: data inválida — "${p.event_date}". Por favor, informe dia e hora.`;
+          return `Erro: formato de data inválido — "${p.event_date}".`;
         }
 
-        // Janela de 1 hora para detecção de conflito
-        const endDate = new Date(startDate.getTime() + 3600000);
+        const endDate = new Date(startDate.getTime() + (p.duration_minutes || 60) * 60000);
         const startISO = startDate.toISOString();
         const endISO = endDate.toISOString();
 
-        // ── RADAR DE CONFLITOS (AQUI ELE COMEÇA A SE IMPORTAR) ──
+        // ── 3. RADAR DE CONFLITOS ──
         if (!p.force) {
           const { data: conflitos } = await supabase
             .schema('jarvis')
@@ -218,11 +220,10 @@ export async function executeTool(
 
           if (conflitos && conflitos.length > 0) {
             const horaConflito = new Date(conflitos[0].start_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-            return `[ALERTA DE CONFLITO] Célio, notei que às ${horaConflito} você já tem "${conflitos[0].title}". Deseja agendar mesmo assim? (Diga "pode forçar" para ignorar).`;
+            return `[CONFLITO] Célio, você já tem "${conflitos[0].title}" às ${horaConflito}. (Diga "forçar" para ignorar).`;
           }
         }
 
-        // ── PERSISTÊNCIA NO BANCO ──
         const { error } = await supabase
           .schema('jarvis')
           .from('events')
@@ -231,20 +232,21 @@ export async function executeTool(
             title: p.title || p.summary,
             start_at: startISO,
             end_at: endISO,
-            all_day: false,
+            all_day: !!p.all_day,
             category: p.category || 'personal',
-            source: 'lev',
+            source: 'lev', // 👈 LIBERA EDIÇÃO NO FRONT
             reminder_minutes: [p.reminderMinutes ?? 30],
             notes: p.notes || null,
           });
 
         if (error) throw error;
-
-        return `Evento "${p.title || p.summary}" salvo com sucesso para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}. Radar de conflitos: Limpo.`;
+        return `Evento "${p.title || p.summary}" salvo para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.`;
       } catch (err: any) {
         return `Erro ao salvar evento: ${err.message}`;
       }
     }
+
+    
 
     case 'criar_evento_agenda': {
       try {
