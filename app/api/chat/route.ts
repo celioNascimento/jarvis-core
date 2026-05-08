@@ -247,7 +247,7 @@ ${composeSystemPrompt({
           tool_call_id: tr.tc.id,
           content: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result)
         }))
-      ], toolsHabilitadas, finalModel, 0.7);
+      ], [], finalModel, 0.7); // <- CORREÇÃO APLICADA AQUI: Array vazio para ferramentas.
 
       assistantReply = secondResponse.content || "Entendido.";
     }
