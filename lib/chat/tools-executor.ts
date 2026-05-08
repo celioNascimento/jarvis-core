@@ -25,6 +25,8 @@ import {
   executeExcluirEmail,
   executeCreateReminder,
   executeConsultarLembretes,
+  executeDeletarEvento,    
+  executeCancelarLembrete,  
 } from '@/lib/tools/executors/agenda';
 
 import {
@@ -109,14 +111,15 @@ export async function executeTool(
     case 'adicionar_diretriz_dinamica': return executeAdicionarDiretrizDinamica(...args);
 
     // ── Agenda ───────────────────────────────────────────────────────────────
-    case 'consultar_agenda':       return executeConsultarAgenda(...args);
+   case 'consultar_agenda':       return executeConsultarAgenda(...args);
     case 'salvar_evento':          return executeSalvarEvento(...args);
+    case 'deletar_evento':         return executeDeletarEvento(...args); 
     case 'criar_evento_agenda':    return executeCriarEventoAgenda(...args);
     case 'listar_emails_recentes': return executeListarEmailsRecentes(...args);
     case 'excluir_email':          return executeExcluirEmail(...args);
     case 'create_reminder':        return executeCreateReminder(...args);
     case 'consultar_lembretes':    return executeConsultarLembretes(...args);
-
+    case 'cancelar_lembrete':      return executeCancelarLembrete(...args); 
     // ── Veículos ─────────────────────────────────────────────────────────────
     case 'registrar_abastecimento': return executeRegistrarAbastecimento(...args);
     case 'registrar_manutencao':    return executeRegistrarManutencao(...args);
