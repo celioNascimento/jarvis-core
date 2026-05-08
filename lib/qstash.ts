@@ -10,8 +10,8 @@ export interface ScheduleReminderPayload {
   userId: string;
   authUserId: string;
   message: string;
-  scheduledTime?: string | null; // 👈 Ajustado para aceitar null se for cron
-  cron?: string | null;          // 👈 Adicionado suporte a recorrência
+  scheduledTime?: string | null;
+  cron?: string | null;
 }
 
 export async function scheduleReminderOnQStash(
@@ -32,7 +32,6 @@ export async function scheduleReminderOnQStash(
       retries: 3,
     };
 
-    // Rigor de Recorrência: Se tem cron, usa cron. Se tem data, usa delay.
     if (payload.cron) {
       publishOptions.cron = payload.cron;
       console.log(`[QStash] Agendando recorrente: ${payload.cron}`);
@@ -47,11 +46,14 @@ export async function scheduleReminderOnQStash(
       publishOptions.delay = Math.max(0, delaySeconds);
       console.log(`[QStash] Agendado com delay: ${delaySeconds}s`);
     } else {
-      publishOptions.delay = 0; // Fallback imediato
+      publishOptions.delay = 0;
     }
 
-    const res = await qstash.publishJSON(publishOptions);
-    return res.messageId;
+    // ── CORREÇÃO DE TYPESCRIPT AQUI ──
+    // Dizemos ao compilador para tratar 'res' como 'any' para evitar o erro de union type
+    const res = await qstash.publishJSON(publishOptions) as any;
+    
+    return res.messageId || null;
   } catch (err) {
     console.error('[QStash] Erro ao agendar:', err);
     return null;
