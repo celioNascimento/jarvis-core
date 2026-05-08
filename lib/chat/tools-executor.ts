@@ -1,6 +1,6 @@
 // lib/chat/tools-executor.ts
-// Motor V10.0.1 — Edição Titã (ExpertFrotas, Finance, Agenda Lev & TDAH)
-// Blindagem de Fuso (Londrina), Recorrência Cron e Saneamento de Origem
+// Motor V10.0.2 — Edição Titã (ExpertFrotas, Finance, Agenda Lev & TDAH)
+// Rigor Total: Fuso Londrina, Recorrência Cron e Saneamento de Origem
 
 import { supabase } from '@/lib/jarvis';
 import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
@@ -17,22 +17,33 @@ import {
   executeListarOrcamentos,
 } from '@/lib/finances/executor';
 
-// ─── HELPERS DE APOIO ──────────────────────────────────────────────────────
+// ─── HELPERS DE INFRAESTRUTURA ──────────────────────────────────────────────
 
 /**
- * Transforma frequências humanas em expressões Cron para o QStash.
+ * Mapeia frequências humanas para expressões Cron padrão.
  */
 const getCronExpression = (freq: string, time: Date) => {
   const m = time.getMinutes();
   const h = time.getHours();
   switch (freq) {
     case 'daily':    return `${m} ${h} * * *`;
-    case 'weekdays': return `${m} ${h} * * 1-5`; // Segunda a Sexta
+    case 'weekdays': return `${m} ${h} * * 1-5`;
     case 'weekly':   return `${m} ${h} * * ${time.getDay()}`;
     case 'monthly':  return `${m} ${h} ${time.getDate()} * *`;
     default: return null;
   }
 };
+
+async function detectarConflitos(userId: number, inicio: string, fim: string) {
+  const { data: conflitos } = await supabase
+    .schema('jarvis')
+    .from('events')
+    .select('title, start_at')
+    .eq('user_id', userId)
+    .lt('start_at', fim)
+    .gt('end_at', inicio);
+  return conflitos || [];
+}
 
 function assertNumericUserId(id: string, context: string): void {
   if (!/^\d+$/.test(id)) {
@@ -81,7 +92,7 @@ export async function executeTool(
     return `Erro crítico: Falha ao parsear argumentos da ferramenta ${name}.`;
   }
 
-  // --- IDEMPOTÊNCIA ---
+  // ─── IDEMPOTÊNCIA ───
   const callSignature = toolCall.id || args.replace(/\s+/g, '').substring(0, 50);
   const idempotencyKey = `${numericUserIdStr}_${name}_${callSignature}`;
 
@@ -91,12 +102,18 @@ export async function executeTool(
       .insert({ key: idempotencyKey });
 
     if (idemError && idemError.code === '23505') {
-      return `[SISTEMA] Comando já processado.`;
+      console.warn(`[Idempotência] Bloqueado retry para a tool: ${name}`);
+      return `[SISTEMA] Comando já processado com sucesso.`;
     }
-  } catch (err) { /* Ignora erro de infra */ }
+  } catch (err) { /* Ignora */ }
 
   const getPlaceId = async (nome: string) => {
-    const { data } = await supabase.from('favorite_places').select('id').eq('user_id', authUserId).ilike('name', nome.trim()).maybeSingle();
+    const { data } = await supabase
+      .from('favorite_places')
+      .select('id')
+      .eq('user_id', authUserId)
+      .ilike('name', nome.trim())
+      .maybeSingle();
     return data?.id ?? null;
   };
 
@@ -109,8 +126,11 @@ export async function executeTool(
           query_embedding: emb, match_threshold: 0.4, match_count: 5
         });
         if (error) throw error;
-        return (mems as any[])?.filter(m => !m.summary.startsWith('[CINZA]')).map(m => m.summary).join('\n---\n') || 'Nenhuma memória relevante.';
-      } catch { return 'Erro ao acessar memórias.'; }
+        return (mems as any[])
+          ?.filter(m => !m.summary.startsWith('[CINZA]'))
+          .map(m => m.summary)
+          .join('\n---\n') || 'Nenhuma memória relevante encontrada.';
+      } catch (err) { return 'Erro ao acessar o banco de memórias.'; }
     }
 
     case 'adicionar_diretriz_dinamica': {
@@ -119,23 +139,25 @@ export async function executeTool(
           user_id: Number(numericUserIdStr), content: p.content, scope: p.scope || 'personal', active: true
         });
         if (error) throw error;
-        return `Diretriz aplicada: "${p.content}".`;
-      } catch (err: any) { return `Erro ao salvar diretriz: ${err.message}`; }
+        return `Entendido, Célio. Diretriz aplicada: "${p.content}".`;
+      } catch (err: any) { return `Erro técnico ao salvar diretriz: ${err.message}`; }
     }
 
-    // ===================== AGENDA LEV (COM BLINDAGEM) =====================
+    // ===================== AGENDA LEV + GOOGLE + OUTLOOK =====================
     case 'consultar_agenda': {
       try {
         const [levRes, googleRes, outlookRes] = await Promise.allSettled([
-          supabase.schema('jarvis').rpc('get_calendar_context_for_jarvis', { p_user_id: Number(numericUserIdStr), p_days: p.dias || 7 }),
+          supabase.schema('jarvis').rpc('get_calendar_context_for_jarvis', {
+            p_user_id: Number(numericUserIdStr), p_days: p.dias || 7,
+          }),
           getGoogleContext().catch(() => null),
           getMicrosoftCalendarContext().catch(() => null),
         ]);
-        const lev = levRes.status === 'fulfilled' ? levRes.value.data : 'Erro na Agenda Lev.';
-        let res = `[AGENDA LEV]\n${lev}`;
-        if (googleRes.status === 'fulfilled' && googleRes.value) res += `\n\n[GOOGLE]\n${googleRes.value}`;
-        return res;
-      } catch { return 'Erro na consulta.'; }
+        const lev = levRes.status === 'fulfilled' && levRes.value.data ? levRes.value.data : 'Nenhum evento Lev.';
+        let result = `[AGENDA LEV]\n${lev}`;
+        if (googleRes.status === 'fulfilled' && googleRes.value) result += `\n\n[GOOGLE]\n${googleRes.value}`;
+        return result;
+      } catch (err) { return 'Erro ao consultar agenda.'; }
     }
 
     case 'salvar_evento': {
@@ -147,24 +169,30 @@ export async function executeTool(
            rawDate = `${agora.toLocaleDateString('en-CA')}T${rawDate}:00`;
         }
 
-        // Garante 2026 e Fuso Londrina
         const dateString = /(Z|[+-]\d{2}:\d{2})$/.test(rawDate) ? rawDate : `${rawDate}-03:00`;
         const startDate = new Date(dateString);
-        if (isNaN(startDate.getTime())) return `Data inválida.`;
+        if (isNaN(startDate.getTime())) return `Erro: data inválida — "${p.event_date}".`;
 
         const startISO = startDate.toISOString();
         const endISO = new Date(startDate.getTime() + (p.duration_minutes || 60) * 60000).toISOString();
 
+        if (!p.force) {
+          const conflitos = await detectarConflitos(Number(numericUserIdStr), startISO, endISO);
+          if (conflitos.length > 0) {
+            const hora = new Date(conflitos[0].start_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            return `[CONFLITO] Você já tem "${conflitos[0].title}" às ${hora}. Deseja forçar?`;
+          }
+        }
+
         const { error } = await supabase.schema('jarvis').from('events').insert({
           user_id: Number(numericUserIdStr), title: p.title || p.summary,
           start_at: startISO, end_at: endISO, all_day: !!p.all_day,
-          category: p.category || 'personal', source: 'lev', // <--- LIBERA EDIÇÃO
+          category: p.category || 'personal', source: 'lev', // IMPORTANTE
           reminder_minutes: [p.reminderMinutes ?? 30], notes: p.notes || null,
         });
-
         if (error) throw error;
         return `Evento "${p.title || p.summary}" salvo para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.`;
-      } catch (err: any) { return `Erro: ${err.message}`; }
+      } catch (err: any) { return `Erro ao salvar: ${err.message}`; }
     }
 
     case 'deletar_evento': {
@@ -175,14 +203,24 @@ export async function executeTool(
       } catch { return 'Falha na exclusão.'; }
     }
 
-    // ===================== LEMBRETES (COM RECORRÊNCIA CRON) =====================
+    case 'criar_evento_agenda': {
+      try { return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30); }
+      catch (err: any) { return `Erro no Google: ${err.message}`; }
+    }
+
+    case 'listar_emails_recentes':
+      try { return await getRecentEmails(p.filtro, 5, true); } catch (err: any) { return `Erro no Gmail: ${err.message}`; }
+
+    case 'excluir_email':
+      try { return await trashGoogleEmail(p.messageId); } catch (err: any) { return `Erro ao excluir: ${err.message}`; }
+
+    // ===================== MOTOR DE LEMBRETES (QSTASH) =====================
     case 'create_reminder': {
       try {
         const title = p.title || p.message;
         let scheduled_time = p.scheduled_time;
         const agora = new Date();
 
-        // Tratamento HH:mm com Ancoragem en-CA
         if (scheduled_time && scheduled_time.length <= 5 && scheduled_time.includes(':')) {
           const dataRef = new Date(`${agora.toLocaleDateString('en-CA')}T${scheduled_time}:00-03:00`);
           if (dataRef.getTime() <= agora.getTime()) dataRef.setDate(dataRef.getDate() + 1);
@@ -199,58 +237,70 @@ export async function executeTool(
 
         const { data: reminder, error } = await supabase.schema('jarvis').from('reminders').insert({
           user_id: Number(numericUserIdStr), title, type: p.type || 'temporary',
-          scheduled_time, frequency, status: 'pending', source: 'lev', // <--- LIBERA EDIÇÃO
+          scheduled_time, frequency, status: 'pending', source: 'lev', // IMPORTANTE
           metadata: { auth_user_id: authUserId },
         }).select('id').single();
 
         if (error) throw error;
 
-        // Lógica de Recorrência Cron para QStash
+        // Lógica Cron para QStash
         const cron = frequency ? getCronExpression(frequency, new Date(scheduled_time)) : null;
 
         const qstashId = await scheduleReminderOnQStash({
-          reminderId: String(reminder.id), userId: numericUserIdStr, authUserId, 
-          message: title, scheduledTime: cron ? null : scheduled_time, cron
+          reminderId: String(reminder.id), userId: numericUserIdStr, authUserId,
+          message: title, scheduledTime: cron ? null : scheduled_time, cron // 👈 ENVIA O CRON
         });
 
         if (qstashId) await supabase.schema('jarvis').from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
 
         const dtFmt = new Date(scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
         return `Lembrete "${title}" às ${dtFmt}${frequency ? ` (${frequency})` : ''}.`;
-      } catch (err: any) { return `Erro: ${err.message}`; }
+      } catch (err: any) { return `Erro ao criar lembrete: ${err.message}`; }
     }
 
     case 'consultar_lembretes': {
       try {
-        const { data: rems } = await supabase.schema('jarvis').from('reminders').select('title, scheduled_time, frequency')
-          .eq('user_id', Number(numericUserIdStr)).eq('status', 'pending').order('scheduled_time', { ascending: true });
-        if (!rems?.length) return "Nenhum lembrete pendente.";
-        return rems.map(r => `- ${r.title} (${new Date(r.scheduled_time!).toLocaleString('pt-BR', {timeZone: 'America/Sao_Paulo'})}) ${r.frequency ? `[${r.frequency}]` : ''}`).join('\n');
-      } catch { return "Erro ao consultar."; }
+        const { data: reminders } = await supabase.schema('jarvis').from('reminders').select('title, scheduled_time, status, frequency')
+          .eq('user_id', Number(numericUserIdStr)).eq('status', 'pending').gte('scheduled_time', new Date().toISOString()).order('scheduled_time', { ascending: true });
+        if (!reminders?.length) return "Nenhum lembrete pendente.";
+        return reminders.map(r => `- ${r.title} (${new Date(r.scheduled_time!).toLocaleString('pt-BR', {timeZone: 'America/Sao_Paulo'})}) ${r.frequency || ''}`).join('\n');
+      } catch (err) { return "Erro ao ler lembretes."; }
     }
 
     case 'cancelar_lembrete': {
       try {
-        const { data: r } = await supabase.schema('jarvis').from('reminders').select('id, qstash_message_id, title')
-          .eq('user_id', Number(numericUserIdStr)).ilike('title', `%${p.query}%`).eq('status', 'pending').maybeSingle();
+        const { data: r } = await supabase.schema('jarvis').from('reminders').select('id, qstash_message_id').eq('user_id', Number(numericUserIdStr))
+          .ilike('title', `%${p.query}%`).eq('status', 'pending').maybeSingle();
         if (!r) return `Lembrete "${p.query}" não encontrado.`;
         if (r.qstash_message_id) await cancelReminderOnQStash(r.qstash_message_id);
         await supabase.schema('jarvis').from('reminders').update({ status: 'cancelled' }).eq('id', r.id);
-        return `Lembrete "${r.title}" cancelado.`;
+        return `Lembrete "${p.query}" cancelado.`;
       } catch { return 'Erro ao cancelar.'; }
     }
 
-    // ===================== RESTANTE DOS MÓDULOS (MANTER) =====================
+    // ===================== EXPERTFROTAS (GESTÃO VEICULAR) =====================
     case 'registrar_abastecimento': {
       try {
         const { data: v } = await supabase.schema('jarvis').from('vehicles').select('id').ilike('name', p.vehicle_name).eq('user_id', numericUserIdStr).maybeSingle();
-        if (!v) return "Veículo não encontrado.";
+        if (!v) return `Veículo "${p.vehicle_name}" não encontrado.`;
         const { error } = await supabase.schema('jarvis').from('vehicle_refueling').insert({
           vehicle_id: v.id, user_id: numericUserIdStr, auth_user_id: authUserId,
           fuel_type: p.fuel_type, total_cost: p.total_cost, odometer: p.odometer, liters: p.liters || null
         });
-        return error ? `Erro: ${error.message}` : `Abastecimento registrado para o ${p.vehicle_name}.`;
-      } catch { return "Erro técnico no abastecimento."; }
+        return error ? `Erro: ${error.message}` : `Abastecimento de ${p.fuel_type} (R$ ${p.total_cost}) registrado.`;
+      } catch (err: any) { return `Erro técnico: ${err.message}`; }
+    }
+
+    case 'registrar_manutencao': {
+      try {
+        const { data: v } = await supabase.schema('jarvis').from('vehicles').select('id').ilike('name', p.vehicle_name).eq('user_id', numericUserIdStr).maybeSingle();
+        if (!v) return "Veículo não encontrado.";
+        const { error } = await supabase.schema('jarvis').from('vehicle_maintenances').insert({
+          vehicle_id: v.id, user_id: numericUserIdStr, title: p.servico || p.title,
+          performed_date: p.data || new Date().toISOString(), odometer: p.odometer, cost: p.custo || 0
+        });
+        return error ? `Erro: ${error.message}` : `Manutenção de "${p.servico}" registrada.`;
+      } catch (err: any) { return `Erro técnico: ${err.message}`; }
     }
 
     case 'atualizar_odometro': {
@@ -259,65 +309,84 @@ export async function executeTool(
         if (!v) return "Veículo não encontrado.";
         await supabase.schema('jarvis').from('vehicle_odometer_logs').insert({ vehicle_id: v.id, user_id: numericUserIdStr, odometer: p.odometer, source: 'manual' });
         await supabase.schema('jarvis').from('vehicles').update({ current_km: p.odometer }).eq('id', v.id);
-        return `Odômetro do ${p.vehicle_name} atualizado.`;
-      } catch { return "Erro no odômetro."; }
+        return `Odômetro do ${p.vehicle_name} atualizado para ${p.odometer}km.`;
+      } catch (err: any) { return `Erro no odômetro: ${err.message}`; }
     }
 
+    // ===================== MÓDULO FINANCEIRO =====================
     case 'registrar_transacao': return executeRegistrarTransacao(p, authUserId, numericUserIdStr);
     case 'consultar_financas': return executeConsultarFinancas(p, authUserId, numericUserIdStr);
     case 'listar_orcamentos': return executeListarOrcamentos(authUserId, numericUserIdStr);
     case 'criar_orcamento': return executeCriarOrcamento(p, authUserId, numericUserIdStr);
 
+    // ===================== FOCO, TDAH & DIÁRIO =====================
     case 'gerenciar_eisenhower': {
       try {
         if (p.acao === 'adicionar') {
           await supabase.schema('jarvis').from('eisenhower_items').insert({ user_id: numericUserIdStr, text: p.texto, quadrant: p.quadrante || 'q2' });
-          return `Tarefa "${p.texto}" adicionada.`;
+          return `Tarefa "${p.texto}" adicionada ao quadrante ${p.quadrante || 'q2'}.`;
         }
         if (p.acao === 'completar') {
           await supabase.schema('jarvis').from('eisenhower_items').update({ completed: true, completed_at: new Date() }).eq('user_id', numericUserIdStr).ilike('text', `%${p.texto}%`);
           return `Tarefa concluída.`;
         }
         return "Ação processada.";
-      } catch { return "Erro na Matriz."; }
+      } catch (err: any) { return `Erro na Matriz: ${err.message}`; }
     }
 
     case 'quebrar_tarefa': {
-      await supabase.from('brain').insert([{ user_id: Number(numericUserIdStr), category: 'Nota', content: `Tarefa: ${p.tarefa_principal}`, project_tag: 'foco' }]);
-      return `[MODO TDAH] Tarefa: "${p.tarefa_principal}". Diga "feito" para o próximo passo.`;
+      await supabase.from('brain').insert([{ user_id: Number(numericUserIdStr), category: 'Nota', content: `Quebra de tarefa: ${p.tarefa_principal}`, project_tag: 'foco' }]);
+      return `[MODO TDAH] Tarefa: "${p.tarefa_principal}". 1. Primeiro passo minúsculo. Diga "feito".`;
     }
 
     case 'registrar_no_diario':
-      try { await extractDiary(numericUserIdStr, p.texto, p.categoria || 'anytime'); return 'Diário atualizado.'; } catch { return 'Erro no diário.'; }
+      try { await extractDiary(numericUserIdStr, p.texto, p.categoria || 'anytime'); return 'Entrada registrada.'; } catch (err: any) { return `Erro no diário: ${err.message}`; }
 
     case 'atualizar_meta':
-      try { return await updateGoalProgress(numericUserIdStr, p.titulo_parcial, p.progresso, p.etapa_concluida); } catch { return 'Erro na meta.'; }
+      try { return await updateGoalProgress(numericUserIdStr, p.titulo_parcial, p.progresso, p.etapa_concluida); } catch (err: any) { return `Erro na meta: ${err.message}`; }
 
+    // ===================== PESQUISA E CLIMA =====================
     case 'searchWeb': return await searchWeb(p.query);
     case 'getWeatherForecast': return await getWeatherForecast(p.lat, p.lng);
-    
+    case 'get_weather_insights': {
+      try {
+        const loc = await getUserLastLocation(numericUserIdStr);
+        if (!loc) return 'Localização não encontrada.';
+        const { getWeatherInsight } = await import('@/lib/insights/weather-insights');
+        return await getWeatherInsight(loc.lat, loc.lng, 'Célio');
+      } catch (err) { return 'Insights climáticos indisponíveis.'; }
+    }
+
+    // ===================== LUGARES E LISTAS DE COMPRAS =====================
     case 'salvar_lugar': {
-      const { error } = await supabase.from('favorite_places').upsert({
-        user_id: authUserId, name: p.nome.trim(), lat: p.lat, lng: p.lng, radius_meters: p.raio_metros, category: p.categoria.trim()
-      }, { onConflict: 'user_id,name' });
-      return error ? `Erro: ${error.message}` : `Lugar "${p.nome}" salvo.`;
+      try {
+        const { error } = await supabase.from('favorite_places').upsert({
+          user_id: authUserId, name: p.nome.trim(), lat: p.lat, lng: p.lng, radius_meters: p.raio_metros, category: p.categoria.trim()
+        }, { onConflict: 'user_id,name' });
+        return error ? `Erro: ${error.message}` : `Lugar "${p.nome}" salvo.`;
+      } catch (err: any) { return `Erro: ${err.message}`; }
     }
 
     case 'adicionar_item_lista': {
-      const pid = await getPlaceId(p.lugar);
-      if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
-      await supabase.from('shopping_items').upsert({ user_id: authUserId, item: p.item.trim(), place_id: pid, done: false }, { onConflict: 'user_id,item,place_id' });
-      return `"${p.item}" adicionado à lista.`;
+      try {
+        const pid = await getPlaceId(p.lugar);
+        if (!pid) return `Não encontrei o lugar "${p.lugar}".`;
+        await supabase.from('shopping_items').upsert({ user_id: authUserId, item: p.item.trim(), place_id: pid, done: false }, { onConflict: 'user_id,item,place_id' });
+        return `"${p.item}" adicionado à lista.`;
+      } catch (err: any) { return `Erro ao adicionar: ${err.message}`; }
     }
 
     case 'ver_lista': {
-      const pid = await getPlaceId(p.lugar);
-      if (!pid) return "Lista não encontrada.";
-      const { data: itens } = await supabase.from('shopping_items').select('item, done').eq('user_id', authUserId).eq('place_id', pid).order('done');
-      if (!itens?.length) return "Lista vazia.";
-      return `Lista ${p.lugar}:\n${itens.map(i => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
+      try {
+        const pid = await getPlaceId(p.lugar);
+        if (!pid) return `Lista de ${p.lugar} não encontrada.`;
+        const { data: itens } = await supabase.from('shopping_items').select('item, done').eq('user_id', authUserId).eq('place_id', pid).order('done');
+        if (!itens?.length) return `Sua lista de ${p.lugar} está vazia.`;
+        return `Lista ${p.lugar}:\n${itens.map(i => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
+      } catch (err: any) { return `Erro ao carregar lista: ${err.message}`; }
     }
 
-    default: return `Ferramenta ${name} reconhecida, mas pendente de plug físico.`;
+    default:
+      return `A ferramenta ${name} reconhecida, motor não plugado.`;
   }
 }
