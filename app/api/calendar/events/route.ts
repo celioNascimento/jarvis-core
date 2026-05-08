@@ -11,9 +11,13 @@ async function getAuthUUID(req: NextRequest) {
 }
 
 // ── GET: BUSCAR EVENTOS (MEUS + PARTILHADOS COMIGO) ──────────────────────────
+// ── GET: BUSCAR EVENTOS (MEUS + PARTILHADOS COMIGO) ──────────────────────────
 export async function GET(req: NextRequest) {
   const authUserId = await getAuthUUID(req);
   if (!authUserId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+
+  // 1. A GUILHOTINA DO BACKEND: Pega a data de hoje no fuso UTC como YYYY-MM-DD
+  const todayStr = new Date().toISOString().split('T')[0];
 
   try {
     const { data: userProfile } = await supabase
@@ -45,12 +49,12 @@ export async function GET(req: NextRequest) {
       .select('owner_id, category')
       .eq('shared_with_id', myBigIntId);
 
-    // Monta a query base
+    // 2. CORREÇÃO NA QUERY BASE (Filtra eventos passados direto no banco)
     let query = supabase
       .schema('jarvis')
       .from('events')
       .select('*')
-      .gte('start_at', '2020-01-01T00:00:00Z');
+      .gte('start_at', todayStr); 
 
     if (sharedEventIds.length > 0) {
       // Meus eventos OU eventos específicos partilhados comigo
@@ -72,7 +76,7 @@ export async function GET(req: NextRequest) {
           .select('*')
           .eq('user_id', share.owner_id)
           .eq('category', share.category)
-          .gte('start_at', '2020-01-01T00:00:00Z')
+          .gte('start_at', todayStr) // 3. CORREÇÃO AQUI TAMBÉM
           .order('start_at', { ascending: true });
 
         if (items) categoryEvents = [...categoryEvents, ...items];
