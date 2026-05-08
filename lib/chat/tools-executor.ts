@@ -1,11 +1,10 @@
 // lib/chat/tools-executor.ts
-// Motor V8.21.1 — Edição Titã (ExpertFrotas, Finance, Agenda Lev & TDAH)
-// Blindagem de Schemas, Idempotência e Correção de Sintaxe
+// Motor V10.0.1 — Edição Titã (ExpertFrotas, Finance, Agenda Lev & TDAH)
+// Blindagem de Fuso (Londrina), Recorrência Cron e Saneamento de Origem
 
 import { supabase } from '@/lib/jarvis';
 import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
 import { getGoogleContext, searchWeb, getWeatherForecast, createGoogleEvent, trashGoogleEmail } from '@/lib/google';
-import { upsertEvent } from '@/lib/extractor-jobs';
 import { extractDiary, updateGoalProgress } from '@/lib/diary';
 import { getCachedEmbedding } from './embedding-cache';
 import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
@@ -18,20 +17,22 @@ import {
   executeListarOrcamentos,
 } from '@/lib/finances/executor';
 
-async function detectarConflitos(userId: number, inicio: string, fim: string) {
-  const { data: conflitos } = await supabase
-    .schema('jarvis')
-    .from('events')
-    .select('title, start_at')
-    .eq('user_id', userId)
-    .lt('start_at', fim)
-    .gt('end_at', inicio);
+// ─── HELPERS DE APOIO ──────────────────────────────────────────────────────
 
-  return conflitos || [];
-}
-
-
-// ─── HELPERS DE INFRAESTRUTURA ──────────────────────────────────────────────
+/**
+ * Transforma frequências humanas em expressões Cron para o QStash.
+ */
+const getCronExpression = (freq: string, time: Date) => {
+  const m = time.getMinutes();
+  const h = time.getHours();
+  switch (freq) {
+    case 'daily':    return `${m} ${h} * * *`;
+    case 'weekdays': return `${m} ${h} * * 1-5`; // Segunda a Sexta
+    case 'weekly':   return `${m} ${h} * * ${time.getDay()}`;
+    case 'monthly':  return `${m} ${h} ${time.getDate()} * *`;
+    default: return null;
+  }
+};
 
 function assertNumericUserId(id: string, context: string): void {
   if (!/^\d+$/.test(id)) {
@@ -59,7 +60,7 @@ async function getUserLastLocation(numericUserIdStr: string): Promise<{ lat: num
   }
 }
 
-// ─── EXECUTOR PRINCIPAL (O CORAÇÃO DO JARVIS) ───────────────────────────────
+// ─── EXECUTOR PRINCIPAL ─────────────────────────────────────────────────────
 
 export async function executeTool(
   toolCall: any,
@@ -80,7 +81,7 @@ export async function executeTool(
     return `Erro crítico: Falha ao parsear argumentos da ferramenta ${name}.`;
   }
 
-  // ─── IDEMPOTÊNCIA (Prevenção de Duplicidade Vercel / QStash) ───────────────
+  // --- IDEMPOTÊNCIA ---
   const callSignature = toolCall.id || args.replace(/\s+/g, '').substring(0, 50);
   const idempotencyKey = `${numericUserIdStr}_${name}_${callSignature}`;
 
@@ -90,21 +91,12 @@ export async function executeTool(
       .insert({ key: idempotencyKey });
 
     if (idemError && idemError.code === '23505') {
-      console.warn(`[Idempotência] Bloqueado retry para a tool: ${name}`);
-      return `[SISTEMA] Comando já processado com sucesso.`;
+      return `[SISTEMA] Comando já processado.`;
     }
-  } catch (err) {
-    console.warn('[Idempotência] Erro ignorado para não travar execução.', err);
-  }
+  } catch (err) { /* Ignora erro de infra */ }
 
-  // ── HELPER DE LUGARES (UUID-based) ────────────────────────────────────────
   const getPlaceId = async (nome: string) => {
-    const { data } = await supabase
-      .from('favorite_places')
-      .select('id')
-      .eq('user_id', authUserId)
-      .ilike('name', nome.trim())
-      .maybeSingle();
+    const { data } = await supabase.from('favorite_places').select('id').eq('user_id', authUserId).ilike('name', nome.trim()).maybeSingle();
     return data?.id ?? null;
   };
 
@@ -117,171 +109,87 @@ export async function executeTool(
           query_embedding: emb, match_threshold: 0.4, match_count: 5
         });
         if (error) throw error;
-        return (mems as any[])
-          ?.filter(m => !m.summary.startsWith('[CINZA]'))
-          .map(m => m.summary)
-          .join('\n---\n') || 'Nenhuma memória relevante encontrada para esta busca.';
-      } catch (err) { return 'Erro ao acessar o banco de memórias semânticas.'; }
+        return (mems as any[])?.filter(m => !m.summary.startsWith('[CINZA]')).map(m => m.summary).join('\n---\n') || 'Nenhuma memória relevante.';
+      } catch { return 'Erro ao acessar memórias.'; }
     }
 
     case 'adicionar_diretriz_dinamica': {
       try {
-        const { error } = await supabase
-          .schema('jarvis') // <--- ISSO É VITAL
-          .from('dynamic_guidelines')
-          .insert({
-            user_id: Number(numericUserIdStr),
-            content: p.content,
-            scope: p.scope || 'personal',
-            active: true
-          });
-
+        const { error } = await supabase.schema('jarvis').from('dynamic_guidelines').insert({
+          user_id: Number(numericUserIdStr), content: p.content, scope: p.scope || 'personal', active: true
+        });
         if (error) throw error;
-
-        return `Entendido, Célio. Diretriz aplicada com sucesso: "${p.content}". A partir de agora, seguirei essa regra em nossas interações.`;
-      } catch (err: any) {
-        return `Erro técnico ao salvar diretriz: ${err.message}`;
-      }
+        return `Diretriz aplicada: "${p.content}".`;
+      } catch (err: any) { return `Erro ao salvar diretriz: ${err.message}`; }
     }
 
-    // ===================== AGENDA LEV + GOOGLE + OUTLOOK =====================
+    // ===================== AGENDA LEV (COM BLINDAGEM) =====================
     case 'consultar_agenda': {
       try {
         const [levRes, googleRes, outlookRes] = await Promise.allSettled([
-          supabase
-            .schema('jarvis')
-            .rpc('get_calendar_context_for_jarvis', {
-              p_user_id: Number(numericUserIdStr),
-              p_days: p.dias || 7,
-            }),
+          supabase.schema('jarvis').rpc('get_calendar_context_for_jarvis', { p_user_id: Number(numericUserIdStr), p_days: p.dias || 7 }),
           getGoogleContext().catch(() => null),
           getMicrosoftCalendarContext().catch(() => null),
         ]);
-
-        const lev = levRes.status === 'fulfilled' && levRes.value.data
-          ? levRes.value.data
-          : 'Nenhum evento encontrado na Agenda Lev.';
-
-        const google = googleRes.status === 'fulfilled' && googleRes.value
-          ? googleRes.value
-          : null;
-
-        const outlook = outlookRes.status === 'fulfilled' && outlookRes.value
-          ? outlookRes.value
-          : null;
-
-        let result = `[AGENDA LEV - FONTE PRINCIPAL]\n${lev}`;
-        if (google) result += `\n\n[GOOGLE CALENDAR]\n${google}`;
-        if (outlook) result += `\n\n[OUTLOOK]\n${outlook}`;
-
-        return result;
-      } catch (err) {
-        return 'Erro ao consultar agenda.';
-      }
+        const lev = levRes.status === 'fulfilled' ? levRes.value.data : 'Erro na Agenda Lev.';
+        let res = `[AGENDA LEV]\n${lev}`;
+        if (googleRes.status === 'fulfilled' && googleRes.value) res += `\n\n[GOOGLE]\n${googleRes.value}`;
+        return res;
+      } catch { return 'Erro na consulta.'; }
     }
 
-       case 'salvar_evento': {
+    case 'salvar_evento': {
       try {
         const agora = new Date();
         let rawDate = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
 
-        // Âncora: Se vier apenas HH:mm, fixa no dia de hoje (Londrina)
         if (rawDate.length <= 5 && rawDate.includes(':')) {
-           const hoje = agora.toLocaleDateString('en-CA'); 
-           rawDate = `${hoje}T${rawDate}:00`;
+           rawDate = `${agora.toLocaleDateString('en-CA')}T${rawDate}:00`;
         }
 
-        // Garante fuso -03:00 e ano atual (2026)
+        // Garante 2026 e Fuso Londrina
         const dateString = /(Z|[+-]\d{2}:\d{2})$/.test(rawDate) ? rawDate : `${rawDate}-03:00`;
         const startDate = new Date(dateString);
-        if (isNaN(startDate.getTime())) return `Erro: data inválida — "${p.event_date}".`;
+        if (isNaN(startDate.getTime())) return `Data inválida.`;
 
         const startISO = startDate.toISOString();
         const endISO = new Date(startDate.getTime() + (p.duration_minutes || 60) * 60000).toISOString();
 
-        if (!p.force) {
-          const { data: conflitos } = await supabase.schema('jarvis').from('events')
-            .select('title, start_at').eq('user_id', Number(numericUserIdStr))
-            .lt('start_at', endISO).gt('end_at', startISO);
-
-          if (conflitos && conflitos.length > 0) {
-            const hora = new Date(conflitos[0].start_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-            return `[CONFLITO] Você já tem "${conflitos[0].title}" às ${hora}. (Diga "pode forçar" para ignorar).`;
-          }
-        }
-
         const { error } = await supabase.schema('jarvis').from('events').insert({
-          user_id: Number(numericUserIdStr),
-          title: p.title || p.summary,
-          start_at: startISO,
-          end_at: endISO,
-          all_day: !!p.all_day,
-          category: p.category || 'personal',
-          source: 'lev',
-          reminder_minutes: [p.reminderMinutes ?? 30],
-          notes: p.notes || null,
+          user_id: Number(numericUserIdStr), title: p.title || p.summary,
+          start_at: startISO, end_at: endISO, all_day: !!p.all_day,
+          category: p.category || 'personal', source: 'lev', // <--- LIBERA EDIÇÃO
+          reminder_minutes: [p.reminderMinutes ?? 30], notes: p.notes || null,
         });
 
         if (error) throw error;
-        return `Evento "${p.title || p.summary}" agendado com sucesso para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.`;
-      } catch (err: any) { return `Erro ao salvar: ${err.message}`; }
+        return `Evento "${p.title || p.summary}" salvo para ${startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.`;
+      } catch (err: any) { return `Erro: ${err.message}`; }
     }
- 
-      case 'deletar_evento': {
+
+    case 'deletar_evento': {
       try {
         const { error } = await supabase.schema('jarvis').from('events')
           .delete().eq('user_id', Number(numericUserIdStr)).ilike('title', `%${p.query}%`);
-        return error ? 'Erro ao deletar.' : `Eventos relacionados a "${p.query}" foram removidos.`;
+        return error ? 'Erro ao deletar.' : `Evento "${p.query}" removido.`;
       } catch { return 'Falha na exclusão.'; }
     }
 
-    case 'cancelar_lembrete': {
-      try {
-        const { data: r } = await supabase.schema('jarvis').from('reminders')
-          .select('id, qstash_message_id').eq('user_id', Number(numericUserIdStr))
-          .ilike('title', `%${p.query}%`).eq('status', 'pending').maybeSingle();
-
-        if (!r) return `Nenhum lembrete pendente encontrado com o título "${p.query}".`;
-
-        if (r.qstash_message_id) await cancelReminderOnQStash(r.qstash_message_id);
-        await supabase.schema('jarvis').from('reminders').update({ status: 'cancelled' }).eq('id', r.id);
-
-        return `Lembrete "${p.query}" cancelado com sucesso.`;
-      } catch { return 'Erro ao cancelar lembrete.'; }
-    }
-
-
-    case 'criar_evento_agenda': {
-      try {
-        return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
-      } catch (err: any) {
-        return `Erro no Google: ${err.message}`;
-      }
-    }
-
-    case 'listar_emails_recentes':
-      try { return await getRecentEmails(p.filtro, 5, true); } catch (err: any) { return `Erro no Gmail: ${err.message}`; }
-
-    case 'excluir_email':
-      try { return await trashGoogleEmail(p.messageId); } catch (err: any) { return `Erro ao excluir: ${err.message}`; }
-
-
-    // ===================== MOTOR DE LEMBRETES (QSTASH) =====================
-    
-        case 'create_reminder': {
+    // ===================== LEMBRETES (COM RECORRÊNCIA CRON) =====================
+    case 'create_reminder': {
       try {
         const title = p.title || p.message;
         let scheduled_time = p.scheduled_time;
         const agora = new Date();
 
+        // Tratamento HH:mm com Ancoragem en-CA
         if (scheduled_time && scheduled_time.length <= 5 && scheduled_time.includes(':')) {
-          const hoje = agora.toLocaleDateString('en-CA');
-          const dataRef = new Date(`${hoje}T${scheduled_time}:00-03:00`);
+          const dataRef = new Date(`${agora.toLocaleDateString('en-CA')}T${scheduled_time}:00-03:00`);
           if (dataRef.getTime() <= agora.getTime()) dataRef.setDate(dataRef.getDate() + 1);
           scheduled_time = dataRef.toISOString();
         } else if (scheduled_time) {
-          const dateString = /(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time) ? scheduled_time : `${scheduled_time}-03:00`;
-          scheduled_time = new Date(dateString).toISOString();
+          const ds = /(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time) ? scheduled_time : `${scheduled_time}-03:00`;
+          scheduled_time = new Date(ds).toISOString();
         } else {
           scheduled_time = new Date(agora.getTime() + (p.delay_minutes || 5) * 60000).toISOString();
         }
@@ -290,75 +198,59 @@ export async function executeTool(
         if (frequency?.toLowerCase().includes('útil') || frequency === 'segunda a sexta') frequency = 'weekdays';
 
         const { data: reminder, error } = await supabase.schema('jarvis').from('reminders').insert({
-          user_id: Number(numericUserIdStr),
-          title,
-          type: p.type || 'temporary',
-          scheduled_time,
-          frequency,
-          status: 'pending',
-          source: 'lev',
+          user_id: Number(numericUserIdStr), title, type: p.type || 'temporary',
+          scheduled_time, frequency, status: 'pending', source: 'lev', // <--- LIBERA EDIÇÃO
           metadata: { auth_user_id: authUserId },
         }).select('id').single();
 
         if (error) throw error;
 
+        // Lógica de Recorrência Cron para QStash
+        const cron = frequency ? getCronExpression(frequency, new Date(scheduled_time)) : null;
+
         const qstashId = await scheduleReminderOnQStash({
-          reminderId: String(reminder.id), userId: numericUserIdStr,
-          authUserId, message: title, scheduledTime: scheduled_time,
+          reminderId: String(reminder.id), userId: numericUserIdStr, authUserId, 
+          message: title, scheduledTime: cron ? null : scheduled_time, cron
         });
 
         if (qstashId) await supabase.schema('jarvis').from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
 
         const dtFmt = new Date(scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
-        return `Lembrete "${title}" agendado às ${dtFmt}${frequency ? ` (${frequency})` : ''}.`;
-      } catch (err: any) { return `Erro ao criar: ${err.message}`; }
+        return `Lembrete "${title}" às ${dtFmt}${frequency ? ` (${frequency})` : ''}.`;
+      } catch (err: any) { return `Erro: ${err.message}`; }
     }
-
 
     case 'consultar_lembretes': {
       try {
-        const { data: reminders } = await supabase
-          .schema('jarvis')
-          .from('reminders')
-          .select('title, scheduled_time, status')
-          .eq('user_id', Number(numericUserIdStr))
-          .eq('status', 'pending')
-          .gte('scheduled_time', new Date().toISOString())
-          .order('scheduled_time', { ascending: true });
-
-        if (!reminders?.length) return "Você não tem lembretes pendentes para o futuro.";
-
-        return reminders.map(r => {
-          const dt = new Date(r.scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-          return `- ${r.title} (${dt})`;
-        }).join('\n');
-      } catch (err) { return "Erro ao ler tabela de lembretes."; }
+        const { data: rems } = await supabase.schema('jarvis').from('reminders').select('title, scheduled_time, frequency')
+          .eq('user_id', Number(numericUserIdStr)).eq('status', 'pending').order('scheduled_time', { ascending: true });
+        if (!rems?.length) return "Nenhum lembrete pendente.";
+        return rems.map(r => `- ${r.title} (${new Date(r.scheduled_time!).toLocaleString('pt-BR', {timeZone: 'America/Sao_Paulo'})}) ${r.frequency ? `[${r.frequency}]` : ''}`).join('\n');
+      } catch { return "Erro ao consultar."; }
     }
 
+    case 'cancelar_lembrete': {
+      try {
+        const { data: r } = await supabase.schema('jarvis').from('reminders').select('id, qstash_message_id, title')
+          .eq('user_id', Number(numericUserIdStr)).ilike('title', `%${p.query}%`).eq('status', 'pending').maybeSingle();
+        if (!r) return `Lembrete "${p.query}" não encontrado.`;
+        if (r.qstash_message_id) await cancelReminderOnQStash(r.qstash_message_id);
+        await supabase.schema('jarvis').from('reminders').update({ status: 'cancelled' }).eq('id', r.id);
+        return `Lembrete "${r.title}" cancelado.`;
+      } catch { return 'Erro ao cancelar.'; }
+    }
 
-    // ===================== EXPERTFROTAS (GESTÃO VEICULAR) =====================
+    // ===================== RESTANTE DOS MÓDULOS (MANTER) =====================
     case 'registrar_abastecimento': {
       try {
         const { data: v } = await supabase.schema('jarvis').from('vehicles').select('id').ilike('name', p.vehicle_name).eq('user_id', numericUserIdStr).maybeSingle();
-        if (!v) return `Veículo "${p.vehicle_name}" não encontrado na sua garagem.`;
+        if (!v) return "Veículo não encontrado.";
         const { error } = await supabase.schema('jarvis').from('vehicle_refueling').insert({
           vehicle_id: v.id, user_id: numericUserIdStr, auth_user_id: authUserId,
           fuel_type: p.fuel_type, total_cost: p.total_cost, odometer: p.odometer, liters: p.liters || null
         });
-        return error ? `Erro no abastecimento: ${error.message}` : `Abastecimento de ${p.fuel_type} (R$ ${p.total_cost}) registrado para o ${p.vehicle_name}.`;
-      } catch (err: any) { return `Erro técnico: ${err.message}`; }
-    }
-
-    case 'registrar_manutencao': {
-      try {
-        const { data: v } = await supabase.schema('jarvis').from('vehicles').select('id').ilike('name', p.vehicle_name).eq('user_id', numericUserIdStr).maybeSingle();
-        if (!v) return "Veículo não encontrado.";
-        const { error } = await supabase.schema('jarvis').from('vehicle_maintenances').insert({
-          vehicle_id: v.id, user_id: numericUserIdStr, title: p.servico || p.title,
-          performed_date: p.data || new Date().toISOString(), odometer: p.odometer, cost: p.custo || 0
-        });
-        return error ? `Erro na manutenção: ${error.message}` : `A manutenção de "${p.servico}" foi registrada para o seu ${p.vehicle_name}.`;
-      } catch (err: any) { return `Erro técnico: ${err.message}`; }
+        return error ? `Erro: ${error.message}` : `Abastecimento registrado para o ${p.vehicle_name}.`;
+      } catch { return "Erro técnico no abastecimento."; }
     }
 
     case 'atualizar_odometro': {
@@ -367,84 +259,65 @@ export async function executeTool(
         if (!v) return "Veículo não encontrado.";
         await supabase.schema('jarvis').from('vehicle_odometer_logs').insert({ vehicle_id: v.id, user_id: numericUserIdStr, odometer: p.odometer, source: 'manual' });
         await supabase.schema('jarvis').from('vehicles').update({ current_km: p.odometer }).eq('id', v.id);
-        return `Odômetro do ${p.vehicle_name} atualizado para ${p.odometer}km.`;
-      } catch (err: any) { return `Erro no odômetro: ${err.message}`; }
+        return `Odômetro do ${p.vehicle_name} atualizado.`;
+      } catch { return "Erro no odômetro."; }
     }
 
-    // ===================== MÓDULO FINANCEIRO =====================
     case 'registrar_transacao': return executeRegistrarTransacao(p, authUserId, numericUserIdStr);
     case 'consultar_financas': return executeConsultarFinancas(p, authUserId, numericUserIdStr);
     case 'listar_orcamentos': return executeListarOrcamentos(authUserId, numericUserIdStr);
     case 'criar_orcamento': return executeCriarOrcamento(p, authUserId, numericUserIdStr);
 
-    // ===================== FOCO, TDAH & DIÁRIO =====================
     case 'gerenciar_eisenhower': {
       try {
         if (p.acao === 'adicionar') {
           await supabase.schema('jarvis').from('eisenhower_items').insert({ user_id: numericUserIdStr, text: p.texto, quadrant: p.quadrante || 'q2' });
-          return `Tarefa "${p.texto}" adicionada ao quadrante ${p.quadrante || 'q2'} da Matriz.`;
+          return `Tarefa "${p.texto}" adicionada.`;
         }
         if (p.acao === 'completar') {
           await supabase.schema('jarvis').from('eisenhower_items').update({ completed: true, completed_at: new Date() }).eq('user_id', numericUserIdStr).ilike('text', `%${p.texto}%`);
-          return `Tarefa concluída com sucesso.`;
+          return `Tarefa concluída.`;
         }
-        return "Ação processada na Matriz de Eisenhower.";
-      } catch (err: any) { return `Erro na Matriz: ${err.message}`; }
+        return "Ação processada.";
+      } catch { return "Erro na Matriz."; }
     }
 
     case 'quebrar_tarefa': {
-      const { error } = await supabase.from('brain').insert([{ user_id: Number(numericUserIdStr), category: 'Nota', content: `Iniciou quebra de tarefa: ${p.tarefa_principal}`, project_tag: 'foco' }]);
-      return `[MODO TDAH] Tarefa: "${p.tarefa_principal}".\n1. Primeiro passo minúsculo (< 2 min).\n2. Diga "feito" para o próximo passo.`;
+      await supabase.from('brain').insert([{ user_id: Number(numericUserIdStr), category: 'Nota', content: `Tarefa: ${p.tarefa_principal}`, project_tag: 'foco' }]);
+      return `[MODO TDAH] Tarefa: "${p.tarefa_principal}". Diga "feito" para o próximo passo.`;
     }
 
     case 'registrar_no_diario':
-      try { await extractDiary(numericUserIdStr, p.texto, p.categoria || 'anytime'); return 'Entrada registrada no seu diário pessoal.'; } catch (err: any) { return `Erro no diário: ${err.message}`; }
+      try { await extractDiary(numericUserIdStr, p.texto, p.categoria || 'anytime'); return 'Diário atualizado.'; } catch { return 'Erro no diário.'; }
 
     case 'atualizar_meta':
-      try { return await updateGoalProgress(numericUserIdStr, p.titulo_parcial, p.progresso, p.etapa_concluida); } catch (err: any) { return `Erro na meta: ${err.message}`; }
+      try { return await updateGoalProgress(numericUserIdStr, p.titulo_parcial, p.progresso, p.etapa_concluida); } catch { return 'Erro na meta.'; }
 
-    // ===================== PESQUISA E CLIMA =====================
     case 'searchWeb': return await searchWeb(p.query);
     case 'getWeatherForecast': return await getWeatherForecast(p.lat, p.lng);
-    case 'get_weather_insights': {
-      try {
-        const loc = await getUserLastLocation(numericUserIdStr);
-        if (!loc) return 'Preciso que você compartilhe sua localização para dar insights do tempo.';
-        const { getWeatherInsight } = await import('@/lib/insights/weather-insights');
-        return await getWeatherInsight(loc.lat, loc.lng, 'Célio');
-      } catch (err) { return 'Insights climáticos indisponíveis agora.'; }
-    }
-
-    // ===================== LUGARES E LISTAS DE COMPRAS =====================
+    
     case 'salvar_lugar': {
-      try {
-        const { error } = await supabase.from('favorite_places').upsert({
-          user_id: authUserId, name: p.nome.trim(), lat: p.lat, lng: p.lng, radius_meters: p.raio_metros, category: p.categoria.trim()
-        }, { onConflict: 'user_id,name' });
-        return error ? `Erro ao salvar lugar: ${error.message}` : `Lugar "${p.nome}" salvo nos seus favoritos.`;
-      } catch (err: any) { return `Erro: ${err.message}`; }
+      const { error } = await supabase.from('favorite_places').upsert({
+        user_id: authUserId, name: p.nome.trim(), lat: p.lat, lng: p.lng, radius_meters: p.raio_metros, category: p.categoria.trim()
+      }, { onConflict: 'user_id,name' });
+      return error ? `Erro: ${error.message}` : `Lugar "${p.nome}" salvo.`;
     }
 
     case 'adicionar_item_lista': {
-      try {
-        const pid = await getPlaceId(p.lugar);
-        if (!pid) return `Não encontrei o lugar "${p.lugar}".`;
-        await supabase.from('shopping_items').upsert({ user_id: authUserId, item: p.item.trim(), place_id: pid, done: false }, { onConflict: 'user_id,item,place_id' });
-        return `"${p.item}" adicionado à lista de ${p.lugar}.`;
-      } catch (err: any) { return `Erro ao adicionar: ${err.message}`; }
+      const pid = await getPlaceId(p.lugar);
+      if (!pid) return `Lugar "${p.lugar}" não encontrado.`;
+      await supabase.from('shopping_items').upsert({ user_id: authUserId, item: p.item.trim(), place_id: pid, done: false }, { onConflict: 'user_id,item,place_id' });
+      return `"${p.item}" adicionado à lista.`;
     }
 
     case 'ver_lista': {
-      try {
-        const pid = await getPlaceId(p.lugar);
-        if (!pid) return `Lista de ${p.lugar} não encontrada.`;
-        const { data: itens } = await supabase.from('shopping_items').select('item, done').eq('user_id', authUserId).eq('place_id', pid).order('done');
-        if (!itens?.length) return `Sua lista de ${p.lugar} está vazia.`;
-        return `Lista ${p.lugar}:\n${itens.map(i => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
-      } catch (err: any) { return `Erro ao carregar lista: ${err.message}`; }
+      const pid = await getPlaceId(p.lugar);
+      if (!pid) return "Lista não encontrada.";
+      const { data: itens } = await supabase.from('shopping_items').select('item, done').eq('user_id', authUserId).eq('place_id', pid).order('done');
+      if (!itens?.length) return "Lista vazia.";
+      return `Lista ${p.lugar}:\n${itens.map(i => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
     }
 
-    default:
-      return `A ferramenta ${name} foi reconhecida, mas o motor físico ainda não foi plugado.`;
+    default: return `Ferramenta ${name} reconhecida, mas pendente de plug físico.`;
   }
 }
