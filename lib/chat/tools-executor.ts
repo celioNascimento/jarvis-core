@@ -264,25 +264,31 @@ export async function executeTool(
 
 
     // ===================== MOTOR DE LEMBRETES (QSTASH) =====================
+    
     case 'create_reminder': {
       try {
         const title = p.title || p.message;
-
-        // ─── BLINDAGEM DE FUSO HORÁRIO (UTC-3 / Brasil) ───
         let scheduled_time = p.scheduled_time;
 
-        if (scheduled_time) {
-          // Se a string veio limpa, sem offset (não termina em Z nem tem + ou - no final)
-          if (!/(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time)) {
-            scheduled_time += '-03:00'; // Força o fuso brasileiro
-          }
-          // Converte para o padrão Universal (UTC) exigido pelo Banco e pelo QStash
+        // ── 1. CONVERSÃO HH:mm -> TIMESTAMP COMPLETO ──
+        if (scheduled_time && scheduled_time.length <= 5 && scheduled_time.includes(':')) {
+          const [h, m] = scheduled_time.split(':').map(Number);
+          const target = new Date();
+          target.setHours(h, m, 0, 0);
+          // Se o horário já passou hoje, agenda para amanhã
+          if (target.getTime() <= Date.now()) target.setDate(target.getDate() + 1);
+          scheduled_time = target.toISOString();
+        } else if (scheduled_time) {
+          if (!/(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time)) scheduled_time += '-03:00';
           scheduled_time = new Date(scheduled_time).toISOString();
         } else {
-          // Fallback para atraso relativo (Date.now() já é universal por natureza)
-          scheduled_time = p.delay_minutes
-            ? new Date(Date.now() + p.delay_minutes * 60000).toISOString()
-            : new Date(Date.now() + 300000).toISOString(); // Padrão: 5 min
+          scheduled_time = new Date(Date.now() + (p.delay_minutes || 5) * 60000).toISOString();
+        }
+
+        // ── 2. MAPEAMENTO DE FREQUÊNCIA (Segunda a Sexta) ──
+        let frequency = p.frequency || null;
+        if (frequency?.toLowerCase().includes('útil') || frequency === 'segunda a sexta') {
+          frequency = 'weekdays';
         }
 
         const { data: reminder, error } = await supabase
@@ -293,7 +299,9 @@ export async function executeTool(
             title,
             type: p.type || 'temporary',
             scheduled_time,
+            frequency, // 👈 Agora aceita 'weekdays'
             status: 'pending',
+            source: 'lev', // 👈 LIBERA EDIÇÃO NO FRONT
             metadata: { auth_user_id: authUserId },
           })
           .select('id')
@@ -301,6 +309,7 @@ export async function executeTool(
 
         if (error) throw error;
 
+        // Disparo para o QStash (Mantém sua lógica original)
         const qstashId = await scheduleReminderOnQStash({
           reminderId: String(reminder.id),
           userId: numericUserIdStr,
@@ -310,20 +319,17 @@ export async function executeTool(
         });
 
         if (qstashId) {
-          await supabase
-            .schema('jarvis')
-            .from('reminders')
-            .update({ qstash_message_id: qstashId })
-            .eq('id', reminder.id);
+          await supabase.schema('jarvis').from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
         }
 
         const dtFormatted = new Date(scheduled_time).toLocaleString('pt-BR', {
           timeZone: 'America/Sao_Paulo',
-          hour: '2-digit',
-          minute: '2-digit',
+          hour: '2-digit', minute: '2-digit',
         });
-        return `Lembrete agendado: "${title}" às ${dtFormatted}.`;
-      } catch (err: any) { return `Erro ao criar lembrete: ${err.message}`; }
+        return `Lembrete agendado: "${title}" às ${dtFormatted}${frequency ? ` (${frequency})` : ''}.`;
+      } catch (err: any) { 
+        return `Erro ao criar lembrete: ${err.message}`; 
+      }
     }
 
     case 'consultar_lembretes': {
