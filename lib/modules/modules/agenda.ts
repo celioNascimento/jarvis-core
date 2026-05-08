@@ -9,8 +9,8 @@ export const ModuloAgenda: ModuleDefinition = {
   plan: 'free',
   trigger: {
     always: true, // Agenda deve estar sempre no contexto
-    contexts: ['agenda', 'evento'],
-    keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos/i
+    contexts: ['agenda', 'evento', 'lembrete'], // Adicionado 'lembrete' para garantir ativação
+    keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos|lembrete|me lembra|avisar/i
   },
   buildContextBlock: async (opts) => {
     try {
@@ -27,14 +27,14 @@ export const ModuloAgenda: ModuleDefinition = {
       return '';
     }
   },
-  // 👇 AS FERRAMENTAS AGORA ESTÃO NA MÃO DA IA 👇
+  // ── Sincronia Total com tools-def.ts e tools-executor.ts ──
   tools: [
     'salvar_evento', 
-    'consultar_agenda', // (Ajustei o nome para bater com o seu tools-executor)
-    'excluir_evento_agenda',
+    'consultar_agenda',
+    'deletar_evento',      // 👈 Nome corrigido
     'create_reminder',
-    'cancel_reminder',
-    'list_reminders'
+    'cancelar_lembrete',   // 👈 Nome corrigido
+    'consultar_lembretes'  // 👈 Nome corrigido
   ],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
