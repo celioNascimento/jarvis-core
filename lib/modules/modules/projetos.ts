@@ -9,7 +9,7 @@ export const ModuloProjetos: ModuleDefinition = {
   plan: 'free',
   trigger: {
     always: false,
-    contexts: ['projeto'],
+    contexts: ['projeto', 'planejamento'],
     keywords: /projeto|reforma|tópico|módulo|entry|ideia|dívida técnica|backlog|pendência|iniciativa|kanban|roadmap|tarefa do projeto/i,
   },
 

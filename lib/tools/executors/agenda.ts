@@ -22,7 +22,7 @@ export async function executeConsultarAgenda(
         .schema('jarvis')
         .rpc('get_calendar_context_for_jarvis', {
           p_user_id: Number(numericUserId),
-          p_days:    p.dias || 7,
+          p_days: p.dias || 7,
         }),
       getGoogleContext().catch(() => null),
       getMicrosoftCalendarContext().catch(() => null),
@@ -79,9 +79,9 @@ export async function executeSalvarEvento(
       return `Erro: data inválida — "${p.event_date}". Por favor, informe dia e hora.`;
     }
 
-    const endDate  = new Date(startDate.getTime() + 3600000);
+    const endDate = new Date(startDate.getTime() + 3600000);
     const startISO = startDate.toISOString();
-    const endISO   = endDate.toISOString();
+    const endISO = endDate.toISOString();
 
     // Radar de conflitos
     if (!p.force) {
@@ -105,15 +105,15 @@ export async function executeSalvarEvento(
       .schema('jarvis')
       .from('events')
       .insert({
-        user_id:          Number(numericUserId),
-        title:            p.title || p.summary,
-        start_at:         startISO,
-        end_at:           endISO,
-        all_day:          false,
-        category:         p.category || 'personal',
-        source:           'lev',
+        user_id: Number(numericUserId),
+        title: p.title || p.summary,
+        start_at: startISO,
+        end_at: endISO,
+        all_day: false,
+        category: p.category || 'personal',
+        source: 'lev',
         reminder_minutes: [p.reminderMinutes ?? 30],
-        notes:            p.notes || null,
+        notes: p.notes || null,
       });
 
     if (error) throw error;
@@ -168,6 +168,8 @@ export async function executeExcluirEmail(
 
 // ─── create_reminder ──────────────────────────────────────────────────────────
 
+// ─── create_reminder ──────────────────────────────────────────────────────────
+
 export async function executeCreateReminder(
   p: {
     title?: string;
@@ -185,27 +187,46 @@ export async function executeCreateReminder(
     const title = p.title || p.message || 'Lembrete (sem título)';
 
     let scheduled_time = p.scheduled_time;
+    const agora = new Date();
+
     if (scheduled_time) {
-      if (!/(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time)) {
-        scheduled_time += '-03:00';
+      // 1. O LLM enviou APENAS a hora? (ex: "06:10" ou "06:10:00")
+      if (scheduled_time.length <= 8 && scheduled_time.includes(':')) {
+        const hoje = agora.toLocaleDateString('en-CA'); // Retorna "YYYY-MM-DD"
+
+        // Garante que o formato tenha segundos para o Date() não reclamar
+        const timeStr = scheduled_time.length <= 5 ? `${scheduled_time}:00` : scheduled_time;
+
+        const dataRef = new Date(`${hoje}T${timeStr}-03:00`);
+
+        // Se a hora já passou hoje, agenda para amanhã
+        if (dataRef.getTime() <= agora.getTime()) {
+          dataRef.setDate(dataRef.getDate() + 1);
+        }
+        scheduled_time = dataRef.toISOString();
       }
-      scheduled_time = new Date(scheduled_time).toISOString();
+      // 2. O LLM enviou a data completa
+      else {
+        const withOffset = /(Z|[+-]\d{2}:\d{2})$/.test(scheduled_time)
+          ? scheduled_time
+          : `${scheduled_time}-03:00`;
+        scheduled_time = new Date(withOffset).toISOString();
+      }
     } else {
-      scheduled_time = p.delay_minutes
-        ? new Date(Date.now() + p.delay_minutes * 60000).toISOString()
-        : new Date(Date.now() + 300000).toISOString();
+      // 3. Fallback de delay_minutes
+      scheduled_time = new Date(agora.getTime() + (p.delay_minutes || 5) * 60000).toISOString();
     }
 
     const { data: reminder, error } = await supabase
       .schema('jarvis')
       .from('reminders')
       .insert({
-        user_id:        Number(numericUserId),
+        user_id: Number(numericUserId),
         title,
-        type:           p.type || 'temporary',
+        type: p.type || 'temporary',
         scheduled_time,
-        status:         'pending',
-        metadata:       { auth_user_id: authUserId },
+        status: 'pending',
+        metadata: { auth_user_id: authUserId },
       })
       .select('id')
       .single();
@@ -213,10 +234,10 @@ export async function executeCreateReminder(
     if (error) throw error;
 
     const qstashId = await scheduleReminderOnQStash({
-      reminderId:    String(reminder.id),
-      userId:        numericUserId,
+      reminderId: String(reminder.id),
+      userId: numericUserId,
       authUserId,
-      message:       title,
+      message: title,
       scheduledTime: scheduled_time,
     });
 
@@ -230,12 +251,14 @@ export async function executeCreateReminder(
 
     const dtFormatted = new Date(scheduled_time).toLocaleString('pt-BR', {
       timeZone: 'America/Sao_Paulo',
-      hour:     '2-digit',
-      minute:   '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
     });
-    return `Lembrete agendado: "${title}" às ${dtFormatted}.`;
+
+    // Sucesso explícito para a IA não se confundir
+    return `[SUCESSO] Lembrete agendado: "${title}" às ${dtFormatted}.`;
   } catch (err: any) {
-    return `Erro ao criar lembrete: ${err.message}`;
+    return `Erro crítico ao criar lembrete: ${err.message}`;
   }
 }
 
