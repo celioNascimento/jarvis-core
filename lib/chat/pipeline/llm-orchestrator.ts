@@ -26,12 +26,13 @@ interface ToolCallResult {
 async function executeToolCalls(
   toolCalls: any[],
   authUserId: string,
-  numericUserId: string
+  numericUserId: string,
+  contextSnapshot: Record<string, any>[]   // ← últimos N turnos
 ): Promise<ToolCallResult[]> {
   return Promise.all(
     toolCalls.map(async (tc: any) => ({
       tc,
-      result: await executeTool(tc, authUserId, numericUserId),
+      result: await executeTool(tc, authUserId, numericUserId, contextSnapshot),
     }))
   );
 }
@@ -72,6 +73,9 @@ export async function runLLMOrchestrator(
   const { user, requestSignature } = ctx;
   const { conversationMessages, tools, model } = prompt;
 
+  // ── Primeiros 3 turnos do histórico como snapshot de contexto ─────────────
+  const contextSnapshot = conversationMessages.slice(-3);
+
   // ── Primeira chamada ──────────────────────────────────────────────────────
   const firstResponse = await callOpenRouterWithPriority(
     1,
@@ -92,7 +96,8 @@ export async function runLLMOrchestrator(
   const toolResults = await executeToolCalls(
     firstResponse.toolCalls,
     user.auth_user_id,
-    String(user.id)
+    String(user.id),
+    contextSnapshot                         // ← passado aqui
   );
 
   // ── Segunda chamada (síntese) ─────────────────────────────────────────────
