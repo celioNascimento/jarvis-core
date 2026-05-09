@@ -11,6 +11,7 @@ import { computeEmotionalScore, type EmotionalScoreResult } from '@/lib/chat/emo
 import { MemoryManager } from '@/lib/memory';
 import { llmGateway } from '@/lib/chat/llm-gateway';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
+import { detectAndLogCorrection } from '@/lib/tools/executors/learning';
 import type { ChatRequestContext } from './request-context';
 
 const MAX_MSG_CHARS = 800;
@@ -23,30 +24,16 @@ export interface HistoryMessage {
 }
 
 export interface ChatIntelligence {
-  // Contexto bruto do banco (God RPC)
   masterContext: any;
-
-  // Histórico formatado para o LLM (alternância correta)
   recentHistory: HistoryMessage[];
-
-  // Classificação semântica da mensagem
   contexts: ContextType[];
-
-  // Embedding da mensagem (reutilizado por outros módulos)
   queryEmbedding: number[] | null;
-
-  // Sistema sobrecarregado?
   isStressed: boolean;
-
-  // Blocos de memória
   memory: Awaited<ReturnType<typeof MemoryManager.read>>;
-
-  // Score emocional
   emotional: EmotionalScoreResult;
 }
 
 // ─── Histórico com alternância estrita ───────────────────────────────────────
-// O OpenRouter exige que mensagens alternem user/assistant sem repetição.
 
 function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
   const recentHistory: HistoryMessage[] = [];
@@ -66,7 +53,6 @@ function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
     }
   }
 
-  // Nunca termina com 'user' (o user atual já será adicionado pelo orquestrador)
   if (lastAddedRole === 'user') recentHistory.pop();
 
   return recentHistory;
@@ -79,7 +65,7 @@ export async function runIntelligencePipeline(
 ): Promise<ChatIntelligence> {
   const { message, user, sessionId, normalizedLocation, requestSignature } = ctx;
 
-  // 1. God RPC (contexto consolidado do banco) — roda em paralelo com geo
+  // 1. God RPC
   const { data: masterContext, error: rpcError } = await supabase.rpc(
     'get_consolidated_context',
     { p_user_id: user.id, p_session_id: sessionId }
@@ -89,28 +75,30 @@ export async function runIntelligencePipeline(
   // 2. Histórico formatado
   const recentHistory = buildRecentHistory(masterContext?.history || []);
 
-  // 3. Execução paralela: embedding + classificação + status do gateway
+  // 3. Execução paralela: embedding + classificação + status do gateway + detecção de correção
   const [queryEmbedding, contexts, isStressed] = await Promise.all([
     getCachedEmbedding(message).catch(() => null),
     classifyContextWithL4(message, String(user.id)),
     llmGateway.isOverloaded(),
+    // Silencioso — não bloqueia nem propaga erro
+    detectAndLogCorrection(message, user.id).catch(() => {}),
   ]);
 
-  // 4. Memória semântica (depende do embedding e dos contextos)
+  // 4. Memória semântica
   const memory = await MemoryManager.read({
     userId:        String(user.id),
     authUserId:    user.auth_user_id,
     sessionId,
     message,
     contexts,
-    emotionalScore: 0,                        // será calculado abaixo
+    emotionalScore: 0,
     authorName:    user.nickname,
     assistantName: user.assistant_name,
     queryEmbedding,
     masterContext,
   });
 
-  // 5. Score emocional (depende das memórias)
+  // 5. Score emocional
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
