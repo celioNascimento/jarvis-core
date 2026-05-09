@@ -45,9 +45,15 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const { reminder_id, shared_with_id, active } = await req.json();
-
   try {
+    const { reminder_id, shared_with_id, active } = await req.json();
+
+    // 🛡️ Validação de Segurança do Arquiteto
+    if (!shared_with_id) {
+      console.error('[Reminder Shares POST] Abortado: shared_with_id está nulo ou indefinido.');
+      return NextResponse.json({ error: 'ID do destinatário não encontrado na lista.' }, { status: 400 });
+    }
+
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
@@ -57,18 +63,16 @@ export async function POST(req: Request) {
     if (authError || !user) throw new Error('Usuário não autenticado');
 
     if (active) {
-      // Upsert na tabela jarvis.reminder_shares
       const { error } = await supabase
         .from('reminder_shares')
         .upsert({ 
           reminder_id, 
-          shared_with_id, 
+          shared_with_id, // Agora garantido que é um BigInt
           active: true 
         }, { onConflict: 'reminder_id, shared_with_id' });
 
       if (error) throw error;
     } else {
-      // Desativação lógica
       const { error } = await supabase
         .from('reminder_shares')
         .update({ active: false })
