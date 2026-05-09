@@ -14,57 +14,70 @@ export interface ScheduleReminderPayload {
   cron?: string | null;
 }
 
+// lib/qstash.ts
+
 export async function scheduleReminderOnQStash(
   payload: ScheduleReminderPayload
 ): Promise<string | null> {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL
     ? process.env.NEXT_PUBLIC_APP_URL
     : process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'http://localhost:3000';
+      ? `https://${process.env.VERCEL_URL}`
+      : 'http://localhost:3000';
 
-  console.log('[QStash] Usando baseUrl:', baseUrl);
+  const destination = `${baseUrl}/api/reminders/fire`;
+  console.log('[QStash] Destino:', destination);
 
   try {
-    const publishOptions: any = {
-      url: `${baseUrl}/api/reminders/fire`,
-      body: payload,
-      retries: 3,
-    };
-
+    // ── CASE 1: AGENDAMENTO RECORRENTE (CRON) ──
     if (payload.cron) {
-      publishOptions.cron = payload.cron;
-      console.log(`[QStash] Agendando recorrente: ${payload.cron}`);
-    } else if (payload.scheduledTime) {
-      const scheduledAt = new Date(payload.scheduledTime);
-      const now = new Date();
-      const delaySeconds = Math.floor((scheduledAt.getTime() - now.getTime()) / 1000);
+      console.log(`[QStash] Criando Schedule (Cron): ${payload.cron}`);
 
-      if (delaySeconds <= 0) {
-        console.warn('[QStash] Lembrete no passado — disparando imediatamente');
-      }
-      publishOptions.delay = Math.max(0, delaySeconds);
-      console.log(`[QStash] Agendado com delay: ${delaySeconds}s`);
-    } else {
-      publishOptions.delay = 0;
+      const res = await qstash.schedules.create({
+        destination,
+        cron: payload.cron,
+
+        body: JSON.stringify(payload),
+        retries: 3,
+      });
+
+      return res.scheduleId;
     }
 
-    // ── CORREÇÃO DE TYPESCRIPT AQUI ──
-    // Dizemos ao compilador para tratar 'res' como 'any' para evitar o erro de union type
-    const res = await qstash.publishJSON(publishOptions) as any;
-    
-    return res.messageId || null;
+    // ── CASE 2: LEMBRETE ÚNICO (DELAY) ──
+    const delaySeconds = payload.scheduledTime
+      ? Math.max(0, Math.floor((new Date(payload.scheduledTime).getTime() - Date.now()) / 1000))
+      : 0;
+
+    console.log(`[QStash] Agendado com delay: ${delaySeconds}s`);
+
+    // ✅ CORREÇÃO DE TIPAGEM: 
+    // Usamos o tipo de retorno específico 'PublishToUrlResponse' para liberar o acesso ao 'messageId'
+    const res = await qstash.publishJSON({
+      url: destination,
+      body: payload,
+      delay: delaySeconds,
+      retries: 3,
+    }) as { messageId: string }; // 👈 Forçamos a tipagem aqui para o TS parar de reclamar
+
+    return res.messageId;
+
   } catch (err) {
-    console.error('[QStash] Erro ao agendar:', err);
+    console.error('[QStash] Erro crítico no transporte:', err);
     return null;
   }
 }
 
-export async function cancelReminderOnQStash(qstashMessageId: string): Promise<void> {
+export async function cancelReminderOnQStash(id: string): Promise<void> {
   try {
-    await qstash.messages.delete(qstashMessageId);
-    console.log('[QStash] Cancelado:', qstashMessageId);
+    // Tenta deletar como mensagem, se falhar tenta como schedule
+    if (id.startsWith('msg_')) {
+      await qstash.messages.delete(id);
+    } else {
+      await qstash.schedules.delete(id);
+    }
+    console.log('[QStash] Removido com sucesso:', id);
   } catch (err) {
-    console.error('[QStash] Erro ao cancelar:', err);
+    console.error('[QStash] Erro ao cancelar (pode já ter sido disparado):', id);
   }
 }
