@@ -145,4 +145,4 @@ export async function finalizeResponse(
     assistantName: ctx.user.assistant_name || 'Lev',
     performance: `${Date.now() - ctx.startTime}ms`,
   });
-}
+} 
