@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/jarvis'; // Ajuste o caminho do seu client Supabase
+import { supabase } from '@/lib/jarvis';
 
 export async function POST(request: Request) {
   try {
@@ -7,22 +7,23 @@ export async function POST(request: Request) {
 
     console.log(`📍 Ping recebido (Usuário: ${userId})! Lat: ${lat}, Lon: ${lon}`);
 
-    // 1. Consulta rápida: a lista de compras tem algo para ESTE usuário?
+    // 1. Consulta rápida: Ajustamos para 'shopping_items' e o filtro de 'done'
     const { data: lista, error } = await supabase
       .schema('jarvis')
-      .from('shopping_list')
+      .from('shopping_items') // CORREÇÃO: Alinhado com o nome no seu banco
       .select('item')
-      .eq('user_id', Number(userId)) // Filtro dinâmico inserido
-      .eq('status', 'pending');
+      .eq('user_id', Number(userId))
+      .eq('done', false)      // CORREÇÃO: No seu banco, itens pendentes são done = false
+      .eq('archived', false); // CORREÇÃO: Garante que não pega itens antigos arquivados
 
     if (error) throw error;
 
-    // 2. Lógica de decisão (Apenas log no terminal por enquanto)
+    // 2. Lógica de decisão
     if (lista && lista.length > 0) {
-      console.log(`🛒 Usuário ${userId} está em movimento e tem ${lista.length} itens pendentes. Ativar busca de mercado!`);
-      // A implementação da busca no Google Places e disparo de Push entraremos aqui depois.
+      console.log(`🛒 Usuário ${userId} em movimento. Radar ativo para ${lista.length} itens: ${lista.map(i => i.item).join(', ')}`);
+      // Próximo passo: Integração com Google Places aqui.
     } else {
-      console.log(`✅ Lista limpa para o usuário ${userId}. Nenhuma ação necessária para este ping.`);
+      console.log(`✅ Nenhuma ação para o usuário ${userId}. Lista de compras vazia ou já concluída.`);
     }
 
     return NextResponse.json({ success: true, message: 'Radar processado' });
