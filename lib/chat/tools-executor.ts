@@ -1,5 +1,5 @@
 // lib/chat/tools-executor.ts
-// Dispatcher V9.0.0 — Zero lógica inline
+// Dispatcher V9.1.0 — Zero lógica inline + Execution Logging
 //
 // Este arquivo APENAS roteia tool calls para o executor correto.
 // Para adicionar uma nova tool:
@@ -25,8 +25,8 @@ import {
   executeExcluirEmail,
   executeCreateReminder,
   executeConsultarLembretes,
-  executeDeletarEvento,    
-  executeCancelarLembrete,  
+  executeDeletarEvento,
+  executeCancelarLembrete,
 } from '@/lib/tools/executors/agenda';
 
 import {
@@ -57,6 +57,7 @@ import {
 } from '@/lib/finances/executor';
 
 import { searchWeb, getWeatherForecast } from '@/lib/google';
+import { logToolExecution } from '@/lib/tools/executors/learning';
 
 // ── Idempotência ──────────────────────────────────────────────────────────────
 
@@ -72,12 +73,12 @@ async function checkIdempotency(
       .insert({ key });
     if (error?.code === '23505') {
       console.warn(`[Idempotência] Bloqueado retry: ${name}`);
-      return false; // já processado
+      return false;
     }
   } catch {
     // não trava a execução
   }
-  return true; // pode executar
+  return true;
 }
 
 // ── Dispatcher principal ───────────────────────────────────────────────────────
@@ -85,7 +86,8 @@ async function checkIdempotency(
 export async function executeTool(
   toolCall: any,
   authUserId: string,
-  numericUserIdStr: string
+  numericUserIdStr: string,
+  contextSnapshot: Record<string, any>[] = []   // ← opcional, default vazio
 ): Promise<string> {
   if (!/^\d+$/.test(numericUserIdStr)) {
     return `Erro de identidade: userId inválido "${numericUserIdStr}"`;
@@ -105,49 +107,63 @@ export async function executeTool(
 
   const args = [p, authUserId, numericUserIdStr] as const;
 
+  let result: string;
+
   switch (name) {
     // ── Memória ──────────────────────────────────────────────────────────────
-    case 'buscar_memoria_longa':        return executeBuscarMemoriaLonga(...args);
-    case 'adicionar_diretriz_dinamica': return executeAdicionarDiretrizDinamica(...args);
+    case 'buscar_memoria_longa':        result = await executeBuscarMemoriaLonga(...args); break;
+    case 'adicionar_diretriz_dinamica': result = await executeAdicionarDiretrizDinamica(...args); break;
 
     // ── Agenda ───────────────────────────────────────────────────────────────
-   case 'consultar_agenda':       return executeConsultarAgenda(...args);
-    case 'salvar_evento':          return executeSalvarEvento(...args);
-    case 'deletar_evento':         return executeDeletarEvento(...args); 
-    case 'criar_evento_agenda':    return executeCriarEventoAgenda(...args);
-    case 'listar_emails_recentes': return executeListarEmailsRecentes(...args);
-    case 'excluir_email':          return executeExcluirEmail(...args);
-    case 'create_reminder':        return executeCreateReminder(...args);
-    case 'consultar_lembretes':    return executeConsultarLembretes(...args);
-    case 'cancelar_lembrete':      return executeCancelarLembrete(...args); 
+    case 'consultar_agenda':       result = await executeConsultarAgenda(...args); break;
+    case 'salvar_evento':          result = await executeSalvarEvento(...args); break;
+    case 'deletar_evento':         result = await executeDeletarEvento(...args); break;
+    case 'criar_evento_agenda':    result = await executeCriarEventoAgenda(...args); break;
+    case 'listar_emails_recentes': result = await executeListarEmailsRecentes(...args); break;
+    case 'excluir_email':          result = await executeExcluirEmail(...args); break;
+    case 'create_reminder':        result = await executeCreateReminder(...args); break;
+    case 'consultar_lembretes':    result = await executeConsultarLembretes(...args); break;
+    case 'cancelar_lembrete':      result = await executeCancelarLembrete(...args); break;
+
     // ── Veículos ─────────────────────────────────────────────────────────────
-    case 'registrar_abastecimento': return executeRegistrarAbastecimento(...args);
-    case 'registrar_manutencao':    return executeRegistrarManutencao(...args);
-    case 'atualizar_odometro':      return executeAtualizarOdometro(...args);
+    case 'registrar_abastecimento': result = await executeRegistrarAbastecimento(...args); break;
+    case 'registrar_manutencao':    result = await executeRegistrarManutencao(...args); break;
+    case 'atualizar_odometro':      result = await executeAtualizarOdometro(...args); break;
 
     // ── Lugares e Compras ─────────────────────────────────────────────────────
-    case 'salvar_lugar':         return executeSalvarLugar(...args);
-    case 'adicionar_item_lista': return executeAdicionarItemLista(...args);
-    case 'ver_lista':            return executeVerLista(...args);
+    case 'salvar_lugar':         result = await executeSalvarLugar(...args); break;
+    case 'adicionar_item_lista': result = await executeAdicionarItemLista(...args); break;
+    case 'ver_lista':            result = await executeVerLista(...args); break;
 
     // ── TDAH e Diário ─────────────────────────────────────────────────────────
-    case 'gerenciar_eisenhower': return executeGerenciarEisenhower(...args);
-    case 'quebrar_tarefa':       return executeQuebrarTarefa(...args);
-    case 'criar_rotina':         return executeCriarRotina(...args);
-    case 'registrar_no_diario':  return executeRegistrarNoDiario(...args);
-    case 'atualizar_meta':       return executeAtualizarMeta(...args);
+    case 'gerenciar_eisenhower': result = await executeGerenciarEisenhower(...args); break;
+    case 'quebrar_tarefa':       result = await executeQuebrarTarefa(...args); break;
+    case 'criar_rotina':         result = await executeCriarRotina(...args); break;
+    case 'registrar_no_diario':  result = await executeRegistrarNoDiario(...args); break;
+    case 'atualizar_meta':       result = await executeAtualizarMeta(...args); break;
 
-    // ── Finanças (executor externo já existente) ───────────────────────────────
-    case 'registrar_transacao': return executeRegistrarTransacao(p, authUserId, numericUserIdStr);
-    case 'consultar_financas':  return executeConsultarFinancas(p, authUserId, numericUserIdStr);
-    case 'criar_orcamento':     return executeCriarOrcamento(p, authUserId, numericUserIdStr);
-    case 'listar_orcamentos':   return executeListarOrcamentos(authUserId, numericUserIdStr);
+    // ── Finanças ──────────────────────────────────────────────────────────────
+    case 'registrar_transacao': result = await executeRegistrarTransacao(p, authUserId, numericUserIdStr); break;
+    case 'consultar_financas':  result = await executeConsultarFinancas(p, authUserId, numericUserIdStr); break;
+    case 'criar_orcamento':     result = await executeCriarOrcamento(p, authUserId, numericUserIdStr); break;
+    case 'listar_orcamentos':   result = await executeListarOrcamentos(authUserId, numericUserIdStr); break;
 
     // ── Web e Clima ───────────────────────────────────────────────────────────
-    case 'searchWeb':          return searchWeb(p.query);
-    case 'getWeatherForecast': return getWeatherForecast(p.lat, p.lng);
+    case 'searchWeb':          result = await searchWeb(p.query); break;
+    case 'getWeatherForecast': result = await getWeatherForecast(p.lat, p.lng); break;
 
     default:
       return `Ferramenta "${name}" não reconhecida pelo dispatcher.`;
   }
+
+  // ── Log assíncrono — nunca bloqueia a resposta ao usuário ─────────────────
+  logToolExecution({
+    userId: Number(numericUserIdStr),
+    toolName: name,
+    arguments: p,
+    output: result,
+    contextSnapshot,                          // ← agora populado
+  }).catch(() => {});
+
+  return result;
 }
