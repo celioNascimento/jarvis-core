@@ -11,6 +11,7 @@ import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
 import { buildGeoBlock } from '@/lib/geo-resolver';
 import { verificarAlertasDeProximidade } from '@/lib/geo';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
+import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
 import { tools as ALL_TOOLS } from '@/lib/chat/tools-def';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
@@ -120,6 +121,9 @@ export async function buildChatPrompt(
     .map((u: any) => u.title)
     .join(', ');
 
+  // 6b. Shadow Prompting — insights aprendidos pelo Jarvis
+  const learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
+
   // 7. System prompt final
   const systemPrompt = [
     `[RELÓGIO DO SISTEMA]: ${dataHoraSP}`,
@@ -128,6 +132,9 @@ export async function buildChatPrompt(
     alertaRadar,
     contextText,
     urgentes ? `\n[URGENTE]: Pendências: ${urgentes}` : '',
+    learnedInsightsBlock
+      ? `\n[O QUE APRENDI SOBRE VOCÊ]\n${learnedInsightsBlock}`
+      : '',
     '---',
     composeSystemPrompt({
       assistantName:    user.assistant_name,
