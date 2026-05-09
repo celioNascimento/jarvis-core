@@ -13,6 +13,7 @@ import { NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase } from '@/lib/jarvis';
 import { extractAndSummarize } from '@/lib/extractor';
+import { detectImplicitNegativeFeedback } from '@/lib/tools/executors/learning';
 import OpenAI from 'openai';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
@@ -32,7 +33,6 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
     const cleanText = text.replace(/[*#_~]/g, '').trim();
     if (!cleanText) return null;
 
-    // ✅ MOTOR ELEVENLABS
     if (provider === 'elevenlabs') {
       if (!process.env.ELEVENLABS_API_KEY) {
         console.warn('[TTS] ELEVENLABS_API_KEY ausente. Abortando áudio.');
@@ -58,10 +58,7 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
 
       const arrayBuffer = await elRes.arrayBuffer();
       return Buffer.from(arrayBuffer).toString('base64');
-    } 
-    
-    // ✅ MOTOR OPENAI (Fallback e Padrão)
-    else {
+    } else {
       const mp3 = await openai.audio.speech.create({
         model: 'tts-1',
         voice: (voiceId as any) || 'alloy',
@@ -72,12 +69,11 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
 
   } catch (e) {
     console.error('[ResponseFinalizer] TTS Error:', e);
-    return null; // Não trava o envio da resposta em texto se o áudio falhar
+    return null;
   }
 }
 
 // ─── Persistência em background ───────────────────────────────────────────────
-// Não bloqueia o retorno — dispara e esquece.
 
 function persistInBackground(
   ctx: ChatRequestContext,
@@ -85,8 +81,12 @@ function persistInBackground(
   prompt: ChatPrompt,
   reply: string
 ): void {
-  // Usa void para não propagar o Promise — é intencional em Vercel edge
   void (async () => {
+    // 1. Detecta repergunta ANTES de salvar a mensagem atual —
+    //    assim a comparação é sempre com a mensagem imediatamente anterior.
+    detectImplicitNegativeFeedback(ctx.message, ctx.user.id).catch(() => {});
+
+    // 2. Persiste a mensagem atual no brain
     try {
       await supabase.from('brain').insert({
         user_id:    ctx.user.id,
@@ -104,6 +104,7 @@ function persistInBackground(
       console.error('[ResponseFinalizer] Brain save error:', e.message);
     }
 
+    // 3. Extração e sumarização
     try {
       await extractAndSummarize(
         String(ctx.user.id),
@@ -128,7 +129,7 @@ export async function finalizeResponse(
   // 1. Cache da resposta (para dedup de requisições duplicadas)
   await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => {});
 
-  // 2. TTS (Usando o contrato adaptativo extraído no request-context)
+  // 2. TTS
   const audioBase64 = ctx.speak && ctx.voiceSettings
     ? await generateTTS(reply, ctx.voiceSettings.provider, ctx.voiceSettings.voiceId)
     : null;
@@ -140,9 +141,9 @@ export async function finalizeResponse(
   return NextResponse.json({
     reply,
     audioBase64,
-    ok:          true,
-    sessionId:   ctx.sessionId,
+    ok:           true,
+    sessionId:    ctx.sessionId,
     assistantName: ctx.user.assistant_name || 'Lev',
-    performance: `${Date.now() - ctx.startTime}ms`,
+    performance:  `${Date.now() - ctx.startTime}ms`,
   });
-} 
+}
