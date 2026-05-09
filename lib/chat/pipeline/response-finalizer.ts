@@ -25,21 +25,54 @@ const redis = new Redis({
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 });
 
-// ─── TTS ──────────────────────────────────────────────────────────────────────
+// ─── TTS Adaptativo (OpenAI + ElevenLabs) ─────────────────────────────────────
 
-async function generateTTS(text: string, voice: string): Promise<string | null> {
+async function generateTTS(text: string, provider: string, voiceId: string): Promise<string | null> {
   try {
     const cleanText = text.replace(/[*#_~]/g, '').trim();
     if (!cleanText) return null;
-    const mp3 = await openai.audio.speech.create({
-      model: 'tts-1',
-      voice: voice as any,
-      input: cleanText,
-    });
-    return Buffer.from(await mp3.arrayBuffer()).toString('base64');
+
+    // ✅ MOTOR ELEVENLABS
+    if (provider === 'elevenlabs') {
+      if (!process.env.ELEVENLABS_API_KEY) {
+        console.warn('[TTS] ELEVENLABS_API_KEY ausente. Abortando áudio.');
+        return null;
+      }
+      const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'audio/mpeg',
+          'xi-api-key': process.env.ELEVENLABS_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          text: cleanText,
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+        })
+      });
+
+      if (!elRes.ok) {
+        throw new Error(`ElevenLabs Http ${elRes.status}: ${await elRes.text()}`);
+      }
+
+      const arrayBuffer = await elRes.arrayBuffer();
+      return Buffer.from(arrayBuffer).toString('base64');
+    } 
+    
+    // ✅ MOTOR OPENAI (Fallback e Padrão)
+    else {
+      const mp3 = await openai.audio.speech.create({
+        model: 'tts-1',
+        voice: (voiceId as any) || 'alloy',
+        input: cleanText,
+      });
+      return Buffer.from(await mp3.arrayBuffer()).toString('base64');
+    }
+
   } catch (e) {
     console.error('[ResponseFinalizer] TTS Error:', e);
-    return null;
+    return null; // Não trava o envio da resposta em texto se o áudio falhar
   }
 }
 
@@ -95,9 +128,9 @@ export async function finalizeResponse(
   // 1. Cache da resposta (para dedup de requisições duplicadas)
   await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => {});
 
-  // 2. TTS (só se solicitado)
-  const audioBase64 = ctx.speak
-    ? await generateTTS(reply, ctx.user.preferred_voice)
+  // 2. TTS (Usando o contrato adaptativo extraído no request-context)
+  const audioBase64 = ctx.speak && ctx.voiceSettings
+    ? await generateTTS(reply, ctx.voiceSettings.provider, ctx.voiceSettings.voiceId)
     : null;
 
   // 3. Efeitos colaterais em background (não bloqueiam)
@@ -109,6 +142,7 @@ export async function finalizeResponse(
     audioBase64,
     ok:          true,
     sessionId:   ctx.sessionId,
+    assistantName: ctx.user.assistant_name || 'Lev',
     performance: `${Date.now() - ctx.startTime}ms`,
   });
 }

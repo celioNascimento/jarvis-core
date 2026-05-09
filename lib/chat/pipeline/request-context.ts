@@ -30,7 +30,6 @@ export interface RawLocation {
   city?: string;
 }
 
-// O que vem do body — lat/lng podem ser null se não vieram
 export interface ParsedLocation {
   lat: number | null;
   lng: number | null;
@@ -38,7 +37,6 @@ export interface ParsedLocation {
   city?: string;
 }
 
-// O que o resolveLocation aceita — lat/lng são string | number (sem null)
 export interface UserLocation {
   lat: string | number;
   lng: string | number;
@@ -46,11 +44,18 @@ export interface UserLocation {
   city?: string;
 }
 
+// ✅ NOVO CONTRATO DE VOZ ADICIONADO AQUI
+export interface VoiceSettings {
+  provider: 'openai' | 'elevenlabs';
+  voiceId: string;
+}
+
 export interface ChatRequestContext {
   // Request
   message: string;
   userEmail: string;
   speak: boolean;
+  voiceSettings: VoiceSettings; // ✅ INJETADO NO CONTEXTO
   sessionId: string;
   requestSignature: string;
 
@@ -98,8 +103,6 @@ function parseLocation(raw: unknown): ParsedLocation | null {
   }
 }
 
-// Converte ParsedLocation (lat pode ser null) → UserLocation (lat nunca null)
-// para passar ao resolveLocation sem erro de tipo.
 function toUserLocation(loc: ParsedLocation | null): UserLocation | null {
   if (!loc || loc.lat == null || loc.lng == null) return null;
   return { lat: loc.lat, lng: loc.lng, label: loc.label, city: loc.city };
@@ -111,6 +114,7 @@ async function extractBody(req: NextRequest): Promise<{
   message: string;
   userEmail: string;
   speak: boolean;
+  voiceSettings: VoiceSettings | null; // ✅ EXTRAÇÃO
   sessionId: string | null;
   rawLocation: ParsedLocation | null;
 }> {
@@ -119,22 +123,32 @@ async function extractBody(req: NextRequest): Promise<{
 
   if (isMultipart) {
     const body = await req.formData();
+    
+    // Tratamento seguro para voiceSettings no formData
+    let parsedVoice = null;
+    try {
+      const vsStr = body.get('voiceSettings') as string;
+      if (vsStr) parsedVoice = JSON.parse(vsStr);
+    } catch { }
+
     return {
-      message:    (body.get('message') as string) || '',
-      userEmail:  (body.get('userEmail') as string) || '',
-      speak:      body.get('speak') === 'true',
-      sessionId:  (body.get('sessionId') as string | null),
-      rawLocation: parseLocation(body.get('location')),
+      message:       (body.get('message') as string) || '',
+      userEmail:     (body.get('userEmail') as string) || '',
+      speak:         body.get('speak') === 'true',
+      voiceSettings: parsedVoice,
+      sessionId:     (body.get('sessionId') as string | null),
+      rawLocation:   parseLocation(body.get('location')),
     };
   }
 
   const body = await req.json();
   return {
-    message:    body.message || '',
-    userEmail:  body.userEmail || '',
-    speak:      !!body.speak,
-    sessionId:  body.sessionId ?? null,
-    rawLocation: parseLocation(body.location),
+    message:       body.message || '',
+    userEmail:     body.userEmail || '',
+    speak:         !!body.speak,
+    voiceSettings: body.voiceSettings || null, // ✅ EXTRAÇÃO
+    sessionId:     body.sessionId ?? null,
+    rawLocation:   parseLocation(body.location),
   };
 }
 
@@ -155,7 +169,6 @@ async function checkDedup(
     return { dedupKey, replyKey, isCachedReply: false, cachedReply: null };
   }
 
-  // Requisição duplicada — tenta recuperar resposta já processada
   for (let i = 0; i < 10; i++) {
     await new Promise(r => setTimeout(r, 1500));
     const cached = await redis.get<string>(replyKey);
@@ -174,8 +187,8 @@ export async function buildRequestContext(
 ): Promise<ChatRequestContext> {
   const startTime = Date.now();
 
-  // 1. Extrai body
-  const { message, userEmail, speak, sessionId: incomingSessionId, rawLocation } = await extractBody(req);
+  // 1. Extrai body (agora inclui voiceSettings)
+  const { message, userEmail, speak, voiceSettings, sessionId: incomingSessionId, rawLocation } = await extractBody(req);
 
   // 2. Autentica usuário
   const { data: user } = await supabase
@@ -194,18 +207,24 @@ export async function buildRequestContext(
   // 4. Dedup
   const dedup = await checkDedup(sessionId, message);
 
-  // 5. Geo — converte para UserLocation antes de passar ao resolveLocation
+  // 5. Geo
   const resolvedLocation = await resolveLocation(toUserLocation(rawLocation));
   const normalizedLocation = normalizeLocationForModules(resolvedLocation);
 
-  // 6. Assinatura da request (usada pelo LLM Gateway)
+  // 6. Assinatura da request
   const timeSlot = Math.floor(Date.now() / 60000);
   const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 40)).toString('base64')}_${timeSlot}`;
+
+  // ✅ 7. Consolidação de Voz (Fallback seguro se o frontend não mandar)
+  const dbVoice = user.preferred_voice || 'alloy';
+  const inferredProvider = dbVoice.length > 10 ? 'elevenlabs' : 'openai';
+  const finalVoiceSettings = voiceSettings || { provider: inferredProvider, voiceId: dbVoice };
 
   return {
     message,
     userEmail,
     speak,
+    voiceSettings: finalVoiceSettings, // ✅ REPASSANDO PARA O FINALIZER
     sessionId,
     requestSignature,
     user: {

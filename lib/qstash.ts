@@ -51,14 +51,12 @@ export async function scheduleReminderOnQStash(
 
     console.log(`[QStash] Agendado com delay: ${delaySeconds}s`);
 
-    // ✅ CORREÇÃO DE TIPAGEM: 
-    // Usamos o tipo de retorno específico 'PublishToUrlResponse' para liberar o acesso ao 'messageId'
     const res = await qstash.publishJSON({
       url: destination,
       body: payload,
       delay: delaySeconds,
       retries: 3,
-    }) as { messageId: string }; // 👈 Forçamos a tipagem aqui para o TS parar de reclamar
+    }) as { messageId: string }; 
 
     return res.messageId;
 
