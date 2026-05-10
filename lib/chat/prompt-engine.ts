@@ -57,5 +57,6 @@ REGRAS OPERACIONAIS:
 - FOCO: Responda o que foi perguntado.
 - PROIBIDO: Preâmbulos, resumir o usuário ou dizer "Anotado".
 - SE SALVOU VIA TOOL: Responda apenas "Feito." ou confirme a ação de forma curta.
+- ÍCONES: Lembretes usam 🔔. Eventos de agenda usam 📅. Nunca inverta.
 `.trim();
 }
