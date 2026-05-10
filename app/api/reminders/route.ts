@@ -24,19 +24,51 @@ export async function GET(req: NextRequest) {
       .single();
 
     if (!userProfile) {
-        return NextResponse.json({ error: 'Perfil não encontrado' }, { status: 404 });
+      return NextResponse.json({ error: 'Perfil não encontrado' }, { status: 404 });
     }
 
-    const { data: reminders, error } = await supabase
+    // 1. Lembretes próprios
+    const { data: ownReminders, error: ownError } = await supabase
       .schema('jarvis')
       .from('reminders')
       .select('*')
       .eq('user_id', userProfile.id)
       .order('scheduled_time', { ascending: true, nullsFirst: false });
 
-    if (error) throw error;
+    if (ownError) throw ownError;
 
-    return NextResponse.json({ ok: true, reminders });
+    // 2. IDs de lembretes compartilhados com este usuário
+    const { data: shares } = await supabase
+      .schema('jarvis')
+      .from('reminder_shares')
+      .select('reminder_id')
+      .eq('shared_with_id', userProfile.id)
+      .eq('active', true);
+
+    const sharedIds = (shares ?? []).map(s => s.reminder_id);
+
+    let sharedReminders: any[] = [];
+    if (sharedIds.length > 0) {
+      const { data, error: sharedError } = await supabase
+        .schema('jarvis')
+        .from('reminders')
+        .select('*')
+        .in('id', sharedIds)
+        .eq('status', 'pending') // só mostra pendentes do parceiro
+        .order('scheduled_time', { ascending: true, nullsFirst: false });
+
+      if (sharedError) throw sharedError;
+      sharedReminders = (data ?? []).map(r => ({ ...r, shared_from_partner: true }));
+    }
+
+    // 3. Mescla e ordena por scheduled_time
+    const all = [...(ownReminders ?? []), ...sharedReminders].sort((a, b) => {
+      if (!a.scheduled_time) return 1;
+      if (!b.scheduled_time) return -1;
+      return new Date(a.scheduled_time).getTime() - new Date(b.scheduled_time).getTime();
+    });
+
+    return NextResponse.json({ ok: true, reminders: all });
   } catch (e: any) {
     console.error('[Reminders GET Error]', e);
     return NextResponse.json({ error: e.message }, { status: 500 });
@@ -59,7 +91,7 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (!userProfile) {
-        return NextResponse.json({ error: 'Perfil não encontrado' }, { status: 404 });
+      return NextResponse.json({ error: 'Perfil não encontrado' }, { status: 404 });
     }
 
     const { data, error } = await supabase
@@ -111,7 +143,7 @@ export async function PUT(req: NextRequest) {
       .single();
 
     if (!reminder || reminder.user_id !== userProfile?.id) {
-        return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
+      return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
     }
 
     const { data, error } = await supabase
@@ -157,7 +189,7 @@ export async function DELETE(req: NextRequest) {
       .single();
 
     if (!reminder || reminder.user_id !== userProfile?.id) {
-        return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
+      return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
     }
 
     const { error } = await supabase
