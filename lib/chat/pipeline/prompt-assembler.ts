@@ -15,6 +15,8 @@ import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
 import { tools as ALL_TOOLS } from '@/lib/chat/tools-def';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
+import { tools as ALL_TOOLS, projectsTools } from '@/lib/chat/tools-def';
+
 
 const FAMILY_DATE_SIGNALS = [
   /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
@@ -166,12 +168,21 @@ export async function buildChatPrompt(
     .filter(Boolean)
     .join('\n');
 
-  // 8. Ferramentas autorizadas (união dos módulos + dinâmicas)
-  const allActiveTools = new Set([...activeTools, ...dynamicTools]);
+   // 8. Ferramentas autorizadas (união dos módulos + dinâmicas)
+  
+  // Extrai os nomes das ferramentas de projeto automaticamente da fonte da verdade
+  const nomesToolsProjetos = projectsTools.map(tool => tool.function.name);
+  
+  const allActiveTools = new Set([
+    ...activeTools, 
+    ...dynamicTools,
+    ...nomesToolsProjetos // ← Agora é dinâmico e à prova de esquecimento
+  ]);
+
   const toolsHabilitadas = ALL_TOOLS.filter(t =>
     allActiveTools.has(t.function.name)
   );
-
+  
   // 9. Mensagens para o LLM
   const conversationMessages = [
     { role: 'system', content: systemPrompt },
