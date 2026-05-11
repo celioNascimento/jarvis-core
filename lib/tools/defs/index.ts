@@ -1,5 +1,5 @@
+// lib/tools/defs/index.ts
 // Barrel: agrega todas as definições de ferramentas por domínio
-// Substitui lib/chat/tools-def.ts
 
 import { memoryTools }   from './memory';
 import { agendaTools }   from './agenda';
@@ -7,7 +7,7 @@ import { lugaresTools }  from './lugares';
 import { veiculosTools } from './veiculos';
 import { tdahTools }     from './tdah';
 import { financesTools } from './finances';
-import { projectsTools } from '../tools/definitions/projects';
+import { projectsTools } from './projects'; // ← CAMINHO CORRIGIDO AQUI
 
 export const tools = [
   ...memoryTools,
@@ -20,4 +20,4 @@ export const tools = [
 ];
 
 // Re-exports individuais — úteis para testes ou feature flags
- export { memoryTools, agendaTools, financesTools, lugaresTools, veiculosTools, tdahTools, projectsTools };
+export { memoryTools, agendaTools, financesTools, lugaresTools, veiculosTools, tdahTools, projectsTools };
