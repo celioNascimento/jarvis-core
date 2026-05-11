@@ -7,7 +7,7 @@ import { lugaresTools }  from './lugares';
 import { veiculosTools } from './veiculos';
 import { tdahTools }     from './tdah';
 import { financesTools } from './finances';
-import { projectsTools } from './projects';
+import { projectsTools } from '../tools/definitions/projects';
 
 export const tools = [
   ...memoryTools,
@@ -20,4 +20,4 @@ export const tools = [
 ];
 
 // Re-exports individuais — úteis para testes ou feature flags
-export { memoryTools, agendaTools, financesTools, lugaresTools, veiculosTools, tdahTools, projectsTools };
+ export { memoryTools, agendaTools, financesTools, lugaresTools, veiculosTools, tdahTools, projectsTools };
