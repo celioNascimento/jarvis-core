@@ -13,7 +13,7 @@ import { verificarAlertasDeProximidade } from '@/lib/geo';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
 import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
 import { tools as ALL_TOOLS } from '@/lib/chat/tools-def';
-import type { ChatRequestContext } from './request-context';
+import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatIntelligence } from './intelligence';
 
 const FAMILY_DATE_SIGNALS = [
