@@ -8,8 +8,8 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
 
   if (acao === 'criar') {
     const { data, error } = await supabase
+      .schema('jarvis')
       .from('projects')
-      .withSchema('jarvis')
       .insert({
         user_id: numericUserId,
         tag,
@@ -31,8 +31,8 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
 
   if (acao === 'atualizar') {
     const { error } = await supabase
+      .schema('jarvis')
       .from('projects')
-      .withSchema('jarvis')
       .update({ name, description, status, url, repo_url, cover_url })
       .eq('id', project_id)
       .eq('user_id', numericUserId);
@@ -43,8 +43,8 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
 
   if (acao === 'arquivar') {
     const { error } = await supabase
+      .schema('jarvis')
       .from('projects')
-      .withSchema('jarvis')
       .update({ status: 'em_pausa' })
       .eq('id', project_id)
       .eq('user_id', numericUserId);
@@ -57,7 +57,7 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
 }
 
 export async function executeListarProjetos(p: any, authUserId: string, numericUserId: string) {
-  let query = supabase.from('projects').withSchema('jarvis').select('*').eq('user_id', numericUserId);
+  let query = supabase.schema('jarvis').from('projects').select('*').eq('user_id', numericUserId);
   if (p.status) query = query.eq('status', p.status);
 
   const { data, error } = await query.order('updated_at', { ascending: false });
@@ -75,8 +75,8 @@ export async function executeGerenciarTopico(p: any, authUserId: string, numeric
 
   if (acao === 'criar') {
     const { data, error } = await supabase
+      .schema('jarvis')
       .from('project_topics')
-      .withSchema('jarvis')
       .insert({ project_id, parent_id, tag, name, description, order_index: order_index || 0 })
       .select()
       .single();
@@ -88,8 +88,8 @@ export async function executeGerenciarTopico(p: any, authUserId: string, numeric
 
   if (acao === 'atualizar') {
     const { error } = await supabase
+      .schema('jarvis')
       .from('project_topics')
-      .withSchema('jarvis')
       .update({ parent_id, tag, name, description, order_index })
       .eq('id', topic_id)
       .eq('project_id', project_id);
@@ -100,8 +100,8 @@ export async function executeGerenciarTopico(p: any, authUserId: string, numeric
 
   if (acao === 'remover') {
     const { error } = await supabase
+      .schema('jarvis')
       .from('project_topics')
-      .withSchema('jarvis')
       .delete()
       .eq('id', topic_id)
       .eq('project_id', project_id);
@@ -114,7 +114,7 @@ export async function executeGerenciarTopico(p: any, authUserId: string, numeric
 }
 
 export async function executeListarTopicos(p: any) {
-  let query = supabase.from('project_topics').withSchema('jarvis').select('*').eq('project_id', p.project_id);
+  let query = supabase.schema('jarvis').from('project_topics').select('*').eq('project_id', p.project_id);
   
   if (p.parent_id !== undefined) {
     query = p.parent_id === null ? query.is('parent_id', null) : query.eq('parent_id', p.parent_id);
@@ -135,8 +135,8 @@ export async function executeGerenciarEntry(p: any, authUserId: string, numericU
 
   if (acao === 'criar') {
     const { error } = await supabase
+      .schema('jarvis')
       .from('project_entries')
-      .withSchema('jarvis')
       .insert({ 
         topic_id, 
         type: type || 'note', 
@@ -156,8 +156,8 @@ export async function executeGerenciarEntry(p: any, authUserId: string, numericU
 
   if (acao === 'atualizar') {
     const { error } = await supabase
+      .schema('jarvis')
       .from('project_entries')
-      .withSchema('jarvis')
       .update({ type, title, body, status, order_index, metadata })
       .eq('id', entry_id)
       .eq('topic_id', topic_id);
@@ -168,8 +168,8 @@ export async function executeGerenciarEntry(p: any, authUserId: string, numericU
 
   if (acao === 'remover') {
     const { error } = await supabase
+      .schema('jarvis')
       .from('project_entries')
-      .withSchema('jarvis')
       .delete()
       .eq('id', entry_id)
       .eq('topic_id', topic_id);
@@ -182,7 +182,7 @@ export async function executeGerenciarEntry(p: any, authUserId: string, numericU
 }
 
 export async function executeListarEntries(p: any) {
-  let query = supabase.from('project_entries').withSchema('jarvis').select('*').eq('topic_id', p.topic_id);
+  let query = supabase.schema('jarvis').from('project_entries').select('*').eq('topic_id', p.topic_id);
   
   if (p.type) query = query.eq('type', p.type);
   if (p.status) query = query.eq('status', p.status);
