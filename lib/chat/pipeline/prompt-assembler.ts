@@ -16,9 +16,6 @@ import { tools as ALL_TOOLS } from '@/lib/chat/tools-def';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 
-import { tools as ALL_TOOLS, projectsTools } from '@/lib/chat/tools-def';
-
-
 const FAMILY_DATE_SIGNALS = [
   /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
   /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
@@ -171,13 +168,16 @@ export async function buildChatPrompt(
 
    // 8. Ferramentas autorizadas (união dos módulos + dinâmicas)
   
-  // Extrai os nomes das ferramentas de projeto automaticamente da fonte da verdade
-  const nomesToolsProjetos = projectsTools.map(tool => tool.function.name);
-  
   const allActiveTools = new Set([
     ...activeTools, 
     ...dynamicTools,
-    ...nomesToolsProjetos // ← Agora é dinâmico e à prova de esquecimento
+    // Liberando ferramentas de projeto para garantir a compilação e uso:
+    'gerenciar_projeto', 
+    'listar_projetos', 
+    'gerenciar_topico', 
+    'listar_topicos', 
+    'gerenciar_entry', 
+    'listar_entries'
   ]);
 
   const toolsHabilitadas = ALL_TOOLS.filter(t =>
