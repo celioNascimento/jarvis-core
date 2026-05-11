@@ -15,6 +15,7 @@ import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
 import { tools as ALL_TOOLS } from '@/lib/chat/tools-def';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
+
 import { tools as ALL_TOOLS, projectsTools } from '@/lib/chat/tools-def';
 
 
