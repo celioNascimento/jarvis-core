@@ -12,7 +12,12 @@ import { buildGeoBlock } from '@/lib/geo-resolver';
 import { verificarAlertasDeProximidade } from '@/lib/geo';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
 import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
+
+// Importação das ferramentas do local correto:
 import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
+
+// Importação dos Tipos (O QUE ESTAVA FALTANDO AGORA):
+import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 
 const FAMILY_DATE_SIGNALS = [
@@ -21,6 +26,7 @@ const FAMILY_DATE_SIGNALS = [
 ];
 
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
+
 
 // ─── Tipos exportados ─────────────────────────────────────────────────────────
 
