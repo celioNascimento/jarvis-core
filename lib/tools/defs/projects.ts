@@ -1,5 +1,6 @@
-// lib/tools/definitions/projects.ts
+// lib/tools/defs/projects.ts
 // Definições de ferramentas: Projetos, Tópicos e Entries
+// V2 — ações reativar, concluir e cancelar adicionadas
 
 export const projectsTools = [
   // ── Projetos ──────────────────────────────────────────────────────────────
@@ -7,29 +8,38 @@ export const projectsTools = [
     type: 'function',
     function: {
       name: 'gerenciar_projeto',
-      description:
-        'Cria, atualiza ou arquiva um projeto. Use "criar" quando o usuário mencionar um novo projeto ou iniciativa. Use "atualizar" para mudar nome, status ou descrição. Use "arquivar" para encerrar.',
+      description: `Gerencia o ciclo de vida completo de um projeto.
+Fluxo de status:
+  criar       → em_desenvolvimento
+  arquivar    → em_pausa          (reversível, itens de compra permanecem)
+  reativar    → em_desenvolvimento (a partir de em_pausa)
+  concluir    → concluido         (arquiva itens de compra vinculados automaticamente)
+  cancelar    → cancelado         (arquiva itens de compra vinculados automaticamente)
+  atualizar   → altera nome, descrição, URLs sem mudar status
+
+Use listar_projetos antes de operar por nome para obter o UUID.`,
       parameters: {
         type: 'object',
         properties: {
           acao: {
             type: 'string',
-            enum: ['criar', 'atualizar', 'arquivar'],
+            enum: ['criar', 'atualizar', 'arquivar', 'reativar', 'concluir', 'cancelar'],
             description: 'Operação a realizar.',
           },
           project_id: {
             type: 'string',
-            description: 'UUID do projeto. Obrigatório para atualizar/arquivar.',
+            description: 'UUID do projeto. Obrigatório para todas as ações exceto criar.',
           },
           tag: {
             type: 'string',
             description: 'Identificador curto e único (ex: "reforma-casa", "app-financas"). Obrigatório para criar.',
           },
-          name: { type: 'string', description: 'Nome legível do projeto.' },
+          name:        { type: 'string', description: 'Nome legível do projeto.' },
           description: { type: 'string', description: 'Resumo curto / tagline do projeto.' },
           status: {
             type: 'string',
             enum: ['em_desenvolvimento', 'em_pausa', 'concluido', 'cancelado'],
+            description: 'Usado apenas com acao "atualizar" para forçar um status específico.',
           },
           url:       { type: 'string', description: 'URL pública do projeto.' },
           repo_url:  { type: 'string', description: 'URL do repositório de código.' },
@@ -44,7 +54,7 @@ export const projectsTools = [
     function: {
       name: 'listar_projetos',
       description:
-        'Lista todos os projetos do usuário (incluindo projetos compartilhados). Útil quando o usuário pede para ver seus projetos ou antes de operar em um projeto pelo nome.',
+        'Lista todos os projetos do usuário. Use antes de operar em um projeto pelo nome para obter o UUID. Filtre por status se necessário.',
       parameters: {
         type: 'object',
         properties: {
@@ -64,7 +74,7 @@ export const projectsTools = [
     function: {
       name: 'gerenciar_topico',
       description:
-        'Cria, atualiza ou remove um tópico/módulo dentro de um projeto. Tópicos são hierárquicos: um tópico pode ter subtópicos via parent_id. Exemplos: "banheiro" dentro de "reforma-casa", ou "piso" dentro de "banheiro".',
+        'Cria, atualiza ou remove um tópico dentro de um projeto. Tópicos são hierárquicos via parent_id. Remover um tópico remove em cascata todos os subtópicos e entries vinculados.',
       parameters: {
         type: 'object',
         properties: {
@@ -86,7 +96,7 @@ export const projectsTools = [
           },
           tag: {
             type: 'string',
-            description: 'Identificador curto único dentro do mesmo nível (ex: "banheiro", "piso"). Obrigatório para criar.',
+            description: 'Identificador curto único dentro do mesmo nível. Obrigatório para criar.',
           },
           name:        { type: 'string', description: 'Nome legível do tópico.' },
           description: { type: 'string', description: 'Contexto ou descrição breve.' },
@@ -105,13 +115,10 @@ export const projectsTools = [
       parameters: {
         type: 'object',
         properties: {
-          project_id: {
-            type: 'string',
-            description: 'UUID do projeto.',
-          },
+          project_id: { type: 'string', description: 'UUID do projeto.' },
           parent_id: {
             type: 'string',
-            description: 'UUID do tópico pai para filtrar subtópicos. Passe null para ver apenas a raiz.',
+            description: 'UUID do tópico pai. Passe null para ver apenas a raiz.',
           },
         },
         required: ['project_id'],
@@ -125,7 +132,7 @@ export const projectsTools = [
     function: {
       name: 'gerenciar_entry',
       description:
-        'Registra, atualiza ou remove uma entry dentro de um tópico. Uma entry pode ser qualquer anotação contextual: ideia, dívida técnica, decisão, bloqueio, link, nota, etc. O campo "type" é texto livre — use o termo que melhor descreve o contexto (ex: "idea", "tech_debt", "decision", "block", "note", "link", "opcao").',
+        'Registra, atualiza ou remove uma entry dentro de um tópico. O campo type é livre: "idea", "note", "tech_debt", "decision", "block", "link", "opcao", "referencia", etc.',
       parameters: {
         type: 'object',
         properties: {
@@ -135,7 +142,7 @@ export const projectsTools = [
           },
           project_id: {
             type: 'string',
-            description: 'UUID do projeto (necessário para verificar acesso).',
+            description: 'UUID do projeto (para verificar acesso).',
           },
           topic_id: {
             type: 'string',
@@ -147,11 +154,10 @@ export const projectsTools = [
           },
           type: {
             type: 'string',
-            description:
-              'Categoria livre da entry. Exemplos: "idea", "note", "tech_debt", "decision", "block", "link", "opcao", "referencia". Padrão: "note".',
+            description: 'Categoria livre. Padrão: "note".',
           },
-          title: { type: 'string', description: 'Título curto da entry.' },
-          body:  { type: 'string', description: 'Conteúdo completo, observação ou detalhe.' },
+          title:       { type: 'string', description: 'Título curto da entry.' },
+          body:        { type: 'string', description: 'Conteúdo completo.' },
           status: {
             type: 'string',
             enum: ['open', 'em_analise', 'aprovado', 'descartado', 'concluido'],
@@ -160,7 +166,7 @@ export const projectsTools = [
           order_index: { type: 'integer' },
           metadata: {
             type: 'object',
-            description: 'Dados extras livres por tipo (ex: { "url": "...", "custo_estimado": 1200 }).',
+            description: 'Dados extras livres (ex: { "url": "...", "custo_estimado": 1200 }).',
           },
         },
         required: ['acao', 'project_id', 'topic_id'],
@@ -171,8 +177,7 @@ export const projectsTools = [
     type: 'function',
     function: {
       name: 'listar_entries',
-      description:
-        'Lista as entries de um tópico. Filtre por type ou status conforme necessário.',
+      description: 'Lista as entries de um tópico. Filtre por type ou status conforme necessário.',
       parameters: {
         type: 'object',
         properties: {
@@ -180,7 +185,7 @@ export const projectsTools = [
           topic_id:   { type: 'string', description: 'UUID do tópico.' },
           type: {
             type: 'string',
-            description: 'Filtra pelo tipo (ex: "idea", "tech_debt"). Omitir retorna todos.',
+            description: 'Filtra pelo tipo. Omitir retorna todos.',
           },
           status: {
             type: 'string',
