@@ -280,7 +280,7 @@ export async function executeGerenciarEntry(p: any, authUserId: string, numericU
   return 'Ação não reconhecida para entries.';
 }
 
-export async function executeListarEntries(p: any): Promise<string> {
+export async function executeListarEntries(p: any, authUserId: string, numericUserId: string): Promise<string> {
   let query = supabase
     .schema('jarvis')
     .from('project_entries')
@@ -298,4 +298,3 @@ export async function executeListarEntries(p: any): Promise<string> {
     .map(e => `[${e.type.toUpperCase()}] ${e.title || 'Sem título'} — ${e.status} (ID: ${e.id})`)
     .join('\n');
 }
-
