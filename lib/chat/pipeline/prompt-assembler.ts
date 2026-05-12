@@ -167,6 +167,7 @@ export async function buildChatPrompt(
     '\n[DIRETRIZES DE RIGOR TÉCNICO]',
     "1. Use 'salvar_evento' como fonte primária.",
     "2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
+    "3. Gerencie projetos, tópicos e entries com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
   ]
     .filter(Boolean)
     .join('\n');
