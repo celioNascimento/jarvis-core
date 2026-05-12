@@ -27,7 +27,7 @@ export const comprasTools = [
           },
           project_id: {
             type: 'string',
-            description: 'UUID do projeto ao qual este item pertence. Omitir para itens pessoais sem projeto.',
+            description: 'Nome, Tag ou UUID do projeto (ex: "reforma banheiro"). Omitir se for uma compra pessoal comum.',
           },
         },
         required: ['item'],
@@ -74,7 +74,7 @@ export const comprasTools = [
         properties: {
           project_id: {
             type: 'string',
-            description: 'UUID do projeto. Se o usuário mencionar o nome, use listar_projetos antes para obter o UUID.',
+            description: 'Nome, Tag ou UUID do projeto. Envie apenas o nome se não souber o UUID.',
           },
         },
         required: ['project_id'],
