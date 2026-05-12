@@ -13,6 +13,7 @@ import { ModuloRotinas }     from './modules/rotinas';
 import { ModuloAgenda }      from './modules/agenda';
 import { ModuloLocalizacao } from './modules/localizacao';
 import { ModuloProjetos }    from './modules/projetos';
+import { ModuloRelacionamentos } from '../modules/modules/relacionamentos'
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -27,6 +28,7 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloAgenda,
   ModuloLocalizacao,
   ModuloProjetos,
+  ModuloRelacionamentos
 ];
 
 /**
