@@ -35,11 +35,13 @@ import {
   executeAtualizarOdometro,
 } from '@/lib/tools/executors/veiculos';
 
+import { executeSalvarLugar } from '@/lib/tools/executors/lugares';
 import {
-  executeSalvarLugar,
   executeAdicionarItemLista,
   executeVerLista,
-} from '@/lib/tools/executors/lugares';
+  executeMarcarItemComprado,
+  executeListarComprasProjeto,
+} from '@/lib/tools/executors/compras';
 
 import {
   executeGerenciarEisenhower,
@@ -143,6 +145,8 @@ export async function executeTool(
     case 'salvar_lugar':         result = await executeSalvarLugar(...args); break;
     case 'adicionar_item_lista': result = await executeAdicionarItemLista(...args); break;
     case 'ver_lista':            result = await executeVerLista(...args); break;
+    case 'marcar_item_comprado':    result = await executeMarcarItemComprado(...args); break;
+    case 'listar_compras_projeto':  result = await executeListarComprasProjeto(...args); break;
 
     // ── TDAH e Diário ─────────────────────────────────────────────────────────
     case 'gerenciar_eisenhower': result = await executeGerenciarEisenhower(...args); break;
@@ -176,7 +180,7 @@ case 'listar_entries':    result = await executeListarEntries(p); break;
   // ── Log assíncrono — nunca bloqueia a resposta ao usuário ─────────────────
   logToolExecution({
     userId: Number(numericUserIdStr),
-    toolName: name,
+    toolName: name, no
     arguments: p,
     output: result,
     contextSnapshot,                          // ← agora populado
