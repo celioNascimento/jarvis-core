@@ -180,8 +180,8 @@ case 'listar_entries':    result = await executeListarEntries(p); break;
   // ── Log assíncrono — nunca bloqueia a resposta ao usuário ─────────────────
   logToolExecution({
     userId: Number(numericUserIdStr),
-    toolName: name, no
-    arguments: p,
+    toolName: name, 
+    ['arguments']: p,
     output: result,
     contextSnapshot,                          // ← agora populado
   }).catch(() => {});
