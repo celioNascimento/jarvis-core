@@ -1,4 +1,4 @@
-// lib/tools/executors/compras.ts
+    // lib/tools/executors/compras.ts
 // Domínio: Lista de Compras
 // Tools: adicionar_item_lista, ver_lista, marcar_item_comprado, listar_compras_projeto
 //
@@ -7,6 +7,28 @@
 
 import { supabase } from '@/lib/jarvis';
 import { getPlaceId } from './lugares';
+
+// ─── HELPER ───────────────────────────────────────────────────────────────────
+
+const isUUID = (str: string) => 
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str);
+
+async function resolveProjectId(identifier: string, numericUserId: string): Promise<string | null> {
+  if (!identifier) return null;
+  if (isUUID(identifier)) return identifier;
+
+  const { data, error } = await supabase
+    .schema('jarvis')
+    .from('projects')
+    .select('id')
+    .eq('user_id', numericUserId)
+    .or(`tag.eq.${identifier},name.ilike.%${identifier}%`)
+    .limit(1)
+    .single();
+
+  if (error || !data) return null;
+  return data.id;
+}
 
 // ─── adicionar_item_lista ─────────────────────────────────────────────────────
 
@@ -18,7 +40,7 @@ export async function executeAdicionarItemLista(
     project_id?: string;    // opcional — vincula ao projeto
   },
   authUserId: string,
-  _numericUserId: string
+  numericUserId: string
 ): Promise<string> {
   try {
     let pid: string | null = null;
@@ -28,6 +50,14 @@ export async function executeAdicionarItemLista(
       if (!pid) return `Não encontrei o lugar "${p.lugar}". Salve-o primeiro com "salvar_lugar".`;
     }
 
+    let resolvedProjectId: string | null = null;
+    if (p.project_id) {
+      resolvedProjectId = await resolveProjectId(p.project_id, numericUserId);
+      if (!resolvedProjectId) {
+        return `Não encontrei nenhum projeto chamado "${p.project_id}".`;
+      }
+    }
+
     const payload: Record<string, any> = {
       user_id:    authUserId,
       item:       p.item.trim(),
@@ -35,7 +65,7 @@ export async function executeAdicionarItemLista(
       done:       false,
       archived:   false,
       category:   p.category ?? 'outros',
-      project_id: p.project_id ?? null,
+      project_id: resolvedProjectId,
     };
 
     const { error } = await supabase
@@ -45,7 +75,7 @@ export async function executeAdicionarItemLista(
     if (error) return `Erro ao adicionar item: ${error.message}`;
 
     const onde = p.lugar ? ` para ${p.lugar}` : '';
-    const projeto = p.project_id ? ' (vinculado ao projeto)' : '';
+    const projeto = resolvedProjectId ? ' (vinculado ao projeto)' : '';
     return `"${p.item}" adicionado à lista${onde}${projeto}.`;
   } catch (err: any) {
     return `Erro: ${err.message}`;
@@ -118,14 +148,17 @@ export async function executeMarcarItemComprado(
 export async function executeListarComprasProjeto(
   p: { project_id: string },
   authUserId: string,
-  _numericUserId: string
+  numericUserId: string
 ): Promise<string> {
   try {
+    const resolvedProjectId = await resolveProjectId(p.project_id, numericUserId);
+    if (!resolvedProjectId) return `Não encontrei o projeto "${p.project_id}".`;
+
     const { data, error } = await supabase
       .from('shopping_items')
       .select('item, category, done, place_id')
       .eq('user_id', authUserId)
-      .eq('project_id', p.project_id)
+      .eq('project_id', resolvedProjectId)
       .eq('archived', false)
       .order('done')
       .order('category');
