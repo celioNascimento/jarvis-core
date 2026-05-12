@@ -166,12 +166,12 @@ export async function executeTool(
     case 'getWeatherForecast': result = await getWeatherForecast(p.lat, p.lng); break;
 
     // ── Projetos ──────────────────────────────────────────────────────────
-case 'gerenciar_projeto': result = await executeGerenciarProjeto(...args); break;
-case 'listar_projetos':   result = await executeListarProjetos(...args); break;
-case 'gerenciar_topico':  result = await executeGerenciarTopico(...args); break;
-case 'listar_topicos':    result = await executeListarTopicos(p); break;
-case 'gerenciar_entry':   result = await executeGerenciarEntry(...args); break;
-case 'listar_entries':    result = await executeListarEntries(p); break;
+    case 'gerenciar_projeto': result = await executeGerenciarProjeto(...args); break;
+    case 'listar_projetos':   result = await executeListarProjetos(...args); break;
+    case 'gerenciar_topico':  result = await executeGerenciarTopico(...args); break;
+    case 'listar_topicos':    result = await executeListarTopicos(...args); break; // ← CORRIGIDO AQUI
+    case 'gerenciar_entry':   result = await executeGerenciarEntry(...args); break;
+    case 'listar_entries':    result = await executeListarEntries(...args); break;  // ← CORRIGIDO AQUI
       
     default:
       return `Ferramenta "${name}" não reconhecida pelo dispatcher.`;
