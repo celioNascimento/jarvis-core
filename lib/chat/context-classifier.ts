@@ -33,13 +33,18 @@ export type ContextType =
   | 'retrospecto'
   | 'veiculos'
   |'planejamento'
-  | 'foco';
+  | 'foco'
+  | 'relacao'   
+  | 'casa'      
+  | 'sistema'  
+  | 'estudo';
 
 const ALL_CONTEXTS: ContextType[] = [
   'casual', 'agenda', 'email', 'saude', 'familia', 'trabalho', 'projeto',
   'meta', 'emocao', 'diario', 'rotina', 'preferencia', 'alias', 'recomendacao',
   'esporte', 'noticias', 'clima', 'math', 'trivial', 'compras', 'financas',
-  'evento', 'tdah', 'foco', 'retrospecto', 'veiculos',
+  'evento', 'tdah', 'foco', 'retrospecto', 'veiculos', 'planejamento',
+  'relacao', 'casa', 'sistema', 'estudo'
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -72,6 +77,11 @@ const RULES_NORMALIZED: Array<[RegExp, ContextType]> = ([
   [norm('trabalho|empresa|chefe|colega|reunião de trabalho|tarefa|prazo|entrega|cliente'), 'trabalho'],
   [norm('foco|tdah|procrastinando|travado|paralisado|sobrecarregado|por onde começo|nao sei comecar'), 'tdah'],
   [norm('carro|veiculo|veículo|moto|placa|km|odômetro|odometro|gasolina|etanol|diesel|abasteci|abastecer|manutenção|manutencao|multa|pneu|oficina|mecanico|mecânico|troca de óleo|freio'), 'veiculos'],
+  [norm('contato|permissao|permissão|compartilh|acesso|libera|bloqueia|autoriza|giselle|namorada|amigo|rede'), 'relacao'],
+  [norm('casa|reforma|construção|construcao|conserto|parede|tinta|piso|led|iluminação|iluminacao|eletrodoméstico|eletro|lava louça|geladeira|tomada'), 'casa'],
+  [norm('diretriz|system prompt|regra|comportamento|aja como|não diga mais|nunca mais use|a partir de agora|instrução|mude seu prompt'), 'sistema'],
+  [norm('estudar|estudando|aprender|aula|curso|certificac|certificaç|prova|inglês|ingles|idioma|traduz|traduza|pronúncia|praticar inglês'), 'estudo'],
+
 ] as Array<[string, ContextType]>).map(([src, ctx]) => [new RegExp(src, 'i'), ctx]);
 
 const RULES_VERBATIM: Array<[RegExp, ContextType]> = [
@@ -278,7 +288,7 @@ export function planContextualBlocks(
   const wantsRec = has('recomendacao') ||
     /me indica|me recomenda|onde (posso|vai|tem)|tem algum|conhece (algum|alguma)|me sugere/.test(msg);
 
-  const wantsShopping = has('compras');
+  const wantsShopping = has('compras', 'casa');
   const wantsPlaces   = wantsShopping || (has('rotina', 'recomendacao') && /perto|próximo|aqui|bairro/.test(msg));
 
   const isRetrospecto = has('retrospecto') ||
