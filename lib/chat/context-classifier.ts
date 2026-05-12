@@ -77,7 +77,7 @@ const RULES_NORMALIZED: Array<[RegExp, ContextType]> = ([
   [norm('trabalho|empresa|chefe|colega|reunião de trabalho|tarefa|prazo|entrega|cliente'), 'trabalho'],
   [norm('foco|tdah|procrastinando|travado|paralisado|sobrecarregado|por onde começo|nao sei comecar'), 'tdah'],
   [norm('carro|veiculo|veículo|moto|placa|km|odômetro|odometro|gasolina|etanol|diesel|abasteci|abastecer|manutenção|manutencao|multa|pneu|oficina|mecanico|mecânico|troca de óleo|freio'), 'veiculos'],
-  [norm('contato|permissao|permissão|compartilh|acesso|libera|bloqueia|autoriza|giselle|namorada|amigo|rede'), 'relacao'],
+  [norm('contato|permissao|permissão|compartilh|acesso|libera|bloqueia|autoriza|giselle|namorada|amigo|rede|relacao|relação|relacionamento'), 'relacao'],
   [norm('casa|reforma|construção|construcao|conserto|parede|tinta|piso|led|iluminação|iluminacao|eletrodoméstico|eletro|lava louça|geladeira|tomada'), 'casa'],
   [norm('diretriz|system prompt|regra|comportamento|aja como|não diga mais|nunca mais use|a partir de agora|instrução|mude seu prompt'), 'sistema'],
   [norm('estudar|estudando|aprender|aula|curso|certificac|certificaç|prova|inglês|ingles|idioma|traduz|traduza|pronúncia|praticar inglês'), 'estudo'],
