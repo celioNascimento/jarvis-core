@@ -9,6 +9,7 @@ import { veiculosTools } from './veiculos';
 import { tdahTools }     from './tdah';
 import { financesTools } from './finances';
 import { projectsTools } from './projects';
+import { guidelinesTools } from './guidelines';
 
 export const tools = [
   ...memoryTools,
@@ -19,6 +20,7 @@ export const tools = [
   ...veiculosTools,
   ...tdahTools,
   ...projectsTools,
+  ...guidelinesTools,
 ];
 
 // Re-exports individuais — úteis para testes ou feature flags
@@ -31,4 +33,5 @@ export {
   veiculosTools,
   tdahTools,
   projectsTools,
+  guidelinesTools,
 };
