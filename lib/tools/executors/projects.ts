@@ -6,7 +6,7 @@
 import { supabase } from '@/lib/jarvis';
 
 // Helper para identificar se a string já é um UUID válido
-const isUUID = (str: string) => 
+const isUUID = (str: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str);
 
 // Helper para buscar o UUID caso a IA envie apenas o nome ou tag do projeto
@@ -27,6 +27,23 @@ async function resolveProjectId(identifier: string, numericUserId: string): Prom
   return data.id;
 }
 
+// Helper para buscar o ID numérico do usuário alvo pelo email ou nome
+async function resolveUserId(identifier: string): Promise<number | null> {
+  if (!identifier) return null;
+  if (/^\d+$/.test(identifier)) return Number(identifier); // Se já for número
+
+  const { data, error } = await supabase
+    .schema('jarvis')
+    .from('users') // Tabela onde ficam os usuários cadastrados
+    .select('id')
+    .or(`email.ilike.%${identifier}%,name.ilike.%${identifier}%`)
+    .limit(1)
+    .single();
+
+  if (error || !data) return null;
+  return data.id;
+}
+
 // ─── PROJETOS ─────────────────────────────────────────────────────────────────
 
 export async function executeGerenciarProjeto(p: any, authUserId: string, numericUserId: string): Promise<string> {
@@ -38,11 +55,11 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
       .schema('jarvis')
       .from('projects')
       .insert({
-        user_id:     numericUserId,
+        user_id: numericUserId,
         tag,
         name,
         description,
-        status:      status || 'em_desenvolvimento',
+        status: status || 'em_desenvolvimento',
         url,
         repo_url,
         cover_url,
@@ -141,9 +158,9 @@ export async function executeListarProjetos(p: any, authUserId: string, numericU
 
   const statusIcon: Record<string, string> = {
     em_desenvolvimento: '🟢',
-    em_pausa:           '⏸️',
-    concluido:          '✅',
-    cancelado:          '❌',
+    em_pausa: '⏸️',
+    concluido: '✅',
+    cancelado: '❌',
   };
 
   return data
@@ -236,13 +253,13 @@ export async function executeGerenciarEntry(p: any, authUserId: string, numericU
       .from('project_entries')
       .insert({
         topic_id,
-        type:        type || 'note',
+        type: type || 'note',
         title,
         body,
-        status:      status || 'open',
+        status: status || 'open',
         order_index: order_index || 0,
-        created_by:  numericUserId,
-        metadata:    metadata || {},
+        created_by: numericUserId,
+        metadata: metadata || {},
       })
       .select('id')
       .single();
@@ -287,7 +304,7 @@ export async function executeListarEntries(p: any, authUserId: string, numericUs
     .select('*')
     .eq('topic_id', p.topic_id);
 
-  if (p.type)   query = query.eq('type', p.type);
+  if (p.type) query = query.eq('type', p.type);
   if (p.status) query = query.eq('status', p.status);
 
   const { data, error } = await query.order('created_at', { ascending: false });
@@ -297,4 +314,92 @@ export async function executeListarEntries(p: any, authUserId: string, numericUs
   return data
     .map(e => `[${e.type.toUpperCase()}] ${e.title || 'Sem título'} — ${e.status} (ID: ${e.id})`)
     .join('\n');
+}
+
+// ─── MEMBROS DO PROJETO (COMPARTILHAMENTO) ────────────────────────────────────
+
+export async function executeGerenciarMembrosProjeto(p: any, authUserId: string, numericUserId: string): Promise<string> {
+  const { acao, project_id, user_identifier, role } = p;
+
+  // 1. Resolve o ID do projeto pelo nome
+  const resolvedProjectId = await resolveProjectId(project_id, numericUserId);
+  if (!resolvedProjectId) return `[ERRO] Não encontrei nenhum projeto chamado "${project_id}".`;
+
+  // ── listar ──────────────────────────────────────────────────────────────────
+  if (acao === 'listar') {
+    const { data, error } = await supabase
+      .schema('jarvis')
+      .from('project_members')
+      .select(`
+        role, 
+        status, 
+        users ( name, email )
+      `)
+      .eq('project_id', resolvedProjectId);
+
+    if (error) return `[ERRO] Falha ao listar membros: ${error.message}`;
+    if (!data?.length) return 'Este projeto ainda não foi compartilhado com ninguém.';
+
+    return data.map(m => {
+      // Tratamento para o Join do Supabase
+      const u: any = Array.isArray(m.users) ? m.users[0] : m.users;
+      const userName = u ? (u.name || u.email) : 'Usuário Desconhecido';
+      return `- ${userName} | Papel: ${m.role} | Status: ${m.status}`;
+    }).join('\n');
+  }
+
+  // Para adicionar, atualizar ou remover, o alvo é obrigatório
+  if (!user_identifier) return '[ERRO] Informe o nome ou email do usuário para realizar esta ação.';
+
+  // 2. Resolve o ID do usuário alvo
+  const targetUserId = await resolveUserId(user_identifier);
+  if (!targetUserId) return `[ERRO] Não encontrei nenhum usuário chamado ou com email "${user_identifier}" no sistema.`;
+
+  // ── adicionar (convidar) ────────────────────────────────────────────────────
+  if (acao === 'adicionar') {
+    const { error } = await supabase
+      .schema('jarvis')
+      .from('project_members')
+      .insert({
+        project_id: resolvedProjectId,
+        user_id: targetUserId,
+        invited_by: Number(numericUserId),
+        role: role || 'viewer',
+        status: 'pending' // Dependendo do seu fluxo, pode ser 'active' direto
+      });
+
+    if (error) {
+      if (error.code === '23505') return `O usuário "${user_identifier}" já é membro deste projeto.`;
+      return `[ERRO] Falha ao compartilhar: ${error.message}`;
+    }
+    return `Projeto compartilhado! Convite enviado para "${user_identifier}" com acesso de ${role || 'viewer'}.`;
+  }
+
+  // ── atualizar ───────────────────────────────────────────────────────────────
+  if (acao === 'atualizar') {
+    const { error } = await supabase
+      .schema('jarvis')
+      .from('project_members')
+      .update({ role })
+      .eq('project_id', resolvedProjectId)
+      .eq('user_id', targetUserId);
+
+    if (error) return `[ERRO] Falha ao atualizar papel: ${error.message}`;
+    return `Acesso de "${user_identifier}" alterado para ${role}.`;
+  }
+
+  // ── remover ─────────────────────────────────────────────────────────────────
+  if (acao === 'remover') {
+    const { error } = await supabase
+      .schema('jarvis')
+      .from('project_members')
+      .delete()
+      .eq('project_id', resolvedProjectId)
+      .eq('user_id', targetUserId);
+
+    if (error) return `[ERRO] Falha ao remover membro: ${error.message}`;
+    return `Usuário "${user_identifier}" removido do projeto com sucesso.`;
+  }
+
+  return 'Ação não reconhecida para membros do projeto.';
 }

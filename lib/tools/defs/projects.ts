@@ -33,15 +33,15 @@ Fluxo de status:
             type: 'string',
             description: 'Identificador curto e único (ex: "reforma-casa", "app-financas"). Obrigatório para criar.',
           },
-          name:        { type: 'string', description: 'Nome legível do projeto.' },
+          name: { type: 'string', description: 'Nome legível do projeto.' },
           description: { type: 'string', description: 'Resumo curto / tagline do projeto.' },
           status: {
             type: 'string',
             enum: ['em_desenvolvimento', 'em_pausa', 'concluido', 'cancelado'],
             description: 'Usado apenas com acao "atualizar" para forçar um status específico.',
           },
-          url:       { type: 'string', description: 'URL pública do projeto.' },
-          repo_url:  { type: 'string', description: 'URL do repositório de código.' },
+          url: { type: 'string', description: 'URL pública do projeto.' },
+          repo_url: { type: 'string', description: 'URL do repositório de código.' },
           cover_url: { type: 'string', description: 'URL da imagem de capa.' },
         },
         required: ['acao'],
@@ -97,7 +97,7 @@ Fluxo de status:
             type: 'string',
             description: 'Identificador curto único dentro do mesmo nível. Obrigatório para criar.',
           },
-          name:        { type: 'string', description: 'Nome legível do tópico.' },
+          name: { type: 'string', description: 'Nome legível do tópico.' },
           description: { type: 'string', description: 'Contexto ou descrição breve.' },
           order_index: { type: 'integer', description: 'Posição na ordem de exibição.' },
         },
@@ -114,9 +114,9 @@ Fluxo de status:
       parameters: {
         type: 'object',
         properties: {
-          project_id: { 
-            type: 'string', 
-            description: 'UUID, Nome ou Tag do projeto. Se não souber o UUID, envie apenas o nome.' 
+          project_id: {
+            type: 'string',
+            description: 'UUID, Nome ou Tag do projeto. Se não souber o UUID, envie apenas o nome.'
           },
           parent_id: {
             type: 'string',
@@ -158,8 +158,8 @@ Fluxo de status:
             type: 'string',
             description: 'Categoria livre. Padrão: "note".',
           },
-          title:       { type: 'string', description: 'Título curto da entry.' },
-          body:        { type: 'string', description: 'Conteúdo completo.' },
+          title: { type: 'string', description: 'Título curto da entry.' },
+          body: { type: 'string', description: 'Conteúdo completo.' },
           status: {
             type: 'string',
             enum: ['open', 'em_analise', 'aprovado', 'descartado', 'concluido'],
@@ -183,11 +183,11 @@ Fluxo de status:
       parameters: {
         type: 'object',
         properties: {
-          project_id: { 
-            type: 'string', 
-            description: 'UUID, Nome ou Tag do projeto. Se não souber o UUID, envie apenas o nome.' 
+          project_id: {
+            type: 'string',
+            description: 'UUID, Nome ou Tag do projeto. Se não souber o UUID, envie apenas o nome.'
           },
-          topic_id:   { type: 'string', description: 'UUID do tópico.' },
+          topic_id: { type: 'string', description: 'UUID do tópico.' },
           type: {
             type: 'string',
             description: 'Filtra pelo tipo. Omitir retorna todos.',
@@ -199,6 +199,38 @@ Fluxo de status:
           },
         },
         required: ['project_id', 'topic_id'],
+      },
+    },
+  },
+  // ── Membros do Projeto ────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'gerenciar_membros_projeto',
+      description: 'Compartilha um projeto com outro usuário, lista os membros atuais ou altera permissões.',
+      parameters: {
+        type: 'object',
+        properties: {
+          acao: {
+            type: 'string',
+            enum: ['adicionar', 'remover', 'atualizar', 'listar'],
+            description: 'Ação a ser executada. "adicionar" envia um convite.'
+          },
+          project_id: {
+            type: 'string',
+            description: 'Nome, Tag ou UUID do projeto (ex: "reforma banheiro"). Envie apenas o nome se não souber o UUID.'
+          },
+          user_identifier: {
+            type: 'string',
+            description: 'Nome ou email da pessoa com quem deseja compartilhar. Não é necessário para a ação "listar".'
+          },
+          role: {
+            type: 'string',
+            enum: ['owner', 'editor', 'viewer'],
+            description: 'Nível de permissão. Padrão: "viewer". Usado para adicionar ou atualizar.'
+          }
+        },
+        required: ['acao', 'project_id'],
       },
     },
   },
