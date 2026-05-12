@@ -1,6 +1,7 @@
 // lib/tools/defs/projects.ts
 // Definições de ferramentas: Projetos, Tópicos e Entries
 // V2 — ações reativar, concluir e cancelar adicionadas
+// V3 — descrições atualizadas para aceitar Nome ou Tag no lugar de UUID
 
 export const projectsTools = [
   // ── Projetos ──────────────────────────────────────────────────────────────
@@ -15,9 +16,7 @@ Fluxo de status:
   reativar    → em_desenvolvimento (a partir de em_pausa)
   concluir    → concluido         (arquiva itens de compra vinculados automaticamente)
   cancelar    → cancelado         (arquiva itens de compra vinculados automaticamente)
-  atualizar   → altera nome, descrição, URLs sem mudar status
-
-Use listar_projetos antes de operar por nome para obter o UUID.`,
+  atualizar   → altera nome, descrição, URLs sem mudar status`,
       parameters: {
         type: 'object',
         properties: {
@@ -28,7 +27,7 @@ Use listar_projetos antes de operar por nome para obter o UUID.`,
           },
           project_id: {
             type: 'string',
-            description: 'UUID do projeto. Obrigatório para todas as ações exceto criar.',
+            description: 'UUID, Nome ou Tag do projeto (ex: "Lev" ou "ExpertFrotas"). Se não souber o UUID, envie apenas o nome. Obrigatório para todas as ações exceto criar.',
           },
           tag: {
             type: 'string',
@@ -54,7 +53,7 @@ Use listar_projetos antes de operar por nome para obter o UUID.`,
     function: {
       name: 'listar_projetos',
       description:
-        'Lista todos os projetos do usuário. Use antes de operar em um projeto pelo nome para obter o UUID. Filtre por status se necessário.',
+        'Lista todos os projetos do usuário. Filtre por status se necessário.',
       parameters: {
         type: 'object',
         properties: {
@@ -84,7 +83,7 @@ Use listar_projetos antes de operar por nome para obter o UUID.`,
           },
           project_id: {
             type: 'string',
-            description: 'UUID do projeto pai. Sempre obrigatório.',
+            description: 'UUID, Nome ou Tag do projeto pai (ex: "Lev" ou "ExpertFrotas"). Se não souber o UUID, envie apenas o nome. Sempre obrigatório.',
           },
           topic_id: {
             type: 'string',
@@ -115,7 +114,10 @@ Use listar_projetos antes de operar por nome para obter o UUID.`,
       parameters: {
         type: 'object',
         properties: {
-          project_id: { type: 'string', description: 'UUID do projeto.' },
+          project_id: { 
+            type: 'string', 
+            description: 'UUID, Nome ou Tag do projeto. Se não souber o UUID, envie apenas o nome.' 
+          },
           parent_id: {
             type: 'string',
             description: 'UUID do tópico pai. Passe null para ver apenas a raiz.',
@@ -142,7 +144,7 @@ Use listar_projetos antes de operar por nome para obter o UUID.`,
           },
           project_id: {
             type: 'string',
-            description: 'UUID do projeto (para verificar acesso).',
+            description: 'UUID, Nome ou Tag do projeto (para verificar acesso). Se não souber o UUID, envie apenas o nome.',
           },
           topic_id: {
             type: 'string',
@@ -181,7 +183,10 @@ Use listar_projetos antes de operar por nome para obter o UUID.`,
       parameters: {
         type: 'object',
         properties: {
-          project_id: { type: 'string', description: 'UUID do projeto.' },
+          project_id: { 
+            type: 'string', 
+            description: 'UUID, Nome ou Tag do projeto. Se não souber o UUID, envie apenas o nome.' 
+          },
           topic_id:   { type: 'string', description: 'UUID do tópico.' },
           type: {
             type: 'string',
