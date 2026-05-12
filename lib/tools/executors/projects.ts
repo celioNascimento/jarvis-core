@@ -1,13 +1,36 @@
 // lib/tools/executors/projects.ts
 // Domínio: Projetos, Tópicos e Entries
 // V2 — ações reativar, concluir e cancelar adicionadas em gerenciar_projeto
+// V3 — helper resolveProjectId adicionado para permitir busca por nome/tag
 
 import { supabase } from '@/lib/jarvis';
+
+// Helper para identificar se a string já é um UUID válido
+const isUUID = (str: string) => 
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str);
+
+// Helper para buscar o UUID caso a IA envie apenas o nome ou tag do projeto
+async function resolveProjectId(identifier: string, numericUserId: string): Promise<string | null> {
+  if (!identifier) return null;
+  if (isUUID(identifier)) return identifier;
+
+  const { data, error } = await supabase
+    .schema('jarvis')
+    .from('projects')
+    .select('id')
+    .eq('user_id', numericUserId)
+    .or(`tag.eq.${identifier},name.ilike.%${identifier}%`)
+    .limit(1)
+    .single();
+
+  if (error || !data) return null;
+  return data.id;
+}
 
 // ─── PROJETOS ─────────────────────────────────────────────────────────────────
 
 export async function executeGerenciarProjeto(p: any, authUserId: string, numericUserId: string): Promise<string> {
-  const { acao, project_id, tag, name, description, status, url, repo_url, cover_url } = p;
+  const { acao, tag, name, description, status, url, repo_url, cover_url } = p;
 
   // ── criar ──────────────────────────────────────────────────────────────────
   if (acao === 'criar') {
@@ -31,8 +54,9 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
     return `Projeto "${data.name || data.tag}" criado com sucesso! ID: ${data.id}`;
   }
 
-  // Todas as ações abaixo exigem project_id
-  if (!project_id) return '[ERRO] ID do projeto é obrigatório para esta ação.';
+  // Todas as ações abaixo exigem project_id resolvido
+  const resolvedProjectId = await resolveProjectId(p.project_id, numericUserId);
+  if (!resolvedProjectId) return `[ERRO] ID ou Nome do projeto "${p.project_id}" é obrigatório ou não foi encontrado para esta ação.`;
 
   // ── atualizar ──────────────────────────────────────────────────────────────
   if (acao === 'atualizar') {
@@ -40,7 +64,7 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
       .schema('jarvis')
       .from('projects')
       .update({ name, description, status, url, repo_url, cover_url })
-      .eq('id', project_id)
+      .eq('id', resolvedProjectId)
       .eq('user_id', numericUserId);
 
     if (error) return `[ERRO] Falha ao atualizar: ${error.message}`;
@@ -53,7 +77,7 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
       .schema('jarvis')
       .from('projects')
       .update({ status: 'em_pausa' })
-      .eq('id', project_id)
+      .eq('id', resolvedProjectId)
       .eq('user_id', numericUserId);
 
     if (error) return `[ERRO] Falha ao arquivar: ${error.message}`;
@@ -66,7 +90,7 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
       .schema('jarvis')
       .from('projects')
       .update({ status: 'em_desenvolvimento' })
-      .eq('id', project_id)
+      .eq('id', resolvedProjectId)
       .eq('user_id', numericUserId);
 
     if (error) return `[ERRO] Falha ao reativar: ${error.message}`;
@@ -79,7 +103,7 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
       .schema('jarvis')
       .from('projects')
       .update({ status: 'concluido' })
-      .eq('id', project_id)
+      .eq('id', resolvedProjectId)
       .eq('user_id', numericUserId);
 
     if (error) return `[ERRO] Falha ao concluir: ${error.message}`;
@@ -92,7 +116,7 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
       .schema('jarvis')
       .from('projects')
       .update({ status: 'cancelado' })
-      .eq('id', project_id)
+      .eq('id', resolvedProjectId)
       .eq('user_id', numericUserId);
 
     if (error) return `[ERRO] Falha ao cancelar: ${error.message}`;
@@ -130,13 +154,16 @@ export async function executeListarProjetos(p: any, authUserId: string, numericU
 // ─── TÓPICOS ──────────────────────────────────────────────────────────────────
 
 export async function executeGerenciarTopico(p: any, authUserId: string, numericUserId: string): Promise<string> {
-  const { acao, project_id, topic_id, parent_id, tag, name, description, order_index } = p;
+  const { acao, topic_id, parent_id, tag, name, description, order_index } = p;
+
+  const resolvedProjectId = await resolveProjectId(p.project_id, numericUserId);
+  if (!resolvedProjectId) return `[ERRO] Não encontrei nenhum projeto chamado ou com ID "${p.project_id}".`;
 
   if (acao === 'criar') {
     const { data, error } = await supabase
       .schema('jarvis')
       .from('project_topics')
-      .insert({ project_id, parent_id, tag, name, description, order_index: order_index || 0 })
+      .insert({ project_id: resolvedProjectId, parent_id, tag, name, description, order_index: order_index || 0 })
       .select()
       .single();
 
@@ -152,7 +179,7 @@ export async function executeGerenciarTopico(p: any, authUserId: string, numeric
       .from('project_topics')
       .update({ parent_id, tag, name, description, order_index })
       .eq('id', topic_id)
-      .eq('project_id', project_id);
+      .eq('project_id', resolvedProjectId);
 
     if (error) return `[ERRO] Falha ao atualizar tópico: ${error.message}`;
     return 'Tópico atualizado com sucesso.';
@@ -164,7 +191,7 @@ export async function executeGerenciarTopico(p: any, authUserId: string, numeric
       .from('project_topics')
       .delete()
       .eq('id', topic_id)
-      .eq('project_id', project_id);
+      .eq('project_id', resolvedProjectId);
 
     if (error) return `[ERRO] Falha ao remover tópico: ${error.message}`;
     return 'Tópico removido. Subtópicos e entries vinculados foram removidos em cascata.';
@@ -173,12 +200,15 @@ export async function executeGerenciarTopico(p: any, authUserId: string, numeric
   return 'Ação não reconhecida para tópicos.';
 }
 
-export async function executeListarTopicos(p: any): Promise<string> {
+export async function executeListarTopicos(p: any, authUserId: string, numericUserId: string): Promise<string> {
+  const resolvedProjectId = await resolveProjectId(p.project_id, numericUserId);
+  if (!resolvedProjectId) return `[ERRO] Não encontrei nenhum projeto chamado ou com ID "${p.project_id}".`;
+
   let query = supabase
     .schema('jarvis')
     .from('project_topics')
     .select('*')
-    .eq('project_id', p.project_id);
+    .eq('project_id', resolvedProjectId);
 
   if (p.parent_id !== undefined) {
     query = p.parent_id === null
