@@ -7,8 +7,10 @@ export const ModuloCompras: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
-    contexts: ['compras', 'foco'],
-    keywords: /comprar|lista|mercado|item|preciso de/i
+    trigger: {
+      contexts: ['compras', 'foco', 'projetos'],   // ← adiciona projetos
+      keywords: /comprar|lista|mercado|item|preciso de|material|insumo/i  // ← adiciona material/insumo
+  },
   },
   buildContextBlock: async (opts) => {
     const { data } = await supabase.from('shopping_items').select('*').eq('user_id', opts.userId).eq('status', 'pending');
