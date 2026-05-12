@@ -56,6 +56,15 @@ import {
   executeListarOrcamentos,
 } from '@/lib/finances/executor';
 
+import {
+  executeGerenciarProjeto,
+  executeListarProjetos,
+  executeGerenciarTopico,
+  executeListarTopicos,
+  executeGerenciarEntry,
+  executeListarEntries,
+} from '@/lib/tools/executors/projects';
+
 import { searchWeb, getWeatherForecast } from '@/lib/google';
 import { logToolExecution } from '@/lib/tools/executors/learning';
 
