@@ -65,6 +65,7 @@ import {
   executeListarTopicos,
   executeGerenciarEntry,
   executeListarEntries,
+  executeGerenciarMembrosProjeto,
 } from '@/lib/tools/executors/projects';
 
 import { searchWeb, getWeatherForecast } from '@/lib/google';
@@ -170,9 +171,10 @@ export async function executeTool(
     case 'gerenciar_projeto': result = await executeGerenciarProjeto(...args); break;
     case 'listar_projetos':   result = await executeListarProjetos(...args); break;
     case 'gerenciar_topico':  result = await executeGerenciarTopico(...args); break;
-    case 'listar_topicos':    result = await executeListarTopicos(...args); break; // ← CORRIGIDO AQUI
+    case 'listar_topicos':    result = await executeListarTopicos(...args); break; 
     case 'gerenciar_entry':   result = await executeGerenciarEntry(...args); break;
-    case 'listar_entries':    result = await executeListarEntries(...args); break;  // ← CORRIGIDO AQUI
+    case 'listar_entries':    result = await executeListarEntries(...args); break;  
+    case 'gerenciar_membros_projeto': result = await executeGerenciarMembrosProjeto(...args); break;
 
     // ── Guidelines / System Prompts ──────────────────────────────────────────
     case 'gerenciar_guideline': result = await executeGerenciarGuideline(...args); break;
