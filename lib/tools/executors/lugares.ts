@@ -1,12 +1,14 @@
 // lib/tools/executors/lugares.ts
-// Domínio: Lugares e Listas de Compras
-// Tools: salvar_lugar, adicionar_item_lista, ver_lista
+// Domínio: Lugares Favoritos
+// Tools: salvar_lugar
+//
+// Compras foram movidas para executors/compras.ts
 
 import { supabase } from '@/lib/jarvis';
 
-// ─── Helper: resolve place id por nome ───────────────────────────────────────
+// ─── Helper exportado — usado também em compras.ts ───────────────────────────
 
-async function getPlaceId(nome: string, authUserId: string): Promise<string | null> {
+export async function getPlaceId(nome: string, authUserId: string): Promise<string | null> {
   const { data } = await supabase
     .from('favorite_places')
     .select('id')
@@ -49,55 +51,5 @@ export async function executeSalvarLugar(
       : `Lugar "${p.nome}" salvo nos seus favoritos.`;
   } catch (err: any) {
     return `Erro: ${err.message}`;
-  }
-}
-
-// ─── adicionar_item_lista ─────────────────────────────────────────────────────
-
-export async function executeAdicionarItemLista(
-  p: { item: string; lugar: string },
-  authUserId: string,
-  _numericUserId: string
-): Promise<string> {
-  try {
-    const pid = await getPlaceId(p.lugar, authUserId);
-    if (!pid) return `Não encontrei o lugar "${p.lugar}".`;
-
-    await supabase
-      .from('shopping_items')
-      .upsert(
-        { user_id: authUserId, item: p.item.trim(), place_id: pid, done: false },
-        { onConflict: 'user_id,item,place_id' }
-      );
-
-    return `"${p.item}" adicionado à lista de ${p.lugar}.`;
-  } catch (err: any) {
-    return `Erro ao adicionar: ${err.message}`;
-  }
-}
-
-// ─── ver_lista ────────────────────────────────────────────────────────────────
-
-export async function executeVerLista(
-  p: { lugar: string },
-  authUserId: string,
-  _numericUserId: string
-): Promise<string> {
-  try {
-    const pid = await getPlaceId(p.lugar, authUserId);
-    if (!pid) return `Lista de ${p.lugar} não encontrada.`;
-
-    const { data: itens } = await supabase
-      .from('shopping_items')
-      .select('item, done')
-      .eq('user_id', authUserId)
-      .eq('place_id', pid)
-      .order('done');
-
-    if (!itens?.length) return `Sua lista de ${p.lugar} está vazia.`;
-
-    return `Lista ${p.lugar}:\n${itens.map(i => `${i.done ? '✅' : '•'} ${i.item}`).join('\n')}`;
-  } catch (err: any) {
-    return `Erro ao carregar lista: ${err.message}`;
   }
 }
