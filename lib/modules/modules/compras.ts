@@ -8,12 +8,13 @@ export const ModuloCompras: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
-    
-    contexts: ['compras', 'foco', 'projeto'], 
+    // Corrigido para 'projeto' (singular) conforme seu ContextType
+    contexts: ['compras', 'foco', 'projeto'],
     keywords: /comprar|lista|mercado|item|preciso de|material|insumo|reforma/i
   },
+
   buildContextBlock: async (opts) => {
-    // Busca itens pendentes e traz o nome do projeto via join
+    // Busca itens pendentes vinculando com a tabela de projetos
     const { data, error } = await supabase
       .from('shopping_items')
       .select(`
@@ -28,7 +29,7 @@ export const ModuloCompras: ModuleDefinition = {
 
     if (error || !data?.length) return '';
 
-    // Segmentação lógica: Pessoais vs Projetos
+    // Segmentação: Pessoais vs Materiais de Projeto
     const pessoais = data.filter(i => !i.project_id);
     const deProjeto = data.filter(i => i.project_id);
 
@@ -42,7 +43,10 @@ export const ModuloCompras: ModuleDefinition = {
     if (deProjeto.length) {
       linhas.push('\n**🏗️ Materiais de Projetos:**');
       linhas.push(...deProjeto.map(i => {
-        const projInfo = i.projects ? `(Projeto: ${i.projects.name || i.projects.tag})` : '';
+        // Tratamento seguro para o join do Supabase que retorna array
+        const p: any = Array.isArray(i.projects) ? i.projects[0] : i.projects;
+        const projInfo = p ? `(Projeto: ${p.name || p.tag})` : '';
+        
         return `- ${i.item} ${projInfo}`;
       }));
     }
@@ -50,7 +54,7 @@ export const ModuloCompras: ModuleDefinition = {
     return linhas.join('\n');
   },
 
-  // Vinculado às definições em lib/tools/defs/compras.ts
+  // Ferramentas registradas em lib/tools/defs/compras.ts
   tools: [
     'adicionar_item_lista',
     'ver_lista',
