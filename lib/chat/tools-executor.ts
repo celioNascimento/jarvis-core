@@ -71,6 +71,7 @@ import {
 import { searchWeb, getWeatherForecast } from '@/lib/google';
 import { logToolExecution } from '@/lib/tools/executors/learning';
 import { executeGerenciarGuideline } from '@/lib/tools/executors/guidelines';
+import { executeAlternarPermissao } from '../tools/executors/relationships';
 
 // ── Idempotência ──────────────────────────────────────────────────────────────
 
@@ -175,6 +176,10 @@ export async function executeTool(
     case 'gerenciar_entry':   result = await executeGerenciarEntry(...args); break;
     case 'listar_entries':    result = await executeListarEntries(...args); break;  
     case 'gerenciar_membros_projeto': result = await executeGerenciarMembrosProjeto(...args); break;
+    
+
+    // ── Relacionamentos / Permissões ──────────────────────────────────────────
+    case 'alternar_permissao_contato': result = await executeAlternarPermissao(p, authUserId, numericUserIdStr); break;
 
     // ── Guidelines / System Prompts ──────────────────────────────────────────
     case 'gerenciar_guideline': result = await executeGerenciarGuideline(...args); break;
