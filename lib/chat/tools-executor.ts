@@ -69,6 +69,7 @@ import {
 
 import { searchWeb, getWeatherForecast } from '@/lib/google';
 import { logToolExecution } from '@/lib/tools/executors/learning';
+import { executeGerenciarGuideline } from '@/lib/tools/executors/guidelines';
 
 // ── Idempotência ──────────────────────────────────────────────────────────────
 
@@ -172,6 +173,9 @@ export async function executeTool(
     case 'listar_topicos':    result = await executeListarTopicos(...args); break; // ← CORRIGIDO AQUI
     case 'gerenciar_entry':   result = await executeGerenciarEntry(...args); break;
     case 'listar_entries':    result = await executeListarEntries(...args); break;  // ← CORRIGIDO AQUI
+
+    // ── Guidelines / System Prompts ──────────────────────────────────────────
+    case 'gerenciar_guideline': result = await executeGerenciarGuideline(...args); break;
       
     default:
       return `Ferramenta "${name}" não reconhecida pelo dispatcher.`;
