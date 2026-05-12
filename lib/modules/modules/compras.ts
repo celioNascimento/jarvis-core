@@ -8,10 +8,10 @@ export const ModuloCompras: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
-    contexts: ['compras', 'foco', 'projetos'],
+    
+    contexts: ['compras', 'foco', 'projeto'], 
     keywords: /comprar|lista|mercado|item|preciso de|material|insumo|reforma/i
   },
-
   buildContextBlock: async (opts) => {
     // Busca itens pendentes e traz o nome do projeto via join
     const { data, error } = await supabase
