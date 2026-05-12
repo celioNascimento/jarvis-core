@@ -7,10 +7,8 @@ export const ModuloRelacionamentos: ModuleDefinition = {
   label: 'Contatos e Permissões',
   preferredModel: 'flash',
   plan: 'free',
-  trigger: {
-    // Isso bate exatamente com o log que você mostrou: contextos: ['relacao']
-    contexts: ['relacao', 'contatos', 'familia'],
-    // Gatilhos de intenção para forçar a ativação do módulo
+ trigger: {
+    contexts: ['relacao'], // ← Deixe apenas o que o Extrator já reconhece
     keywords: /contato|permissão|compartilhar|acesso|liberar|bloquear|giselle/i 
   },
   
