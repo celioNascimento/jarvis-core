@@ -299,22 +299,3 @@ export async function executeListarEntries(p: any): Promise<string> {
     .join('\n');
 }
 
-export async function executeListarEntries(p: any, authUserId: string, numericUserId: string): Promise<string> {
-  let query = supabase
-    .schema('jarvis')
-    .from('project_entries')
-    .select('*')
-    .eq('topic_id', p.topic_id);
-
-  if (p.type)   query = query.eq('type', p.type);
-  if (p.status) query = query.eq('status', p.status);
-
-  const { data, error } = await query.order('created_at', { ascending: false });
-  if (error) return `[ERRO] Falha ao listar entries: ${error.message}`;
-  if (!data?.length) return 'Nenhuma entry neste tópico.';
-
-  return data
-    .map(e => `[${e.type.toUpperCase()}] ${e.title || 'Sem título'} — ${e.status} (ID: ${e.id})`)
-    .join('\n');
-}
-
