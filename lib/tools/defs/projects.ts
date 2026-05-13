@@ -1,7 +1,6 @@
 // lib/tools/defs/projects.ts
-// Definições de ferramentas: Projetos, Tópicos e Entries
-// V2 — ações reativar, concluir e cancelar adicionadas
-// V3 — descrições atualizadas para aceitar Nome ou Tag no lugar de UUID
+// Definições de ferramentas: Projetos, Tópicos, Entries e Membros
+// V4 — descrições reforçadas para evitar que o modelo recuse ações possíveis
 
 export const projectsTools = [
   // ── Projetos ──────────────────────────────────────────────────────────────
@@ -9,14 +8,16 @@ export const projectsTools = [
     type: 'function',
     function: {
       name: 'gerenciar_projeto',
-      description: `Gerencia o ciclo de vida completo de um projeto.
+      description: `SEMPRE use esta tool para criar, atualizar ou mudar o status de um projeto.
 Fluxo de status:
   criar       → em_desenvolvimento
-  arquivar    → em_pausa          (reversível, itens de compra permanecem)
+  arquivar    → em_pausa          (reversível, itens de compra permanecem ativos)
   reativar    → em_desenvolvimento (a partir de em_pausa)
   concluir    → concluido         (arquiva itens de compra vinculados automaticamente)
   cancelar    → cancelado         (arquiva itens de compra vinculados automaticamente)
-  atualizar   → altera nome, descrição, URLs sem mudar status`,
+  atualizar   → altera nome, descrição, URLs sem mudar status
+
+Exemplos de trigger: "cria um projeto para a reforma", "pausa o projeto Lev", "marca o ExpertFrotas como concluído".`,
       parameters: {
         type: 'object',
         properties: {
@@ -27,7 +28,8 @@ Fluxo de status:
           },
           project_id: {
             type: 'string',
-            description: 'UUID, Nome ou Tag do projeto (ex: "Lev" ou "ExpertFrotas"). Se não souber o UUID, envie apenas o nome. Obrigatório para todas as ações exceto criar.',
+            description:
+              'UUID, Nome ou Tag do projeto (ex: "Lev" ou "ExpertFrotas"). Se não souber o UUID, envie apenas o nome. Obrigatório para todas as ações exceto criar.',
           },
           tag: {
             type: 'string',
@@ -48,12 +50,13 @@ Fluxo de status:
       },
     },
   },
+
   {
     type: 'function',
     function: {
       name: 'listar_projetos',
       description:
-        'Lista todos os projetos do usuário. Filtre por status se necessário.',
+        'SEMPRE use esta tool quando o usuário pedir para ver, listar ou consultar seus projetos. Filtre por status se o usuário especificar (ex: "projetos ativos", "projetos pausados").',
       parameters: {
         type: 'object',
         properties: {
@@ -73,7 +76,7 @@ Fluxo de status:
     function: {
       name: 'gerenciar_topico',
       description:
-        'Cria, atualiza ou remove um tópico dentro de um projeto. Tópicos são hierárquicos via parent_id. Remover um tópico remove em cascata todos os subtópicos e entries vinculados.',
+        'SEMPRE use para criar, atualizar ou remover um tópico dentro de um projeto. Tópicos são hierárquicos via parent_id — um tópico pode ter subtópicos. Remover um tópico remove em cascata todos os subtópicos e entries vinculados.',
       parameters: {
         type: 'object',
         properties: {
@@ -83,7 +86,8 @@ Fluxo de status:
           },
           project_id: {
             type: 'string',
-            description: 'UUID, Nome ou Tag do projeto pai (ex: "Lev" ou "ExpertFrotas"). Se não souber o UUID, envie apenas o nome. Sempre obrigatório.',
+            description:
+              'UUID, Nome ou Tag do projeto pai (ex: "Lev" ou "ExpertFrotas"). Sempre obrigatório.',
           },
           topic_id: {
             type: 'string',
@@ -105,6 +109,7 @@ Fluxo de status:
       },
     },
   },
+
   {
     type: 'function',
     function: {
@@ -116,7 +121,7 @@ Fluxo de status:
         properties: {
           project_id: {
             type: 'string',
-            description: 'UUID, Nome ou Tag do projeto. Se não souber o UUID, envie apenas o nome.'
+            description: 'UUID, Nome ou Tag do projeto.',
           },
           parent_id: {
             type: 'string',
@@ -144,7 +149,7 @@ Fluxo de status:
           },
           project_id: {
             type: 'string',
-            description: 'UUID, Nome ou Tag do projeto (para verificar acesso). Se não souber o UUID, envie apenas o nome.',
+            description: 'UUID, Nome ou Tag do projeto (para verificar acesso).',
           },
           topic_id: {
             type: 'string',
@@ -175,6 +180,7 @@ Fluxo de status:
       },
     },
   },
+
   {
     type: 'function',
     function: {
@@ -185,7 +191,7 @@ Fluxo de status:
         properties: {
           project_id: {
             type: 'string',
-            description: 'UUID, Nome ou Tag do projeto. Se não souber o UUID, envie apenas o nome.'
+            description: 'UUID, Nome ou Tag do projeto.',
           },
           topic_id: { type: 'string', description: 'UUID do tópico.' },
           type: {
@@ -202,33 +208,49 @@ Fluxo de status:
       },
     },
   },
+
   // ── Membros do Projeto ────────────────────────────────────────────────────
   {
     type: 'function',
     function: {
       name: 'gerenciar_membros_projeto',
-      description: 'Compartilha um projeto com outro usuário, lista os membros atuais ou altera permissões.',
+      description: `SEMPRE use esta tool quando o usuário pedir para:
+- Compartilhar um projeto com alguém ("compartilha o projeto X com a Gih")
+- Convidar alguém para um projeto ("adiciona a Ana como editora do Lev")
+- Ver quem tem acesso a um projeto ("quem pode ver o projeto reforma?")
+- Remover alguém de um projeto ("tira a Gih do projeto X")
+- Alterar o papel de um membro ("muda a Gih para editora")
+
+NUNCA diga que não consegue compartilhar projetos. Use esta tool.
+
+Ações disponíveis:
+  adicionar  → envia convite (status "pending") com o papel escolhido
+  remover    → revoga o acesso do usuário
+  atualizar  → muda o papel (owner / editor / viewer)
+  listar     → mostra todos os membros e seus papéis`,
       parameters: {
         type: 'object',
         properties: {
           acao: {
             type: 'string',
             enum: ['adicionar', 'remover', 'atualizar', 'listar'],
-            description: 'Ação a ser executada. "adicionar" envia um convite.'
+            description: 'Ação a ser executada.',
           },
           project_id: {
             type: 'string',
-            description: 'Nome, Tag ou UUID do projeto (ex: "reforma banheiro"). Envie apenas o nome se não souber o UUID.'
+            description:
+              'Nome, Tag ou UUID do projeto (ex: "reforma banheiro"). Envie apenas o nome se não souber o UUID.',
           },
           user_identifier: {
             type: 'string',
-            description: 'Nome ou email da pessoa com quem deseja compartilhar. Não é necessário para a ação "listar".'
+            description:
+              'Nome ou email da pessoa. Obrigatório para adicionar, remover e atualizar. Não é necessário para listar.',
           },
           role: {
             type: 'string',
             enum: ['owner', 'editor', 'viewer'],
-            description: 'Nível de permissão. Padrão: "viewer". Usado para adicionar ou atualizar.'
-          }
+            description: 'Nível de permissão. Padrão: "viewer". Usado ao adicionar ou atualizar.',
+          },
         },
         required: ['acao', 'project_id'],
       },
