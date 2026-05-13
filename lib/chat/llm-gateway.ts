@@ -196,36 +196,41 @@ class Gatekeeper {
   }
 
   // ─── LÓGICA DE FALLBACK INCORPORADA NO GATEWAY ──────────────────────────────
-  private async executeWithModelFallback(task: LLMTask, dedupKeyStr: string): Promise<any> {
-    const originalModel = task.openRouterParams.model;
+  
+private async executeWithModelFallback(task: LLMTask, dedupKeyStr: string): Promise<any> {
+  const originalModel = task.openRouterParams.model;
 
-    try {
-      // Tenta com a lógica de retry/breaker padrão
-      return await this.executeDirectly(task, dedupKeyStr);
-    } catch (error: any) {
-      const isRateLimit = 
-        error?.message?.includes('429') || 
-        error?.status === 429 || 
-        error?.message?.includes('RATE_LIMIT_EXCEEDED');
-
-      // Se falhou por Rate Limit e ainda não estávamos usando o tanque de guerra
-      if (isRateLimit && originalModel !== FALLBACK_MODEL) {
-        console.warn(`[Gatekeeper] Fallback ativado. ${originalModel} exaurido. Modificando para ${FALLBACK_MODEL}...`);
-        
-        // Altera o modelo da task para o fallback
-        task.openRouterParams.model = FALLBACK_MODEL;
-        
-        // Recalcula o cache key pois o payload mudou
-        const newDedupPayload = JSON.stringify(task.openRouterParams);
-        const newDedupKeyStr = dedupKey(`${task.id}_fallback`, newDedupPayload);
-
-        // Tenta mais UMA vez direto (sem retries do gateway para não estourar tempo da Vercel)
-        return await this.executeDirectly(task, newDedupKeyStr, true);
-      }
-
-      throw error;
+  try {
+    // Se o modelo for o experimental e o Breaker já estiver 'open', 
+    // nem tenta o Pro, pula direto pro Flash para economizar 8 segundos.
+    if (originalModel !== FALLBACK_MODEL && (await this.isBreakerOpen())) {
+      console.warn(`[Gatekeeper] Circuit Breaker ativo. Pulando direto para ${FALLBACK_MODEL}`);
+      throw new Error('RATE_LIMIT_EXCEEDED'); 
     }
+
+    return await this.executeDirectly(task, dedupKeyStr);
+  } catch (error: any) {
+    const isRateLimit = 
+      error?.message?.includes('429') || 
+      error?.status === 429 || 
+      error?.message?.includes('RATE_LIMIT_EXCEEDED');
+
+    if (isRateLimit && originalModel !== FALLBACK_MODEL) {
+      // FAIL FAST: Não tenta o retry no Pro. Chaveia pro Flash na hora.
+      console.warn(`[Gatekeeper] 429 detectado. Chaveando instantaneamente para ${FALLBACK_MODEL}`);
+      
+      task.openRouterParams.model = FALLBACK_MODEL;
+      const newDedupKey = dedupKey(`${task.id}_fb`, JSON.stringify(task.openRouterParams));
+      
+      // Chamada de resgate com timeout reduzido para não travar a Vercel
+      task.openRouterParams.timeoutMs = 15000; 
+      return await this.executeDirectly(task, newDedupKey, true);
+    }
+
+    throw error;
   }
+}
+
 
   private async executeDirectly(task: LLMTask, dedupKeyStr: string, isFallbackCall = false): Promise<any> {
     // Se for a chamada de resgate, tenta apenas 1 vez rápido. Se for normal, usa os retries de prioridade.
