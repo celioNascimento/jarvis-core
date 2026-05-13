@@ -14,6 +14,10 @@ import { executeTool } from '@/lib/chat/tools-executor';
 import type { ChatRequestContext } from './request-context';
 import type { ChatPrompt } from './prompt-assembler';
 
+// ─── Configurações ────────────────────────────────────────────────────────────
+
+const FALLBACK_MODEL = 'google/gemini-2.5-flash';
+
 // ─── Tipos internos ───────────────────────────────────────────────────────────
 
 interface ToolCallResult {
@@ -64,6 +68,61 @@ function buildToolCallMessages(
   ];
 }
 
+// ─── Wrapper Anti-RateLimit (429) ─────────────────────────────────────────────
+
+async function callWithFallback(
+  priority: number,
+  cachePolicy: 'never' | 'always',
+  requestSignature: string,
+  messages: any[],
+  tools: any[],
+  primaryModel: string,
+  temperature: number
+) {
+  try {
+    // 1. Tenta executar com o modelo principal (Ex: Pro Experimental)
+    return await callOpenRouterWithPriority(
+      priority,
+      cachePolicy,
+      requestSignature,
+      messages,
+      tools,
+      primaryModel,
+      temperature
+    );
+  } catch (error: any) {
+    // 2. Interceptador de Rate Limit (Erro 429)
+    const isRateLimit = 
+      error?.status === 429 || 
+      error?.statusCode === 429 || 
+      error?.message?.includes('429');
+
+    // Se bateu no limite e ainda não estava usando o modelo de resgate...
+    if (isRateLimit && primaryModel !== FALLBACK_MODEL) {
+      console.warn(`[Orchestrator] Limite atingido (429) no modelo ${primaryModel}. Desviando para ${FALLBACK_MODEL}...`);
+      
+      try {
+        // 3. Executa a chamada de resgate imediatamente
+        return await callOpenRouterWithPriority(
+          priority,
+          cachePolicy,
+          `${requestSignature}_fallback`, // Muda a assinatura para não cruzar logs/cache
+          messages,
+          tools,
+          FALLBACK_MODEL,
+          temperature
+        );
+      } catch (fallbackError) {
+        console.error('[Orchestrator] Falha crítica no modelo de fallback:', fallbackError);
+        throw fallbackError;
+      }
+    }
+
+    // Se o erro for outro (500, timeout, token inválido), joga pra cima
+    throw error;
+  }
+}
+
 // ─── Entrypoint público ───────────────────────────────────────────────────────
 
 export async function runLLMOrchestrator(
@@ -76,8 +135,8 @@ export async function runLLMOrchestrator(
   // ── Primeiros 3 turnos do histórico como snapshot de contexto ─────────────
   const contextSnapshot = conversationMessages.slice(-3);
 
-  // ── Primeira chamada ──────────────────────────────────────────────────────
-  const firstResponse = await callOpenRouterWithPriority(
+  // ── Primeira chamada (agora blindada) ─────────────────────────────────────
+  const firstResponse = await callWithFallback(
     1,
     'never',
     requestSignature,
@@ -97,23 +156,23 @@ export async function runLLMOrchestrator(
     firstResponse.toolCalls,
     user.auth_user_id,
     String(user.id),
-    contextSnapshot                         // ← passado aqui
+    contextSnapshot                         
   );
 
-  // ── Segunda chamada (síntese) ─────────────────────────────────────────────
+  // ── Segunda chamada de síntese (agora blindada) ───────────────────────────
   const toolMessages = buildToolCallMessages(
     firstResponse.content,
     firstResponse.toolCalls,
     toolResults
   );
 
-  const secondResponse = await callOpenRouterWithPriority(
+  const secondResponse = await callWithFallback(
     1,
     'never',
     `${requestSignature}_synth`,
     [...conversationMessages, ...toolMessages],
     [],           // sem ferramentas na chamada de síntese
-    model,
+    model,        // Note que passamos 'model' de novo; o helper cuida do fallback se precisar
     0.7
   );
 
