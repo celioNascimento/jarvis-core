@@ -1,7 +1,4 @@
 // lib/chat/llm-gateway.ts
-// Motor V10.2.0 — Fast-Track Edition
-// Fila, Semáforo e Banimento Local de modelos instáveis.
-
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
 import { createHash } from 'crypto';
@@ -12,142 +9,84 @@ const redis = new Redis({
 });
 
 const FALLBACK_MODEL = 'google/gemini-2.5-flash';
-const BAN_TIME_MS = 5 * 60 * 1000; // 5 minutos de "geladeira" para o Pro
-
-// Variável em memória (viva enquanto o container da Vercel durar)
+const BREAKER_KEY = 'llm_circuit_breaker';
 let localModelBan: { [model: string]: number } = {};
 
 export type PriorityLevel = 1 | 2 | 3 | 4;
 export type DropPolicy    = 'never' | 'if_full';
 
-export interface LLMTask {
-  id:               string; 
-  priority:         PriorityLevel;
-  dropPolicy:       DropPolicy;
-  openRouterParams: any;
-  dedupPayload?:    string;
-}
-
-const MAX_CONCURRENT   = 3;
-const ACTIVE_KEY       = 'global_llm_active';
-const BREAKER_KEY      = 'llm_circuit_breaker';
-const QUEUE_POLL_MS    = 250;
-const WAITER_TIMEOUT_S = 45; 
-
 class Gatekeeper {
-  
-  private async isBreakerOpen(model: string): Promise<boolean> {
-    // 1. Checa banimento local (mais rápido que Redis)
-    if (localModelBan[model] && Date.now() < localModelBan[model]) return true;
-    
-    // 2. Checa Circuit Breaker global no Redis
-    try { return (await redis.get(BREAKER_KEY)) === 'open'; }
-    catch { return false; }
-  }
-
-  private banModel(model: string) {
-    console.warn(`[Gatekeeper] Banindo ${model} localmente por 5 min.`);
-    localModelBan[model] = Date.now() + BAN_TIME_MS;
-  }
-
-  async enqueue(task: LLMTask): Promise<any> {
+  async enqueue(task: any): Promise<any> {
     const dk = `llm_dedup:${task.id}:${createHash('sha256').update(task.dedupPayload || '').digest('hex').slice(0, 10)}`;
-
-    // 1. Dedup
     const cached = await redis.get(dk).catch(() => null);
     if (cached) return cached;
 
-    // 2. Registro na Fila e Semáforo
     const executionId = `${task.id}:${Date.now()}`;
-    const score = task.priority * 1e13 + Date.now();
-    await redis.zadd('llm_task_queue_sorted', { score, member: executionId });
-
-    const deadline = Date.now() + WAITER_TIMEOUT_S * 1000;
-    let myTurn = false;
+    await redis.zadd('llm_task_queue_sorted', { score: task.priority * 1e13 + Date.now(), member: executionId });
 
     try {
+      let myTurn = false;
+      const deadline = Date.now() + 45000;
       while (Date.now() < deadline) {
         const [next] = await redis.zrange('llm_task_queue_sorted', 0, 0);
         if (next === executionId) {
-          const count = await redis.incr(ACTIVE_KEY);
-          if (count <= MAX_CONCURRENT) {
+          const count = await redis.incr('global_llm_active');
+          if (count <= 3) {
             await redis.zrem('llm_task_queue_sorted', executionId);
-            myTurn = true;
-            break;
+            myTurn = true; break;
           }
-          await redis.decr(ACTIVE_KEY);
+          await redis.decr('global_llm_active');
         }
-        await await new Promise(r => setTimeout(r, QUEUE_POLL_MS));
+        await new Promise(r => setTimeout(r, 250));
       }
-
       if (!myTurn) throw new Error('GATEKEEPER_TIMEOUT');
 
-      return await this.executeWithModelFallback(task, dk);
-
+      return await this.executeWithFallback(task, dk);
     } finally {
-      await redis.decr(ACTIVE_KEY).catch(() => {});
-      if (!myTurn) await redis.zrem('llm_task_queue_sorted', executionId);
+      await redis.decr('global_llm_active').catch(() => {});
+      await redis.zrem('llm_task_queue_sorted', executionId).catch(() => {});
     }
   }
 
-  private async executeWithModelFallback(task: LLMTask, dk: string): Promise<any> {
-    const originalModel = task.openRouterParams.model;
-
-    // ⚡ SEGUNDA CHAMADA PROTEGIDA: Se já falhou antes, nem tenta o Pro agora.
-    if (originalModel !== FALLBACK_MODEL && (await this.isBreakerOpen(originalModel))) {
-      task.openRouterParams.model = FALLBACK_MODEL;
+  private async executeWithFallback(task: any, dk: string): Promise<any> {
+    const originalModel = task.params.model;
+    const isBanned = localModelBan[originalModel] && Date.now() < localModelBan[originalModel];
+    
+    if (originalModel !== FALLBACK_MODEL && (isBanned || (await redis.get(BREAKER_KEY)) === 'open')) {
+      task.params.model = FALLBACK_MODEL;
     }
 
     try {
-      // Se for o Pro, damos apenas 5 segundos. Se não for, 25s.
-      const currentTimeout = task.openRouterParams.model === FALLBACK_MODEL ? 25000 : 6000;
-      
-      return await this.executeDirectly(task, dk, currentTimeout);
+      const timeout = task.params.model === FALLBACK_MODEL ? task.params.timeoutMs : 6000;
+      return await this.executeDirectly(task, dk, timeout);
     } catch (error: any) {
-      const is429 = error?.status === 429 || error?.message?.includes('429');
-
-      if (is429 && task.openRouterParams.model !== FALLBACK_MODEL) {
-        this.banModel(originalModel); // Bane localmente para não repetir o erro na síntese
-        await redis.set(BREAKER_KEY, 'open', { ex: 60 }); // Avisa o mundo por 1 min
-        
-        task.openRouterParams.model = FALLBACK_MODEL;
-        task.openRouterParams.timeoutMs = 20000;
+      if ((error?.status === 429 || error?.message?.includes('429')) && task.params.model !== FALLBACK_MODEL) {
+        localModelBan[originalModel] = Date.now() + 300000;
+        await redis.set(BREAKER_KEY, 'open', { ex: 60 });
+        task.params.model = FALLBACK_MODEL;
         return await this.executeDirectly(task, `${dk}_fb`, 20000);
       }
       throw error;
     }
   }
 
-  private async executeDirectly(task: LLMTask, dk: string, timeout: number): Promise<any> {
-    const res = await rawCallOpenRouter(
-      task.openRouterParams.messages,
-      task.openRouterParams.tools,
-      task.openRouterParams.model,
-      task.openRouterParams.temperature,
-      timeout,
-      task.openRouterParams.maxTokens
-    );
-    if (res) await redis.set(dk, res, { ex: 15 }).catch(() => {});
-    return res;
+  private async executeDirectly(task: any, dk: string, timeout: number): Promise<any> {
+    const res = await rawCallOpenRouter(task.params.messages, task.params.tools, task.params.model, task.params.temperature, timeout, task.params.maxTokens, task.params.toolChoice);
+    const enriched = typeof res === 'object' ? { ...res, modelUsed: task.params.model } : res;
+    if (res) await redis.set(dk, enriched, { ex: 15 }).catch(() => {});
+    return enriched;
   }
 }
 
-export const llmGateway = new Gatekeeper();
+const gatekeeper = new Gatekeeper();
 
 export async function callOpenRouterWithPriority(
-  priority: 1|2|3|4,
-  dropPolicy: 'never'|'if_full',
-  taskId: string,
-  messages: any[],
-  tools: any[],
-  model: string,
-  temperature: number
+  priority: PriorityLevel, dropPolicy: DropPolicy, taskId: string, messages: any[], tools: any[], model: string, temperature: number, 
+  timeoutMs: number = 25000, maxTokens?: number, toolChoice?: any
 ): Promise<any> {
-  return llmGateway.enqueue({
-    id: taskId,
-    priority,
-    dropPolicy,
-    openRouterParams: { messages, tools, model, temperature },
-    dedupPayload: JSON.stringify({ messages, model }),
+  return gatekeeper.enqueue({
+    id: taskId, priority, dropPolicy,
+    params: { messages, tools, model, temperature, timeoutMs, maxTokens, toolChoice },
+    dedupPayload: JSON.stringify({ messages, model, tools })
   });
 }
