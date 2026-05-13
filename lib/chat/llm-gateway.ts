@@ -1,5 +1,5 @@
 // lib/chat/llm-gateway.ts
-// V10.2.4 — Resiliência Total
+// V10.2.5 — Zero-Timeout & Stealth Fallback
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
@@ -59,22 +59,57 @@ class Gatekeeper {
     const originalModel = task.params.model;
     const isBanned = localModelBan[originalModel] && Date.now() < localModelBan[originalModel];
     
+    // Se estiver banido ou com o breaker aberto no Redis, pula pro Flash
     if (originalModel !== FALLBACK_MODEL && (isBanned || (await redis.get('llm_circuit_breaker')) === 'open')) {
       task.params.model = FALLBACK_MODEL;
     }
 
     try {
-      const timeout = task.params.model === FALLBACK_MODEL ? task.params.timeoutMs : 6000;
-      const res = await rawCallOpenRouter(task.params.messages, task.params.tools, task.params.model, task.params.temperature, timeout, task.params.maxTokens, task.params.toolChoice);
+      const isPro = task.params.model !== FALLBACK_MODEL;
+      const timeout = isPro ? 6000 : (task.params.timeoutMs || 25000);
+      
+      const res = await rawCallOpenRouter(
+        task.params.messages, 
+        task.params.tools, 
+        task.params.model, 
+        task.params.temperature, 
+        timeout, 
+        task.params.maxTokens, 
+        task.params.toolChoice
+      );
+
       const enriched = typeof res === 'object' ? { ...res, modelUsed: task.params.model } : res;
       if (res) await redis.set(dk, enriched, { ex: 15 }).catch(() => {});
       return enriched;
+
     } catch (error: any) {
-      if ((error?.status === 429 || error?.message?.includes('429')) && task.params.model !== FALLBACK_MODEL) {
-        localModelBan[originalModel] = Date.now() + 300000;
-        await redis.set('llm_circuit_breaker', 'open', { ex: 60 });
-        return rawCallOpenRouter(task.params.messages, task.params.tools, FALLBACK_MODEL, task.params.temperature, 20000);
+      const errorMessage = error?.message?.toLowerCase() || '';
+      const isRateLimit = error?.status === 429 || errorMessage.includes('429');
+      const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('aborted') || error?.name === 'AbortError';
+
+      // Se o erro foi no Pro, banimos e tentamos o Flash
+      if ((isRateLimit || isTimeout) && task.params.model !== FALLBACK_MODEL) {
+        console.warn(`[Gateway] Fallback acionado: ${isTimeout ? 'Timeout' : 'RateLimit'} no Pro.`);
+        
+        localModelBan[originalModel] = Date.now() + 300000; // 5 min de geladeira local
+        await redis.set('llm_circuit_breaker', 'open', { ex: 60 }); // 1 min global
+
+        // Segunda tentativa imediata com o Flash
+        const fbRes = await rawCallOpenRouter(
+          task.params.messages, 
+          task.params.tools, 
+          FALLBACK_MODEL, 
+          task.params.temperature, 
+          20000, 
+          task.params.maxTokens, 
+          task.params.toolChoice
+        );
+        
+        const enrichedFb = typeof fbRes === 'object' ? { ...fbRes, modelUsed: FALLBACK_MODEL } : fbRes;
+        return enrichedFb;
       }
+      
+      // Se deu erro no Flash também, aí não tem o que fazer
       throw error;
     }
   }
