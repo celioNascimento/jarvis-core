@@ -1,4 +1,6 @@
 // lib/chat/llm-gateway.ts
+// V10.2.4 — Resiliência Total
+
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
 
@@ -46,7 +48,6 @@ class Gatekeeper {
         await new Promise(r => setTimeout(r, 250));
       }
       if (!myTurn) throw new Error('GATEKEEPER_TIMEOUT');
-
       return await this.executeWithFallback(task, dk);
     } finally {
       await redis.decr('global_llm_active').catch(() => {});
@@ -72,8 +73,6 @@ class Gatekeeper {
       if ((error?.status === 429 || error?.message?.includes('429')) && task.params.model !== FALLBACK_MODEL) {
         localModelBan[originalModel] = Date.now() + 300000;
         await redis.set('llm_circuit_breaker', 'open', { ex: 60 });
-        task.params.model = FALLBACK_MODEL;
-        // Resgate direto via Flash
         return rawCallOpenRouter(task.params.messages, task.params.tools, FALLBACK_MODEL, task.params.temperature, 20000);
       }
       throw error;
