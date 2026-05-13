@@ -1,6 +1,7 @@
 // lib/modules/modules/projetos.ts
 import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
+import { getEffectiveUserId } from '../relationships/identity';
 
 export const ModuloProjetos: ModuleDefinition = {
   id: 'projetos_lev',
@@ -15,12 +16,14 @@ export const ModuloProjetos: ModuleDefinition = {
 
   buildContextBlock: async (opts) => {
     try {
-      // Busca projetos ativos onde o usuário é membro
+      // 1. Resolve o ID real para ler os projetos vinculados ao perfil do App
+      const effectiveId = await getEffectiveUserId(opts.userId, opts.userId);
+
+      // Busca projetos onde o usuário é membro (ou dono)
       const { data: memberships, error: mErr } = await supabase
-        .schema('jarvis')
         .from('project_members')
         .select('project_id, role')
-        .eq('user_id', Number(opts.userId))
+        .eq('user_id', Number(effectiveId))
         .eq('status', 'active');
 
       if (mErr || !memberships?.length) return '';
@@ -29,7 +32,6 @@ export const ModuloProjetos: ModuleDefinition = {
       const roleMap = Object.fromEntries(memberships.map(m => [m.project_id, m.role]));
 
       const { data: projects, error: pErr } = await supabase
-        .schema('jarvis')
         .from('projects')
         .select('id, tag, name, description, status, updated_at')
         .in('id', ids)
@@ -39,11 +41,9 @@ export const ModuloProjetos: ModuleDefinition = {
 
       if (pErr || !projects?.length) return '';
 
-      // Para cada projeto, traz os tópicos raiz (sem parent)
       const topicBlocks = await Promise.all(
         projects.map(async proj => {
           const { data: topics } = await supabase
-            .schema('jarvis')
             .from('project_topics')
             .select('id, tag, name')
             .eq('project_id', proj.id)
@@ -52,10 +52,10 @@ export const ModuloProjetos: ModuleDefinition = {
             .limit(8);
 
           const role = roleMap[proj.id];
-          const roleLabel = role !== 'owner' ? ` [${role}]` : '';
-          const header = `• ${proj.name ?? proj.tag} (${proj.tag})${roleLabel} [${proj.status}] — id: ${proj.id}`;
+          const roleLabel = role !== 'owner' ? ` [Papel: ${role}]` : '';
+          const header = `• ${proj.name ?? proj.tag} (${proj.tag})${roleLabel} [Status: ${proj.status}] — id: ${proj.id}`;
           const topicList = topics?.length
-            ? '\n  Tópicos: ' + topics.map(t => `${t.name ?? t.tag} (id:${t.id})`).join(', ')
+            ? '\n  Tópicos Raiz: ' + topics.map(t => `${t.name ?? t.tag}`).join(', ')
             : '';
 
           return header + topicList;
@@ -66,7 +66,7 @@ export const ModuloProjetos: ModuleDefinition = {
         '[PROJETOS ATIVOS]',
         topicBlocks.join('\n'),
         '',
-        'Use listar_topicos(project_id) para ver subtópicos e listar_entries(project_id, topic_id) para ver o conteúdo de um tópico.',
+        'Comandos: listar_topicos(project_id) ou listar_entries(topic_id).',
       ].join('\n');
     } catch (e) {
       console.error('[ModuloProjetos] Erro:', e);
@@ -81,6 +81,7 @@ export const ModuloProjetos: ModuleDefinition = {
     'listar_topicos',
     'gerenciar_entry',
     'listar_entries',
+    'gerenciar_membros_projeto'
   ],
 
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 },
