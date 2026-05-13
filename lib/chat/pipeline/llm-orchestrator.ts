@@ -71,7 +71,7 @@ function buildToolCallMessages(
 // ─── Wrapper Anti-RateLimit (429) ─────────────────────────────────────────────
 
 async function callWithFallback(
-  priority: number,
+  priority: Parameters<typeof callOpenRouterWithPriority>[0], // Resolve Erro Type
   cachePolicy: 'never' | 'always',
   requestSignature: string,
   messages: any[],
@@ -137,7 +137,7 @@ export async function runLLMOrchestrator(
 
   // ── Primeira chamada (agora blindada) ─────────────────────────────────────
   const firstResponse = await callWithFallback(
-    1,
+    1 as Parameters<typeof callOpenRouterWithPriority>[0], // Evita erro no valor numérico
     'never',
     requestSignature,
     conversationMessages,
@@ -167,7 +167,7 @@ export async function runLLMOrchestrator(
   );
 
   const secondResponse = await callWithFallback(
-    1,
+    1 as Parameters<typeof callOpenRouterWithPriority>[0], // Evita erro no valor numérico
     'never',
     `${requestSignature}_synth`,
     [...conversationMessages, ...toolMessages],
