@@ -1,7 +1,9 @@
 // lib/tools/executors/agenda.ts
+// V11.1.0 — Integrado, Completo e Resiliente ao Build (9 Exports)
+
 import { supabase } from '@/lib/jarvis';
-import { getGoogleContext, createGoogleEvent, trashGoogleEmail } from '@/lib/google';
 import { getRecentEmails, getMicrosoftCalendarContext } from '@/lib/microsoft';
+import { getGoogleContext, createGoogleEvent, trashGoogleEmail } from '@/lib/google';
 import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
 import { getEffectiveUserId } from '@/lib/modules/relationships';
 
@@ -19,7 +21,7 @@ const getCronExpression = (freq: string, time: Date) => {
   }
 };
 
-// ─── EXECUTORES ───────────────────────────────────────────────────────────────
+// ─── 1. CONSULTAR AGENDA ──────────────────────────────────────────────────────
 
 export async function executeConsultarAgenda(
   p: { dias?: number },
@@ -28,7 +30,6 @@ export async function executeConsultarAgenda(
 ): Promise<string> {
   try {
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
-    
     const [levRes, googleRes, outlookRes] = await Promise.allSettled([
       supabase.rpc('get_calendar_context_for_jarvis', {
         p_user_id: Number(targetId),
@@ -50,6 +51,8 @@ export async function executeConsultarAgenda(
   } catch { return 'Erro ao consultar agenda.'; }
 }
 
+// ─── 2. SALVAR EVENTO (LEV) ───────────────────────────────────────────────────
+
 export async function executeSalvarEvento(
   p: { title?: string; summary?: string; event_date?: string; startTime?: string; category?: string; notes?: string; reminderMinutes?: number; force?: boolean; },
   authUserId: string,
@@ -60,7 +63,6 @@ export async function executeSalvarEvento(
     const anoAtual = new Date().getFullYear();
     let rawDate = (p.event_date || p.startTime || '').trim().replace(' ', 'T');
 
-    // Correção de data/ano
     const anoEvento = parseInt(rawDate.substring(0, 4));
     if (anoEvento > 0 && (anoEvento < anoAtual || isNaN(anoEvento))) {
       rawDate = String(anoAtual) + rawDate.substring(4);
@@ -72,18 +74,13 @@ export async function executeSalvarEvento(
     const startISO = startDate.toISOString();
     const endISO = new Date(startDate.getTime() + 3600000).toISOString();
 
-    // Radar de conflitos usando o ID Efetivo
     if (!p.force) {
-      const { data: conflitos } = await supabase
-        .from('events')
-        .select('title, start_at')
-        .eq('user_id', Number(targetId))
-        .lt('start_at', endISO)
-        .gt('end_at', startISO);
+      const { data: conflitos } = await supabase.from('events').select('title, start_at')
+        .eq('user_id', Number(targetId)).lt('start_at', endISO).gt('end_at', startISO);
 
       if (conflitos?.length) {
         const hora = new Date(conflitos[0].start_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-        return `[CONFLITO] Você já tem "${conflitos[0].title}" às ${hora}. Confirmar mesmo assim?`;
+        return `[ALERTA] Você já tem "${conflitos[0].title}" às ${hora}. Confirmar assim mesmo?`;
       }
     }
 
@@ -103,6 +100,44 @@ export async function executeSalvarEvento(
   } catch (err: any) { return `Erro: ${err.message}`; }
 }
 
+// ─── 3. CRIAR EVENTO GOOGLE (EXTERNO) ─────────────────────────────────────────
+
+export async function executeCriarEventoAgenda(
+  p: { summary: string; startTime: string; reminderMinutes?: number },
+  _authUserId: string,
+  _numericUserId: string
+): Promise<string> {
+  try {
+    return await createGoogleEvent(p.summary, p.startTime, p.reminderMinutes || 30);
+  } catch (err: any) { return `Erro no Google Calendar: ${err.message}`; }
+}
+
+// ─── 4. LISTAR EMAILS ─────────────────────────────────────────────────────────
+
+export async function executeListarEmailsRecentes(
+  p: { filtro?: string },
+  _authUserId: string,
+  _numericUserId: string
+): Promise<string> {
+  try {
+    return await getRecentEmails(p.filtro, 5, true);
+  } catch (err: any) { return `Erro ao buscar emails: ${err.message}`; }
+}
+
+// ─── 5. EXCLUIR EMAIL ─────────────────────────────────────────────────────────
+
+export async function executeExcluirEmail(
+  p: { messageId: string },
+  _authUserId: string,
+  _numericUserId: string
+): Promise<string> {
+  try {
+    return await trashGoogleEmail(p.messageId);
+  } catch (err: any) { return `Erro ao excluir: ${err.message}`; }
+}
+
+// ─── 6. CREATE REMINDER ───────────────────────────────────────────────────────
+
 export async function executeCreateReminder(
   p: { title?: string; message?: string; type?: string; scheduled_time?: string; delay_minutes?: number; frequency?: string; },
   authUserId: string,
@@ -115,7 +150,6 @@ export async function executeCreateReminder(
     let freq = p.frequency;
     let scheduled_time = p.scheduled_time;
 
-    // Inteligência de Tempo e Frequência
     if (freq?.toLowerCase().includes('útil')) freq = 'weekdays';
 
     if (scheduled_time) {
@@ -163,6 +197,8 @@ export async function executeCreateReminder(
   } catch (err: any) { return `Erro: ${err.message}`; }
 }
 
+// ─── 7. CONSULTAR LEMBRETES ───────────────────────────────────────────────────
+
 export async function executeConsultarLembretes(
   _p: any,
   authUserId: string,
@@ -170,18 +206,15 @@ export async function executeConsultarLembretes(
 ): Promise<string> {
   try {
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
-    const { data: reminders } = await supabase
-      .from('reminders')
-      .select('title, scheduled_time')
-      .eq('user_id', Number(targetId))
-      .eq('status', 'pending')
-      .gte('scheduled_time', new Date().toISOString())
-      .order('scheduled_time', { ascending: true });
+    const { data: reminders } = await supabase.from('reminders').select('title, scheduled_time')
+      .eq('user_id', Number(targetId)).eq('status', 'pending').gte('scheduled_time', new Date().toISOString()).order('scheduled_time', { ascending: true });
 
     if (!reminders?.length) return 'Nenhum lembrete pendente.';
     return reminders.map(r => `- ${r.title} (${new Date(r.scheduled_time).toLocaleString('pt-BR')})`).join('\n');
   } catch { return 'Erro ao buscar lembretes.'; }
 }
+
+// ─── 8. DELETAR EVENTO ────────────────────────────────────────────────────────
 
 export async function executeDeletarEvento(p: { query: string }, authUserId: string, numericUserId: string): Promise<string> {
   const targetId = await getEffectiveUserId(authUserId, numericUserId);
@@ -189,11 +222,13 @@ export async function executeDeletarEvento(p: { query: string }, authUserId: str
   return error ? 'Erro ao excluir.' : `Evento "${p.query}" removido.`;
 }
 
+// ─── 9. CANCELAR LEMBRETE ──────────────────────────────────────────────────────
+
 export async function executeCancelarLembrete(p: { query: string }, authUserId: string, numericUserId: string): Promise<string> {
   const targetId = await getEffectiveUserId(authUserId, numericUserId);
   const { data: r } = await supabase.from('reminders').select('id, qstash_message_id, title').eq('user_id', Number(targetId)).ilike('title', `%${p.query}%`).eq('status', 'pending').maybeSingle();
   if (!r) return 'Lembrete não encontrado.';
   if (r.qstash_message_id) await cancelReminderOnQStash(r.qstash_message_id);
   await supabase.from('reminders').update({ status: 'cancelled' }).eq('id', r.id);
-  return `Lembrete "${r.title}" cancelado.`;
+  return `Lembrete "${r.title}" cancelado com sucesso.`;
 }
