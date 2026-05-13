@@ -79,3 +79,20 @@ export async function cancelReminderOnQStash(id: string): Promise<void> {
     console.error('[QStash] Erro ao cancelar (pode já ter sido disparado):', id);
   }
 }
+
+export function frequencyToCron(frequency: string, scheduledTime: string): string | null {
+  const date = new Date(scheduledTime);
+  const min = date.getMinutes();
+  const hour = date.getHours();
+  const dayOfMonth = date.getDate();
+  const month = date.getMonth() + 1;
+  const dayOfWeek = date.getDay(); // 0-6 (Dom-Sab)
+
+  switch (frequency) {
+    case 'daily': return `${min} ${hour} * * *`;
+    case 'weekdays': return `${min} ${hour} * * 1-5`;
+    case 'weekly': return `${min} ${hour} * * ${dayOfWeek}`;
+    case 'monthly': return `${min} ${hour} ${dayOfMonth} * *`;
+    default: return null;
+  }
+}
