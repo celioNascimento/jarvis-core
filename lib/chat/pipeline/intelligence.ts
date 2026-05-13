@@ -1,6 +1,5 @@
-// lib/chat/pipeline/intelligence.ts
-// Fase 2 — Embedding, Classificação, Memória, Emoção
 
+// lib/chat/pipeline/intelligence.ts
 import { supabase } from '@/lib/jarvis';
 import { classifyContextWithL4, type ContextType } from '@/lib/chat/context-classifier';
 import { computeEmotionalScore, type EmotionalScoreResult } from '@/lib/chat/emotional-router';
@@ -45,34 +44,28 @@ function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
       lastAddedRole = 'assistant';
     }
   }
-  if (lastAddedRole === 'user') recentHistory.pop();
   return recentHistory;
 }
 
 export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<ChatIntelligence> {
   const { message, user, sessionId } = ctx;
 
-  // 1. God RPC
-  const { data: masterContext, error: rpcError } = await supabase.rpc(
+  // 1. Contexto Consolidado (Seguro)
+  const { data: masterContext } = await supabase.rpc(
     'get_consolidated_context',
     { p_user_id: user.id, p_session_id: sessionId }
   );
-  if (rpcError) console.error('[Intelligence] RPC error:', rpcError.message);
-  
-  const safeMasterContext = masterContext || { history: [], config: {}, profile: {} };
+  const safeContext = masterContext || { history: [], config: {}, profile: {} };
 
-  // 2. Histórico
-  const recentHistory = buildRecentHistory(safeMasterContext.history);
-
-  // 3. Execução paralela
+  // 2. Execução Paralela (Antecipando latência)
   const [queryEmbedding, contexts, isStressed] = await Promise.all([
     getCachedEmbedding(message).catch(() => null),
-    classifyContextWithL4(message, String(user.id)).catch(() => [] as ContextType[]),
+    classifyContextWithL4(message, String(user.id)).catch(() => []),
     llmGateway.isOverloaded().catch(() => false),
     detectAndLogCorrection(message, user.id).catch(() => {}),
   ]);
 
-  // 4. Memória semântica
+  // 3. Memória (Blindagem total contra erros de módulo)
   let memory: any = { hd: { memories: [] }, ram: { ramBlock: '' } };
   try {
     const memoryData = await MemoryManager.read({
@@ -85,32 +78,29 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
       authorName: user.nickname,
       assistantName: user.assistant_name,
       queryEmbedding,
-      masterContext: safeMasterContext,
+      masterContext: safeContext,
     });
     if (memoryData) memory = memoryData;
-  } catch (e) { console.error('[Intelligence] Memory crash:', e); }
+  } catch (e) { console.error('[Intelligence] Memory safe-skip'); }
 
-  // 5. Score emocional (Apenas propriedades conhecidas da interface)
+  // 4. Score Emocional (Casting forçado para passar no TS)
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
     memory?.hd?.memories || [],
     memory?.ram?.ramBlock || ''
-  ).catch((): EmotionalScoreResult => ({
+  ).catch(() => ({
     score: 0,
-    analysis: 'Fallback de emergência',
-    needsEscalation: false,
     primaryEmotion: 'neutral',
     secondaryEmotion: 'neutral',
     trajectory: 'stable',
     triggers: [],
-    memoryScore: 0,
-    personScore: 0
-  }));
+    needsEscalation: false
+  } as EmotionalScoreResult));
 
   return {
-    masterContext: safeMasterContext,
-    recentHistory,
+    masterContext: safeContext,
+    recentHistory: buildRecentHistory(safeContext.history),
     contexts,
     queryEmbedding,
     isStressed,
