@@ -1,6 +1,6 @@
 // lib/chat/llm-gateway.ts
-// Motor V10.1.0 — Fail-Fast Edition
-// Fila, Semáforo e Fallback de LLM com latência otimizada.
+// Motor V10.2.0 — Fast-Track Edition
+// Fila, Semáforo e Banimento Local de modelos instáveis.
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
@@ -11,107 +11,54 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-// ---------------------------------------------------------------------------
-// Configurações e Tipos
-// ---------------------------------------------------------------------------
 const FALLBACK_MODEL = 'google/gemini-2.5-flash';
+const BAN_TIME_MS = 5 * 60 * 1000; // 5 minutos de "geladeira" para o Pro
+
+// Variável em memória (viva enquanto o container da Vercel durar)
+let localModelBan: { [model: string]: number } = {};
 
 export type PriorityLevel = 1 | 2 | 3 | 4;
 export type DropPolicy    = 'never' | 'if_full';
-
-export interface OpenRouterParams {
-  messages:    any[];
-  tools:       any[];
-  model:       string;
-  temperature: number;
-  timeoutMs:   number;
-  maxTokens?:  number;
-  toolChoice?: any;
-}
 
 export interface LLMTask {
   id:               string; 
   priority:         PriorityLevel;
   dropPolicy:       DropPolicy;
-  openRouterParams: OpenRouterParams;
+  openRouterParams: any;
   dedupPayload?:    string;
 }
 
-// ---------------------------------------------------------------------------
-// Constantes de Performance
-// ---------------------------------------------------------------------------
 const MAX_CONCURRENT   = 3;
 const ACTIVE_KEY       = 'global_llm_active';
-const ACTIVE_TTL_S     = 60;
 const BREAKER_KEY      = 'llm_circuit_breaker';
-const BREAKER_TTL_S    = 60; // Aumentado para 1min para acalmar o Pro
-const DEDUP_TTL_S      = 15;
-const QUEUE_POLL_MS    = 250; // Mais rápido para reduzir latência de fila
-const MAX_QUEUE_SIZE   = 200;
+const QUEUE_POLL_MS    = 250;
 const WAITER_TIMEOUT_S = 45; 
 
-// ---------------------------------------------------------------------------
-// Helpers (Deduplicação e Semáforo)
-// ---------------------------------------------------------------------------
-function dedupKey(taskId: string, payload?: string): string {
-  const suffix = payload
-    ? createHash('sha256').update(payload).digest('hex').slice(0, 16)
-    : 'nopayload';
-  return `llm_dedup:${taskId}:${suffix}`;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-async function atomicIncr(): Promise<number> {
-  await redis.set(ACTIVE_KEY, 0, { nx: true, ex: ACTIVE_TTL_S });
-  const next = await redis.incr(ACTIVE_KEY);
-  await redis.expire(ACTIVE_KEY, ACTIVE_TTL_S);
-  return next;
-}
-
-async function safeDecr(): Promise<void> {
-  try {
-    const val = await redis.decr(ACTIVE_KEY);
-    if (val < 0) await redis.set(ACTIVE_KEY, 0, { ex: ACTIVE_TTL_S });
-  } catch { /* Auto-correção via TTL */ }
-}
-
-// ---------------------------------------------------------------------------
-// Gatekeeper (Core de Execução)
-// ---------------------------------------------------------------------------
 class Gatekeeper {
   
-  async isOverloaded(): Promise<boolean> {
-    try { return ((await redis.get<number>(ACTIVE_KEY)) ?? 0) >= MAX_CONCURRENT; }
-    catch { return false; }
-  }
-
-  private async isBreakerOpen(): Promise<boolean> {
+  private async isBreakerOpen(model: string): Promise<boolean> {
+    // 1. Checa banimento local (mais rápido que Redis)
+    if (localModelBan[model] && Date.now() < localModelBan[model]) return true;
+    
+    // 2. Checa Circuit Breaker global no Redis
     try { return (await redis.get(BREAKER_KEY)) === 'open'; }
     catch { return false; }
   }
 
-  async enqueue(task: LLMTask): Promise<any> {
-    const dk = dedupKey(task.id, task.dedupPayload);
+  private banModel(model: string) {
+    console.warn(`[Gatekeeper] Banindo ${model} localmente por 5 min.`);
+    localModelBan[model] = Date.now() + BAN_TIME_MS;
+  }
 
-    // 1. Dedup rápido
+  async enqueue(task: LLMTask): Promise<any> {
+    const dk = `llm_dedup:${task.id}:${createHash('sha256').update(task.dedupPayload || '').digest('hex').slice(0, 10)}`;
+
+    // 1. Dedup
     const cached = await redis.get(dk).catch(() => null);
     if (cached) return cached;
 
-    // 2. Circuit Breaker e Queue Space
-    if (await this.isBreakerOpen() && task.dropPolicy === 'if_full') {
-      throw new Error('GATEKEEPER_DROPPED_TASK');
-    }
-
-    const queueSize = await redis.zcard('llm_task_queue_sorted');
-    if (queueSize >= MAX_QUEUE_SIZE && task.dropPolicy === 'if_full') {
-      throw new Error('GATEKEEPER_DROPPED_TASK');
-    }
-
-    // 3. Registro na Fila
-    const executionId = `${task.id}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    // 2. Registro na Fila e Semáforo
+    const executionId = `${task.id}:${Date.now()}`;
     const score = task.priority * 1e13 + Date.now();
     await redis.zadd('llm_task_queue_sorted', { score, member: executionId });
 
@@ -121,107 +68,86 @@ class Gatekeeper {
     try {
       while (Date.now() < deadline) {
         const [next] = await redis.zrange('llm_task_queue_sorted', 0, 0);
-        
         if (next === executionId) {
-          const activeCount = await atomicIncr();
-          if (activeCount <= MAX_CONCURRENT) {
+          const count = await redis.incr(ACTIVE_KEY);
+          if (count <= MAX_CONCURRENT) {
             await redis.zrem('llm_task_queue_sorted', executionId);
             myTurn = true;
             break;
-          } else {
-            await safeDecr();
           }
+          await redis.decr(ACTIVE_KEY);
         }
-        await sleep(QUEUE_POLL_MS);
+        await await new Promise(r => setTimeout(r, QUEUE_POLL_MS));
       }
 
       if (!myTurn) throw new Error('GATEKEEPER_TIMEOUT');
 
-      // 4. Execução Otimizada
       return await this.executeWithModelFallback(task, dk);
 
     } finally {
+      await redis.decr(ACTIVE_KEY).catch(() => {});
       if (!myTurn) await redis.zrem('llm_task_queue_sorted', executionId);
     }
   }
 
-  private async executeWithModelFallback(task: LLMTask, dedupKeyStr: string): Promise<any> {
+  private async executeWithModelFallback(task: LLMTask, dk: string): Promise<any> {
     const originalModel = task.openRouterParams.model;
 
+    // ⚡ SEGUNDA CHAMADA PROTEGIDA: Se já falhou antes, nem tenta o Pro agora.
+    if (originalModel !== FALLBACK_MODEL && (await this.isBreakerOpen(originalModel))) {
+      task.openRouterParams.model = FALLBACK_MODEL;
+    }
+
     try {
-      // ⚡ PRE-EMPTIVE FALLBACK: Se o breaker estiver aberto, pula o Pro na hora.
-      if (originalModel !== FALLBACK_MODEL && (await this.isBreakerOpen())) {
-        console.warn(`[Gatekeeper] Breaker aberto para ${originalModel}. Saltando para ${FALLBACK_MODEL}`);
-        throw new Error('RATE_LIMIT_PREEMPTIVE');
-      }
-
-      return await this.executeDirectly(task, dedupKeyStr, false);
+      // Se for o Pro, damos apenas 5 segundos. Se não for, 25s.
+      const currentTimeout = task.openRouterParams.model === FALLBACK_MODEL ? 25000 : 6000;
+      
+      return await this.executeDirectly(task, dk, currentTimeout);
     } catch (error: any) {
-      const isRateLimit = 
-        error?.message?.includes('429') || 
-        error?.status === 429 || 
-        error?.message?.includes('RATE_LIMIT');
+      const is429 = error?.status === 429 || error?.message?.includes('429');
 
-      if (isRateLimit && originalModel !== FALLBACK_MODEL) {
-        // ⚡ FAIL-FAST: Não tenta retry no modelo Pro. Troca instantaneamente.
-        console.warn(`[Gatekeeper] 429 no Pro. Chaveando para ${FALLBACK_MODEL} imediatamente.`);
+      if (is429 && task.openRouterParams.model !== FALLBACK_MODEL) {
+        this.banModel(originalModel); // Bane localmente para não repetir o erro na síntese
+        await redis.set(BREAKER_KEY, 'open', { ex: 60 }); // Avisa o mundo por 1 min
         
         task.openRouterParams.model = FALLBACK_MODEL;
-        task.openRouterParams.timeoutMs = 15000; // Resgate rápido
-        const fbKey = dedupKey(`${task.id}_fb`, JSON.stringify(task.openRouterParams));
-        
-        return await this.executeDirectly(task, fbKey, true);
+        task.openRouterParams.timeoutMs = 20000;
+        return await this.executeDirectly(task, `${dk}_fb`, 20000);
       }
       throw error;
     }
   }
 
-  private async executeDirectly(task: LLMTask, dk: string, isFallback: boolean): Promise<any> {
-    try {
-      // ⚡ ZERO-RETRY no modelo primário para ganhar tempo.
-      const result = await rawCallOpenRouter(
-        task.openRouterParams.messages,
-        task.openRouterParams.tools,
-        task.openRouterParams.model,
-        task.openRouterParams.temperature,
-        task.openRouterParams.timeoutMs,
-        task.openRouterParams.maxTokens,
-        task.openRouterParams.toolChoice,
-      );
-
-      if (result) await redis.set(dk, result, { ex: DEDUP_TTL_S }).catch(() => {});
-      return result;
-
-    } catch (error: any) {
-      if (error?.status === 429) {
-        await redis.set(BREAKER_KEY, 'open', { ex: BREAKER_TTL_S });
-      }
-      throw error;
-    } finally {
-      if (!isFallback) await safeDecr().catch(() => {});
-    }
+  private async executeDirectly(task: LLMTask, dk: string, timeout: number): Promise<any> {
+    const res = await rawCallOpenRouter(
+      task.openRouterParams.messages,
+      task.openRouterParams.tools,
+      task.openRouterParams.model,
+      task.openRouterParams.temperature,
+      timeout,
+      task.openRouterParams.maxTokens
+    );
+    if (res) await redis.set(dk, res, { ex: 15 }).catch(() => {});
+    return res;
   }
 }
 
 export const llmGateway = new Gatekeeper();
 
 export async function callOpenRouterWithPriority(
-  priority:    PriorityLevel,
-  dropPolicy:  DropPolicy,
-  taskId:      string,
-  messages:    any[],
-  tools:       any[],
-  model:       string,
-  temperature: number,
-  timeoutMs:   number = 25_000,
-  maxTokens?:  number,
-  toolChoice?: any,
+  priority: 1|2|3|4,
+  dropPolicy: 'never'|'if_full',
+  taskId: string,
+  messages: any[],
+  tools: any[],
+  model: string,
+  temperature: number
 ): Promise<any> {
   return llmGateway.enqueue({
     id: taskId,
     priority,
     dropPolicy,
-    openRouterParams: { messages, tools, model, temperature, timeoutMs, maxTokens, toolChoice },
-    dedupPayload: JSON.stringify({ messages, model, tools }),
+    openRouterParams: { messages, tools, model, temperature },
+    dedupPayload: JSON.stringify({ messages, model }),
   });
 }
