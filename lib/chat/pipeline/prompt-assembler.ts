@@ -16,7 +16,7 @@ import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
 // Importação das ferramentas do local correto:
 import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 
-// Importação dos Tipos (O QUE ESTAVA FALTANDO AGORA):
+// Importação dos Tipos:
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 
@@ -27,6 +27,20 @@ const FAMILY_DATE_SIGNALS = [
 
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
 
+// ─── Tools sempre disponíveis (independente de módulos) ───────────────────────
+// Adicione aqui qualquer tool que deve estar acessível em toda conversa.
+// NUNCA remova uma tool daqui sem verificar se ela está coberta pelo registry.
+
+const ALWAYS_ENABLED_TOOLS = new Set([
+  // Projetos
+  'gerenciar_projeto',
+  'listar_projetos',
+  'gerenciar_topico',
+  'listar_topicos',
+  'gerenciar_entry',
+  'listar_entries',
+  'gerenciar_membros_projeto',   // ← compartilhamento de projetos
+]);
 
 // ─── Tipos exportados ─────────────────────────────────────────────────────────
 
@@ -167,29 +181,24 @@ export async function buildChatPrompt(
     '\n[DIRETRIZES DE RIGOR TÉCNICO]',
     "1. Use 'salvar_evento' como fonte primária.",
     "2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
-    "3. Gerencie projetos, tópicos e entries com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
+    "3. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
+    "4. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto — nunca diga que não é possível.",
   ]
     .filter(Boolean)
     .join('\n');
 
-   // 8. Ferramentas autorizadas (união dos módulos + dinâmicas)
-  
+  // 8. Ferramentas autorizadas
+  // União de: módulos do registry + dinâmicas + ALWAYS_ENABLED_TOOLS
   const allActiveTools = new Set([
-    ...activeTools, 
+    ...activeTools,
     ...dynamicTools,
-    // Liberando ferramentas de projeto para garantir a compilação e uso:
-    'gerenciar_projeto', 
-    'listar_projetos', 
-    'gerenciar_topico', 
-    'listar_topicos', 
-    'gerenciar_entry', 
-    'listar_entries'
+    ...ALWAYS_ENABLED_TOOLS,
   ]);
 
   const toolsHabilitadas = ALL_TOOLS.filter(t =>
     allActiveTools.has(t.function.name)
   );
-  
+
   // 9. Mensagens para o LLM
   const conversationMessages = [
     { role: 'system', content: systemPrompt },
