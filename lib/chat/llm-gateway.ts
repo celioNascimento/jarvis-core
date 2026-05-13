@@ -16,7 +16,7 @@ let localModelBan: { [model: string]: number } = {};
 export type PriorityLevel = 1 | 2 | 3 | 4;
 export type DropPolicy    = 'never' | 'if_full';
 
-// Função de hash compatível com Edge Runtime
+// Função de hash compatível com Edge Runtime (evita dependência de 'crypto')
 function generateSimpleHash(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
