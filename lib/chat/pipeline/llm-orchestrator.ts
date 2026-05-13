@@ -1,125 +1,165 @@
-// lib/chat/pipeline/llm-orchestrator.ts
-// Fase 4 — Ciclo LLM + Tool Loop
+// lib/chat/llm-gateway.ts
+// Motor V10.2.1 — Fast-Track Edition (Build Fixed)
+// Fila, Semáforo e Banimento Local de modelos instáveis.
 
-import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
-import { executeTool } from '@/lib/chat/tools-executor';
-import type { ChatRequestContext } from './request-context';
-import type { ChatPrompt } from './prompt-assembler';
+import { Redis } from '@upstash/redis';
+import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
+import { createHash } from 'crypto';
 
-// ─── Tipos Internos ───────────────────────────────────────────────────────────
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL!,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+});
 
-interface ToolCallResult {
-  tc: any;
-  result: string;
+const FALLBACK_MODEL = 'google/gemini-2.5-flash';
+const BAN_TIME_MS = 5 * 60 * 1000; 
+
+let localModelBan: { [model: string]: number } = {};
+
+export type PriorityLevel = 1 | 2 | 3 | 4;
+export type DropPolicy    = 'never' | 'if_full';
+
+export interface LLMTask {
+  id:               string; 
+  priority:         PriorityLevel;
+  dropPolicy:       DropPolicy;
+  openRouterParams: {
+    messages:    any[];
+    tools:       any[];
+    model:       string;
+    temperature: number;
+    timeoutMs:   number;
+    maxTokens?:  number;
+    toolChoice?: any;
+  };
+  dedupPayload?:    string;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+const MAX_CONCURRENT   = 3;
+const ACTIVE_KEY       = 'global_llm_active';
+const BREAKER_KEY      = 'llm_circuit_breaker';
+const QUEUE_POLL_MS    = 250;
+const WAITER_TIMEOUT_S = 45; 
 
-async function executeToolCalls(
-  toolCalls: any[],
-  authUserId: string,
-  numericUserId: string,
-  contextSnapshot: Record<string, any>[]
-): Promise<ToolCallResult[]> {
-  return Promise.all(
-    toolCalls.map(async (tc: any) => ({
-      tc,
-      result: await executeTool(tc, authUserId, numericUserId, contextSnapshot),
-    }))
-  );
-}
-
-function buildToolCallMessages(
-  firstContent: string | null,
-  toolCalls: any[],
-  toolResults: ToolCallResult[]
-): any[] {
-  return [
-    {
-      role: 'assistant',
-      content: firstContent || null,
-      tool_calls: toolCalls.map((tc: any) => ({
-        id:       tc.id,
-        type:     'function',
-        function: { name: tc.function.name, arguments: tc.function.arguments },
-      })),
-    },
-    ...toolResults.map((tr: any) => ({
-      role:         'tool',
-      tool_call_id: tr.tc.id,
-      content:      typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result),
-    })),
-  ];
-}
-
-function appendResilienceNotice(text: string, requestedModel: string, usedModel: string): string {
-  // Só adiciona a nota se o usuário pediu o PRO e o sistema entregou o FLASH (fallback)
-  const isFallback = requestedModel.includes('pro') && usedModel.includes('flash');
+class Gatekeeper {
   
-  if (!isFallback) return text;
-  
-  const notice = `\n\n---\n*💡 Nota: O motor principal (Pro) está instável. Resposta gerada via motor de reserva (Flash).*`;
-  return text + notice;
-}
-
-// ─── Entrypoint Único ─────────────────────────────────────────────────────────
-
-export async function runLLMOrchestrator(
-  ctx: ChatRequestContext,
-  prompt: ChatPrompt
-): Promise<string> {
-  const { user, requestSignature } = ctx;
-  const { conversationMessages, tools, model: requestedModel } = prompt;
-  const contextSnapshot = conversationMessages.slice(-3);
-
-  // 1. Primeira chamada ao Gateway
-  const firstResponse = await callOpenRouterWithPriority(
-    1,
-    'never',
-    requestSignature,
-    conversationMessages,
-    tools,
-    requestedModel,
-    0.7
-  );
-
-  // Se não houve tool calls, tratamos a resposta direta
-  if (!firstResponse.toolCalls?.length) {
-    const content = firstResponse.content || 'Entendido.';
-    return appendResilienceNotice(content, requestedModel, firstResponse.modelUsed || requestedModel);
+  private async isBreakerOpen(model: string): Promise<boolean> {
+    if (localModelBan[model] && Date.now() < localModelBan[model]) return true;
+    try { return (await redis.get(BREAKER_KEY)) === 'open'; }
+    catch { return false; }
   }
 
-  // 2. Tool loop (Execução das ferramentas)
-  const toolResults = await executeToolCalls(
-    firstResponse.toolCalls,
-    user.auth_user_id,
-    String(user.id),
-    contextSnapshot
-  );
+  private banModel(model: string) {
+    console.warn(`[Gatekeeper] Banindo ${model} localmente.`);
+    localModelBan[model] = Date.now() + BAN_TIME_MS;
+  }
 
-  const toolMessages = buildToolCallMessages(
-    firstResponse.content,
-    firstResponse.toolCalls,
-    toolResults
-  );
+  async enqueue(task: LLMTask): Promise<any> {
+    const dk = `llm_dedup:${task.id}:${createHash('sha256').update(task.dedupPayload || '').digest('hex').slice(0, 10)}`;
 
-  // 3. Segunda chamada (Síntese final)
-  const secondResponse = await callOpenRouterWithPriority(
-    1,
-    'never',
-    `${requestSignature}_synth`,
-    [...conversationMessages, ...toolMessages],
-    [],
-    requestedModel,
-    0.7
-  );
+    const cached = await redis.get(dk).catch(() => null);
+    if (cached) return cached;
 
-  const finalContent = secondResponse.content || 'Entendido.';
+    const executionId = `${task.id}:${Date.now()}`;
+    const score = task.priority * 1e13 + Date.now();
+    await redis.zadd('llm_task_queue_sorted', { score, member: executionId });
 
-  // Retorna o conteúdo com a nota apenas se houve troca forçada de modelo
-  return appendResilienceNotice(
-    finalContent, 
-    requestedModel, 
-    secondResponse.modelUsed || requestedModel
-  );
+    const deadline = Date.now() + WAITER_TIMEOUT_S * 1000;
+    let myTurn = false;
+
+    try {
+      while (Date.now() < deadline) {
+        const [next] = await redis.zrange('llm_task_queue_sorted', 0, 0);
+        if (next === executionId) {
+          const count = await redis.incr(ACTIVE_KEY);
+          if (count <= MAX_CONCURRENT) {
+            await redis.zrem('llm_task_queue_sorted', executionId);
+            myTurn = true;
+            break;
+          }
+          await redis.decr(ACTIVE_KEY);
+        }
+        await new Promise(r => setTimeout(r, QUEUE_POLL_MS));
+      }
+
+      if (!myTurn) throw new Error('GATEKEEPER_TIMEOUT');
+
+      return await this.executeWithModelFallback(task, dk);
+
+    } finally {
+      await redis.decr(ACTIVE_KEY).catch(() => {});
+      if (!myTurn) await redis.zrem('llm_task_queue_sorted', executionId);
+    }
+  }
+
+  private async executeWithModelFallback(task: LLMTask, dk: string): Promise<any> {
+    const originalModel = task.openRouterParams.model;
+
+    if (originalModel !== FALLBACK_MODEL && (await this.isBreakerOpen(originalModel))) {
+      task.openRouterParams.model = FALLBACK_MODEL;
+    }
+
+    try {
+      // Timeout agressivo para o modelo Pro (6s)
+      const currentTimeout = task.openRouterParams.model === FALLBACK_MODEL 
+        ? task.openRouterParams.timeoutMs 
+        : 6000;
+      
+      return await this.executeDirectly(task, dk, currentTimeout);
+    } catch (error: any) {
+      const is429 = error?.status === 429 || error?.message?.includes('429');
+
+      if (is429 && task.openRouterParams.model !== FALLBACK_MODEL) {
+        this.banModel(originalModel);
+        await redis.set(BREAKER_KEY, 'open', { ex: 60 });
+        
+        task.openRouterParams.model = FALLBACK_MODEL;
+        return await this.executeDirectly(task, `${dk}_fb`, 20000);
+      }
+      throw error;
+    }
+  }
+
+  private async executeDirectly(task: LLMTask, dk: string, timeout: number): Promise<any> {
+    const res = await rawCallOpenRouter(
+      task.openRouterParams.messages,
+      task.openRouterParams.tools,
+      task.openRouterParams.model,
+      task.openRouterParams.temperature,
+      timeout,
+      task.openRouterParams.maxTokens,
+      task.openRouterParams.toolChoice
+    );
+    
+    // Adicionamos o modelo usado no retorno para o Orchestrator poder sinalizar o usuário
+    const enrichedRes = typeof res === 'object' ? { ...res, modelUsed: task.openRouterParams.model } : res;
+
+    if (res) await redis.set(dk, enrichedRes, { ex: 15 }).catch(() => {});
+    return enrichedRes;
+  }
+}
+
+export const llmGateway = new Gatekeeper();
+
+export async function callOpenRouterWithPriority(
+  priority: PriorityLevel,
+  dropPolicy: DropPolicy,
+  taskId: string,
+  messages: any[],
+  tools: any[],
+  model: string,
+  temperature: number,
+  timeoutMs: number = 25000,
+  maxTokens?: number,
+  toolChoice?: any
+): Promise<any> {
+  const openRouterParams = { messages, tools, model, temperature, timeoutMs, maxTokens, toolChoice };
+  
+  return llmGateway.enqueue({
+    id: taskId,
+    priority,
+    dropPolicy,
+    openRouterParams,
+    dedupPayload: JSON.stringify({ messages, model, tools }),
+  });
 }
