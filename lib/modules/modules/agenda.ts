@@ -1,6 +1,7 @@
 // lib/modules/modules/agenda.ts
 import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
+import { getEffectiveUserId } from '../relationships/identity';
 
 export const ModuloAgenda: ModuleDefinition = {
   id: 'agenda_lev',
@@ -12,10 +13,13 @@ export const ModuloAgenda: ModuleDefinition = {
     contexts: ['agenda', 'evento'], // 👈 REMOVIDO o 'lembrete' daqui para respeitar a Tipagem
     keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos|lembrete|me lembra|avisar/i
   },
-  buildContextBlock: async (opts) => {
+ buildContextBlock: async (opts) => {
     try {
+      // Resolve o ID real para ler a agenda do App
+      const targetId = await getEffectiveUserId(opts.userId, opts.userId);
+
       const { data, error } = await supabase.rpc('get_calendar_context_for_jarvis', {
-        p_user_id: Number(opts.userId),
+        p_user_id: Number(targetId), // Usa o ID Efetivo
         p_days: 7,
       });
 
