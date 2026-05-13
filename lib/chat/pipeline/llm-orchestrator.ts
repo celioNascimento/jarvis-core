@@ -19,7 +19,6 @@ import type { ChatPrompt } from './prompt-assembler';
 const FALLBACK_MODEL = 'google/gemini-2.5-flash';
 
 // ─── Tipos Injetados (Blindagem TypeScript) ───────────────────────────────────
-// Pegamos exatamente o que o seu llm-gateway espera, sem adivinhações.
 type ORPriority = Parameters<typeof callOpenRouterWithPriority>[0];
 type ORCachePolicy = Parameters<typeof callOpenRouterWithPriority>[1];
 
@@ -73,7 +72,7 @@ function buildToolCallMessages(
   ];
 }
 
-// ─── Wrapper Anti-RateLimit (429) ─────────────────────────────────────────────
+// ─── Wrapper Anti-Falhas (Fallback Incondicional) ─────────────────────────────
 
 async function callWithFallback(
   priority: ORPriority,
@@ -96,22 +95,20 @@ async function callWithFallback(
       temperature
     );
   } catch (error: any) {
-    // 2. Interceptador de Rate Limit (Erro 429)
-    const isRateLimit = 
-      error?.status === 429 || 
-      error?.statusCode === 429 || 
-      error?.message?.includes('429');
+    // 2. Converte o erro oculto em string para podermos logar na Vercel e debugar futuramente
+    const errorDetails = error?.message || error?.name || String(error);
 
-    // Se bateu no limite e ainda não estava usando o modelo de resgate...
-    if (isRateLimit && primaryModel !== FALLBACK_MODEL) {
-      console.warn(`[Orchestrator] Limite atingido (429) no modelo ${primaryModel}. Desviando para ${FALLBACK_MODEL}...`);
+    // 3. FALLBACK INCONDICIONAL: Se o modelo primário engasgar por QUALQUER motivo
+    // e nós ainda não estivermos usando o modelo de resgate, fazemos a troca.
+    if (primaryModel !== FALLBACK_MODEL) {
+      console.warn(`[Orchestrator] Falha no modelo ${primaryModel} (${errorDetails}). Acionando Fallback para ${FALLBACK_MODEL}...`);
       
       try {
-        // 3. Executa a chamada de resgate imediatamente
+        // Executa a chamada de resgate imediatamente
         return await callOpenRouterWithPriority(
           priority,
           cachePolicy,
-          `${requestSignature}_fallback`, // Muda a assinatura para não cruzar logs/cache
+          `${requestSignature}_fallback_${Date.now()}`, // Sufixo de timestamp para não bugar o cache
           messages,
           tools,
           FALLBACK_MODEL,
@@ -123,7 +120,8 @@ async function callWithFallback(
       }
     }
 
-    // Se o erro for outro (500, timeout, token inválido), joga pra cima
+    // Se já era o fallback falhando, não tem o que fazer a não ser avisar o sistema
+    console.error(`[Orchestrator] Falha Fatal no LLM de Resgate:`, error);
     throw error;
   }
 }
@@ -177,7 +175,7 @@ export async function runLLMOrchestrator(
     `${requestSignature}_synth`,
     [...conversationMessages, ...toolMessages],
     [],           // sem ferramentas na chamada de síntese
-    model,        // Note que passamos 'model' de novo; o helper cuida do fallback se precisar
+    model,        
     0.7
   );
 
