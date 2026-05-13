@@ -6,10 +6,14 @@ import { executeTool } from '@/lib/chat/tools-executor';
 import type { ChatRequestContext } from './request-context';
 import type { ChatPrompt } from './prompt-assembler';
 
+// ─── Tipos Internos ───────────────────────────────────────────────────────────
+
 interface ToolCallResult {
   tc: any;
   result: string;
 }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function executeToolCalls(
   toolCalls: any[],
@@ -48,30 +52,44 @@ function buildToolCallMessages(
   ];
 }
 
+function appendResilienceNotice(text: string, requestedModel: string, usedModel: string): string {
+  // Só adiciona a nota se o usuário pediu o PRO e o sistema entregou o FLASH (fallback)
+  const isFallback = requestedModel.includes('pro') && usedModel.includes('flash');
+  
+  if (!isFallback) return text;
+  
+  const notice = `\n\n---\n*💡 Nota: O motor principal (Pro) está instável. Resposta gerada via motor de reserva (Flash).*`;
+  return text + notice;
+}
+
+// ─── Entrypoint Único ─────────────────────────────────────────────────────────
+
 export async function runLLMOrchestrator(
   ctx: ChatRequestContext,
   prompt: ChatPrompt
 ): Promise<string> {
   const { user, requestSignature } = ctx;
-  const { conversationMessages, tools, model } = prompt;
+  const { conversationMessages, tools, model: requestedModel } = prompt;
   const contextSnapshot = conversationMessages.slice(-3);
 
-  // ── Primeira chamada (Direto para o Gateway) ─────────────────────────────
+  // 1. Primeira chamada ao Gateway
   const firstResponse = await callOpenRouterWithPriority(
-    1, // PriorityLevel (Tipagem corrigida no Gateway)
+    1,
     'never',
     requestSignature,
     conversationMessages,
     tools,
-    model,
+    requestedModel,
     0.7
   );
 
+  // Se não houve tool calls, tratamos a resposta direta
   if (!firstResponse.toolCalls?.length) {
-    return firstResponse.content || 'Entendido.';
+    const content = firstResponse.content || 'Entendido.';
+    return appendResilienceNotice(content, requestedModel, firstResponse.modelUsed || requestedModel);
   }
 
-  // ── Tool loop ─────────────────────────────────────────────────────────────
+  // 2. Tool loop (Execução das ferramentas)
   const toolResults = await executeToolCalls(
     firstResponse.toolCalls,
     user.auth_user_id,
@@ -85,58 +103,23 @@ export async function runLLMOrchestrator(
     toolResults
   );
 
-  // ── Segunda chamada (Síntese) ─────────────────────────────────────────────
+  // 3. Segunda chamada (Síntese final)
   const secondResponse = await callOpenRouterWithPriority(
     1,
     'never',
     `${requestSignature}_synth`,
     [...conversationMessages, ...toolMessages],
     [],
-    model,
+    requestedModel,
     0.7
   );
 
-  return secondResponse.content || 'Entendido.';
-}
+  const finalContent = secondResponse.content || 'Entendido.';
 
-function appendResilienceNotice(text: string, wasFallback: boolean): string {
-  if (!wasFallback) return text;
-  
-  // Nota discreta em itálico ao final da resposta
-  const notice = `\n\n---\n*💡 Nota: O motor principal (Pro) está instável no momento. Resposta gerada via motor de reserva (Flash).*`;
-  return text + notice;
-}
-
-export async function runLLMOrchestrator(
-  ctx: ChatRequestContext,
-  prompt: ChatPrompt
-): Promise<string> {
-  // ... lógica anterior ...
-
-  // Chamada de síntese (Segunda chamada)
-  const secondResponse = await callOpenRouterWithPriority(
-    1 as ORPriority,
-    'never' as ORCachePolicy,
-    `${requestSignature}_synth`,
-    [...conversationMessages, ...toolMessages],
-    [],           
-    model,        
-    0.7
+  // Retorna o conteúdo com a nota apenas se houve troca forçada de modelo
+  return appendResilienceNotice(
+    finalContent, 
+    requestedModel, 
+    secondResponse.modelUsed || requestedModel
   );
-
-  // Verificamos se o Gateway retornou o nome do modelo usado (se você alterar o gateway para retornar isso)
-  // Ou simplesmente checamos se o tempo de resposta foi de um fallback.
-  
-  // Uma forma simples é verificar se o gateway nos avisou.
-  // Se o gateway retornou a resposta, vamos apenas garantir que ela chegue.
-  
-  let finalContent = secondResponse.content || 'Entendido.';
-
-  // Se o modelo que o prompt pediu (model) for diferente do que o 
-  // Gateway realmente usou, nós sinalizamos.
-  if (secondResponse.modelUsed && secondResponse.modelUsed === 'google/gemini-2.5-flash' && model !== 'google/gemini-2.5-flash') {
-     finalContent = appendResilienceNotice(finalContent, true);
-  }
-
-  return finalContent;
 }
