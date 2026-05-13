@@ -1,6 +1,5 @@
 // lib/chat/llm-gateway.ts
-// Motor V10.0.2 — Serverless-Native: Execução síncrona com fila baseada em Semáforo Redis.
-// Corrige o bug de congelamento (Worker Zombie) em ambientes Vercel.
+// Motor V10.0.3 — Serverless-Native: Fila, Semáforo e Fallback de LLM Integrado.
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
@@ -10,6 +9,11 @@ const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
+
+// ---------------------------------------------------------------------------
+// Configurações
+// ---------------------------------------------------------------------------
+const FALLBACK_MODEL = 'google/gemini-2.5-flash';
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -164,12 +168,12 @@ class Gatekeeper {
           const activeCount = await atomicIncr();
           
           if (activeCount <= MAX_CONCURRENT) {
-            // Slot garantido. Sai da fila para liberar espaço aos próximos.
+            // Slot garantido. Sai da fila.
             await redis.zrem('llm_task_queue_sorted', executionId);
             myTurn = true;
             break;
           } else {
-            // Fila andou, mas limite de concorrência global atingido.
+            // Limite global atingido, recua.
             await safeDecr();
           }
         }
@@ -181,26 +185,58 @@ class Gatekeeper {
         throw new Error('GATEKEEPER_TIMEOUT');
       }
 
-      // Execução síncrona diretamente na mesma thread!
-      return await this.executeDirectly(task, dk);
+      // 5. Execução (Com Fallback de Modelo Integrado)
+      return await this.executeWithModelFallback(task, dk);
 
     } finally {
       if (!myTurn) {
-        // Timeout ou erro crítico antes de conseguir o slot: limpa o rastro
         await redis.zrem('llm_task_queue_sorted', executionId);
       }
     }
   }
 
-  private async executeDirectly(task: LLMTask, dedupKeyStr: string): Promise<any> {
-    const maxAttempts = task.priority === 1 ? 2 : 1;
+  // ─── LÓGICA DE FALLBACK INCORPORADA NO GATEWAY ──────────────────────────────
+  private async executeWithModelFallback(task: LLMTask, dedupKeyStr: string): Promise<any> {
+    const originalModel = task.openRouterParams.model;
+
+    try {
+      // Tenta com a lógica de retry/breaker padrão
+      return await this.executeDirectly(task, dedupKeyStr);
+    } catch (error: any) {
+      const isRateLimit = 
+        error?.message?.includes('429') || 
+        error?.status === 429 || 
+        error?.message?.includes('RATE_LIMIT_EXCEEDED');
+
+      // Se falhou por Rate Limit e ainda não estávamos usando o tanque de guerra
+      if (isRateLimit && originalModel !== FALLBACK_MODEL) {
+        console.warn(`[Gatekeeper] Fallback ativado. ${originalModel} exaurido. Modificando para ${FALLBACK_MODEL}...`);
+        
+        // Altera o modelo da task para o fallback
+        task.openRouterParams.model = FALLBACK_MODEL;
+        
+        // Recalcula o cache key pois o payload mudou
+        const newDedupPayload = JSON.stringify(task.openRouterParams);
+        const newDedupKeyStr = dedupKey(`${task.id}_fallback`, newDedupPayload);
+
+        // Tenta mais UMA vez direto (sem retries do gateway para não estourar tempo da Vercel)
+        return await this.executeDirectly(task, newDedupKeyStr, true);
+      }
+
+      throw error;
+    }
+  }
+
+  private async executeDirectly(task: LLMTask, dedupKeyStr: string, isFallbackCall = false): Promise<any> {
+    // Se for a chamada de resgate, tenta apenas 1 vez rápido. Se for normal, usa os retries de prioridade.
+    const maxAttempts = isFallbackCall ? 1 : (task.priority === 1 ? 2 : 1);
     let attempts = 0;
     let result: any;
 
     try {
       while (attempts < maxAttempts) {
         try {
-          console.log(`[Gatekeeper] Executando diretamente: ${task.id} (Prio: ${task.priority})`);
+          console.log(`[Gatekeeper] Executando: ${task.id} | Modelo: ${task.openRouterParams.model} (Prio: ${task.priority})`);
           result = await rawCallOpenRouter(
             task.openRouterParams.messages,
             task.openRouterParams.tools,
@@ -210,22 +246,24 @@ class Gatekeeper {
             task.openRouterParams.maxTokens,
             task.openRouterParams.toolChoice,
           );
-          break;
+          break; // Sucesso, sai do loop
         } catch (error: any) {
           attempts++;
           const isRateLimit = error?.message?.includes('429') || error?.status === 429;
 
           if (isRateLimit) {
+            // Dispara o breaker no Redis avisando as outras requisições
             await redis.set(BREAKER_KEY, 'open', { ex: BREAKER_TTL_S });
+            
             if (attempts < maxAttempts) {
               const delay = Math.pow(2, attempts) * 1000 + Math.random() * 500;
-              console.warn(`[Gatekeeper] ⚠️ Rate limit. Aguardando ${delay.toFixed(0)}ms...`);
+              console.warn(`[Gatekeeper] ⚠️ Rate limit em ${task.openRouterParams.model}. Retry em ${delay.toFixed(0)}ms...`);
               await sleep(delay);
             } else {
               throw new Error('RATE_LIMIT_EXCEEDED');
             }
           } else {
-            throw error;
+            throw error; // Erro 500, Auth, etc. Joga direto pra cima.
           }
         }
       }
@@ -237,8 +275,13 @@ class Gatekeeper {
       return result;
 
     } finally {
-      // Sempre libera o slot de concorrência global!
-      await safeDecr();
+      // Sempre libera o slot global, independentemente de sucesso ou erro!
+      // Usamos um try/catch aqui para evitar que erro de decr mascare o erro original
+      if (!isFallbackCall) {
+        // Só decrementa na chamada original, pois o executeWithModelFallback 
+        // já segura o slot durante toda a operação (original + fallback).
+        await safeDecr().catch(() => {});
+      }
     }
   }
 }
@@ -249,9 +292,6 @@ class Gatekeeper {
 
 export const llmGateway = new Gatekeeper();
 
-/**
- * Ponto de entrada público atualizado.
- */
 export async function callOpenRouterWithPriority(
   priority:    PriorityLevel,
   dropPolicy:  DropPolicy,
