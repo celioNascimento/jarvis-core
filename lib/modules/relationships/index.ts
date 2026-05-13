@@ -2,3 +2,4 @@
 export * from './identity';
 export * from './family';
 export * from './permissions';
+export * from './resolution'
