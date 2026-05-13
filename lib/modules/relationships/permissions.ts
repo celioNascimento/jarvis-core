@@ -1,6 +1,7 @@
 // lib/modules/relationships/permissions.ts
 import { supabase } from '@/lib/jarvis';
 
+// ESTA É A DEFINIÇÃO QUE ESTÁ FALTANDO:
 export interface PartnerIdentity {
   bigint_id: string;
   auth_uuid: string;
@@ -8,9 +9,12 @@ export interface PartnerIdentity {
 }
 
 /**
- * Busca todos os parceiros ativos que possuem compartilhamento de compras habilitado.
+ * Busca parceiros ativos com base em uma chave específica de configuração
  */
-export async function getActiveShoppingPartners(authUUID: string): Promise<PartnerIdentity[]> {
+export async function getActivePartnersBySetting(
+  authUUID: string, 
+  settingKey: 'agenda_enabled' | 'shopping_enabled' | 'finances_enabled'
+): Promise<PartnerIdentity[]> {
   const { data: relationships } = await supabase
     .from('relationships')
     .select('user_id_a, user_id_b, contact_name, settings')
@@ -18,7 +22,7 @@ export async function getActiveShoppingPartners(authUUID: string): Promise<Partn
     .or(`user_id_a.eq.${authUUID},user_id_b.eq.${authUUID}`);
 
   const activeUUIDs = (relationships ?? [])
-    .filter(r => r.settings?.shopping_enabled === true)
+    .filter(r => r.settings?.[settingKey] === true)
     .map(r => r.user_id_a === authUUID ? r.user_id_b : r.user_id_a);
 
   if (activeUUIDs.length === 0) return [];

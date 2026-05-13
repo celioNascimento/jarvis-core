@@ -1,6 +1,7 @@
 // lib/modules/compras.ts
 import type { ModuleDefinition } from '../types';
 import { supabase } from '@/lib/jarvis';
+import { getEffectiveUserId } from '../../modules/relationships';
 
 export const ModuloCompras: ModuleDefinition = {
   id: 'compras',
@@ -13,8 +14,10 @@ export const ModuloCompras: ModuleDefinition = {
     keywords: /comprar|lista|mercado|item|preciso de|material|insumo|reforma/i
   },
 
-  buildContextBlock: async (opts) => {
-    // Busca itens pendentes vinculando com a tabela de projetos
+ buildContextBlock: async (opts) => {
+    // 1. Resolve o ID real para que o Jarvis enxergue o que o App mostra
+    const effectiveId = await getEffectiveUserId(opts.userId, opts.userId);
+
     const { data, error } = await supabase
       .from('shopping_items')
       .select(`
@@ -23,7 +26,7 @@ export const ModuloCompras: ModuleDefinition = {
         project_id,
         projects ( name, tag )
       `)
-      .eq('user_id', opts.userId)
+      .eq('user_id', effectiveId) 
       .eq('done', false)
       .eq('archived', false);
 
