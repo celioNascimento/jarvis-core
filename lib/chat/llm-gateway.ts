@@ -1,4 +1,7 @@
 // lib/chat/llm-gateway.ts
+// Motor V10.2.2 — Fast-Track Edition
+// Fila, Semáforo e Fallback com Export Corrigido.
+
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
 import { createHash } from 'crypto';
@@ -16,6 +19,13 @@ export type PriorityLevel = 1 | 2 | 3 | 4;
 export type DropPolicy    = 'never' | 'if_full';
 
 class Gatekeeper {
+  async isOverloaded(): Promise<boolean> {
+    try {
+      const count = (await redis.get<number>('global_llm_active')) ?? 0;
+      return count >= 3;
+    } catch { return false; }
+  }
+
   async enqueue(task: any): Promise<any> {
     const dk = `llm_dedup:${task.id}:${createHash('sha256').update(task.dedupPayload || '').digest('hex').slice(0, 10)}`;
     const cached = await redis.get(dk).catch(() => null);
@@ -52,6 +62,7 @@ class Gatekeeper {
     const originalModel = task.params.model;
     const isBanned = localModelBan[originalModel] && Date.now() < localModelBan[originalModel];
     
+    // Fallback preventivo (se o breaker ou ban local estiverem ativos)
     if (originalModel !== FALLBACK_MODEL && (isBanned || (await redis.get(BREAKER_KEY)) === 'open')) {
       task.params.model = FALLBACK_MODEL;
     }
@@ -61,7 +72,7 @@ class Gatekeeper {
       return await this.executeDirectly(task, dk, timeout);
     } catch (error: any) {
       if ((error?.status === 429 || error?.message?.includes('429')) && task.params.model !== FALLBACK_MODEL) {
-        localModelBan[originalModel] = Date.now() + 300000;
+        localModelBan[originalModel] = Date.now() + 300000; // 5 min de geladeira
         await redis.set(BREAKER_KEY, 'open', { ex: 60 });
         task.params.model = FALLBACK_MODEL;
         return await this.executeDirectly(task, `${dk}_fb`, 20000);
@@ -78,13 +89,22 @@ class Gatekeeper {
   }
 }
 
-const gatekeeper = new Gatekeeper();
+// ─── EXPORTAÇÃO CORRIGIDA PARA O INTELLIGENCE.TS ───
+export const llmGateway = new Gatekeeper();
 
 export async function callOpenRouterWithPriority(
-  priority: PriorityLevel, dropPolicy: DropPolicy, taskId: string, messages: any[], tools: any[], model: string, temperature: number, 
-  timeoutMs: number = 25000, maxTokens?: number, toolChoice?: any
+  priority: PriorityLevel, 
+  dropPolicy: DropPolicy, 
+  taskId: string, 
+  messages: any[], 
+  tools: any[], 
+  model: string, 
+  temperature: number, 
+  timeoutMs: number = 25000, 
+  maxTokens?: number, 
+  toolChoice?: any
 ): Promise<any> {
-  return gatekeeper.enqueue({
+  return llmGateway.enqueue({
     id: taskId, priority, dropPolicy,
     params: { messages, tools, model, temperature, timeoutMs, maxTokens, toolChoice },
     dedupPayload: JSON.stringify({ messages, model, tools })
