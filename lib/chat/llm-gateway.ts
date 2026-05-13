@@ -1,10 +1,8 @@
 // lib/chat/llm-gateway.ts
-// Motor V10.2.2 — Fast-Track Edition
-// Fila, Semáforo e Fallback com Export Corrigido.
+// Motor V10.2.3 — Edge-Safe & Fast-Track
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
-import { createHash } from 'crypto';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -18,6 +16,16 @@ let localModelBan: { [model: string]: number } = {};
 export type PriorityLevel = 1 | 2 | 3 | 4;
 export type DropPolicy    = 'never' | 'if_full';
 
+// Função de hash compatível com Edge Runtime
+function generateSimpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
 class Gatekeeper {
   async isOverloaded(): Promise<boolean> {
     try {
@@ -27,7 +35,7 @@ class Gatekeeper {
   }
 
   async enqueue(task: any): Promise<any> {
-    const dk = `llm_dedup:${task.id}:${createHash('sha256').update(task.dedupPayload || '').digest('hex').slice(0, 10)}`;
+    const dk = `llm_dedup:${task.id}:${generateSimpleHash(task.dedupPayload || '')}`;
     const cached = await redis.get(dk).catch(() => null);
     if (cached) return cached;
 
@@ -62,7 +70,6 @@ class Gatekeeper {
     const originalModel = task.params.model;
     const isBanned = localModelBan[originalModel] && Date.now() < localModelBan[originalModel];
     
-    // Fallback preventivo (se o breaker ou ban local estiverem ativos)
     if (originalModel !== FALLBACK_MODEL && (isBanned || (await redis.get(BREAKER_KEY)) === 'open')) {
       task.params.model = FALLBACK_MODEL;
     }
@@ -72,7 +79,7 @@ class Gatekeeper {
       return await this.executeDirectly(task, dk, timeout);
     } catch (error: any) {
       if ((error?.status === 429 || error?.message?.includes('429')) && task.params.model !== FALLBACK_MODEL) {
-        localModelBan[originalModel] = Date.now() + 300000; // 5 min de geladeira
+        localModelBan[originalModel] = Date.now() + 300000;
         await redis.set(BREAKER_KEY, 'open', { ex: 60 });
         task.params.model = FALLBACK_MODEL;
         return await this.executeDirectly(task, `${dk}_fb`, 20000);
@@ -89,7 +96,6 @@ class Gatekeeper {
   }
 }
 
-// ─── EXPORTAÇÃO CORRIGIDA PARA O INTELLIGENCE.TS ───
 export const llmGateway = new Gatekeeper();
 
 export async function callOpenRouterWithPriority(
