@@ -2,8 +2,8 @@
 import { supabase } from '@/lib/jarvis';
 
 /**
- * Resolve o ID real de destino (Alias) para persistência.
- * Se houver um mapeamento 'is_alias' ativo, retorna o user_id_b (Numérico).
+ * Resolve o ID de banco (BigInt) para persistência.
+ * Verifica se o UUID logado possui um Alias ativo.
  */
 export async function getEffectiveUserId(authUserId: string, fallbackId: string): Promise<string> {
   try {
@@ -16,8 +16,20 @@ export async function getEffectiveUserId(authUserId: string, fallbackId: string)
       .maybeSingle();
 
     return data?.user_id_b || fallbackId;
-  } catch (error) {
-    console.error('[Identity] Erro ao resolver Alias:', error);
+  } catch {
     return fallbackId;
   }
+}
+
+/**
+ * Retorna o UUID de autenticação de um ID numérico (BigInt).
+ */
+export async function getAuthUUIDFromNumeric(numericId: string): Promise<string | null> {
+  const { data } = await supabase
+    .from('users')
+    .select('auth_user_id')
+    .eq('id', numericId)
+    .maybeSingle();
+  
+  return data?.auth_user_id || null;
 }
