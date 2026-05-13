@@ -1,16 +1,17 @@
-// Definições de ferramentas: Agenda, Lembretes e Integrações de Calendário
+// lib/tools/defs/agenda.ts
+// Definições de ferramentas para Agenda Lev, Lembretes e Integrações
 
 export const agendaTools = [
-  // ── AGENDA LEV (PROPRIEDADE JARVIS) ────────────────────────────────────
+  // ── AGENDA INTERNA (LEV) ────────────────────────────────────────────────
   {
     type: 'function',
     function: {
       name: 'consultar_agenda',
-      description: 'Consulta a Agenda Mestra (Lev/Supabase) e sincroniza com Google/Outlook. Única fonte para ver compromissos.',
+      description: 'Consulta a agenda interna e sincroniza com calendários externos (Google/Outlook). Use para ver compromissos futuros.',
       parameters: {
         type: 'object',
         properties: {
-          dias: { type: 'integer', description: 'Número de dias para frente (padrão 7)' },
+          dias: { type: 'integer', description: 'Número de dias para a consulta (padrão: 7).' },
         },
       },
     },
@@ -19,15 +20,20 @@ export const agendaTools = [
     type: 'function',
     function: {
       name: 'salvar_evento',
-      description: 'Salva um compromisso na agenda interna do app (jarvis.events).',
+      description: 'Salva um novo compromisso na agenda interna. Verifica conflitos automaticamente.',
       parameters: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'Título do evento' },
-          event_date: { type: 'string', description: 'Data e hora ISO 8601, ex: 2026-05-08T09:00:00-03:00' },
-          category: { type: 'string', description: 'Categoria: health, work, school, family, personal' },
-          notes: { type: 'string', description: 'Observações' },
-          reminderMinutes: { type: 'integer', description: 'Antecedência do lembrete (padrão 30)' },
+          title: { type: 'string', description: 'Título claro do evento.' },
+          event_date: { type: 'string', description: 'Data e hora no formato ISO (ex: 2026-05-15T14:00:00).' },
+          category: { 
+            type: 'string', 
+            enum: ['health', 'work', 'school', 'family', 'personal'],
+            description: 'Categoria do evento para organização visual.' 
+          },
+          notes: { type: 'string', description: 'Detalhes ou observações adicionais.' },
+          reminderMinutes: { type: 'integer', description: 'Minutos de antecedência para o alerta (padrão: 30).' },
+          force: { type: 'boolean', description: 'Se true, ignora avisos de conflito de horário.' }
         },
         required: ['title', 'event_date'],
       },
@@ -37,34 +43,41 @@ export const agendaTools = [
     type: 'function',
     function: {
       name: 'deletar_evento',
-      description: 'Remove um evento da agenda interna baseado no título.',
+      description: 'Remove um evento da agenda interna buscando pelo título.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Título ou parte do título do evento' },
+          query: { type: 'string', description: 'Termo de busca para encontrar o evento a ser removido.' },
         },
         required: ['query'],
       },
     },
   },
 
-  // ── MOTOR DE LEMBRETES ──────────────────────────────────────────────────
+  // ── MOTOR DE LEMBRETES (NOTIFICAÇÕES PUSH) ──────────────────────────────
   {
     type: 'function',
     function: {
       name: 'create_reminder',
-      description: "Cria um lembrete (tempo ou local). Use quando ouvir 'me lembra' ou 'avisa'.",
+      description: 'Cria um lembrete com agendamento via QStash. Suporta recorrência e inteligência de dias úteis.',
       parameters: {
         type: 'object',
         properties: {
-          title: { type: 'string' },
-          type: { type: 'string', enum: ['temporary', 'agenda', 'recurring', 'location'] },
-          delay_minutes: { type: 'integer' },
-          scheduled_time: { type: 'string' },
-          frequency: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'weekdays'] },
-          location_trigger: { type: 'string' },
+          title: { type: 'string', description: 'O que deve ser lembrado.' },
+          type: { 
+            type: 'string', 
+            enum: ['temporary', 'recurring', 'location'],
+            description: 'Tipo do lembrete. Use "recurring" se houver frequência.' 
+          },
+          scheduled_time: { type: 'string', description: 'Hora ou data específica (ex: "08:00" ou ISO).' },
+          delay_minutes: { type: 'integer', description: 'Minutos a partir de agora (caso não haja hora fixa).' },
+          frequency: { 
+            type: 'string', 
+            enum: ['daily', 'weekly', 'monthly', 'weekdays'],
+            description: 'Frequência da repetição. "weekdays" pula finais de semana.' 
+          },
         },
-        required: ['title', 'type'],
+        required: ['title'],
       },
     },
   },
@@ -72,7 +85,7 @@ export const agendaTools = [
     type: 'function',
     function: {
       name: 'consultar_lembretes',
-      description: 'Lista todos os lembretes pendentes do usuário.',
+      description: 'Lista todos os lembretes que ainda não foram disparados.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -80,31 +93,44 @@ export const agendaTools = [
     type: 'function',
     function: {
       name: 'cancelar_lembrete',
-      description: 'Cancela um lembrete pendente baseado no título.',
+      description: 'Cancela um lembrete pendente buscando pelo título.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Título ou parte do título do lembrete' },
+          query: { type: 'string', description: 'Termo de busca para encontrar o lembrete.' },
         },
         required: ['query'],
       },
     },
   },
 
-  // ── GOOGLE CALENDAR ─────────────────────────────────────────────────────
+  // ── INTEGRAÇÕES EXTERNAS ────────────────────────────────────────────────
   {
     type: 'function',
     function: {
       name: 'criar_evento_agenda',
-      description: 'Cria evento NO GOOGLE CALENDAR (apenas sob pedido explícito).',
+      description: 'Cria um evento especificamente no GOOGLE CALENDAR.',
       parameters: {
         type: 'object',
         properties: {
-          summary: { type: 'string' },
-          startTime: { type: 'string' },
-          reminderMinutes: { type: 'integer' },
+          summary: { type: 'string', description: 'Título do evento no Google.' },
+          startTime: { type: 'string', description: 'Data/Hora de início ISO.' },
+          reminderMinutes: { type: 'integer', description: 'Lembrete em minutos.' },
         },
         required: ['summary', 'startTime'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'listar_emails_recentes',
+      description: 'Busca os últimos emails do Gmail ou Outlook para contexto.',
+      parameters: {
+        type: 'object',
+        properties: {
+          filtro: { type: 'string', description: 'Termo para filtrar emails (ex: nome de empresa).' },
+        },
       },
     },
   },
