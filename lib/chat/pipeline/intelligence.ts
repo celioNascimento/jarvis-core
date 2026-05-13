@@ -49,19 +49,16 @@ function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
   return recentHistory;
 }
 
-export async function runIntelligencePipeline(
-  ctx: ChatRequestContext
-): Promise<ChatIntelligence> {
+export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<ChatIntelligence> {
   const { message, user, sessionId } = ctx;
 
-  // 1. God RPC (Blindagem contra Null)
+  // 1. God RPC
   const { data: masterContext, error: rpcError } = await supabase.rpc(
     'get_consolidated_context',
     { p_user_id: user.id, p_session_id: sessionId }
   );
   if (rpcError) console.error('[Intelligence] RPC error:', rpcError.message);
   
-  // Garantimos que masterContext seja ao menos um objeto vazio para não quebrar a memória
   const safeMasterContext = masterContext || { history: [], config: {}, profile: {} };
 
   // 2. Histórico
@@ -75,40 +72,41 @@ export async function runIntelligencePipeline(
     detectAndLogCorrection(message, user.id).catch(() => {}),
   ]);
 
-  // 4. Memória semântica com Try/Catch para evitar Panic
+  // 4. Memória semântica
   let memory: any = { hd: { memories: [] }, ram: { ramBlock: '' } };
   try {
     const memoryData = await MemoryManager.read({
-      userId:        String(user.id),
-      authUserId:    user.auth_user_id,
+      userId: String(user.id),
+      authUserId: user.auth_user_id,
       sessionId,
       message,
       contexts,
       emotionalScore: 0,
-      authorName:    user.nickname,
+      authorName: user.nickname,
       assistantName: user.assistant_name,
       queryEmbedding,
       masterContext: safeMasterContext,
     });
     if (memoryData) memory = memoryData;
-  } catch (memError) {
-    console.error('[Intelligence] Memory Manager crash prevented:', memError);
-  }
+  } catch (e) { console.error('[Intelligence] Memory crash:', e); }
 
-  // 5. Score emocional (Acesso seguro a propriedades)
-  const memoriesForEmotional = memory?.hd?.memories || [];
-  const ramForEmotional = memory?.ram?.ramBlock || '';
-
+  // 5. Score emocional (Fallback Completo para TypeScript)
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
-    memoriesForEmotional,
-    ramForEmotional
-  ).catch((e) => ({
+    memory?.hd?.memories || [],
+    memory?.ram?.ramBlock || ''
+  ).catch((): EmotionalScoreResult => ({
     score: 0,
     label: 'neutral',
-    analysis: 'Fallback devido a erro no processamento',
-    needsEscalation: false
+    analysis: 'Fallback de emergência',
+    needsEscalation: false,
+    primaryEmotion: 'neutral',
+    secondaryEmotion: 'neutral',
+    trajectory: 'stable',
+    triggers: [],
+    memoryScore: 0,
+    personScore: 0
   }));
 
   return {
