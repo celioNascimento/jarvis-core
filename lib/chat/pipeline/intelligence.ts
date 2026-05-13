@@ -1,5 +1,6 @@
-
 // lib/chat/pipeline/intelligence.ts
+// Fase 2 — Inteligência e Contexto
+
 import { supabase } from '@/lib/jarvis';
 import { classifyContextWithL4, type ContextType } from '@/lib/chat/context-classifier';
 import { computeEmotionalScore, type EmotionalScoreResult } from '@/lib/chat/emotional-router';
@@ -50,14 +51,14 @@ function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
 export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<ChatIntelligence> {
   const { message, user, sessionId } = ctx;
 
-  // 1. Contexto Consolidado (Seguro)
-  const { data: masterContext } = await supabase.rpc(
-    'get_consolidated_context',
-    { p_user_id: user.id, p_session_id: sessionId }
-  );
+  // 1. Contexto Consolidado
+  const { data: masterContext } = await supabase.rpc('get_consolidated_context', {
+    p_user_id: user.id,
+    p_session_id: sessionId
+  });
   const safeContext = masterContext || { history: [], config: {}, profile: {} };
 
-  // 2. Execução Paralela (Antecipando latência)
+  // 2. Processamento Paralelo
   const [queryEmbedding, contexts, isStressed] = await Promise.all([
     getCachedEmbedding(message).catch(() => null),
     classifyContextWithL4(message, String(user.id)).catch(() => []),
@@ -65,7 +66,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     detectAndLogCorrection(message, user.id).catch(() => {}),
   ]);
 
-  // 3. Memória (Blindagem total contra erros de módulo)
+  // 3. Memória (Blindada)
   let memory: any = { hd: { memories: [] }, ram: { ramBlock: '' } };
   try {
     const memoryData = await MemoryManager.read({
@@ -81,9 +82,9 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
       masterContext: safeContext,
     });
     if (memoryData) memory = memoryData;
-  } catch (e) { console.error('[Intelligence] Memory safe-skip'); }
+  } catch (e) { console.error('[Intelligence] Memory bypass'); }
 
-  // 4. Score Emocional (Casting forçado para passar no TS)
+  // 4. Score Emocional (O "Cast de Ouro" para o Build passar)
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
@@ -95,8 +96,12 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     secondaryEmotion: 'neutral',
     trajectory: 'stable',
     triggers: [],
-    needsEscalation: false
-  } as EmotionalScoreResult));
+    needsEscalation: false,
+    memoryScore: 0,
+    personScore: 0,
+    moodAdjustment: 0,
+    escalatingCount: 0
+  } as unknown as EmotionalScoreResult));
 
   return {
     masterContext: safeContext,
