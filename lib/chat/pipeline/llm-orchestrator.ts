@@ -18,6 +18,11 @@ import type { ChatPrompt } from './prompt-assembler';
 
 const FALLBACK_MODEL = 'google/gemini-2.5-flash';
 
+// ─── Tipos Injetados (Blindagem TypeScript) ───────────────────────────────────
+// Pegamos exatamente o que o seu llm-gateway espera, sem adivinhações.
+type ORPriority = Parameters<typeof callOpenRouterWithPriority>[0];
+type ORCachePolicy = Parameters<typeof callOpenRouterWithPriority>[1];
+
 // ─── Tipos internos ───────────────────────────────────────────────────────────
 
 interface ToolCallResult {
@@ -71,8 +76,8 @@ function buildToolCallMessages(
 // ─── Wrapper Anti-RateLimit (429) ─────────────────────────────────────────────
 
 async function callWithFallback(
-  priority: Parameters<typeof callOpenRouterWithPriority>[0], // Resolve Erro Type
-  cachePolicy: 'never' | 'always',
+  priority: ORPriority,
+  cachePolicy: ORCachePolicy,
   requestSignature: string,
   messages: any[],
   tools: any[],
@@ -137,8 +142,8 @@ export async function runLLMOrchestrator(
 
   // ── Primeira chamada (agora blindada) ─────────────────────────────────────
   const firstResponse = await callWithFallback(
-    1 as Parameters<typeof callOpenRouterWithPriority>[0], // Evita erro no valor numérico
-    'never',
+    1 as ORPriority,
+    'never' as ORCachePolicy,
     requestSignature,
     conversationMessages,
     tools,
@@ -167,8 +172,8 @@ export async function runLLMOrchestrator(
   );
 
   const secondResponse = await callWithFallback(
-    1 as Parameters<typeof callOpenRouterWithPriority>[0], // Evita erro no valor numérico
-    'never',
+    1 as ORPriority,
+    'never' as ORCachePolicy,
     `${requestSignature}_synth`,
     [...conversationMessages, ...toolMessages],
     [],           // sem ferramentas na chamada de síntese
