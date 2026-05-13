@@ -52,7 +52,6 @@ export async function loadActiveModules(
     
     if (!enabledIds) {
       const { data } = await supabase
-        .schema('jarvis')
         .from('user_modules')
         .select('module_id')
         .eq('user_id', opts.userId)
