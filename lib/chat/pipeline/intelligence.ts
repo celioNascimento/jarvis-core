@@ -90,7 +90,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     if (memoryData) memory = memoryData;
   } catch (e) { console.error('[Intelligence] Memory crash:', e); }
 
-  // 5. Score emocional (Fallback Completo para TypeScript)
+  // 5. Score emocional (Apenas propriedades conhecidas da interface)
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
@@ -98,7 +98,6 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     memory?.ram?.ramBlock || ''
   ).catch((): EmotionalScoreResult => ({
     score: 0,
-    label: 'neutral',
     analysis: 'Fallback de emergência',
     needsEscalation: false,
     primaryEmotion: 'neutral',
