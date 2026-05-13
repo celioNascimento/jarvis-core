@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
 import { getUserFromToken } from '@/lib/auth';
-import { getActiveShoppingPartners } from '@/lib/modules/relationships';
+import { getActivePartnersBySetting } from '@/lib/modules/relationships';
 
 export async function GET(req: NextRequest) {
   try {
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
     const { data: user } = await supabase.from('users').select('auth_user_id').eq('id', userId).single();
     
     // 2. Busca parceiros via Módulo de Permissões
-    const partners = await getActiveShoppingPartners(user!.auth_user_id);
+    const partners = await getActivePartnersBySetting(user!.auth_user_id, 'shopping_enabled');
     if (partners.length === 0) return NextResponse.json({ ok: true, options: [] });
 
     const partnerIds = partners.map(p => p.bigint_id);
