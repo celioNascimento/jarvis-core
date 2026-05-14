@@ -1,9 +1,10 @@
+// app/api/reminders/shares/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
 import { getUserFromToken } from '@/lib/auth';
+import { getActivePartnersBySetting } from '@/lib/modules/relationships';
 
-
- export async function GET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
     const token = req.headers.get('authorization')?.replace('Bearer ', '');
     const userId = await getUserFromToken(token);
@@ -73,7 +74,7 @@ export async function POST(req: NextRequest) {
       .from('reminder_shares')
       .upsert(
         { reminder_id, shared_with_id: Number(shared_with_id), active },
-        { onConflict: 'reminder_id,shared_with_id' } // sem espaço
+        { onConflict: 'reminder_id,shared_with_id' }
       );
 
     if (error) throw error;
