@@ -1,239 +1,111 @@
 // ============================================================
-// app/api/reminders/route.ts
-// Motor V8.17.0 — CRUD Híbrido com QStash e Automação de Cron
+// app/api/reminders/fire/route.ts
+// Motor V8.2.1 — Disparo com Node.js Runtime (Compatível com Expo SDK)
 // ============================================================
+
+// Alteramos para 'nodejs' ou removemos a linha, pois Node é o default.
+export const runtime = 'nodejs'; 
+
 import { NextRequest, NextResponse } from 'next/server';
+import { Receiver } from '@upstash/qstash';
 import { supabase } from '@/lib/jarvis';
-import { 
-  scheduleReminderOnQStash, 
-  cancelReminderOnQStash, 
-  frequencyToCron 
-} from '@/lib/qstash';
+import { Expo } from 'expo-server-sdk';
 
-// ── HELPER DE AUTENTICAÇÃO DRY ──────────────────────────────────────────────
-async function getJarvisUser(req: NextRequest) {
-  const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (!token) return { error: 'Não autorizado', status: 401 };
+const receiver = new Receiver({
+  currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
+  nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY!,
+});
 
-  const { data: authData, error: authError } = await supabase.auth.getUser(token);
-  if (authError || !authData.user) return { error: 'Não autorizado', status: 401 };
+const expo = new Expo();
 
-  const { data: userProfile } = await supabase
-    .schema('jarvis')
-    .from('users')
-    .select('id, auth_user_id')
-    .eq('auth_user_id', authData.user.id)
-    .single();
-
-  if (!userProfile) return { error: 'Perfil não encontrado', status: 404 };
-
-  return { user: userProfile, authUser: authData.user };
-}
-
-// ── GET: BUSCAR LEMBRETES ───────────────────────────────────────────────────
-export async function GET(req: NextRequest) {
-  const { user, error, status } = await getJarvisUser(req);
-  if (error) return NextResponse.json({ error }, { status });
-
+export async function POST(req: NextRequest) {
   try {
-    const { data: ownReminders, error: ownError } = await supabase
-      .schema('jarvis')
-      .from('reminders')
-      .select('*')
-      .eq('user_id', user!.id)
-      .order('scheduled_time', { ascending: true, nullsFirst: false });
+    const bodyText = await req.text();
+    const signature = req.headers.get('upstash-signature') ?? '';
 
-    if (ownError) throw ownError;
-
-    const { data: shares } = await supabase
-      .schema('jarvis')
-      .from('reminder_shares')
-      .select('reminder_id')
-      .eq('shared_with_id', user!.id)
-      .eq('active', true);
-
-    const sharedIds = (shares ?? []).map(s => s.reminder_id);
-    let sharedReminders: any[] = [];
-
-    if (sharedIds.length > 0) {
-      const { data, error: sharedError } = await supabase
-        .schema('jarvis')
-        .from('reminders')
-        .select('*')
-        .in('id', sharedIds)
-        .eq('status', 'pending')
-        .order('scheduled_time', { ascending: true, nullsFirst: false });
-
-      if (sharedError) throw sharedError;
-      sharedReminders = (data ?? []).map(r => ({ ...r, shared_from_partner: true }));
+    // 1. Validação de segurança do QStash
+    const isValid = await receiver.verify({ signature, body: bodyText }).catch(() => false);
+    if (!isValid) {
+      console.error('[Fire] Assinatura QStash inválida.');
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     }
 
-    const all = [...(ownReminders ?? []), ...sharedReminders].sort((a, b) => {
-      if (!a.scheduled_time) return 1;
-      if (!b.scheduled_time) return -1;
-      return new Date(a.scheduled_time).getTime() - new Date(b.scheduled_time).getTime();
+    const payload = JSON.parse(bodyText);
+    const { reminderId, message } = payload;
+
+    // 2. Busca dados do Lembrete + Dono + Compartilhamentos
+    const { data: reminder, error: remError } = await supabase
+      .schema('jarvis')
+      .from('reminders')
+      .select(`
+        id, type, 
+        users!fk_reminders_user (push_token, telegram_chat_id),
+        reminder_shares (
+          active,
+          shared_with:users!reminder_shares_shared_with_id_fkey (push_token, telegram_chat_id)
+        )
+      `)
+      .eq('id', reminderId)
+      .single();
+
+    if (remError || !reminder) {
+      return NextResponse.json({ error: 'reminder_not_found' }, { status: 404 });
+    }
+
+    // 3. Organiza destinatários
+    const recipients: any[] = [];
+    if (reminder.users) recipients.push(reminder.users);
+    
+    reminder.reminder_shares?.forEach((share: any) => {
+      if (share.active && share.shared_with) {
+        recipients.push(share.shared_with);
+      }
     });
 
-    return NextResponse.json({ ok: true, reminders: all });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
-  }
-}
+    // 4. Disparo Push via Expo SDK (Agora seguro no Node.js)
+    const pushMessages = recipients
+      .filter(r => r.push_token && Expo.isExpoPushToken(r.push_token))
+      .map(r => ({
+        to: r.push_token,
+        title: '📅 Lembrete Jarvis',
+        body: message,
+        sound: 'default',
+        data: { reminderId, type: reminder.type },
+      }));
 
-// ── POST: CRIAR E AGENDAR ───────────────────────────────────────────────────
-export async function POST(req: NextRequest) {
-  const { user, authUser, error, status } = await getJarvisUser(req);
-  if (error) return NextResponse.json({ error }, { status });
+    if (pushMessages.length > 0) {
+      const chunks = expo.chunkPushNotifications(pushMessages);
+      for (const chunk of chunks) {
+        try {
+          await expo.sendPushNotificationsAsync(chunk);
+        } catch (pushErr) {
+          console.error('[Fire] Erro ao enviar chunk de push:', pushErr);
+        }
+      }
+    }
 
-  try {
-    const body = await req.json();
+    // 5. Lógica de Fallback Telegram (Opcional, mas recomendado)
+    // Se quiser manter o Telegram como redundância, o código segue aqui...
 
-    const { data: reminder, error: dbError } = await supabase
+    // 6. Atualização de Status
+    const isRecurring = reminder.type === 'recurring';
+    const { error: updateError } = await supabase
       .schema('jarvis')
       .from('reminders')
-      .insert({
-        user_id: user!.id,
-        title: body.title,
-        type: body.type || 'temporary',
-        scheduled_time: body.scheduled_time || null,
-        frequency: body.frequency || null,
-        location_trigger: body.location_trigger || null,
-        status: 'pending'
+      .update({ 
+        status: isRecurring ? 'pending' : 'completed',
+        fired: true,
+        fired_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
       })
-      .select()
-      .single();
+      .eq('id', reminderId);
 
-    if (dbError) throw dbError;
+    if (updateError) console.error('[Fire] Erro ao atualizar status:', updateError.message);
 
-    // ── AUTOMAÇÃO: Cálculo de Cron e Agendamento ──
-    if (reminder.scheduled_time && reminder.type !== 'location') {
-      const cronCalculado = reminder.frequency 
-        ? frequencyToCron(reminder.frequency, reminder.scheduled_time) 
-        : null;
+    return NextResponse.json({ ok: true, sentTo: recipients.length });
 
-      const qstashId = await scheduleReminderOnQStash({
-        reminderId: reminder.id,
-        userId: user!.id.toString(),
-        authUserId: authUser!.id,
-        message: reminder.title,
-        scheduledTime: reminder.scheduled_time,
-        cron: cronCalculado, // Injeta o cron automático aqui
-      });
-
-      if (qstashId) {
-        await supabase
-          .schema('jarvis')
-          .from('reminders')
-          .update({ qstash_message_id: qstashId })
-          .eq('id', reminder.id);
-          
-        reminder.qstash_message_id = qstashId;
-      }
-    }
-
-    return NextResponse.json({ ok: true, reminder });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
-  }
-}
-
-// ── PUT: ATUALIZAR E REAGENDAR ──────────────────────────────────────────────
-export async function PUT(req: NextRequest) {
-  const { user, authUser, error, status } = await getJarvisUser(req);
-  if (error) return NextResponse.json({ error }, { status });
-
-  try {
-    const body = await req.json();
-    const { id, ...updateData } = body;
-
-    if (!id) return NextResponse.json({ error: 'ID obrigatório' }, { status: 400 });
-
-    const { data: old } = await supabase
-      .schema('jarvis')
-      .from('reminders')
-      .select('user_id, qstash_message_id')
-      .eq('id', id)
-      .single();
-
-    if (!old || old.user_id !== user!.id) {
-      return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
-    }
-
-    // ── LIMPEZA: Cancela agendamento antigo no QStash ──
-    if (old.qstash_message_id) {
-      await cancelReminderOnQStash(old.qstash_message_id);
-    }
-
-    const { data: updated, error: upError } = await supabase
-      .schema('jarvis')
-      .from('reminders')
-      .update({ ...updateData, qstash_message_id: null }) // Limpa ID antigo
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (upError) throw upError;
-
-    // ── REAGENDAMENTO: Novo tempo ou frequência ──
-    if (updated.status === 'pending' && updated.scheduled_time && updated.type !== 'location') {
-      const cronCalculado = updated.frequency 
-        ? frequencyToCron(updated.frequency, updated.scheduled_time) 
-        : null;
-
-      const qstashId = await scheduleReminderOnQStash({
-        reminderId: updated.id,
-        userId: user!.id.toString(),
-        authUserId: authUser!.id,
-        message: updated.title,
-        scheduledTime: updated.scheduled_time,
-        cron: cronCalculado,
-      });
-
-      if (qstashId) {
-        await supabase
-          .schema('jarvis')
-          .from('reminders')
-          .update({ qstash_message_id: qstashId })
-          .eq('id', updated.id);
-          
-        updated.qstash_message_id = qstashId;
-      }
-    }
-
-    return NextResponse.json({ ok: true, reminder: updated });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
-  }
-}
-
-// ── DELETE: CANCELAR E REMOVER ──────────────────────────────────────────────
-export async function DELETE(req: NextRequest) {
-  const { user, error, status } = await getJarvisUser(req);
-  if (error) return NextResponse.json({ error }, { status });
-
-  try {
-    const id = new URL(req.url).searchParams.get('id');
-    if (!id) return NextResponse.json({ error: 'ID obrigatório' }, { status: 400 });
-
-    const { data: rem } = await supabase
-      .schema('jarvis')
-      .from('reminders')
-      .select('user_id, qstash_message_id')
-      .eq('id', id)
-      .single();
-
-    if (!rem || rem.user_id !== user!.id) {
-      return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
-    }
-
-    if (rem.qstash_message_id) {
-      await cancelReminderOnQStash(rem.qstash_message_id);
-    }
-
-    await supabase.schema('jarvis').from('reminders').delete().eq('id', id);
-
-    return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch (err) {
+    console.error('[Fire] Erro crítico no motor:', err);
+    return NextResponse.json({ error: 'internal_error' }, { status: 500 });
   }
 }
