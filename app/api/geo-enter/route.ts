@@ -1,96 +1,73 @@
 // app/api/geo-enter/route.ts
+// V2.0.0 — Cooldown migrado do Supabase config para Redis (via GeoState)
 //
-// Substitui o /api/location-ping.
-// Recebe o evento de entrada numa zona e dispara push se houver itens pendentes.
-// Tem cooldown de 2h por usuário/lugar para evitar spam.
+// Chamado pelo app nativo quando o usuário entra numa zona de geofencing.
+// Dispara push com itens pendentes da lista de compras.
+//
+// MUDANÇAS em relação à V1:
+//   - verificarCooldown() e registrarCooldown() removidos
+//   - Cooldown agora vive em GeoState.alertCooldowns (Redis, TTL 4h)
+//   - verificarProximidade() do geo-resolver centraliza toda a lógica
+//   - placeId agora pode ser resolvido via GPS direto (sem depender só do app)
 
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/jarvis';
 import { sendPushNotification } from '@/lib/notifications/push';
-
-const COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 horas
-
-async function verificarCooldown(userId: string, placeId: string): Promise<boolean> {
-  const key = `geo_alert_${userId}_${placeId}`;
-  const { data } = await supabase
-    .schema('jarvis')
-    .from('config')
-    .select('value')
-    .eq('key', key)
-    .maybeSingle();
-
-  if (!data?.value) return false;
-  return Date.now() - parseInt(data.value) < COOLDOWN_MS;
-}
-
-async function registrarCooldown(userId: string, placeId: string): Promise<void> {
-  const key = `geo_alert_${userId}_${placeId}`;
-  await supabase
-    .schema('jarvis')
-    .from('config')
-    .upsert({ key, value: String(Date.now()) }, { onConflict: 'key' });
-}
+import {
+  verificarProximidade,
+  updateGeoState,
+} from '@/lib/geo-resolver';
 
 export async function POST(request: Request) {
   try {
-    const { userId, placeId } = await request.json();
+    const body = await request.json();
+    const { userId, lat, lng, placeId } = body;
 
-    if (!userId || !placeId) {
-      return NextResponse.json({ error: 'userId e placeId são obrigatórios' }, { status: 400 });
+    if (!userId) {
+      return NextResponse.json({ error: 'userId é obrigatório' }, { status: 400 });
     }
 
-    console.log(`[Geo Enter] Usuário ${userId} entrou na zona ${placeId}`);
-
-    // 1. Verifica cooldown — evita notificar toda vez que o usuário passa pelo lugar
-    const emCooldown = await verificarCooldown(userId, placeId);
-    if (emCooldown) {
-      console.log(`[Geo Enter] Cooldown ativo para ${userId}/${placeId}. Ignorando.`);
-      return NextResponse.json({ triggered: false, reason: 'cooldown' });
+    // Aceita tanto evento de zona (placeId) quanto ping de GPS (lat/lng).
+    // Em ambos os casos passa pelo verificarProximidade que tem o cooldown correto.
+    if (lat !== undefined && lng !== undefined) {
+      // Atualiza o GeoState com a posição atual (pode ser cache hit se dentro do raio)
+      await updateGeoState(String(userId), lat, lng);
     }
 
-    // 2. Busca o nome do lugar
-    const { data: lugar, error: lugarError } = await supabase
-      .schema('jarvis')
-      .from('favorite_places')
-      .select('name')
-      .eq('id', placeId)
-      .eq('user_id', userId)
-      .maybeSingle();
+    // Caso o app envie apenas placeId sem coords, buscamos o GeoState atual
+    // e verificamos a proximidade com base nele
+    const { getGeoState } = await import('@/lib/geo-resolver');
+    const geoState = await getGeoState(String(userId));
 
-    if (lugarError || !lugar) {
-      console.warn(`[Geo Enter] Lugar ${placeId} não encontrado para usuário ${userId}`);
-      return NextResponse.json({ triggered: false, reason: 'place_not_found' });
+    if (!geoState) {
+      return NextResponse.json({ triggered: false, reason: 'no_location_state' });
     }
 
-    // 3. Busca itens pendentes vinculados a este lugar
-    const { data: itens, error: itensError } = await supabase
-      .schema('jarvis')
-      .from('shopping_items')
-      .select('item')
-      .eq('user_id', userId)
-      .eq('place_id', placeId)
-      .eq('done', false)
-      .eq('archived', false);
+    // verificarProximidade cuida do raio + cooldown + busca de itens
+    const resultado = await verificarProximidade(
+      String(userId),
+      geoState.lat,
+      geoState.lng
+    );
 
-    if (itensError) throw itensError;
-
-    if (!itens?.length) {
-      console.log(`[Geo Enter] Nenhum item pendente em ${lugar.name} para ${userId}`);
-      return NextResponse.json({ triggered: false, reason: 'no_items' });
+    if (!resultado.temAlerta) {
+      return NextResponse.json({
+        triggered: false,
+        reason: resultado.mensagem || 'no_items_or_cooldown',
+      });
     }
 
-    // 4. Registra cooldown antes de notificar
-    await registrarCooldown(userId, placeId);
+    // Envia push
+    await sendPushNotification(Number(userId), `🛒 ${resultado.mensagem}`);
 
-    // 5. Monta e envia o push
-    const listaItens = itens.map(i => i.item).join(', ');
-    const mensagem = `🛒 Você está perto de ${lugar.name}! Lembre de pegar: ${listaItens}`;
+    console.log(
+      `[Geo Enter] Push enviado para ${userId} — ${resultado.itens?.length} item(s) em ${resultado.placeName}`
+    );
 
-    await sendPushNotification(Number(userId), mensagem);
-
-    console.log(`[Geo Enter] Push enviado para ${userId} — ${itens.length} item(s) em ${lugar.name}`);
-
-    return NextResponse.json({ triggered: true, items: itens.length, place: lugar.name });
+    return NextResponse.json({
+      triggered: true,
+      items:     resultado.itens?.length ?? 0,
+      place:     resultado.placeName,
+    });
 
   } catch (error: any) {
     console.error('[Geo Enter] Erro:', error.message);

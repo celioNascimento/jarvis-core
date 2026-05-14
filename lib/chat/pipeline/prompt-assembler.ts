@@ -3,20 +3,13 @@
 //
 // Recebe ChatRequestContext + ChatIntelligence e devolve ChatPrompt:
 // systemPrompt final, ferramentas autorizadas e modelo resolvido.
-// É a única fase que conhece composeSystemPrompt, buildGeoBlock,
-// loadActiveModules e buildDynamicContext.
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
-import { buildGeoBlock } from '@/lib/geo-resolver';
-import { verificarAlertasDeProximidade } from '@/lib/geo';
+import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver'; // ← lib/geo removido
 import { buildDynamicContext } from '@/lib/chat/context-builder';
 import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
-
-// Importação das ferramentas do local correto:
 import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
-
-// Importação dos Tipos:
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 
@@ -27,22 +20,15 @@ const FAMILY_DATE_SIGNALS = [
 
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
 
-// ─── Tools sempre disponíveis (independente de módulos) ───────────────────────
-// Adicione aqui qualquer tool que deve estar acessível em toda conversa.
-// NUNCA remova uma tool daqui sem verificar se ela está coberta pelo registry.
-
 const ALWAYS_ENABLED_TOOLS = new Set([
-  // Projetos
   'gerenciar_projeto',
   'listar_projetos',
   'gerenciar_topico',
   'listar_topicos',
   'gerenciar_entry',
   'listar_entries',
-  'gerenciar_membros_projeto',   // ← compartilhamento de projetos
+  'gerenciar_membros_projeto',
 ]);
-
-// ─── Tipos exportados ─────────────────────────────────────────────────────────
 
 export interface ChatPrompt {
   systemPrompt: string;
@@ -51,32 +37,20 @@ export interface ChatPrompt {
   conversationMessages: any[];
 }
 
-// ─── Filtro de L3 por data/família ───────────────────────────────────────────
-
-function filterL3ByAffect(
-  l3: string,
-  recentHistoryText: string,
-  message: string
-): string {
+function filterL3ByAffect(l3: string, recentHistoryText: string, message: string): string {
   const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
-  const hasFamilySignal = FAMILY_DATE_SIGNALS.some(
-    p => p.test(recentHistoryText + message)
-  );
-
+  const hasFamilySignal  = FAMILY_DATE_SIGNALS.some(p => p.test(recentHistoryText + message));
   if (isHighAlertMonth || hasFamilySignal) return l3;
-
   return l3
     .replace(/##\s*(datas?|aniversário|famil[íi]a|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
     .trim();
 }
 
-// ─── Entrypoint público ───────────────────────────────────────────────────────
-
 export async function buildChatPrompt(
   ctx: ChatRequestContext,
   intel: ChatIntelligence
 ): Promise<ChatPrompt> {
-  const { user, resolvedLocation, normalizedLocation, message, requestSignature } = ctx;
+  const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, memory, masterContext, recentHistory, isStressed } = intel;
 
   // 1. Módulos ativos + modelo resolvido
@@ -98,7 +72,7 @@ export async function buildChatPrompt(
     ? resolvedModel
     : DEFAULT_MODEL;
 
-  // 2. Contexto dinâmico (módulos complementares)
+  // 2. Contexto dinâmico
   const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
     userId:         String(user.id),
     authUserId:     user.auth_user_id,
@@ -109,10 +83,10 @@ export async function buildChatPrompt(
     masterContext,
   });
 
-  // 3. Radar de proximidade
+  // 3. Radar de proximidade — agora via geo-resolver (fonte única)
   let alertaRadar = '';
   if (resolvedLocation?.lat && resolvedLocation?.lng) {
-    const radar = await verificarAlertasDeProximidade(
+    const radar = await verificarProximidade(
       String(user.id),
       Number(resolvedLocation.lat),
       Number(resolvedLocation.lng)
@@ -125,6 +99,8 @@ export async function buildChatPrompt(
     new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' })
   );
   const dataHoraSP = nowSP.toLocaleString('pt-BR');
+
+  // buildGeoBlock aceita GeoState diretamente
   const geoBlock = buildGeoBlock(resolvedLocation);
 
   const gpsInstruction = resolvedLocation
@@ -133,14 +109,14 @@ export async function buildChatPrompt(
 
   // 5. Filtro de afeto no L3
   const historyText = recentHistory.map(h => h.content).join(' ');
-  const filteredL3 = filterL3ByAffect(memory.l3.content, historyText, message);
+  const filteredL3  = filterL3ByAffect(memory.l3.content, historyText, message);
 
   // 6. Urgentes
   const urgentes = (masterContext?.reminders || [])
     .map((u: any) => u.title)
     .join(', ');
 
-  // 6b. Shadow Prompting — insights aprendidos pelo Jarvis
+  // 6b. Insights aprendidos
   const learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
 
   // 7. System prompt final
@@ -188,16 +164,13 @@ export async function buildChatPrompt(
     .join('\n');
 
   // 8. Ferramentas autorizadas
-  // União de: módulos do registry + dinâmicas + ALWAYS_ENABLED_TOOLS
   const allActiveTools = new Set([
     ...activeTools,
     ...dynamicTools,
     ...ALWAYS_ENABLED_TOOLS,
   ]);
 
-  const toolsHabilitadas = ALL_TOOLS.filter(t =>
-    allActiveTools.has(t.function.name)
-  );
+  const toolsHabilitadas = ALL_TOOLS.filter(t => allActiveTools.has(t.function.name));
 
   // 9. Mensagens para o LLM
   const conversationMessages = [
@@ -208,8 +181,8 @@ export async function buildChatPrompt(
 
   return {
     systemPrompt,
-    tools: toolsHabilitadas,
-    model: finalModel,
+    tools:                toolsHabilitadas,
+    model:                finalModel,
     conversationMessages,
   };
 }
