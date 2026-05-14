@@ -1,5 +1,5 @@
 // lib/chat/pipeline/intelligence.ts
-// Fase 2 — Inteligência e Contexto
+// Fase 2 — Inteligência e Contexto (Blindado e Tipado para Number)
 
 import { supabase } from '@/lib/jarvis';
 import { classifyContextWithL4, type ContextType } from '@/lib/chat/context-classifier';
@@ -51,26 +51,32 @@ function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
 export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<ChatIntelligence> {
   const { message, user, sessionId } = ctx;
 
-  // 1. Contexto Consolidado
+  // 1. Contexto Consolidado (A ÚNICA chamada de banco que deve existir aqui)
   const { data: masterContext } = await supabase.rpc('get_consolidated_context', {
     p_user_id: user.id,
     p_session_id: sessionId
   });
+  
   const safeContext = masterContext || { history: [], config: {}, profile: {} };
 
   // 2. Processamento Paralelo
   const [queryEmbedding, contexts, isStressed] = await Promise.all([
     getCachedEmbedding(message).catch(() => null),
-    classifyContextWithL4(message, String(user.id)).catch(() => []),
+    
+    // Passando o ID numérico, o authUserId (UUID) e o safeContext injetado
+    classifyContextWithL4(message, user.id, user.auth_user_id, safeContext).catch(() => []),
+    
     llmGateway.isOverloaded().catch(() => false),
-    detectAndLogCorrection(message, user.id).catch(() => {}),
+    
+    // Passando o safeContext injetado
+    detectAndLogCorrection(message, user.id, safeContext).catch(() => {}),
   ]);
 
   // 3. Memória (Blindada)
   let memory: any = { hd: { memories: [] }, ram: { ramBlock: '' } };
   try {
     const memoryData = await MemoryManager.read({
-      userId: String(user.id),
+      userId: user.id, // ✅ CORREÇÃO: Passando o number bruto, sem String()
       authUserId: user.auth_user_id,
       sessionId,
       message,
@@ -84,10 +90,10 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     if (memoryData) memory = memoryData;
   } catch (e) { console.error('[Intelligence] Memory bypass'); }
 
-  // 4. Score Emocional (O "Cast de Ouro" para o Build passar)
+  // 4. Score Emocional (O "Cast de Ouro" restaurado para evitar o erro do Turbopack)
   const emotional = await computeEmotionalScore(
     message,
-    String(user.id),
+    String(user.id), // Mantido como string se o roteador emocional exigir
     memory?.hd?.memories || [],
     memory?.ram?.ramBlock || ''
   ).catch(() => ({

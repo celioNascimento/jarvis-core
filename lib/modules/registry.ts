@@ -1,11 +1,12 @@
-// lib/modules/registry.ts — V10.1.0 (God RPC Hydration + Zero Redundancy)
+// lib/modules/registry.ts
+// V12.2.0 (Type-Safe DB Query para evitar Erro 400 no PostgREST)
+
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
 import { waitUntil } from '@vercel/functions'; 
 import type { ModuleDefinition, ModuleConditionOpts } from './types';
 import { recordModuleMetrics } from './metrics';
 
-// Importação dos Módulos Especialistas
 import { ModuloFinancas }    from './modules/financas';
 import { ModuloVeiculos }    from './modules/veiculos';
 import { ModuloFoco }        from './modules/foco';
@@ -13,7 +14,7 @@ import { ModuloRotinas }     from './modules/rotinas';
 import { ModuloAgenda }      from './modules/agenda';
 import { ModuloLocalizacao } from './modules/localizacao';
 import { ModuloProjetos }    from './modules/projetos';
-import { ModuloRelacionamentos } from '../modules/modules/relacionamentos'
+import { ModuloRelacionamentos } from '../modules/modules/relacionamentos';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -31,16 +32,11 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloRelacionamentos
 ];
 
-/**
- * Carrega módulos ativos usando Injeção de Dependência da God RPC
- */
 export async function loadActiveModules(
   opts: ModuleConditionOpts & { masterContext?: any },
   userPlan: string,
   baseModel: string,
 ) {
-  // ── 1. IDENTIFICAÇÃO DE MÓDULOS (HIDRATAÇÃO) ──
-  // Prioridade: God RPC > Redis > Supabase
   let enabledIds: string[] | null = null;
 
   if (opts.masterContext?.modules) {
@@ -51,17 +47,21 @@ export async function loadActiveModules(
     enabledIds = await redis.get<string[]>(cacheKey);
     
     if (!enabledIds) {
+      // ── CORREÇÃO ERRO 400 ──
+      // Converte explicitamente para Base 10 Inteiro. Evita vazamento de UUIDs na query.
+      const safeNumericId = parseInt(String(opts.userId), 10);
+      
       const { data } = await supabase
         .from('user_modules')
         .select('module_id')
-        .eq('user_id', opts.userId)
+        .eq('user_id', safeNumericId)
         .eq('is_active', true);
+        
       enabledIds = data?.map(r => r.module_id) || [];
       await redis.set(cacheKey, enabledIds, { ex: 300 });
     }
   }
 
-  // ── 2. FILTRAGEM POR PLANO E TRIGGER ──
   const activeModules = await Promise.all(ALL_MODULES.map(async mod => {
     if (!enabledIds?.includes(mod.id)) return null;
     
@@ -80,7 +80,6 @@ export async function loadActiveModules(
 
   const finalModules = activeModules.filter(Boolean) as ModuleDefinition[];
 
-  // ── 3. CONSTRUÇÃO DE CONTEXTO EM PARALELO ──
   const results = await Promise.all(finalModules.map(async mod => {
     const start = Date.now();
     try {
@@ -88,7 +87,7 @@ export async function loadActiveModules(
       
       waitUntil(
         (async () => {
-          await recordModuleMetrics(mod.id, Number(opts.userId), {
+          await recordModuleMetrics(mod.id, parseInt(String(opts.userId), 10), {
             latencyMs: Date.now() - start,
             tokens: Math.ceil(block.length / 4),
             activated: block.length > 0
@@ -103,7 +102,6 @@ export async function loadActiveModules(
     }
   }));
 
-  // ── 4. RESOLUÇÃO DE MODELO (UPGRADE DINÂMICO) ──
   const needsPro = results.some(r => r.model === 'pro');
   const finalModel = needsPro ? 'google/gemini-2.0-pro-exp-02-05' : baseModel;
 

@@ -1,5 +1,5 @@
 // lib/chat/context-classifier.ts
-// V9.1.4 — LLM no Gateway (Prio 2, if_full) com extração segura do objeto ToolResponse
+// V9.3.1 — Blindagem Total (Zero DB Calls, Tipagem Estrita e Regex Segura)
 
 import { supabase } from '@/lib/jarvis';
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; 
@@ -32,7 +32,7 @@ export type ContextType =
   | 'tdah'
   | 'retrospecto'
   | 'veiculos'
-  |'planejamento'
+  | 'planejamento'
   | 'foco'
   | 'relacao'   
   | 'casa'      
@@ -81,7 +81,6 @@ const RULES_NORMALIZED: Array<[RegExp, ContextType]> = ([
   [norm('casa|reforma|construção|construcao|conserto|parede|tinta|piso|led|iluminação|iluminacao|eletrodoméstico|eletro|lava louça|geladeira|tomada'), 'casa'],
   [norm('diretriz|system prompt|regra|comportamento|aja como|não diga mais|nunca mais use|a partir de agora|instrução|mude seu prompt'), 'sistema'],
   [norm('estudar|estudando|aprender|aula|curso|certificac|certificaç|prova|inglês|ingles|idioma|traduz|traduza|pronúncia|praticar inglês'), 'estudo'],
-
 ] as Array<[string, ContextType]>).map(([src, ctx]) => [new RegExp(src, 'i'), ctx]);
 
 const RULES_VERBATIM: Array<[RegExp, ContextType]> = [
@@ -89,10 +88,7 @@ const RULES_VERBATIM: Array<[RegExp, ContextType]> = [
   [/quanto [eé]|quanto d[aá]|calcule|soma|subtraia|multiplique|divida|raiz|pot[eê]ncia|quanto é|calcul|porcentagem|^[0-9]+ (mais|vezes|dividido por|menos) [0-9]+/i, 'math'],
   [/^(ok|oi|ol[aá]|bom dia|boa tarde|boa noite|tudo bem|tudo bom|blz|vlw|valeu|obrigad|kkk|haha|rs|👍|🙏|😂|!)[\s!?.]*$/i, 'trivial'],
   [/R\$|\breal\b/i, 'financas'],
-  [
-  /você me (disse|falou|indicou|sugeriu|recomendou|lembrou|avisou|mostrou)|me indicou|falamos (sobre|de|que)|você (lembra|sabe) que (me|eu)|ontem (você|vc)|antes você|na última vez|você tinha dito|vc tinha falado/i,
-  'retrospecto' as ContextType
-],
+  [/você me (disse|falou|indicou|sugeriu|recomendou|lembrou|avisou|mostrou)|me indicou|falamos (sobre|de|que)|você (lembra|sabe) que (me|eu)|ontem (você|vc)|antes você|na última vez|você tinha dito|vc tinha falado/i, 'retrospecto' as ContextType],
 ];
 
 // ─── classifyContextRegex ─────────────────────────────────────────────────────
@@ -130,7 +126,9 @@ function needsLLMClassification(text: string, regexContexts: ContextType[]): boo
 
 export async function classifyContextWithL4(
   text: string,
-  userId: string
+  userId: number,
+  authUserIdOrSafeContext?: string | any,
+  safeContextFallback?: any
 ): Promise<ContextType[]> {
   const regexContexts = classifyContextRegex(text);
 
@@ -138,62 +136,61 @@ export async function classifyContextWithL4(
     return regexContexts;
   }
 
-  if (regexContexts.length > 2) {
-    try {
-      const { data: topicWeights } = await supabase
-        .schema('public')
-        .from('topic_index')
-        .select('topic, weight')
-        .eq('user_id', userId)
-        .in('topic', regexContexts);
+  // Tratamento resiliente de argumentos para garantir que o safeContext seja capturado
+  const actualSafeContext = typeof authUserIdOrSafeContext === 'object' 
+    ? authUserIdOrSafeContext 
+    : safeContextFallback;
 
-      if (topicWeights?.length) {
-        const sorted = [...topicWeights].sort((a, b) => (b.weight || 0) - (a.weight || 0));
-        const prioritized = sorted.map((t) => t.topic as ContextType);
-        const missing = regexContexts.filter((c) => !prioritized.includes(c));
-        if (prioritized.length >= regexContexts.length * 0.6) {
-          return [...prioritized, ...missing] as ContextType[];
-        }
+  if (regexContexts.length > 2) {
+    // Tenta usar o contexto em memória primeiro (Zero DB call)
+    const topicWeights = actualSafeContext?.topics || [];
+    
+    if (topicWeights.length) {
+      const sorted = [...topicWeights].sort((a: any, b: any) => (b.weight || 0) - (a.weight || 0));
+      const prioritized = sorted.map((t) => t.topic as ContextType);
+      const missing = regexContexts.filter((c) => !prioritized.includes(c));
+      if (prioritized.length >= regexContexts.length * 0.6) {
+        return [...prioritized, ...missing] as ContextType[];
       }
-    } catch {
-      // continua para LLM
+    } else {
+      // Fallback seguro usando type NUMBER (Evita 400 Bad Request)
+      try {
+        const { data: dbTopics } = await supabase
+          .schema('public')
+          .from('topic_index')
+          .select('topic, weight')
+          .eq('user_id', userId)
+          .in('topic', regexContexts);
+        
+        if (dbTopics?.length) {
+           const sorted = [...dbTopics].sort((a, b) => (b.weight || 0) - (a.weight || 0));
+           const prioritized = sorted.map((t) => t.topic as ContextType);
+           const missing = regexContexts.filter((c) => !prioritized.includes(c));
+           return [...prioritized, ...missing] as ContextType[];
+        }
+      } catch {}
     }
   }
 
   try {
-    const prompt = `Classifique a mensagem abaixo em 1-3 categorias da lista:
-${ALL_CONTEXTS.join(', ')}
+    const prompt = `Classifique a mensagem abaixo em 1-3 categorias da lista:\n${ALL_CONTEXTS.join(', ')}\n\nMensagem: "${text.slice(0, 200)}"\n\nResponda APENAS com JSON: {"contexts": ["cat1", "cat2"]}`;
 
-Mensagem: "${text.slice(0, 200)}"
-
-Responda APENAS com JSON: {"contexts": ["cat1", "cat2"]}`;
-
-    // ✅ CENTRALIZADO NO GATEWAY: Prio 2, policy 'if_full'
     const rawResponse: any = await callOpenRouterWithPriority(
-      2, 
-      'if_full', 
-      `ctx_class_${Date.now()}`, 
-      [{ role: 'user', content: prompt }], 
-      [], 
-      'google/gemini-2.0-flash-001', 
-      0.1
+      2, 'if_full', `ctx_class_${Date.now()}`, [{ role: 'user', content: prompt }], [], 'google/gemini-2.0-flash-001', 0.1
     );
 
-    // ✅ EXTRAÇÃO SEGURA (Evita erro .trim() do TypeScript)
     const rawText = typeof rawResponse === 'string' ? rawResponse : (rawResponse.text || rawResponse.content || '');
-
-    const cleaned = rawText.trim().replace(/```json|```/g, '').trim();
+    
+    // ✅ CORREÇÃO APLICADA: Sintaxe `{3}` evita a quebra de linha em formatadores e erros no Turbopack
+    const cleaned = rawText.trim().replace(/`{3}json|`{3}/g, '').trim();
+    
     const parsed = JSON.parse(cleaned);
-    const llmContexts = (parsed.contexts as ContextType[]).filter((c) =>
-      ALL_CONTEXTS.includes(c)
-    );
+    const llmContexts = (parsed.contexts as ContextType[]).filter((c) => ALL_CONTEXTS.includes(c));
 
     return [...new Set([...regexContexts, ...llmContexts])] as ContextType[];
   } catch (e: any) {
     if (e.message === 'GATEKEEPER_DROPPED_TASK') {
-       console.log(`[ContextL4/Gateway] ✂️ Classificação LLM abortada por alto tráfego. Usando fallback de Regex.`);
-    } else {
-       console.warn(`[ContextL4] Erro na classificação LLM, caindo para regex.`, e.message);
+       console.log(`[ContextL4/Gateway] ✂️ Classificação LLM abortada por alto tráfego. Usando fallback.`);
     }
     return regexContexts;
   }
@@ -208,23 +205,13 @@ export function routeModel(
 ): { model: string; label: string } {
   const effectiveEmotional = Math.max(emotionalScore, topicEmotionalDimension ?? 0);
 
-  if (effectiveEmotional > 0.7)
-    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet-emocional' };
-
-  if (contexts.some((c) => ['emocao', 'familia', 'saude', 'diario'].includes(c)))
-    return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet-pessoal' };
-
-  if (contexts.some((c) => ['trabalho', 'projeto', 'meta', 'financas'].includes(c)))
-    return { model: 'google/gemini-2.5-pro', label: 'pro-trabalho' };
-
-  const flashFriendly: ContextType[] = [
-    'esporte', 'noticias', 'clima', 'casual', 'rotina',
-    'alias', 'preferencia', 'recomendacao', 'math', 'trivial', 'compras', 'veiculos'
-  ];
-  if (contexts.includes('agenda') && effectiveEmotional < 0.4)
-    return { model: 'google/gemini-2.0-flash-001', label: 'flash-agenda' };
-  if (contexts.some((c) => flashFriendly.includes(c)))
-    return { model: 'google/gemini-2.0-flash-001', label: 'flash-default' };
+  if (effectiveEmotional > 0.7) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet-emocional' };
+  if (contexts.some((c) => ['emocao', 'familia', 'saude', 'diario'].includes(c))) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet-pessoal' };
+  if (contexts.some((c) => ['trabalho', 'projeto', 'meta', 'financas'].includes(c))) return { model: 'google/gemini-2.5-pro', label: 'pro-trabalho' };
+  
+  const flashFriendly: ContextType[] = ['esporte', 'noticias', 'clima', 'casual', 'rotina', 'alias', 'preferencia', 'recomendacao', 'math', 'trivial', 'compras', 'veiculos'];
+  if (contexts.includes('agenda') && effectiveEmotional < 0.4) return { model: 'google/gemini-2.0-flash-001', label: 'flash-agenda' };
+  if (contexts.some((c) => flashFriendly.includes(c))) return { model: 'google/gemini-2.0-flash-001', label: 'flash-default' };
 
   return { model: 'google/gemini-2.0-flash-001', label: 'flash-default' };
 }
@@ -233,11 +220,11 @@ export function routeModel(
 
 export function getTemperature(contexts: ContextType[]): number {
   if (contexts.includes('math') || contexts.includes('trivial')) return 0.2;
-  if (contexts.some((c) => ['emocao', 'diario'].includes(c)))              return 0.9;
-  if (contexts.some((c) => ['emocao', 'familia'].includes(c)))             return 0.85;
+  if (contexts.some((c) => ['emocao', 'diario'].includes(c))) return 0.9;
+  if (contexts.some((c) => ['emocao', 'familia'].includes(c))) return 0.85;
   if (contexts.some((c) => ['casual', 'projeto', 'meta', 'esporte', 'trivial'].includes(c))) return 0.7;
-  if (contexts.some((c) => ['trabalho', 'projeto'].includes(c)))           return 0.5;
-  if (contexts.some((c) => ['financas', 'veiculos']))                       return 0.3; 
+  if (contexts.some((c) => ['trabalho', 'projeto'].includes(c))) return 0.5;
+  if (contexts.some((c) => ['financas', 'veiculos'])) return 0.3; 
   if (contexts.some((c) => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima', 'compras'].includes(c))) return 0.5;
   if (contexts.some((c) => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
   return 0.7;
@@ -248,80 +235,50 @@ export function getTemperature(contexts: ContextType[]): number {
 export function planContextualBlocks(
   contexts: ContextType[],
   message: string,
-  emotionalScore: number,
-): {
-  loadCalendar:        boolean;
-  loadEmail:           boolean;
-  loadL3:              boolean;
-  loadHD:              boolean;
-  loadAshes:           boolean;
-  loadTopics:          boolean;
-  loadDiary:           boolean;
-  loadRecommendations: boolean;
-  loadGaps:            boolean;
-  loadFinances:        boolean;
-  loadProjects:        boolean;
-  loadShopping:        boolean;
-  loadPlaces:          boolean;
-  loadWeather:         boolean;
-} {
+  emotionalScore: number
+) {
   const has = (...ctxs: ContextType[]) => ctxs.some((c) => contexts.includes(c));
   const msg = message.toLowerCase();
-  const isTrivial    = has('math', 'trivial');
+  const isTrivial = has('math', 'trivial');
   const isCasualOnly = contexts.length === 1 && contexts[0] === 'casual';
 
-  const wantsWeather = has('clima') ||
-    /vai chover|levo guarda|como (está|tá|ta) o tempo|temperatura|frio|calor hoje|agasalho|sair hoje/.test(msg);
-
-  const wantsCalendar = has('agenda', 'evento') &&
-    /marcar|agendar|tem algo|minha agenda|meus compromissos|semana|amanhã|amanha|hoje|horário|horario|confirmar|cancelar|vou|tenho|tem/.test(msg);
-
-  const wantsFinances = has('financas') &&
-    /gastei|paguei|recebi|comprei|transferi|quanto (gastei|tenho|sobrou|falta)|minhas finan|meu saldo|extrato|fatura|boleto|orçamento|orcamento|limite/.test(msg);
-
+  const wantsWeather = has('clima') || /vai chover|levo guarda|como (está|tá|ta) o tempo|temperatura|frio|calor hoje|agasalho|sair hoje/.test(msg);
+  const wantsCalendar = has('agenda', 'evento') && /marcar|agendar|tem algo|minha agenda|meus compromissos|semana|amanhã|amanha|hoje|horário|horario|confirmar|cancelar|vou|tenho|tem/.test(msg);
+  const wantsFinances = has('financas') && /gastei|paguei|recebi|comprei|transferi|quanto (gastei|tenho|sobrou|falta)|minhas finan|meu saldo|extrato|fatura|boleto|orçamento|orcamento|limite/.test(msg);
   const hasRealEmotion = emotionalScore > 0.3;
-
-  const wantsDiary = has('diario', 'meta') ||
-    (has('emocao') && hasRealEmotion) ||
-    (has('tdah') && /travado|paralisado|sobrecarregado|por onde|foco/.test(msg));
-
-  const wantsRec = has('recomendacao') ||
-    /me indica|me recomenda|onde (posso|vai|tem)|tem algum|conhece (algum|alguma)|me sugere/.test(msg);
-
+  const wantsDiary = has('diario', 'meta') || (has('emocao') && hasRealEmotion) || (has('tdah') && /travado|paralisado|sobrecarregado|por onde|foco/.test(msg));
+  const wantsRec = has('recomendacao') || /me indica|me recomenda|onde (posso|vai|tem)|tem algum|conhece (algum|alguma)|me sugere/.test(msg);
   const wantsShopping = has('compras', 'casa');
-  const wantsPlaces   = wantsShopping || (has('rotina', 'recomendacao') && /perto|próximo|aqui|bairro/.test(msg));
-
-  const isRetrospecto = has('retrospecto') ||
-    /você me (disse|falou|indicou|sugeriu|recomendou)|me indicou|falamos (sobre|de)|ontem você|antes você|última vez/i.test(msg);
+  const wantsPlaces = wantsShopping || (has('rotina', 'recomendacao') && /perto|próximo|aqui|bairro/.test(msg));
+  const isRetrospecto = has('retrospecto') || /você me (disse|falou|indicou|sugeriu|recomendou)|me indicou|falamos (sobre|de)|ontem você|antes você|última vez/i.test(msg);
   
   const needsHD = (hasRealEmotion || has('diario', 'familia', 'saude') || wantsFinances || isRetrospecto) && !isTrivial && !isCasualOnly;
   const needsAshes = (has('diario', 'emocao', 'meta', 'familia') && (hasRealEmotion || wantsDiary)) && !isTrivial;
-  const needsGaps  = (wantsCalendar || wantsFinances || has('projeto', 'meta', 'trabalho')) && !isTrivial;
+  const needsGaps = (wantsCalendar || wantsFinances || has('projeto', 'meta', 'trabalho')) && !isTrivial;
   const needsTopics = has('saude', 'projeto', 'familia', 'rotina', 'preferencia') && !isTrivial && !isCasualOnly;
-  
 
   return {
-    loadWeather:         wantsWeather && !isTrivial,
-    loadCalendar:        wantsCalendar && !isTrivial,
-    loadEmail:           has('email') && !isTrivial,
-    loadL3:              !isTrivial,
-    loadHD:              needsHD || isRetrospecto,
-    loadAshes:           needsAshes,
-    loadTopics:          needsTopics,
-    loadDiary:           wantsDiary && !isTrivial,
+    loadWeather: wantsWeather && !isTrivial,
+    loadCalendar: wantsCalendar && !isTrivial,
+    loadEmail: has('email') && !isTrivial,
+    loadL3: !isTrivial,
+    loadHD: needsHD || isRetrospecto,
+    loadAshes: needsAshes,
+    loadTopics: needsTopics,
+    loadDiary: wantsDiary && !isTrivial,
     loadRecommendations: (wantsRec || isRetrospecto) && !isTrivial,
-    loadGaps:            needsGaps,
-    loadFinances:        wantsFinances && !isTrivial,
-    loadProjects:        has('projeto') && !isTrivial,
-    loadShopping:        wantsShopping && !isTrivial,
-    loadPlaces:          wantsPlaces && !isTrivial,
+    loadGaps: needsGaps,
+    loadFinances: wantsFinances && !isTrivial,
+    loadProjects: has('projeto') && !isTrivial,
+    loadShopping: wantsShopping && !isTrivial,
+    loadPlaces: wantsPlaces && !isTrivial,
   };
 }
 
 // ─── detectTopicShiftWithL4 ───────────────────────────────────────────────────
 
 export async function detectTopicShiftWithL4(
-  userId: string,
+  userId: number,
   newContexts: ContextType[]
 ): Promise<boolean> {
   try {
