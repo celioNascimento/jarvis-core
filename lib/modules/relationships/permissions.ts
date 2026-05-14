@@ -1,40 +1,39 @@
 // lib/modules/relationships/permissions.ts
 import { supabase } from '@/lib/jarvis';
 
-// ESTA É A DEFINIÇÃO QUE ESTÁ FALTANDO:
-export interface PartnerIdentity {
-  bigint_id: string;
-  auth_uuid: string;
-  contact_name: string;
+/**
+ * Busca um relacionamento ativo entre dois usuários, independente de quem iniciou.
+ */
+export async function getActiveRelationship(userIdA: number, userIdB: number) {
+  const { data, error } = await supabase
+    .from('relationships')
+    .select('id, settings, user_id_a, user_id_b')
+    .eq('status', 'active')
+    .or(`and(user_id_a.eq.${userIdA},user_id_b.eq.${userIdB}),and(user_id_a.eq.${userIdB},user_id_b.eq.${userIdA})`)
+    .maybeSingle(); // Essencial para evitar erro 406 no log
+
+  if (error) throw error;
+  return data;
 }
 
 /**
- * Busca parceiros ativos com base em uma chave específica de configuração
+ * Atualiza uma chave específica dentro do JSONB de configurações.
  */
-export async function getActivePartnersBySetting(
-  authUUID: string, 
-  settingKey: 'agenda_enabled' | 'shopping_enabled' | 'finances_enabled'
-): Promise<PartnerIdentity[]> {
-  const { data: relationships } = await supabase
+export async function updateRelationshipSetting(relId: string, key: string, value: any) {
+  // Busca o estado atual primeiro para fazer o merge (evita sobrescrever outras chaves)
+  const { data: rel } = await supabase
     .from('relationships')
-    .select('user_id_a, user_id_b, contact_name, settings')
-    .eq('status', 'active')
-    .or(`user_id_a.eq.${authUUID},user_id_b.eq.${authUUID}`);
+    .select('settings')
+    .eq('id', relId)
+    .single();
 
-  const activeUUIDs = (relationships ?? [])
-    .filter(r => r.settings?.[settingKey] === true)
-    .map(r => r.user_id_a === authUUID ? r.user_id_b : r.user_id_a);
+  const newSettings = { ...(rel?.settings || {}), [key]: value };
 
-  if (activeUUIDs.length === 0) return [];
+  const { error } = await supabase
+    .from('relationships')
+    .update({ settings: newSettings })
+    .eq('id', relId);
 
-  const { data: partners } = await supabase
-    .from('users')
-    .select('id, auth_user_id, preferred_name, nickname, name')
-    .in('auth_user_id', activeUUIDs);
-
-  return (partners ?? []).map(p => ({
-    bigint_id: p.id,
-    auth_uuid: p.auth_user_id,
-    contact_name: p.preferred_name || p.nickname || p.name || 'Contato'
-  }));
+  if (error) throw error;
+  return true;
 }
