@@ -1,31 +1,40 @@
 // ============================================================
 // app/api/reminders/route.ts
-// Motor V8.17.0 — CRUD Híbrido com QStash e Automação de Cron
+// Motor V8.18.0 — Pro-Active CRUD (Jarvis Schema Optimized)
 // ============================================================
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/jarvis';
+import { supabase } from '@/lib/jarvis'; // Cliente já configurado com schema 'jarvis'
 import { 
   scheduleReminderOnQStash, 
   cancelReminderOnQStash, 
   frequencyToCron 
 } from '@/lib/qstash';
 
-// ── HELPER DE AUTENTICAÇÃO DRY ──────────────────────────────────────────────
+// ── HELPER DE AUTENTICAÇÃO COM DIAGNÓSTICO ──────────────────────────────────
 async function getJarvisUser(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (!token) return { error: 'Não autorizado', status: 401 };
+  if (!token) {
+    console.error('[Reminders] Erro: Token de autorização ausente.');
+    return { error: 'Não autorizado', status: 401 };
+  }
 
   const { data: authData, error: authError } = await supabase.auth.getUser(token);
-  if (authError || !authData.user) return { error: 'Não autorizado', status: 401 };
+  if (authError || !authData.user) {
+    console.error('[Reminders] Erro Auth Supabase:', authError?.message);
+    return { error: 'Token inválido', status: 401 };
+  }
 
-  const { data: userProfile } = await supabase
-    .schema('jarvis')
+  // Busca o perfil usando o cliente já configurado no schema jarvis
+  const { data: userProfile, error: profileError } = await supabase
     .from('users')
     .select('id, auth_user_id')
     .eq('auth_user_id', authData.user.id)
     .single();
 
-  if (!userProfile) return { error: 'Perfil não encontrado', status: 404 };
+  if (profileError || !userProfile) {
+    console.error(`[Reminders] 404: Usuário Auth ${authData.user.id} não tem perfil na tabela jarvis.users.`);
+    return { error: 'Perfil não encontrado no Jarvis', status: 404 };
+  }
 
   return { user: userProfile, authUser: authData.user };
 }
@@ -36,8 +45,8 @@ export async function GET(req: NextRequest) {
   if (error) return NextResponse.json({ error }, { status });
 
   try {
+    // 1. Lembretes próprios
     const { data: ownReminders, error: ownError } = await supabase
-      .schema('jarvis')
       .from('reminders')
       .select('*')
       .eq('user_id', user!.id)
@@ -45,8 +54,8 @@ export async function GET(req: NextRequest) {
 
     if (ownError) throw ownError;
 
+    // 2. Busca IDs de lembretes compartilhados
     const { data: shares } = await supabase
-      .schema('jarvis')
       .from('reminder_shares')
       .select('reminder_id')
       .eq('shared_with_id', user!.id)
@@ -57,7 +66,6 @@ export async function GET(req: NextRequest) {
 
     if (sharedIds.length > 0) {
       const { data, error: sharedError } = await supabase
-        .schema('jarvis')
         .from('reminders')
         .select('*')
         .in('id', sharedIds)
@@ -76,6 +84,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ ok: true, reminders: all });
   } catch (e: any) {
+    console.error('[Reminders GET] Erro crítico:', e.message);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
@@ -88,8 +97,10 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
+    if (!body.title) return NextResponse.json({ error: 'Título é obrigatório' }, { status: 400 });
+
+    // 1. Persistência no Banco
     const { data: reminder, error: dbError } = await supabase
-      .schema('jarvis')
       .from('reminders')
       .insert({
         user_id: user!.id,
@@ -97,7 +108,6 @@ export async function POST(req: NextRequest) {
         type: body.type || 'temporary',
         scheduled_time: body.scheduled_time || null,
         frequency: body.frequency || null,
-        location_trigger: body.location_trigger || null,
         status: 'pending'
       })
       .select()
@@ -105,7 +115,7 @@ export async function POST(req: NextRequest) {
 
     if (dbError) throw dbError;
 
-    // ── AUTOMAÇÃO: Cálculo de Cron e Agendamento ──
+    // 2. Agendamento QStash (Apenas se houver tempo e não for por localização)
     if (reminder.scheduled_time && reminder.type !== 'location') {
       const cronCalculado = reminder.frequency 
         ? frequencyToCron(reminder.frequency, reminder.scheduled_time) 
@@ -117,22 +127,20 @@ export async function POST(req: NextRequest) {
         authUserId: authUser!.id,
         message: reminder.title,
         scheduledTime: reminder.scheduled_time,
-        cron: cronCalculado, // Injeta o cron automático aqui
+        cron: cronCalculado,
       });
 
       if (qstashId) {
         await supabase
-          .schema('jarvis')
           .from('reminders')
           .update({ qstash_message_id: qstashId })
           .eq('id', reminder.id);
-          
-        reminder.qstash_message_id = qstashId;
       }
     }
 
     return NextResponse.json({ ok: true, reminder });
   } catch (e: any) {
+    console.error('[Reminders POST] Erro crítico:', e.message);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
@@ -143,13 +151,11 @@ export async function PUT(req: NextRequest) {
   if (error) return NextResponse.json({ error }, { status });
 
   try {
-    const body = await req.json();
-    const { id, ...updateData } = body;
+    const { id, ...updateData } = await req.json();
 
     if (!id) return NextResponse.json({ error: 'ID obrigatório' }, { status: 400 });
 
     const { data: old } = await supabase
-      .schema('jarvis')
       .from('reminders')
       .select('user_id, qstash_message_id')
       .eq('id', id)
@@ -159,22 +165,21 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
     }
 
-    // ── LIMPEZA: Cancela agendamento antigo no QStash ──
+    // Cancela agendamento prévio
     if (old.qstash_message_id) {
       await cancelReminderOnQStash(old.qstash_message_id);
     }
 
     const { data: updated, error: upError } = await supabase
-      .schema('jarvis')
       .from('reminders')
-      .update({ ...updateData, qstash_message_id: null }) // Limpa ID antigo
+      .update({ ...updateData, qstash_message_id: null })
       .eq('id', id)
       .select()
       .single();
 
     if (upError) throw upError;
 
-    // ── REAGENDAMENTO: Novo tempo ou frequência ──
+    // Novo agendamento
     if (updated.status === 'pending' && updated.scheduled_time && updated.type !== 'location') {
       const cronCalculado = updated.frequency 
         ? frequencyToCron(updated.frequency, updated.scheduled_time) 
@@ -191,12 +196,9 @@ export async function PUT(req: NextRequest) {
 
       if (qstashId) {
         await supabase
-          .schema('jarvis')
           .from('reminders')
           .update({ qstash_message_id: qstashId })
           .eq('id', updated.id);
-          
-        updated.qstash_message_id = qstashId;
       }
     }
 
@@ -213,25 +215,17 @@ export async function DELETE(req: NextRequest) {
 
   try {
     const id = new URL(req.url).searchParams.get('id');
-    if (!id) return NextResponse.json({ error: 'ID obrigatório' }, { status: 400 });
-
     const { data: rem } = await supabase
-      .schema('jarvis')
       .from('reminders')
       .select('user_id, qstash_message_id')
       .eq('id', id)
       .single();
 
-    if (!rem || rem.user_id !== user!.id) {
-      return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
-    }
+    if (!rem || rem.user_id !== user!.id) return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
 
-    if (rem.qstash_message_id) {
-      await cancelReminderOnQStash(rem.qstash_message_id);
-    }
+    if (rem.qstash_message_id) await cancelReminderOnQStash(rem.qstash_message_id);
 
-    await supabase.schema('jarvis').from('reminders').delete().eq('id', id);
-
+    await supabase.from('reminders').delete().eq('id', id);
     return NextResponse.json({ ok: true });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
