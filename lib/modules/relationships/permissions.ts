@@ -1,40 +1,72 @@
 // lib/modules/relationships/permissions.ts
 import { supabase } from '@/lib/jarvis';
+export async function getActivePartnersBySetting(numericUserId: number, settingKey: string) {
+  const { data, error } = await supabase
+    .from('relationships')
+    .select(`
+      id,
+      settings,
+      user_id_a,
+      user_id_b,
+      partner_a:users!user_id_a(id, auth_user_id, name, preferred_name, nickname, email),
+      partner_b:users!user_id_b(id, auth_user_id, name, preferred_name, nickname, email)
+    `)
+    .eq('status', 'active')
+    .or(`user_id_a.eq.${numericUserId},user_id_b.eq.${numericUserId}`)
+    .contains('settings', { [settingKey]: true });
 
-// ESTA É A DEFINIÇÃO QUE ESTÁ FALTANDO:
-export interface PartnerIdentity {
-  bigint_id: string;
-  auth_uuid: string;
-  contact_name: string;
+  if (error) throw error;
+
+  return (data || []).map(rel => {
+    const isUserA = rel.user_id_a === numericUserId;
+    const partner = isUserA ? rel.partner_b : rel.partner_a;
+    
+    // @ts-ignore - Tratando retorno do join do Supabase
+    const p = Array.isArray(partner) ? partner[0] : partner;
+
+    return {
+      relId: rel.id,
+      partnerId: p.id, // bigint_id
+      partnerUUID: p.auth_user_id, // user_id (UUID)
+      displayName: p.nickname || p.preferred_name || p.name || p.email,
+      settings: rel.settings
+    };
+  });
 }
 
 /**
- * Busca parceiros ativos com base em uma chave específica de configuração
+ * Busca um relacionamento ativo entre dois usuários, independente de quem iniciou.
  */
-export async function getActivePartnersBySetting(
-  authUUID: string, 
-  settingKey: 'agenda_enabled' | 'shopping_enabled' | 'finances_enabled'
-): Promise<PartnerIdentity[]> {
-  const { data: relationships } = await supabase
+export async function getActiveRelationship(userIdA: number, userIdB: number) {
+  const { data, error } = await supabase
     .from('relationships')
-    .select('user_id_a, user_id_b, contact_name, settings')
+    .select('id, settings, user_id_a, user_id_b')
     .eq('status', 'active')
-    .or(`user_id_a.eq.${authUUID},user_id_b.eq.${authUUID}`);
+    .or(`and(user_id_a.eq.${userIdA},user_id_b.eq.${userIdB}),and(user_id_a.eq.${userIdB},user_id_b.eq.${userIdA})`)
+    .maybeSingle(); // Essencial para evitar erro 406 no log
 
-  const activeUUIDs = (relationships ?? [])
-    .filter(r => r.settings?.[settingKey] === true)
-    .map(r => r.user_id_a === authUUID ? r.user_id_b : r.user_id_a);
+  if (error) throw error;
+  return data;
+}
 
-  if (activeUUIDs.length === 0) return [];
+/**
+ * Atualiza uma chave específica dentro do JSONB de configurações.
+ */
+export async function updateRelationshipSetting(relId: string, key: string, value: any) {
+  // Busca o estado atual primeiro para fazer o merge (evita sobrescrever outras chaves)
+  const { data: rel } = await supabase
+    .from('relationships')
+    .select('settings')
+    .eq('id', relId)
+    .single();
 
-  const { data: partners } = await supabase
-    .from('users')
-    .select('id, auth_user_id, preferred_name, nickname, name')
-    .in('auth_user_id', activeUUIDs);
+  const newSettings = { ...(rel?.settings || {}), [key]: value };
 
-  return (partners ?? []).map(p => ({
-    bigint_id: p.id,
-    auth_uuid: p.auth_user_id,
-    contact_name: p.preferred_name || p.nickname || p.name || 'Contato'
-  }));
+  const { error } = await supabase
+    .from('relationships')
+    .update({ settings: newSettings })
+    .eq('id', relId);
+
+  if (error) throw error;
+  return true;
 }

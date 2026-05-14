@@ -1,5 +1,5 @@
 // lib/chat/llm-gateway.ts
-// V10.2.5 — Zero-Timeout & Stealth Fallback
+// V11.1.0 — Priority-Aware & Intelligence Compatible
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
@@ -9,8 +9,10 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-const FALLBACK_MODEL = 'google/gemini-2.5-flash';
-let localModelBan: { [model: string]: number } = {};
+const FALLBACK_MODEL = 'google/gemini-2.0-flash';
+const CONCURRENCY_LIMIT = 3;
+
+let localBreaker = { open: false, expires: 0 };
 
 function edgeSafeHash(str: string): string {
   let h = 0;
@@ -19,55 +21,82 @@ function edgeSafeHash(str: string): string {
 }
 
 class Gatekeeper {
+  /**
+   * RESTAURADO: Verifica se o sistema está sobrecarregado.
+   * Usado pelo intelligence.ts em chamadas paralelas (Promise.all).
+   */
   async isOverloaded(): Promise<boolean> {
-    const count = await redis.get<number>('global_llm_active').catch(() => 0);
-    return (count || 0) >= 3;
+    try {
+      const count = await redis.get<number>('global_llm_active');
+      return (count ?? 0) >= CONCURRENCY_LIMIT;
+    } catch {
+      return false; // Em caso de erro no Redis, assume que não está lotado
+    }
   }
 
+  /**
+   * Enfileiramento inteligente com Fail-to-Flash.
+   */
   async enqueue(task: any): Promise<any> {
-    const dk = `llm_dedup:${task.id}:${edgeSafeHash(task.dedupPayload || '')}`;
-    const cached = await redis.get(dk).catch(() => null);
-    if (cached) return cached;
+    const dedupKey = `llm_dedup:${task.id}:${edgeSafeHash(task.dedupPayload || '')}`;
+    
+    // Pipeline atômico para economizar chamadas
+    const [cached, activeCount] = await redis.pipeline()
+      .get(dedupKey)
+      .incr('global_llm_active')
+      .exec();
 
-    const executionId = `${task.id}:${Date.now()}`;
-    await redis.zadd('llm_task_queue_sorted', { score: task.priority * 1e13 + Date.now(), member: executionId });
+    if (cached) {
+      await redis.decr('global_llm_active');
+      return cached;
+    }
 
     try {
-      let myTurn = false;
-      const deadline = Date.now() + 45000;
-      while (Date.now() < deadline) {
-        const [next] = await redis.zrange('llm_task_queue_sorted', 0, 0);
-        if (next === executionId) {
-          const count = await redis.incr('global_llm_active');
-          if (count <= 3) {
-            await redis.zrem('llm_task_queue_sorted', executionId);
-            myTurn = true; break;
-          }
-          await redis.decr('global_llm_active');
+      const currentLoad = activeCount as number;
+      const isOverloaded = currentLoad > CONCURRENCY_LIMIT;
+
+      if (isOverloaded) {
+        if (task.priority === 1) {
+          await this.waitSmartly(4000); 
+        } else if (task.params.model !== FALLBACK_MODEL) {
+          console.warn(`[Gateway] Downgrade preventivo (Load: ${currentLoad}).`);
+          task.params.model = FALLBACK_MODEL;
         }
-        await new Promise(r => setTimeout(r, 250));
       }
-      if (!myTurn) throw new Error('GATEKEEPER_TIMEOUT');
-      return await this.executeWithFallback(task, dk);
+
+      return await this.executeWithFallback(task, dedupKey);
     } finally {
       await redis.decr('global_llm_active').catch(() => {});
-      await redis.zrem('llm_task_queue_sorted', executionId).catch(() => {});
+    }
+  }
+
+  private async waitSmartly(ms: number): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < ms) {
+      const count = await redis.get<number>('global_llm_active').catch(() => 99);
+      if ((count || 0) <= CONCURRENCY_LIMIT) return;
+      await new Promise(r => setTimeout(r, 1000));
     }
   }
 
   private async executeWithFallback(task: any, dk: string): Promise<any> {
     const originalModel = task.params.model;
-    const isBanned = localModelBan[originalModel] && Date.now() < localModelBan[originalModel];
     
-    // Se estiver banido ou com o breaker aberto no Redis, pula pro Flash
-    if (originalModel !== FALLBACK_MODEL && (isBanned || (await redis.get('llm_circuit_breaker')) === 'open')) {
-      task.params.model = FALLBACK_MODEL;
+    if (localBreaker.open && Date.now() > localBreaker.expires) localBreaker.open = false;
+    
+    if (!localBreaker.open && originalModel !== FALLBACK_MODEL) {
+      const globalBreaker = await redis.get('llm_circuit_breaker').catch(() => null);
+      if (globalBreaker === 'open') {
+        localBreaker = { open: true, expires: Date.now() + 30000 };
+      }
     }
+
+    if (localBreaker.open && originalModel !== FALLBACK_MODEL) task.params.model = FALLBACK_MODEL;
 
     try {
       const isPro = task.params.model !== FALLBACK_MODEL;
-      const timeout = isPro ? 6000 : (task.params.timeoutMs || 25000);
-      
+      const timeout = isPro ? 10000 : 25000;
+
       const res = await rawCallOpenRouter(
         task.params.messages, 
         task.params.tools, 
@@ -78,38 +107,15 @@ class Gatekeeper {
         task.params.toolChoice
       );
 
-      const enriched = typeof res === 'object' ? { ...res, modelUsed: task.params.model } : res;
-      if (res) await redis.set(dk, enriched, { ex: 15 }).catch(() => {});
+      const enriched = { ...res, modelUsed: task.params.model };
+      if (res) await redis.set(dk, enriched, { ex: 20 }).catch(() => {});
       return enriched;
 
     } catch (error: any) {
-      const errorMessage = error?.message?.toLowerCase() || '';
-      const isRateLimit = error?.status === 429 || errorMessage.includes('429');
-      const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('aborted') || error?.name === 'AbortError';
-
-      // Se o erro foi no Pro, banimos e tentamos o Flash
-      if ((isRateLimit || isTimeout) && task.params.model !== FALLBACK_MODEL) {
-        console.warn(`[Gateway] Fallback acionado: ${isTimeout ? 'Timeout' : 'RateLimit'} no Pro.`);
-        
-        localModelBan[originalModel] = Date.now() + 300000; // 5 min de geladeira local
-        await redis.set('llm_circuit_breaker', 'open', { ex: 60 }); // 1 min global
-
-        // Segunda tentativa imediata com o Flash
-        const fbRes = await rawCallOpenRouter(
-          task.params.messages, 
-          task.params.tools, 
-          FALLBACK_MODEL, 
-          task.params.temperature, 
-          20000, 
-          task.params.maxTokens, 
-          task.params.toolChoice
-        );
-        
-        const enrichedFb = typeof fbRes === 'object' ? { ...fbRes, modelUsed: FALLBACK_MODEL } : fbRes;
-        return enrichedFb;
+      if (task.params.model !== FALLBACK_MODEL && (error?.status === 429 || error?.message?.includes('timeout'))) {
+        await redis.set('llm_circuit_breaker', 'open', { ex: 60 });
+        return await rawCallOpenRouter(task.params.messages, task.params.tools, FALLBACK_MODEL, task.params.temperature, 20000);
       }
-      
-      // Se deu erro no Flash também, aí não tem o que fazer
       throw error;
     }
   }
@@ -122,7 +128,7 @@ export async function callOpenRouterWithPriority(
   timeoutMs: number = 25000, maxTokens?: number, toolChoice?: any
 ): Promise<any> {
   return llmGateway.enqueue({
-    id: taskId, priority, dropPolicy,
+    id: taskId, priority,
     params: { messages, tools, model, temperature, timeoutMs, maxTokens, toolChoice },
     dedupPayload: JSON.stringify({ messages, model, tools })
   });

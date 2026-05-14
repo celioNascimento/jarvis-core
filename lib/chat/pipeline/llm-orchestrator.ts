@@ -10,7 +10,7 @@ async function executeToolCalls(
   toolCalls: any[], 
   authUserId: string, 
   numericUserId: string, 
-  contextSnapshot: Record<string, any>[]
+  contextSnapshot: Record<string, any>[],
 ): Promise<ToolCallResult[]> {
   return Promise.all(toolCalls.map(async (tc: any) => ({
     tc,

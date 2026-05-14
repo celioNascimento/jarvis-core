@@ -1,6 +1,6 @@
-// lib/modules/localizacao.ts
+// lib/modules/modules/localizacao.ts
+// V12 — Zero DB Calls (Extrai dados do masterContext)
 import type { ModuleDefinition } from '../types';
-import { checkProximidade } from '@/lib/geo';
 
 export const ModuloLocalizacao: ModuleDefinition = {
   id: 'localizacao',
@@ -14,15 +14,16 @@ export const ModuloLocalizacao: ModuleDefinition = {
   buildContextBlock: async (opts) => {
     if (!opts.location) return '';
     try {
-      // ── INJEÇÃO DE RIGOR ──
-      // Passamos o masterContext para que o checkProximidade não chame o Supabase
-      const geoCtx = await checkProximidade(
-        opts.location.latitude, 
-        opts.location.longitude, 
-        opts.userId,
-        (opts as any).masterContext?.locations // Enviamos os locais injetados
-      );
-      return `[MÓDULO LOCALIZAÇÃO]\n${geoCtx}`;
+      // ✅ Injeção limpa e simples. Sem ir ao banco.
+      const lat = opts.location.latitude?.toFixed(4);
+      const lng = opts.location.longitude?.toFixed(4);
+      const injectedLocations = (opts as any).masterContext?.locations || [];
+      
+      let ctx = `[MÓDULO LOCALIZAÇÃO]\n📍 Coordenadas Atuais: ${lat}, ${lng}`;
+      if (injectedLocations.length > 0) {
+        ctx += `\nLugares conhecidos próximos (extraídos do radar): ${injectedLocations.map((l: any) => l.name).join(', ')}`;
+      }
+      return ctx;
     } catch {
       return '';
     }
