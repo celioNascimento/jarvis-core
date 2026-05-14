@@ -16,11 +16,12 @@ export async function getCachedEmbedding(text: string): Promise<number[] | null>
   const cacheKey = `embedding_${hash}`;
   
   try {
+    // ✅ CORREÇÃO: maybeSingle() não quebra o banco se a mensagem for nova
     const { data } = await supabase
       .from('config')
       .select('value')
       .eq('key', cacheKey)
-      .single();
+      .maybeSingle();
     
     if (data?.value) {
       try {
