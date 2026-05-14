@@ -1,5 +1,5 @@
 // lib/chat/pipeline/intelligence.ts
-// Fase 2 — Inteligência e Contexto (Blindado)
+// Fase 2 — Inteligência e Contexto (Blindado e Tipado para Number)
 
 import { supabase } from '@/lib/jarvis';
 import { classifyContextWithL4, type ContextType } from '@/lib/chat/context-classifier';
@@ -76,7 +76,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   let memory: any = { hd: { memories: [] }, ram: { ramBlock: '' } };
   try {
     const memoryData = await MemoryManager.read({
-      userId: String(user.id),
+      userId: user.id, // ✅ CORREÇÃO: Passando o number bruto, sem String()
       authUserId: user.auth_user_id,
       sessionId,
       message,
@@ -93,7 +93,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   // 4. Score Emocional (O "Cast de Ouro" restaurado para evitar o erro do Turbopack)
   const emotional = await computeEmotionalScore(
     message,
-    String(user.id),
+    String(user.id), // Mantido como string se o roteador emocional exigir
     memory?.hd?.memories || [],
     memory?.ram?.ramBlock || ''
   ).catch(() => ({
