@@ -14,13 +14,10 @@ export async function GET(req: NextRequest) {
     const category = searchParams.get('category');
     if (!category) return NextResponse.json({ error: 'category obrigatório' }, { status: 400 });
 
-    const { data: user } = await supabase.from('users').select('auth_user_id').eq('id', userId).single();
-    if (!user) return NextResponse.json({ error: 'Perfil não encontrado' }, { status: 404 });
-
-    const partners = await getActivePartnersBySetting(user.auth_user_id, 'agenda_enabled');
+    const partners = await getActivePartnersBySetting(userId, 'agenda_enabled');
     if (partners.length === 0) return NextResponse.json({ ok: true, options: [] });
 
-    const partnerIds = partners.map(p => p.bigint_id);
+    const partnerIds = partners.map(p => p.partnerId);
 
     const { data: outgoing } = await supabase.from('calendar_shares').select('shared_with_id').eq('owner_id', userId).eq('category', category).in('shared_with_id', partnerIds);
     const { data: incoming } = await supabase.from('calendar_shares').select('owner_id').eq('shared_with_id', userId).eq('category', category).in('owner_id', partnerIds);
@@ -29,11 +26,11 @@ export async function GET(req: NextRequest) {
     const activeIncoming = new Set(incoming?.map(s => String(s.owner_id)));
 
     const options = partners.map(p => ({
-      user_id: p.auth_uuid,
-      bigint_id: p.bigint_id,
-      contact_name: p.contact_name,
-      is_active: activeOutgoing.has(String(p.bigint_id)),
-      received_from_partner: activeIncoming.has(String(p.bigint_id)),
+      user_id: p.partnerUUID,
+      bigint_id: p.partnerId,
+      contact_name: p.displayName,
+      is_active: activeOutgoing.has(String(p.partnerId)),
+      received_from_partner: activeIncoming.has(String(p.partnerId)),
     }));
 
     return NextResponse.json({ ok: true, options });
