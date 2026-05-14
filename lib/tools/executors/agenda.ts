@@ -137,30 +137,46 @@ export async function executeCreateReminder(
     const agora = new Date();
     const title = p.title ?? p.message ?? 'Lembrete';
     let freq = p.frequency;
-    let scheduled_time = p.scheduled_time ?? agora.toISOString();
+    
+    // ── LÓGICA DE TEMPO ROBUSTA ──
+    let scheduled_time = p.scheduled_time;
 
-    if (freq?.toLowerCase().includes('útil')) freq = 'weekdays';
-
-    // Normalização básica de hora
-    if (scheduled_time.length <= 8 && scheduled_time.includes(':')) {
-      const timeStr = scheduled_time.length <= 5 ? `${scheduled_time}:00` : scheduled_time;
-      const dataRef = new Date(`${agora.toLocaleDateString('en-CA')}T${timeStr}-03:00`);
+    // 1. Se houver delay_minutes (ex: "em 1 minuto"), calcula a partir de agora
+    if (p.delay_minutes) {
+      scheduled_time = new Date(agora.getTime() + p.delay_minutes * 60000).toISOString();
+    } 
+    // 2. Se for apenas hora (ex: "08:00"), normaliza para hoje/amanhã
+    else if (scheduled_time && scheduled_time.length <= 8 && scheduled_time.includes(':')) {
+      const [h, m] = scheduled_time.split(':').map(Number);
+      const dataRef = new Date(agora);
+      dataRef.setHours(h, m, 0, 0);
       if (dataRef.getTime() <= agora.getTime()) dataRef.setDate(dataRef.getDate() + 1);
       scheduled_time = dataRef.toISOString();
     }
+    // 3. Fallback: se nada for enviado, coloca para daqui a 5 min
+    else if (!scheduled_time) {
+      scheduled_time = new Date(agora.getTime() + 5 * 60000).toISOString();
+    }
 
-    const { data: reminder, error } = await supabase.from('reminders').insert({
-      user_id: Number(targetId),
-      title,
-      type: p.type ?? (freq ? 'recurring' : 'temporary'),
-      frequency: freq ?? null,
-      scheduled_time,
-      status: 'pending',
-      metadata: { auth_user_id: authUserId }
-    }).select('id').single();
+    if (freq?.toLowerCase().includes('útil')) freq = 'weekdays';
+
+    // Inserção direta via Service Role (Bypassa a API Route e evita 404)
+    const { data: reminder, error } = await supabase
+      .from('reminders')
+      .insert({
+        user_id: Number(targetId),
+        title,
+        type: p.type ?? (freq ? 'recurring' : 'temporary'),
+        frequency: freq ?? null,
+        scheduled_time,
+        status: 'pending'
+      })
+      .select('id')
+      .single();
 
     if (error) throw error;
     
+    // Agenda no QStash
     const qstashId = await scheduleReminderOnQStash({
       reminderId: String(reminder.id),
       userId: String(targetId),
@@ -170,10 +186,20 @@ export async function executeCreateReminder(
       cron: freq ? getCronExpression(freq, new Date(scheduled_time)) : null
     });
 
-    if (qstashId) await supabase.from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
-    return `Lembrete agendado para ${new Date(scheduled_time).toLocaleString('pt-BR')}.`;
-  } catch (err: any) { return `Erro: ${err.message}`; }
+    if (qstashId) {
+      await supabase
+        .from('reminders')
+        .update({ qstash_message_id: qstashId })
+        .eq('id', reminder.id);
+    }
+
+    return `Sucesso: Lembrete "${title}" agendado para ${new Date(scheduled_time).toLocaleString('pt-BR')}.`;
+  } catch (err: any) { 
+    console.error('[Tool: CreateReminder] Erro:', err.message);
+    return `Erro ao processar lembrete: ${err.message}`; 
+  }
 }
+
 
 // ─── 7. CONSULTAR LEMBRETES ───────────────────────────────────────────────────
 
