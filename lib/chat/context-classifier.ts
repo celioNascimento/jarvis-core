@@ -1,5 +1,5 @@
 // lib/chat/context-classifier.ts
-// V9.3.0 — Blindagem Total (Zero DB Calls & Tipagem Estrita para BigInt)
+// V9.3.1 — Blindagem Total (Zero DB Calls, Tipagem Estrita e Regex Segura)
 
 import { supabase } from '@/lib/jarvis';
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; 
@@ -137,7 +137,6 @@ export async function classifyContextWithL4(
   }
 
   // Tratamento resiliente de argumentos para garantir que o safeContext seja capturado
-  // independentemente de como foi chamado em intelligence.ts
   const actualSafeContext = typeof authUserIdOrSafeContext === 'object' 
     ? authUserIdOrSafeContext 
     : safeContextFallback;
@@ -181,8 +180,10 @@ export async function classifyContextWithL4(
     );
 
     const rawText = typeof rawResponse === 'string' ? rawResponse : (rawResponse.text || rawResponse.content || '');
-    const cleaned = rawText.trim().replace(/```json|
-```/g, '').trim();
+    
+    // ✅ CORREÇÃO APLICADA: Sintaxe `{3}` evita a quebra de linha em formatadores e erros no Turbopack
+    const cleaned = rawText.trim().replace(/`{3}json|`{3}/g, '').trim();
+    
     const parsed = JSON.parse(cleaned);
     const llmContexts = (parsed.contexts as ContextType[]).filter((c) => ALL_CONTEXTS.includes(c));
 
