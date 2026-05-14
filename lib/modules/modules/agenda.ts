@@ -48,3 +48,4 @@ export const ModuloAgenda: ModuleDefinition = {
   ],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
+ 
