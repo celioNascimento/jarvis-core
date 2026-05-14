@@ -1,16 +1,9 @@
 // lib/chat/tools-executor.ts
-// Dispatcher V9.2.0 — Cache Invalidation após writes
+// Dispatcher V9.3.0 — Cache Invalidation após writes + Type-Safe com sessionId
 //
-// MUDANÇA em relação à V9.1.0:
-//   Após tools que escrevem dados (agenda, finanças, projetos, etc),
-//   invalida o cache Redis do masterContext para que a próxima mensagem
-//   já veja os dados atualizados sem esperar o TTL de 5 min expirar.
-//
-// Para adicionar uma nova tool:
-//   1. Crie o executor em lib/tools/executors/
-//   2. Adicione o case aqui (3 linhas)
-//   3. Se a tool ESCREVE dados, adicione o nome em WRITE_TOOLS abaixo
-//   4. Adicione a definição em tools-def.ts
+// MUDANÇA em relação à V9.2.0:
+//   Separação dos imports de lembretes (agora em reminders.ts)
+//   Passagem do sessionId explícito para as ferramentas que gerenciam estado de cache.
 
 import { supabase } from '@/lib/jarvis';
 import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
@@ -27,11 +20,15 @@ import {
   executeCriarEventoAgenda,
   executeListarEmailsRecentes,
   executeExcluirEmail,
+  executeDeletarEvento,
+} from '@/lib/tools/executors/agenda';
+
+// 🔥 NOVO IMPORT: Lembretes separados da Agenda
+import {
   executeCreateReminder,
   executeConsultarLembretes,
-  executeDeletarEvento,
   executeCancelarLembrete,
-} from '@/lib/tools/executors/agenda';
+} from '@/lib/tools/executors/reminders';
 
 import {
   executeRegistrarAbastecimento,
@@ -78,50 +75,32 @@ import { executeGerenciarGuideline } from '@/lib/tools/executors/guidelines';
 import { executeAlternarPermissao } from '../tools/executors/relationships';
 
 // ── Tools que escrevem dados → invalidam o cache do masterContext ─────────────
-// Reads (consultar_agenda, ver_lista, etc.) NÃO invalidam — cache continua válido.
-// Só adicione aqui tools que CRIAM, ATUALIZAM ou DELETAM registros.
-
 const WRITE_TOOLS = new Set([
-  // Agenda
   'salvar_evento',
   'criar_evento_agenda',
   'deletar_evento',
   'excluir_email',
   'create_reminder',
   'cancelar_lembrete',
-
-  // TDAH / Diário / Metas
   'gerenciar_eisenhower',
   'quebrar_tarefa',
   'criar_rotina',
   'registrar_no_diario',
   'atualizar_meta',
-
-  // Finanças
   'registrar_transacao',
   'criar_orcamento',
-
-  // Projetos
   'gerenciar_projeto',
   'gerenciar_topico',
   'gerenciar_entry',
   'gerenciar_membros_projeto',
-
-  // Lugares / Compras
   'salvar_lugar',
   'adicionar_item_lista',
   'marcar_item_comprado',
-
-  // Memória / Guidelines
   'adicionar_diretriz_dinamica',
   'gerenciar_guideline',
-
-  // Veículos
   'registrar_abastecimento',
   'registrar_manutencao',
   'atualizar_odometro',
-
-  // Relacionamentos
   'alternar_permissao_contato',
 ]);
 
@@ -134,9 +113,7 @@ async function checkIdempotency(
 ): Promise<boolean> {
   const key = `${numericUserId}_${name}_${callSignature}`;
   try {
-    const { error } = await supabase
-      .from('idempotency_keys')
-      .insert({ key });
+    const { error } = await supabase.from('idempotency_keys').insert({ key });
     if (error?.code === '23505') {
       console.warn(`[Idempotência] Bloqueado retry: ${name}`);
       return false;
@@ -154,7 +131,7 @@ export async function executeTool(
   authUserId: string,
   numericUserIdStr: string,
   contextSnapshot: Record<string, any>[] = [],
-  sessionId?: string,   // ← novo parâmetro opcional para invalidação de cache
+  sessionId?: string,
 ): Promise<string> {
   if (!/^\d+$/.test(numericUserIdStr)) {
     return `Erro de identidade: userId inválido "${numericUserIdStr}"`;
@@ -173,6 +150,9 @@ export async function executeTool(
   if (!canRun) return '[SISTEMA] Comando já processado com sucesso.';
 
   const args = [p, authUserId, numericUserIdStr] as const;
+  
+  // Garante que o sessionId seja uma string válida para evitar erros de tipagem nas ferramentas
+  const safeSessionId = sessionId || 'default-session';
 
   let result: string;
 
@@ -181,16 +161,20 @@ export async function executeTool(
     case 'buscar_memoria_longa':        result = await executeBuscarMemoriaLonga(...args); break;
     case 'adicionar_diretriz_dinamica': result = await executeAdicionarDiretrizDinamica(...args); break;
 
-    // ── Agenda ───────────────────────────────────────────────────────────────
+    // ── Agenda (Lev e Google) ────────────────────────────────────────────────
     case 'consultar_agenda':       result = await executeConsultarAgenda(...args); break;
-    case 'salvar_evento':          result = await executeSalvarEvento(...args); break;
-    case 'deletar_evento':         result = await executeDeletarEvento(...args); break;
     case 'criar_evento_agenda':    result = await executeCriarEventoAgenda(...args); break;
     case 'listar_emails_recentes': result = await executeListarEmailsRecentes(...args); break;
     case 'excluir_email':          result = await executeExcluirEmail(...args); break;
-    case 'create_reminder':        result = await executeCreateReminder(...args); break;
+    // Tools de Agenda com Invalidação Direta:
+    case 'salvar_evento':          result = await executeSalvarEvento(p, authUserId, numericUserIdStr, safeSessionId); break;
+    case 'deletar_evento':         result = await executeDeletarEvento(p, authUserId, numericUserIdStr, safeSessionId); break;
+
+    // ── Lembretes (Notificações) ─────────────────────────────────────────────
     case 'consultar_lembretes':    result = await executeConsultarLembretes(...args); break;
-    case 'cancelar_lembrete':      result = await executeCancelarLembrete(...args); break;
+    // Tools de Lembrete com Invalidação Direta:
+    case 'create_reminder':        result = await executeCreateReminder(p, authUserId, numericUserIdStr, safeSessionId); break;
+    case 'cancelar_lembrete':      result = await executeCancelarLembrete(p, authUserId, numericUserIdStr, safeSessionId); break;
 
     // ── Veículos ─────────────────────────────────────────────────────────────
     case 'registrar_abastecimento': result = await executeRegistrarAbastecimento(...args); break;
@@ -240,8 +224,7 @@ export async function executeTool(
       return `Ferramenta "${name}" não reconhecida pelo dispatcher.`;
   }
 
-  // ── Invalidação de cache após writes ──────────────────────────────────────
-  // Feita antes do log para garantir que a próxima request já leia dados frescos.
+  // ── Invalidação de cache global (redundância de segurança) ───────────────
   if (WRITE_TOOLS.has(name) && sessionId) {
     invalidateMasterContextCache(Number(numericUserIdStr), sessionId).catch(() => {});
   }

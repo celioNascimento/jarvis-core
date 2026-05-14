@@ -37,14 +37,16 @@ export type ContextType =
   | 'relacao'   
   | 'casa'      
   | 'sistema'  
-  | 'estudo';
+  | 'estudo'
+  | 'lembrete'     // ← NOVO
+  | 'notificacao'; // ← NOVO
 
 const ALL_CONTEXTS: ContextType[] = [
   'casual', 'agenda', 'email', 'saude', 'familia', 'trabalho', 'projeto',
   'meta', 'emocao', 'diario', 'rotina', 'preferencia', 'alias', 'recomendacao',
   'esporte', 'noticias', 'clima', 'math', 'trivial', 'compras', 'financas',
   'evento', 'tdah', 'foco', 'retrospecto', 'veiculos', 'planejamento',
-  'relacao', 'casa', 'sistema', 'estudo'
+  'relacao', 'casa', 'sistema', 'estudo', 'lembrete', 'notificacao'
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
