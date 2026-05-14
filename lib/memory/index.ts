@@ -1,4 +1,4 @@
-// lib/memory/index.ts — V2.2.1 (Fix: ContextType cast)
+// lib/memory/index.ts — V2.2.2 (Fix: userId as Number & ContextType cast)
 import { supabase } from '@/lib/jarvis';
 import { compressToSummary, semanticRamCompression, RAM_MAX_CHARS } from '@/lib/chat/ram';
 import { detectTopicShiftWithL4 } from '@/lib/chat/context-classifier';
@@ -7,7 +7,7 @@ import { buildRecommendationsBlock, buildTopicBlock } from '@/lib/extractor-jobs
 import { planContextualBlocks } from '@/lib/chat/context-classifier';
 import { generateEmbedding } from '@/lib/jarvis';
 import { indexL3Chunks } from '@/lib/chat/l3-chunks';
-import type { ContextType } from '@/lib/chat/context-classifier'; // ← import do tipo
+import type { ContextType } from '@/lib/chat/context-classifier';
 
 // ─── Interfaces e Tipos ──────────────────────────────────────────────────────
 
@@ -33,14 +33,17 @@ export interface MemoryReadResult {
 }
 
 export interface MemoryReadOptions {
-  userId: string; authUserId: string; sessionId: string; queryEmbedding: number[] | null;
+  // ✅ CORREÇÃO AQUI: userId passa a ser number em toda a arquitetura da Memória
+  userId: number; 
+  authUserId: string; sessionId: string; queryEmbedding: number[] | null;
   contexts: string[]; message: string; emotionalScore: number; authorName: string;
   assistantName?: string; layers?: Partial<Record<MemoryLayer, boolean>>;
   masterContext?: any; 
 }
 
 export interface MemoryWritePayload {
-  type: MemoryWriteType; userId: string; authUserId?: string; relationshipId?: string;
+  // ✅ CORREÇÃO: tipando como number/string para garantir flexibilidade no insert
+  type: MemoryWriteType; userId: number | string; authUserId?: string; relationshipId?: string;
   summary?: string; embedding?: number[]; emotionalWeight?: number; category?: string;
   title?: string; eventDate?: string; isRecurring?: boolean; notes?: string;
   sessionId?: string; messageText?: string; aiReply?: string; metadata?: Record<string, any>;
@@ -74,7 +77,7 @@ async function readRAM(options: MemoryReadOptions, hdBlock: string, injectedHist
     if (historySession.length === 0) return { recentPairs: [], ramBlock: '', sessionId: safeSessionId };
 
     const hasEnoughHistory = historySession.length >= 2;
-    // FIX: cast contexts para ContextType[] para satisfazer a assinatura de detectTopicShiftWithL4
+    // ✅ Agora o userId já é number, o classificador vai aceitar perfeitamente
     const shiftDetected = hasEnoughHistory
       ? await detectTopicShiftWithL4(userId, contexts as ContextType[])
       : false;
@@ -99,16 +102,16 @@ async function readRAM(options: MemoryReadOptions, hdBlock: string, injectedHist
   }
 }
 
-async function readL3(userId: string, queryEmbedding: number[] | null, injectedDossier?: string): Promise<L3Result> {
+async function readL3(userId: number, queryEmbedding: number[] | null, injectedDossier?: string): Promise<L3Result> {
   if (!queryEmbedding) return { content: injectedDossier || '', themes: [], isFallback: true };
   const { data: results, error } = await supabase.rpc('match_l3_chunks', {
-    query_embedding: queryEmbedding, p_user_id: Number(userId), match_threshold: 0.3, match_count: 3
+    query_embedding: queryEmbedding, p_user_id: userId, match_threshold: 0.3, match_count: 3
   });
   if (error || !results?.length) return { content: injectedDossier || '', themes: [], isFallback: true };
   return { content: results.map((r: any) => r.content).join('\n\n'), themes: results.map((r: any) => r.theme), isFallback: false };
 }
 
-async function readHD(userId: string, queryEmbedding: number[] | null, contexts: string[], emotionalScore: number): Promise<HDResult> {
+async function readHD(userId: number, queryEmbedding: number[] | null, contexts: string[], emotionalScore: number): Promise<HDResult> {
   if (!queryEmbedding) return { memories: [], block: '', memoryIds: [] };
   const { data: search } = await supabase.rpc('match_memories', {
     query_embedding: queryEmbedding, match_threshold: 0.22, match_count: 8
@@ -128,7 +131,7 @@ async function readHD(userId: string, queryEmbedding: number[] | null, contexts:
   };
 }
 
-async function readEvents(userId: string, canonicalDateISO: string, injectedEvents?: any[]): Promise<EventsResult> {
+async function readEvents(userId: number, canonicalDateISO: string, injectedEvents?: any[]): Promise<EventsResult> {
   let data = injectedEvents ?? [];
   if (data.length === 0) {
     const { data: fetched } = await supabase.from('events').select('title, start_at, description').eq('user_id', userId).order('start_at', { ascending: true });
@@ -143,13 +146,13 @@ async function readEvents(userId: string, canonicalDateISO: string, injectedEven
   return { upcoming, important: [], block };
 }
 
-async function readTopics(userId: string, contexts: string[], message: string): Promise<TopicsResult> {
+async function readTopics(userId: number, contexts: string[], message: string): Promise<TopicsResult> {
     try {
         const safeContext = contexts.length > 0 ? contexts[0] : 'casual';
         const [topicBlock, recommendationsBlock, relatedTopicsBlock] = await Promise.all([
-            buildTopicBlock(userId, message).catch(() => ''),
-            buildRecommendationsBlock(userId, message).catch(() => ''),
-            getRelatedTopics(userId, safeContext).catch(() => '')
+            buildTopicBlock(String(userId), message).catch(() => ''), // Mantido String apenas para os extratores que não refatoramos
+            buildRecommendationsBlock(String(userId), message).catch(() => ''),
+            getRelatedTopics(String(userId), safeContext).catch(() => '')
         ]);
         return { topicBlock, recommendationsBlock, relatedTopicsBlock };
     } catch {
@@ -178,7 +181,7 @@ export async function read(options: MemoryReadOptions): Promise<MemoryReadResult
 
   return {
     ram, l3, hd, ashes, events, topics, relationship,
-    meta: { userId, sessionId, layersLoaded: ['ram', 'events', 'hd', 'l3'], durationMs: Date.now() - start }
+    meta: { userId: String(userId), sessionId, layersLoaded: ['ram', 'events', 'hd', 'l3'], durationMs: Date.now() - start }
   };
 }
 
@@ -190,14 +193,14 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
       case 'conversation':
         if (!payload.messageText || !payload.sessionId) return;
         await supabase.from('brain').insert([{
-          content: payload.messageText, user_id: payload.userId, session_id: payload.sessionId,
+          content: payload.messageText, user_id: Number(payload.userId), session_id: payload.sessionId,
           category: payload.category || 'info', project_tag: 'geral',
           metadata: { ai_reply: payload.aiReply, ...payload.metadata }
         }]);
         break;
       case 'l3_patch':
         if (!payload.dossie) return;
-        await supabase.from('users').update({ current_context: payload.dossie }).eq('id', payload.userId);
+        await supabase.from('users').update({ current_context: payload.dossie }).eq('id', Number(payload.userId));
         indexL3Chunks(Number(payload.userId), payload.dossie).catch(() => {});
         break;
     }
