@@ -1,5 +1,6 @@
 // lib/modules/registry.ts
-// V10.2.0 (God RPC Hydration + UUID fix)
+// V12.2.0 (Type-Safe DB Query para evitar Erro 400 no PostgREST)
+
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
 import { waitUntil } from '@vercel/functions'; 
@@ -46,12 +47,16 @@ export async function loadActiveModules(
     enabledIds = await redis.get<string[]>(cacheKey);
     
     if (!enabledIds) {
+      // ── CORREÇÃO ERRO 400 ──
+      // Converte explicitamente para Base 10 Inteiro. Evita vazamento de UUIDs na query.
+      const safeNumericId = parseInt(String(opts.userId), 10);
+      
       const { data } = await supabase
         .from('user_modules')
         .select('module_id')
-        // ✅ CORREÇÃO ERRO 400: Usa o authUserId (UUID) ou tenta parsear numérico de forma segura.
-        .eq('user_id', opts.authUserId || opts.userId)
+        .eq('user_id', safeNumericId)
         .eq('is_active', true);
+        
       enabledIds = data?.map(r => r.module_id) || [];
       await redis.set(cacheKey, enabledIds, { ex: 300 });
     }
@@ -82,7 +87,7 @@ export async function loadActiveModules(
       
       waitUntil(
         (async () => {
-          await recordModuleMetrics(mod.id, Number(opts.userId), {
+          await recordModuleMetrics(mod.id, parseInt(String(opts.userId), 10), {
             latencyMs: Date.now() - start,
             tokens: Math.ceil(block.length / 4),
             activated: block.length > 0
