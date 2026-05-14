@@ -1,10 +1,14 @@
 // ============================================================
 // app/api/reminders/route.ts
-// Motor V8.16.0 — CRUD Híbrido com QStash (Schema Jarvis)
+// Motor V8.17.0 — CRUD Híbrido com QStash e Automação de Cron
 // ============================================================
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
-import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
+import { 
+  scheduleReminderOnQStash, 
+  cancelReminderOnQStash, 
+  frequencyToCron 
+} from '@/lib/qstash';
 
 // ── HELPER DE AUTENTICAÇÃO DRY ──────────────────────────────────────────────
 async function getJarvisUser(req: NextRequest) {
@@ -32,7 +36,6 @@ export async function GET(req: NextRequest) {
   if (error) return NextResponse.json({ error }, { status });
 
   try {
-    // 1. Lembretes próprios
     const { data: ownReminders, error: ownError } = await supabase
       .schema('jarvis')
       .from('reminders')
@@ -42,7 +45,6 @@ export async function GET(req: NextRequest) {
 
     if (ownError) throw ownError;
 
-    // 2. Lembretes compartilhados (se houver)
     const { data: shares } = await supabase
       .schema('jarvis')
       .from('reminder_shares')
@@ -74,12 +76,11 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ ok: true, reminders: all });
   } catch (e: any) {
-    console.error('[Reminders GET Error]', e);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 
-// ── POST: CRIAR NOVO LEMBRETE E AGENDAR NO QSTASH ───────────────────────────
+// ── POST: CRIAR E AGENDAR ───────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const { user, authUser, error, status } = await getJarvisUser(req);
   if (error) return NextResponse.json({ error }, { status });
@@ -87,7 +88,6 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    // 1. Salva no banco de dados primeiro
     const { data: reminder, error: dbError } = await supabase
       .schema('jarvis')
       .from('reminders')
@@ -105,18 +105,21 @@ export async function POST(req: NextRequest) {
 
     if (dbError) throw dbError;
 
-    // 2. Agenda no QStash (se houver horário e não for puramente por localização)
+    // ── AUTOMAÇÃO: Cálculo de Cron e Agendamento ──
     if (reminder.scheduled_time && reminder.type !== 'location') {
+      const cronCalculado = reminder.frequency 
+        ? frequencyToCron(reminder.frequency, reminder.scheduled_time) 
+        : null;
+
       const qstashId = await scheduleReminderOnQStash({
-        reminderId: reminder.id, // ID agora é UUID
-        userId: user!.id.toString(), // ID do schema jarvis
-        authUserId: authUser!.id, // UUID de autenticação
+        reminderId: reminder.id,
+        userId: user!.id.toString(),
+        authUserId: authUser!.id,
         message: reminder.title,
         scheduledTime: reminder.scheduled_time,
-        cron: body.cron || null, // Recebe do payload caso seja recorrente nativo do QStash
+        cron: cronCalculado, // Injeta o cron automático aqui
       });
 
-      // 3. Atualiza o ID da mensagem do QStash no banco
       if (qstashId) {
         await supabase
           .schema('jarvis')
@@ -130,60 +133,60 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, reminder });
   } catch (e: any) {
-    console.error('[Reminders POST Error]', e);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 
-// ── PUT: ATUALIZAR LEMBRETE E REAGENDAR NO QSTASH ───────────────────────────
+// ── PUT: ATUALIZAR E REAGENDAR ──────────────────────────────────────────────
 export async function PUT(req: NextRequest) {
   const { user, authUser, error, status } = await getJarvisUser(req);
   if (error) return NextResponse.json({ error }, { status });
 
   try {
     const body = await req.json();
-    const { id, cron, ...updateData } = body;
+    const { id, ...updateData } = body;
 
-    if (!id) return NextResponse.json({ error: 'ID do lembrete obrigatório' }, { status: 400 });
+    if (!id) return NextResponse.json({ error: 'ID obrigatório' }, { status: 400 });
 
-    // 1. Busca o lembrete atual para validar propriedade e pegar o QStash ID antigo
-    const { data: oldReminder } = await supabase
+    const { data: old } = await supabase
       .schema('jarvis')
       .from('reminders')
-      .select('user_id, qstash_message_id, type')
+      .select('user_id, qstash_message_id')
       .eq('id', id)
       .single();
 
-    if (!oldReminder || oldReminder.user_id !== user!.id) {
+    if (!old || old.user_id !== user!.id) {
       return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
     }
 
-    // 2. Cancela o agendamento antigo no QStash (se existir)
-    if (oldReminder.qstash_message_id && (updateData.scheduled_time || updateData.status !== 'pending')) {
-      await cancelReminderOnQStash(oldReminder.qstash_message_id);
-      updateData.qstash_message_id = null; // Limpa para garantir
+    // ── LIMPEZA: Cancela agendamento antigo no QStash ──
+    if (old.qstash_message_id) {
+      await cancelReminderOnQStash(old.qstash_message_id);
     }
 
-    // 3. Atualiza os dados no banco
-    const { data: updatedReminder, error: updateError } = await supabase
+    const { data: updated, error: upError } = await supabase
       .schema('jarvis')
       .from('reminders')
-      .update(updateData)
+      .update({ ...updateData, qstash_message_id: null }) // Limpa ID antigo
       .eq('id', id)
       .select()
       .single();
 
-    if (updateError) throw updateError;
+    if (upError) throw upError;
 
-    // 4. Se continuou pendente e tem horário, cria um novo agendamento no QStash
-    if (updatedReminder.status === 'pending' && updatedReminder.scheduled_time && updatedReminder.type !== 'location') {
+    // ── REAGENDAMENTO: Novo tempo ou frequência ──
+    if (updated.status === 'pending' && updated.scheduled_time && updated.type !== 'location') {
+      const cronCalculado = updated.frequency 
+        ? frequencyToCron(updated.frequency, updated.scheduled_time) 
+        : null;
+
       const qstashId = await scheduleReminderOnQStash({
-        reminderId: updatedReminder.id,
+        reminderId: updated.id,
         userId: user!.id.toString(),
         authUserId: authUser!.id,
-        message: updatedReminder.title,
-        scheduledTime: updatedReminder.scheduled_time,
-        cron: cron || null,
+        message: updated.title,
+        scheduledTime: updated.scheduled_time,
+        cron: cronCalculado,
       });
 
       if (qstashId) {
@@ -191,59 +194,46 @@ export async function PUT(req: NextRequest) {
           .schema('jarvis')
           .from('reminders')
           .update({ qstash_message_id: qstashId })
-          .eq('id', updatedReminder.id);
+          .eq('id', updated.id);
           
-        updatedReminder.qstash_message_id = qstashId;
+        updated.qstash_message_id = qstashId;
       }
     }
 
-    return NextResponse.json({ ok: true, reminder: updatedReminder });
+    return NextResponse.json({ ok: true, reminder: updated });
   } catch (e: any) {
-    console.error('[Reminders PUT Error]', e);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 
-// ── DELETE: CANCELAR NO QSTASH E EXCLUIR DO BANCO ───────────────────────────
+// ── DELETE: CANCELAR E REMOVER ──────────────────────────────────────────────
 export async function DELETE(req: NextRequest) {
   const { user, error, status } = await getJarvisUser(req);
   if (error) return NextResponse.json({ error }, { status });
 
   try {
-    const { searchParams } = new URL(req.url);
-    const id = searchParams.get('id');
+    const id = new URL(req.url).searchParams.get('id');
+    if (!id) return NextResponse.json({ error: 'ID obrigatório' }, { status: 400 });
 
-    if (!id) return NextResponse.json({ error: 'ID do lembrete obrigatório' }, { status: 400 });
-
-    // 1. Busca o lembrete para validação e extração do QStash ID
-    const { data: reminder } = await supabase
+    const { data: rem } = await supabase
       .schema('jarvis')
       .from('reminders')
       .select('user_id, qstash_message_id')
       .eq('id', id)
       .single();
 
-    if (!reminder || reminder.user_id !== user!.id) {
+    if (!rem || rem.user_id !== user!.id) {
       return NextResponse.json({ error: 'Sem permissão' }, { status: 403 });
     }
 
-    // 2. Remove o agendamento pendente no QStash
-    if (reminder.qstash_message_id) {
-      await cancelReminderOnQStash(reminder.qstash_message_id);
+    if (rem.qstash_message_id) {
+      await cancelReminderOnQStash(rem.qstash_message_id);
     }
 
-    // 3. Deleta o registro do banco
-    const { error: deleteError } = await supabase
-      .schema('jarvis')
-      .from('reminders')
-      .delete()
-      .eq('id', id);
-
-    if (deleteError) throw deleteError;
+    await supabase.schema('jarvis').from('reminders').delete().eq('id', id);
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    console.error('[Reminders DELETE Error]', e);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
