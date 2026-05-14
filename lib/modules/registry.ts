@@ -54,7 +54,7 @@ export async function loadActiveModules(
       const { data } = await supabase
         .from('user_modules')
         .select('module_id')
-        .eq('user_id', opts.userId)
+        .eq('user_id', Number(opts.userId))
         .eq('is_active', true);
       enabledIds = data?.map(r => r.module_id) || [];
       await redis.set(cacheKey, enabledIds, { ex: 300 });
