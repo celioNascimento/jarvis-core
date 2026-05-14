@@ -10,11 +10,12 @@ async function executeToolCalls(
   toolCalls: any[], 
   authUserId: string, 
   numericUserId: string, 
-  contextSnapshot: Record<string, any>[]
+  contextSnapshot: Record<string, any>[],
+  token: string
 ): Promise<ToolCallResult[]> {
   return Promise.all(toolCalls.map(async (tc: any) => ({
     tc,
-    result: await executeTool(tc, authUserId, numericUserId, contextSnapshot),
+    result: await executeTool(tc, authUserId, numericUserId, contextSnapshot, token),
   })));
 }
 
