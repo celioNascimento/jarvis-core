@@ -9,8 +9,10 @@ import { NextRequest } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase, getOrCreateSession } from '@/lib/jarvis';
 import {
-  resolveLocation,
+  updateGeoState,
   normalizeLocationForModules,
+  type GeoState,
+  type UserLocation,
 } from '@/lib/geo-resolver';
 
 const redis = new Redis({
@@ -37,14 +39,6 @@ export interface ParsedLocation {
   city?: string;
 }
 
-export interface UserLocation {
-  lat: string | number;
-  lng: string | number;
-  label?: string;
-  city?: string;
-}
-
-// ✅ NOVO CONTRATO DE VOZ ADICIONADO AQUI
 export interface VoiceSettings {
   provider: 'openai' | 'elevenlabs';
   voiceId: string;
@@ -55,7 +49,7 @@ export interface ChatRequestContext {
   message: string;
   userEmail: string;
   speak: boolean;
-  voiceSettings: VoiceSettings; // ✅ INJETADO NO CONTEXTO
+  voiceSettings: VoiceSettings;
   sessionId: string;
   requestSignature: string;
 
@@ -71,7 +65,7 @@ export interface ChatRequestContext {
 
   // Localização
   rawLocation: ParsedLocation | null;
-  resolvedLocation: Awaited<ReturnType<typeof resolveLocation>>;
+  resolvedLocation: GeoState | null;           // ← agora é GeoState (fonte única)
   normalizedLocation: ReturnType<typeof normalizeLocationForModules>;
 
   // Dedup
@@ -103,9 +97,16 @@ function parseLocation(raw: unknown): ParsedLocation | null {
   }
 }
 
-function toUserLocation(loc: ParsedLocation | null): UserLocation | null {
-  if (!loc || loc.lat == null || loc.lng == null) return null;
-  return { lat: loc.lat, lng: loc.lng, label: loc.label, city: loc.city };
+// Converte GeoState para UserLocation (compatibilidade com normalizeLocationForModules)
+function geoStateToUserLocation(state: GeoState): UserLocation {
+  return {
+    lat:     state.lat,
+    lng:     state.lng,
+    label:   state.label,
+    city:    state.city,
+    state:   state.state,
+    country: state.country,
+  };
 }
 
 // ─── Extrator de body (multipart ou JSON) ─────────────────────────────────────
@@ -114,7 +115,7 @@ async function extractBody(req: NextRequest): Promise<{
   message: string;
   userEmail: string;
   speak: boolean;
-  voiceSettings: VoiceSettings | null; // ✅ EXTRAÇÃO
+  voiceSettings: VoiceSettings | null;
   sessionId: string | null;
   rawLocation: ParsedLocation | null;
 }> {
@@ -123,8 +124,6 @@ async function extractBody(req: NextRequest): Promise<{
 
   if (isMultipart) {
     const body = await req.formData();
-    
-    // Tratamento seguro para voiceSettings no formData
     let parsedVoice = null;
     try {
       const vsStr = body.get('voiceSettings') as string;
@@ -146,7 +145,7 @@ async function extractBody(req: NextRequest): Promise<{
     message:       body.message || '',
     userEmail:     body.userEmail || '',
     speak:         !!body.speak,
-    voiceSettings: body.voiceSettings || null, // ✅ EXTRAÇÃO
+    voiceSettings: body.voiceSettings || null,
     sessionId:     body.sessionId ?? null,
     rawLocation:   parseLocation(body.location),
   };
@@ -187,7 +186,7 @@ export async function buildRequestContext(
 ): Promise<ChatRequestContext> {
   const startTime = Date.now();
 
-  // 1. Extrai body (agora inclui voiceSettings)
+  // 1. Extrai body
   const { message, userEmail, speak, voiceSettings, sessionId: incomingSessionId, rawLocation } = await extractBody(req);
 
   // 2. Autentica usuário
@@ -207,15 +206,33 @@ export async function buildRequestContext(
   // 4. Dedup
   const dedup = await checkDedup(sessionId, message);
 
-  // 5. Geo
-  const resolvedLocation = await resolveLocation(toUserLocation(rawLocation));
-  const normalizedLocation = normalizeLocationForModules(resolvedLocation);
+  // 5. Geo — via GeoStateManager (único caminho)
+  //    updateGeoState decide internamente se chama Nominatim ou retorna cache.
+  //    Se não há GPS nessa request, getGeoState retorna o último estado salvo.
+  let resolvedLocation: GeoState | null = null;
 
-  // 6. Assinatura da request
+  if (rawLocation?.lat != null && rawLocation.lng != null) {
+    resolvedLocation = await updateGeoState(
+      String(user.id),
+      rawLocation.lat,
+      rawLocation.lng
+    );
+  } else {
+    // Sem GPS nessa request — usa o último estado conhecido do usuário
+    const { getGeoState } = await import('@/lib/geo-resolver');
+    resolvedLocation = await getGeoState(String(user.id));
+  }
+
+  // 6. normalizedLocation para os módulos (mantém compatibilidade de tipo)
+  const normalizedLocation = resolvedLocation
+    ? normalizeLocationForModules(geoStateToUserLocation(resolvedLocation))
+    : null;
+
+  // 7. Assinatura da request
   const timeSlot = Math.floor(Date.now() / 60000);
   const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 40)).toString('base64')}_${timeSlot}`;
 
-  // ✅ 7. Consolidação de Voz (Fallback seguro se o frontend não mandar)
+  // 8. Consolidação de voz
   const dbVoice = user.preferred_voice || 'alloy';
   const inferredProvider = dbVoice.length > 10 ? 'elevenlabs' : 'openai';
   const finalVoiceSettings = voiceSettings || { provider: inferredProvider, voiceId: dbVoice };
@@ -224,15 +241,15 @@ export async function buildRequestContext(
     message,
     userEmail,
     speak,
-    voiceSettings: finalVoiceSettings, // ✅ REPASSANDO PARA O FINALIZER
+    voiceSettings: finalVoiceSettings,
     sessionId,
     requestSignature,
     user: {
-      id:             user.id,
-      auth_user_id:   user.auth_user_id,
-      nickname:       user.nickname || 'Usuário',
-      assistant_name: user.assistant_name || 'Lev',
-      plan:           user.plan || 'free',
+      id:              user.id,
+      auth_user_id:    user.auth_user_id,
+      nickname:        user.nickname || 'Usuário',
+      assistant_name:  user.assistant_name || 'Lev',
+      plan:            user.plan || 'free',
       preferred_voice: user.preferred_voice || 'alloy',
     },
     rawLocation,
