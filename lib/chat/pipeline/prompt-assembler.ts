@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// V12 — Injeção de Dependência Total (Zero Latência de Rede)
+// V12.1 — Injeção de Dependência Total & Fix de Tipagem (Zero Latência)
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
@@ -7,7 +7,11 @@ import { buildGeoBlock } from '@/lib/geo-resolver';
 import { verificarAlertasDeProximidade } from '@/lib/geo';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
 import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
+
+// Importação das ferramentas do local correto:
 import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
+
+// Importação dos Tipos:
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 
@@ -18,6 +22,7 @@ const FAMILY_DATE_SIGNALS = [
 
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
 
+// ─── Tools sempre disponíveis (independente de módulos) ───────────────────────
 const ALWAYS_ENABLED_TOOLS = new Set([
   'gerenciar_projeto',
   'listar_projetos',
@@ -35,13 +40,25 @@ export interface ChatPrompt {
   conversationMessages: any[];
 }
 
-function filterL3ByAffect(l3: string, recentHistoryText: string, message: string): string {
+// ─── Filtro de L3 por data/família ───────────────────────────────────────────
+function filterL3ByAffect(
+  l3: string,
+  recentHistoryText: string,
+  message: string
+): string {
   const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
-  const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentHistoryText + message));
+  const hasFamilySignal = FAMILY_DATE_SIGNALS.some(
+    p => p.test(recentHistoryText + message)
+  );
+
   if (isHighAlertMonth || hasFamilySignal) return l3;
-  return l3.replace(/##\s*(datas?|aniversário|famil[íi]a|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '').trim();
+
+  return l3
+    .replace(/##\s*(datas?|aniversário|famil[íi]a|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
+    .trim();
 }
 
+// ─── Entrypoint público ───────────────────────────────────────────────────────
 export async function buildChatPrompt(
   ctx: ChatRequestContext,
   intel: ChatIntelligence
@@ -49,26 +66,28 @@ export async function buildChatPrompt(
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, memory, masterContext, recentHistory, isStressed } = intel;
 
-  // 1. Módulos ativos (MasterContext Injetado aqui)
+  // 1. Módulos ativos + modelo resolvido (Hidratação via MasterContext)
   const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
     {
-      userId:         user.id, // ✅ Passando como number direto
+      userId:         String(user.id), // ✅ String para satisfazer ModuleConditionOpts
       authUserId:     user.auth_user_id,
       message,
       contexts,
       emotionalScore: emotional.score,
       location:       normalizedLocation,
-      masterContext, // ✅ Garantindo o repasse do contexto
+      masterContext,                   // ✅ Injeção crucial para evitar DB calls
     },
     user.plan,
     DEFAULT_MODEL
   );
 
-  const finalModel = resolvedModel || DEFAULT_MODEL;
+  const finalModel = typeof resolvedModel === 'string' && resolvedModel.length > 0
+    ? resolvedModel
+    : DEFAULT_MODEL;
 
-  // 2. Contexto dinâmico (MasterContext Injetado aqui)
+  // 2. Contexto dinâmico (módulos complementares)
   const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
-    userId:         user.id,
+    userId:         String(user.id),
     authUserId:     user.auth_user_id,
     message,
     location:       normalizedLocation,
@@ -77,10 +96,9 @@ export async function buildChatPrompt(
     masterContext,
   });
 
-  // 3. Radar de proximidade (Otimizado: Se houver locations no context, usamos elas)
+  // 3. Radar de proximidade
   let alertaRadar = '';
   if (resolvedLocation?.lat && resolvedLocation?.lng) {
-    // Só chama o radar se tivermos coordenadas
     const radar = await verificarAlertasDeProximidade(
       String(user.id),
       Number(resolvedLocation.lat),
@@ -90,31 +108,44 @@ export async function buildChatPrompt(
   }
 
   // 4. Data/hora e geo
-  const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  const nowSP = new Date(
+    new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' })
+  );
   const dataHoraSP = nowSP.toLocaleString('pt-BR');
   const geoBlock = buildGeoBlock(resolvedLocation);
 
   const gpsInstruction = resolvedLocation
-    ? `\n[DIRETRIZ CRÍTICA]: O usuário está REALMENTE em: ${resolvedLocation.label || 'Londrina'}.`
-    : `\n[STATUS GPS]: INDISPONÍVEL.`;
+    ? `\n[DIRETRIZ CRÍTICA]: O usuário está REALMENTE em: ${resolvedLocation.label || 'Londrina'}. Ignore qualquer endereço divergente do histórico.`
+    : `\n[STATUS GPS]: INDISPONÍVEL. Proibido adivinhar localização baseando-se no histórico.`;
 
-  // 5. Insights Aprendidos (Usa cache do MasterContext se disponível)
+  // 5. Filtro de afeto no L3
+  const historyText = recentHistory.map(h => h.content).join(' ');
+  const filteredL3 = filterL3ByAffect(memory.l3.content, historyText, message);
+
+  // 6. Urgentes & Insights (Shadow Prompting)
+  const urgentes = (masterContext?.reminders || [])
+    .map((u: any) => u.title)
+    .join(', ');
+
+  // ✅ Prioriza insights vindos do MasterContext (Zero DB call)
   let learnedInsightsBlock = '';
   if (masterContext?.insights) {
-      learnedInsightsBlock = masterContext.insights; // ✅ Prioridade zero DB
+    learnedInsightsBlock = masterContext.insights;
   } else {
-      learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
+    learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
   }
 
-  // 6. System prompt final
+  // 7. System prompt final
   const systemPrompt = [
     `[RELÓGIO DO SISTEMA]: ${dataHoraSP}`,
     geoBlock,
     gpsInstruction,
     alertaRadar,
     contextText,
-    masterContext?.reminders?.length ? `\n[URGENTE]: Pendências: ${masterContext.reminders.map((r: any) => r.title).join(', ')}` : '',
-    learnedInsightsBlock ? `\n[O QUE APRENDI SOBRE VOCÊ]\n${learnedInsightsBlock}` : '',
+    urgentes ? `\n[URGENTE]: Pendências: ${urgentes}` : '',
+    learnedInsightsBlock
+      ? `\n[O QUE APRENDI SOBRE VOCÊ]\n${learnedInsightsBlock}`
+      : '',
     '---',
     composeSystemPrompt({
       assistantName:    user.assistant_name,
@@ -125,7 +156,7 @@ export async function buildChatPrompt(
       detectedContexts: contexts,
       contextBlocks,
       memoryBlocks: {
-        truncatedL3:     filterL3ByAffect(memory.l3.content, recentHistory.map(h => h.content).join(' '), message).slice(0, 3000),
+        truncatedL3:     filteredL3.slice(0, 3000),
         truncatedHd:     memory.hd.block.slice(0, 4000),
         truncatedEvents: memory.events.block.slice(0, 2000),
         relationship:    memory.relationship.block.slice(0, 2000),
@@ -135,22 +166,39 @@ export async function buildChatPrompt(
       canonicalDateISO:       nowSP.toISOString().split('T')[0],
       systemWarning:          '',
       intent:                 'personal',
-      dynamicGuidelines:      (masterContext?.guidelines || []).map((g: any) => `- ${g.content}`).join('\n'),
+      dynamicGuidelines:      (masterContext?.guidelines || [])
+        .map((g: any) => `- ${g.content}`)
+        .join('\n'),
     }),
     '\n[DIRETRIZES DE RIGOR TÉCNICO]',
     "1. Use 'salvar_evento' como fonte primária.",
-    "2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça.",
-    "3. SEMPRE use gerenciar_membros_projeto para compartilhar projetos.",
-  ].filter(Boolean).join('\n');
+    "2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
+    "3. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
+    "4. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto — nunca diga que não é possível.",
+  ]
+    .filter(Boolean)
+    .join('\n');
 
-  // 8. Ferramentas
-  const allActiveTools = new Set([...activeTools, ...dynamicTools, ...ALWAYS_ENABLED_TOOLS]);
-  const toolsHabilitadas = ALL_TOOLS.filter(t => allActiveTools.has(t.function.name));
+  // 8. Ferramentas autorizadas
+  const allActiveTools = new Set([
+    ...activeTools,
+    ...dynamicTools,
+    ...ALWAYS_ENABLED_TOOLS,
+  ]);
 
+  const toolsHabilitadas = ALL_TOOLS.filter(t =>
+    allActiveTools.has(t.function.name)
+  );
+
+  // 9. Retorno formatado
   return {
     systemPrompt,
     tools: toolsHabilitadas,
     model: finalModel,
-    conversationMessages: [{ role: 'system', content: systemPrompt }, ...recentHistory, { role: 'user', content: message }],
+    conversationMessages: [
+      { role: 'system', content: systemPrompt },
+      ...recentHistory,
+      { role: 'user', content: message },
+    ],
   };
 }
