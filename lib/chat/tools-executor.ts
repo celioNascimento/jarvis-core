@@ -1,15 +1,19 @@
 // lib/chat/tools-executor.ts
-// Dispatcher V9.1.0 — Zero lógica inline + Execution Logging
+// Dispatcher V9.2.0 — Cache Invalidation após writes
 //
-// Este arquivo APENAS roteia tool calls para o executor correto.
+// MUDANÇA em relação à V9.1.0:
+//   Após tools que escrevem dados (agenda, finanças, projetos, etc),
+//   invalida o cache Redis do masterContext para que a próxima mensagem
+//   já veja os dados atualizados sem esperar o TTL de 5 min expirar.
+//
 // Para adicionar uma nova tool:
-//   1. Crie ou edite o executor no domínio correspondente em lib/tools/executors/
+//   1. Crie o executor em lib/tools/executors/
 //   2. Adicione o case aqui (3 linhas)
-//   3. Adicione a definição em tools-def.ts
-//
-// Nunca coloque lógica de negócio aqui.
+//   3. Se a tool ESCREVE dados, adicione o nome em WRITE_TOOLS abaixo
+//   4. Adicione a definição em tools-def.ts
 
 import { supabase } from '@/lib/jarvis';
+import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
 
 // ── Executores por domínio ────────────────────────────────────────────────────
 import {
@@ -73,6 +77,54 @@ import { logToolExecution } from '@/lib/tools/executors/learning';
 import { executeGerenciarGuideline } from '@/lib/tools/executors/guidelines';
 import { executeAlternarPermissao } from '../tools/executors/relationships';
 
+// ── Tools que escrevem dados → invalidam o cache do masterContext ─────────────
+// Reads (consultar_agenda, ver_lista, etc.) NÃO invalidam — cache continua válido.
+// Só adicione aqui tools que CRIAM, ATUALIZAM ou DELETAM registros.
+
+const WRITE_TOOLS = new Set([
+  // Agenda
+  'salvar_evento',
+  'criar_evento_agenda',
+  'deletar_evento',
+  'excluir_email',
+  'create_reminder',
+  'cancelar_lembrete',
+
+  // TDAH / Diário / Metas
+  'gerenciar_eisenhower',
+  'quebrar_tarefa',
+  'criar_rotina',
+  'registrar_no_diario',
+  'atualizar_meta',
+
+  // Finanças
+  'registrar_transacao',
+  'criar_orcamento',
+
+  // Projetos
+  'gerenciar_projeto',
+  'gerenciar_topico',
+  'gerenciar_entry',
+  'gerenciar_membros_projeto',
+
+  // Lugares / Compras
+  'salvar_lugar',
+  'adicionar_item_lista',
+  'marcar_item_comprado',
+
+  // Memória / Guidelines
+  'adicionar_diretriz_dinamica',
+  'gerenciar_guideline',
+
+  // Veículos
+  'registrar_abastecimento',
+  'registrar_manutencao',
+  'atualizar_odometro',
+
+  // Relacionamentos
+  'alternar_permissao_contato',
+]);
+
 // ── Idempotência ──────────────────────────────────────────────────────────────
 
 async function checkIdempotency(
@@ -101,7 +153,8 @@ export async function executeTool(
   toolCall: any,
   authUserId: string,
   numericUserIdStr: string,
-  contextSnapshot: Record<string, any>[] = []   // ← opcional, default vazio
+  contextSnapshot: Record<string, any>[] = [],
+  sessionId?: string,   // ← novo parâmetro opcional para invalidação de cache
 ): Promise<string> {
   if (!/^\d+$/.test(numericUserIdStr)) {
     return `Erro de identidade: userId inválido "${numericUserIdStr}"`;
@@ -145,9 +198,9 @@ export async function executeTool(
     case 'atualizar_odometro':      result = await executeAtualizarOdometro(...args); break;
 
     // ── Lugares e Compras ─────────────────────────────────────────────────────
-    case 'salvar_lugar':         result = await executeSalvarLugar(...args); break;
-    case 'adicionar_item_lista': result = await executeAdicionarItemLista(...args); break;
-    case 'ver_lista':            result = await executeVerLista(...args); break;
+    case 'salvar_lugar':            result = await executeSalvarLugar(...args); break;
+    case 'adicionar_item_lista':    result = await executeAdicionarItemLista(...args); break;
+    case 'ver_lista':               result = await executeVerLista(...args); break;
     case 'marcar_item_comprado':    result = await executeMarcarItemComprado(...args); break;
     case 'listar_compras_projeto':  result = await executeListarComprasProjeto(...args); break;
 
@@ -168,33 +221,38 @@ export async function executeTool(
     case 'searchWeb':          result = await searchWeb(p.query); break;
     case 'getWeatherForecast': result = await getWeatherForecast(p.lat, p.lng); break;
 
-    // ── Projetos ──────────────────────────────────────────────────────────
-    case 'gerenciar_projeto': result = await executeGerenciarProjeto(...args); break;
-    case 'listar_projetos':   result = await executeListarProjetos(...args); break;
-    case 'gerenciar_topico':  result = await executeGerenciarTopico(...args); break;
-    case 'listar_topicos':    result = await executeListarTopicos(...args); break; 
-    case 'gerenciar_entry':   result = await executeGerenciarEntry(...args); break;
-    case 'listar_entries':    result = await executeListarEntries(...args); break;  
+    // ── Projetos ──────────────────────────────────────────────────────────────
+    case 'gerenciar_projeto':         result = await executeGerenciarProjeto(...args); break;
+    case 'listar_projetos':           result = await executeListarProjetos(...args); break;
+    case 'gerenciar_topico':          result = await executeGerenciarTopico(...args); break;
+    case 'listar_topicos':            result = await executeListarTopicos(...args); break;
+    case 'gerenciar_entry':           result = await executeGerenciarEntry(...args); break;
+    case 'listar_entries':            result = await executeListarEntries(...args); break;
     case 'gerenciar_membros_projeto': result = await executeGerenciarMembrosProjeto(...args); break;
-    
 
     // ── Relacionamentos / Permissões ──────────────────────────────────────────
     case 'alternar_permissao_contato': result = await executeAlternarPermissao(p, authUserId, numericUserIdStr); break;
 
     // ── Guidelines / System Prompts ──────────────────────────────────────────
     case 'gerenciar_guideline': result = await executeGerenciarGuideline(...args); break;
-      
+
     default:
       return `Ferramenta "${name}" não reconhecida pelo dispatcher.`;
   }
 
-  // ── Log assíncrono — nunca bloqueia a resposta ao usuário ─────────────────
+  // ── Invalidação de cache após writes ──────────────────────────────────────
+  // Feita antes do log para garantir que a próxima request já leia dados frescos.
+  if (WRITE_TOOLS.has(name) && sessionId) {
+    invalidateMasterContextCache(Number(numericUserIdStr), sessionId).catch(() => {});
+  }
+
+  // ── Log assíncrono — nunca bloqueia a resposta ─────────────────────────────
   logToolExecution({
-    userId: Number(numericUserIdStr),
-    toolName: name, 
+    userId:      Number(numericUserIdStr),
+    toolName:    name,
     ['arguments']: p,
-    output: result,
-    contextSnapshot,                          // ← agora populado
+    output:      result,
+    contextSnapshot,
   }).catch(() => {});
 
   return result;
