@@ -1,4 +1,5 @@
 // lib/modules/modules/agenda.ts
+// V11 — Blindado com Injeção de Contexto (Zero DB calls padrão)
 import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
 import { getEffectiveUserId } from '../relationships/identity';
@@ -9,17 +10,23 @@ export const ModuloAgenda: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
-    always: true, // Agenda deve estar sempre no contexto
-    contexts: ['agenda', 'evento'], // 👈 REMOVIDO o 'lembrete' daqui para respeitar a Tipagem
+    always: true,
+    contexts: ['agenda', 'evento'],
     keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos|lembrete|me lembra|avisar/i
   },
- buildContextBlock: async (opts) => {
+  buildContextBlock: async (opts) => {
     try {
-      // Resolve o ID real para ler a agenda do App
+      // 1. Tenta extrair a agenda diretamente do masterContext já carregado! (Zero Latência)
+      if (opts.masterContext?.calendar) {
+        return `[AGENDA INTERNA LEV - PRÓXIMOS DIAS]\n${opts.masterContext.calendar}`;
+      }
+
+      // 2. Fallback resiliente: Caso o masterContext falhe ou se for um Alias ativo
       const targetId = await getEffectiveUserId(opts.userId, opts.userId);
 
+      // Só faz a chamada se realmente precisar (Fallback de segurança)
       const { data, error } = await supabase.rpc('get_calendar_context_for_jarvis', {
-        p_user_id: Number(targetId), // Usa o ID Efetivo
+        p_user_id: Number(targetId),
         p_days: 7,
       });
 
@@ -31,7 +38,6 @@ export const ModuloAgenda: ModuleDefinition = {
       return '';
     }
   },
-  // ── Sincronia Total com tools-def.ts e tools-executor.ts ──
   tools: [
     'salvar_evento', 
     'consultar_agenda',
