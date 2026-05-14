@@ -1,9 +1,16 @@
 // lib/google.ts
 import { supabase } from './jarvis';
 
+// Dentro de lib/google.ts
+
 // --- 1. AUTENTICAÇÃO ---
 export async function getGoogleAccessToken() {
-  const { data } = await supabase.from('config').select('value').eq('key', 'google_refresh_token').single();
+  // ✅ CORREÇÃO: maybeSingle()
+  const { data } = await supabase
+    .from('config')
+    .select('value')
+    .eq('key', 'google_refresh_token')
+    .maybeSingle();
 
   if (!data?.value) {
     console.error('[Google] Erro: google_refresh_token não encontrado na tabela config.');
@@ -34,6 +41,8 @@ export async function getGoogleAccessToken() {
 
   return json.access_token || null;
 }
+
+
 
 // --- 2. BUSCA NA WEB (SERPER.DEV) ---
 export async function searchWeb(query: string) {
