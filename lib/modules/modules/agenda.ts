@@ -1,5 +1,5 @@
 // lib/modules/modules/agenda.ts
-// V11 — Blindado com Injeção de Contexto (Zero DB calls padrão)
+// V12 — Blindado com Injeção de Contexto Estrita
 import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
 import { getEffectiveUserId } from '../relationships/identity';
@@ -16,15 +16,13 @@ export const ModuloAgenda: ModuleDefinition = {
   },
   buildContextBlock: async (opts) => {
     try {
-      // 1. Tenta extrair a agenda diretamente do masterContext já carregado! (Zero Latência)
-      if (opts.masterContext?.calendar) {
-        return `[AGENDA INTERNA LEV - PRÓXIMOS DIAS]\n${opts.masterContext.calendar}`;
+      // ✅ Usa SEMPRE o masterContext se ele existir. Zera a latência.
+      if ((opts as any).masterContext?.calendar) {
+        return `[AGENDA INTERNA LEV - PRÓXIMOS DIAS]\n${(opts as any).masterContext.calendar}`;
       }
 
-      // 2. Fallback resiliente: Caso o masterContext falhe ou se for um Alias ativo
       const targetId = await getEffectiveUserId(opts.userId, opts.userId);
 
-      // Só faz a chamada se realmente precisar (Fallback de segurança)
       const { data, error } = await supabase.rpc('get_calendar_context_for_jarvis', {
         p_user_id: Number(targetId),
         p_days: 7,
@@ -48,4 +46,3 @@ export const ModuloAgenda: ModuleDefinition = {
   ],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
- 
