@@ -1,5 +1,5 @@
 // lib/chat/pipeline/intelligence.ts
-// Fase 2 — Inteligência e Contexto
+// Fase 2 — Inteligência e Contexto (Blindado)
 
 import { supabase } from '@/lib/jarvis';
 import { classifyContextWithL4, type ContextType } from '@/lib/chat/context-classifier';
@@ -51,28 +51,28 @@ function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
 export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<ChatIntelligence> {
   const { message, user, sessionId } = ctx;
 
-  // 1. Contexto Consolidado (A ÚNICA chamada de banco que deveria existir aqui)
+  // 1. Contexto Consolidado (A ÚNICA chamada de banco que deve existir aqui)
   const { data: masterContext } = await supabase.rpc('get_consolidated_context', {
-    p_user_id: user.id, // ID Numérico garantido
+    p_user_id: user.id,
     p_session_id: sessionId
   });
   
-  const safeContext = masterContext || { history: [], config: {}, profile: {}, modules: [], routines: [] };
+  const safeContext = masterContext || { history: [], config: {}, profile: {} };
 
-  // 2. Processamento Paralelo (Sem chamadas extras de DB escondidas)
+  // 2. Processamento Paralelo
   const [queryEmbedding, contexts, isStressed] = await Promise.all([
     getCachedEmbedding(message).catch(() => null),
     
-    // CORREÇÃO ERRO 400: Passando ambos os IDs e o safeContext para evitar que o classificador faça fetch
+    // Passando o ID numérico, o authUserId (UUID) e o safeContext injetado
     classifyContextWithL4(message, user.id, user.auth_user_id, safeContext).catch(() => []),
     
     llmGateway.isOverloaded().catch(() => false),
     
-    // Passando safeContext para evitar o erro 406/201 de configs
+    // Passando o safeContext injetado
     detectAndLogCorrection(message, user.id, safeContext).catch(() => {}),
   ]);
 
-  // 3. Memória (Já estava recebendo masterContext, só precisamos garantir que ele não use o DB lá dentro)
+  // 3. Memória (Blindada)
   let memory: any = { hd: { memories: [] }, ram: { ramBlock: '' } };
   try {
     const memoryData = await MemoryManager.read({
@@ -85,20 +85,29 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
       authorName: user.nickname,
       assistantName: user.assistant_name,
       queryEmbedding,
-      masterContext: safeContext, // MANDATÓRIO usar isso dentro do read()
+      masterContext: safeContext,
     });
     if (memoryData) memory = memoryData;
   } catch (e) { console.error('[Intelligence] Memory bypass'); }
 
-  // 4. Score Emocional
+  // 4. Score Emocional (O "Cast de Ouro" restaurado para evitar o erro do Turbopack)
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
     memory?.hd?.memories || [],
     memory?.ram?.ramBlock || ''
   ).catch(() => ({
-    // ... default emocional (igual ao seu original)
-  }));
+    score: 0,
+    primaryEmotion: 'neutral',
+    secondaryEmotion: 'neutral',
+    trajectory: 'stable',
+    triggers: [],
+    needsEscalation: false,
+    memoryScore: 0,
+    personScore: 0,
+    moodAdjustment: 0,
+    escalatingCount: 0
+  } as unknown as EmotionalScoreResult));
 
   return {
     masterContext: safeContext,
