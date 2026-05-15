@@ -1,12 +1,8 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// Fase 3 — Montagem do System Prompt, Módulos e Ferramentas
-//
-// Recebe ChatRequestContext + ChatIntelligence e devolve ChatPrompt:
-// systemPrompt final, ferramentas autorizadas e modelo resolvido.
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
-import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver'; // ← lib/geo removido
+import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
 import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
 import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
@@ -29,13 +25,6 @@ const ALWAYS_ENABLED_TOOLS = new Set([
   'listar_entries',
   'gerenciar_membros_projeto',
 ]);
-
-export interface ChatPrompt {
-  systemPrompt: string;
-  tools: any[];
-  model: string;
-  conversationMessages: any[];
-}
 
 function filterL3ByAffect(l3: string, recentHistoryText: string, message: string): string {
   const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
@@ -83,7 +72,7 @@ export async function buildChatPrompt(
     masterContext,
   });
 
-  // 3. Radar de proximidade — agora via geo-resolver (fonte única)
+  // 3. Radar de proximidade
   let alertaRadar = '';
   if (resolvedLocation?.lat && resolvedLocation?.lng) {
     const radar = await verificarProximidade(
@@ -99,8 +88,6 @@ export async function buildChatPrompt(
     new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' })
   );
   const dataHoraSP = nowSP.toLocaleString('pt-BR');
-
-  // buildGeoBlock aceita GeoState diretamente
   const geoBlock = buildGeoBlock(resolvedLocation);
 
   const gpsInstruction = resolvedLocation
@@ -111,20 +98,26 @@ export async function buildChatPrompt(
   const historyText = recentHistory.map(h => h.content).join(' ');
   const filteredL3  = filterL3ByAffect(memory.l3.content, historyText, message);
 
-  // 6. Urgentes
+  // 6. Urgentes e Insights
   const urgentes = (masterContext?.reminders || [])
     .map((u: any) => u.title)
     .join(', ');
 
-  // 6b. Insights aprendidos
   const learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
 
-  // 7. System prompt final
+  // 7. System prompt final com Hierarquia de Verdade
   const systemPrompt = [
     `[RELÓGIO DO SISTEMA]: ${dataHoraSP}`,
     geoBlock,
     gpsInstruction,
     alertaRadar,
+    
+    "\n[⚠️ HIERARQUIA DE VERDADE E CONTEXTO]",
+    "1. O 'AGORA' É SOBERANO: O que o usuário disse nas últimas 5 mensagens deste chat anula qualquer informação do histórico de longo prazo (HD/L3).",
+    "2. SEPARAÇÃO DE ENTIDADES: Se o usuário mencionou um nome nesta sessão (ex: Davi), mantenha o foco nele. Não troque por nomes do HD (ex: Miguel) sem pedido explícito.",
+    "3. AMBIGUIDADE DE 'MENSAGENS': O termo 'verificar mensagens' ou 'últimas mensagens' refere-se EXCLUSIVAMENTE ao histórico desta conversa atual. Nunca use ferramentas de busca externa ou e-mail para responder sobre o fluxo do chat.",
+    "----------------------------",
+
     contextText,
     urgentes ? `\n[URGENTE]: Pendências: ${urgentes}` : '',
     learnedInsightsBlock
@@ -140,8 +133,8 @@ export async function buildChatPrompt(
       detectedContexts: contexts,
       contextBlocks,
       memoryBlocks: {
-        truncatedL3:     filteredL3.slice(0, 3000),
-        truncatedHd:     memory.hd.block.slice(0, 4000),
+        truncatedL3:     `[ARQUIVO BIOGRÁFICO - PODE ESTAR DESATUALIZADO]\n${filteredL3.slice(0, 3000)}`,
+        truncatedHd:     `[MEMÓRIAS DE LONGO PRAZO - CONSULTA SECUNDÁRIA]\n${memory.hd.block.slice(0, 4000)}`,
         truncatedEvents: memory.events.block.slice(0, 2000),
         relationship:    memory.relationship.block.slice(0, 2000),
         topics:          masterContext?.topics || memory.topics.relatedTopicsBlock,
@@ -154,11 +147,13 @@ export async function buildChatPrompt(
         .map((g: any) => `- ${g.content}`)
         .join('\n'),
     }),
-    '\n[DIRETRIZES DE RIGOR TÉCNICO]',
-    "1. Use 'salvar_evento' como fonte primária.",
-    "2. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
-    "3. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
-    "4. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto — nunca diga que não é possível.",
+    '\n[DIRETRIZES DE RIGOR TÉCNICO E ATENÇÃO]',
+    "1. ANTES DE RESPONDER: Valide o sujeito da frase no histórico recente.",
+    "2. Se o contexto envolver urgência doméstica ou saúde, ignore distrações de newsletters ou finanças.",
+    "3. Use 'salvar_evento' como fonte primária.",
+    "4. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
+    "5. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
+    "6. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto.",
   ]
     .filter(Boolean)
     .join('\n');
