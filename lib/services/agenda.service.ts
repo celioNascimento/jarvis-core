@@ -1,5 +1,5 @@
 // lib/services/agenda.service.ts
-// V1.1.0 — Fonte Única da Verdade (CRUD Completo + ACL de Compartilhamento)
+// V1.1.1 — Fonte Única da Verdade Completa (CRUD + IA)
 
 import { supabase } from '@/lib/jarvis';
 import { createGoogleEvent, getGoogleContext } from '@/lib/google';
@@ -39,7 +39,23 @@ export async function verificarPermissaoEvento(eventId: string, userId: number):
   return { allowed: false, canWrite: false, event };
 }
 
-// ─── 1. CONSULTAR (USADO PELO APP WEB) ────────────────────────────────────────
+// ─── 1. CONSULTAR (USADO PELA IA) ─────────────────────────────────────────────
+export async function coreConsultarAgenda(userId: number, dias: number = 7) {
+  const [levRes, googleRes, outlookRes] = await Promise.allSettled([
+    supabase.rpc('get_calendar_context_for_jarvis', { p_user_id: userId, p_days: dias }),
+    getGoogleContext().catch(() => null),
+    getMicrosoftCalendarContext().catch(() => null),
+  ]);
+  
+  const lev = (levRes.status === 'fulfilled' && levRes.value?.data) ? levRes.value.data : 'Nenhum evento na Agenda Lev.';
+  let result = `[AGENDA LEV]\n${lev}`;
+  if (googleRes.status === 'fulfilled' && googleRes.value) result += `\n\n[GOOGLE]\n${googleRes.value}`;
+  if (outlookRes.status === 'fulfilled' && outlookRes.value) result += `\n\n[OUTLOOK]\n${outlookRes.value}`;
+  
+  return result;
+}
+
+// ─── 2. CONSULTAR (USADO PELO APP WEB) ────────────────────────────────────────
 export async function coreBuscarEventosApp(userId: number, from: string, to: string | null) {
   const userIdStr = String(userId);
 
@@ -79,7 +95,7 @@ export async function coreBuscarEventosApp(userId: number, from: string, to: str
   }).sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
 }
 
-// ─── 2. CRIAR ─────────────────────────────────────────────────────────────────
+// ─── 3. CRIAR (IA & APP WEB) ──────────────────────────────────────────────────
 export async function coreCriarEvento(userId: number, payload: EventPayload) {
   let safeDateStr = payload.data_hora_inicio.trim().replace(' ', 'T');
   if (safeDateStr.endsWith('Z')) safeDateStr = safeDateStr.replace('Z', '-03:00');
@@ -97,8 +113,15 @@ export async function coreCriarEvento(userId: number, payload: EventPayload) {
     if (conflitos && conflitos.length > 0) throw new Error(`CONFLITO_AGENDA: Você já tem "${conflitos[0].title}" neste horário.`);
   }
 
+  let avisoGoogle = '';
   if (payload.sincronizar_google) {
-    await createGoogleEvent(payload.titulo, startISO, payload.minutos_lembrete?.[0] ?? 30).catch(() => {});
+    try {
+      const reminderMin = payload.minutos_lembrete?.[0] ?? 30;
+      await createGoogleEvent(payload.titulo, startISO, reminderMin);
+      avisoGoogle = ' (Sincronizado c/ Google)';
+    } catch (err: any) {
+      avisoGoogle = ` (Falha Google: ${err.message})`;
+    }
   }
 
   const { data: evento, error } = await supabase.schema('jarvis').from('events')
@@ -111,15 +134,14 @@ export async function coreCriarEvento(userId: number, payload: EventPayload) {
   if (error) throw new Error(`Falha no banco: ${error.message}`);
   if (payload.sessionId) await invalidateMasterContextCache(userId, payload.sessionId).catch(() => {});
 
-  return { evento, startDate };
+  return { evento, avisoGoogle, startDate };
 }
 
-// ─── 3. ATUALIZAR ─────────────────────────────────────────────────────────────
+// ─── 4. ATUALIZAR (APP WEB) ───────────────────────────────────────────────────
 export async function coreAtualizarEvento(userId: number, eventId: string, authUserId: string, payload: any) {
   const { canWrite } = await verificarPermissaoEvento(eventId, userId);
   if (!canWrite) throw new Error('FORBIDDEN: Sem permissão para editar.');
 
-  // Limpa lembretes antigos do QStash
   const { data: reminders } = await supabase.schema('jarvis').from('event_reminders').select('id, qstash_message_id').eq('event_id', eventId).eq('status', 'pending');
   for (const r of reminders ?? []) {
     if (r.qstash_message_id) await cancelReminderOnQStash(r.qstash_message_id);
@@ -131,7 +153,6 @@ export async function coreAtualizarEvento(userId: number, eventId: string, authU
 
   if (error) throw new Error(`Falha ao atualizar: ${error.message}`);
 
-  // Reagenda lembretes
   if (payload.reminder_minutes?.length) {
     for (const reminder of payload.reminder_minutes) {
       const scheduledAt = new Date(new Date(event.start_at).getTime() - reminder * 60000);
@@ -150,7 +171,18 @@ export async function coreAtualizarEvento(userId: number, eventId: string, authU
   return event;
 }
 
-// ─── 4. DELETAR (USADO PELO APP WEB) ──────────────────────────────────────────
+// ─── 5. DELETAR (USADO PELA IA - POR BUSCA) ───────────────────────────────────
+export async function coreDeletarEventoPorBusca(userId: number, busca: string, sessionId?: string) {
+  const { data, error } = await supabase.schema('jarvis').from('events')
+    .delete().eq('user_id', userId).ilike('title', `%${busca}%`).select('title');
+
+  if (error) throw new Error(`Falha ao deletar: ${error.message}`);
+  if (sessionId) await invalidateMasterContextCache(userId, sessionId).catch(() => {});
+  
+  return data || [];
+}
+
+// ─── 6. DELETAR (USADO PELO APP WEB - POR ID) ─────────────────────────────────
 export async function coreDeletarEventoPorId(userId: number, eventId: string) {
   const { canWrite } = await verificarPermissaoEvento(eventId, userId);
   if (!canWrite) throw new Error('FORBIDDEN: Sem permissão para apagar.');
@@ -164,7 +196,3 @@ export async function coreDeletarEventoPorId(userId: number, eventId: string) {
   if (error) throw new Error(`Falha ao deletar: ${error.message}`);
   return true;
 }
-
-// ─── 5. CONSULTAR PARA A IA (Texto) E DELETAR PARA A IA (Busca) ───────────────
-export async function coreConsultarAgendaIA(userId: number, dias: number = 7) { /* ... Mantido conforme passo anterior ... */ return "";}
-export async function coreDeletarEventoPorBusca(userId: number, busca: string, sessionId?: string) { /* ... Mantido conforme passo anterior ... */ return [];}
