@@ -1,8 +1,11 @@
+// lib/tools/defs/agenda.ts
+// V10.2.0 — Namespacing e PT-BR estrito (E-mails removidos)
+
 export const agendaTools = [
   {
     type: 'function',
     function: {
-      name: 'consultar_agenda',
+      name: 'agenda_consultar',
       description: 'Consulta a agenda interna e sincroniza com calendários externos (Google/Outlook). Use para ver compromissos futuros.',
       parameters: {
         type: 'object',
@@ -15,66 +18,38 @@ export const agendaTools = [
   {
     type: 'function',
     function: {
-      name: 'salvar_evento',
-      description: 'Salva um novo compromisso(reunião, consulta) na agenda interna. Verifica conflitos automaticamente. IMPORTANTE: NÃO USE ESTA FERRAMENTA PARA LEMBRETES SIMPLES (use create_reminder para isso).',
+      name: 'agenda_salvar_evento',
+      description: 'Salva um compromisso FORMAL (reunião, consulta, viagem). Exige horário. NÃO use para tarefas ou lembretes genéricos.',
       parameters: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'Título claro do evento.' },
-          event_date: { type: 'string', description: 'Data e hora no formato ISO (ex: 2026-05-15T14:00:00).' },
-          category: { 
+          titulo: { type: 'string', description: 'Título claro do compromisso.' },
+          data_hora: { type: 'string', description: 'Data e hora no formato ISO (ex: 2026-05-15T14:00:00).' },
+          categoria: { 
             type: 'string', 
             enum: ['health', 'work', 'school', 'family', 'personal'],
             description: 'Categoria do evento para organização visual.' 
           },
-          notes: { type: 'string', description: 'Detalhes ou observações adicionais.' },
-          reminderMinutes: { type: 'integer', description: 'Minutos de antecedência para o alerta (padrão: 30).' },
-          force: { type: 'boolean', description: 'Se true, ignora avisos de conflito de horário.' }
+          notas: { type: 'string', description: 'Detalhes, links ou observações adicionais.' },
+          minutos_lembrete: { type: 'integer', description: 'Minutos de antecedência para o alerta (padrão: 30).' },
+          sincronizar_google: { type: 'boolean', description: 'Se true, cria o evento também no Google Calendar.' },
+          forcar: { type: 'boolean', description: 'Se true, ignora avisos de conflito de horário.' }
         },
-        required: ['title', 'event_date'],
+        required: ['titulo', 'data_hora'],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'deletar_evento',
+      name: 'agenda_deletar_evento',
       description: 'Remove um evento da agenda interna buscando pelo título.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Termo de busca para encontrar o evento a ser removido.' },
+          busca: { type: 'string', description: 'Termo de busca para encontrar o evento a ser removido.' },
         },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'criar_evento_agenda',
-      description: 'Cria um evento especificamente no GOOGLE CALENDAR.',
-      parameters: {
-        type: 'object',
-        properties: {
-          summary: { type: 'string', description: 'Título do evento no Google.' },
-          startTime: { type: 'string', description: 'Data/Hora de início ISO.' },
-          reminderMinutes: { type: 'integer', description: 'Lembrete em minutos.' },
-        },
-        required: ['summary', 'startTime'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'listar_emails_recentes',
-      description: 'Busca os últimos emails do Gmail ou Outlook para contexto.',
-      parameters: {
-        type: 'object',
-        properties: {
-          filtro: { type: 'string', description: 'Termo para filtrar emails (ex: nome de empresa).' },
-        },
+        required: ['busca'],
       },
     },
   }
