@@ -3,7 +3,7 @@ export const agendaTools = [
     type: 'function',
     function: {
       name: 'agenda_consultar',
-      description: 'Consulta a agenda interna e sincroniza com calendários externos (Google/Outlook). Use para ver compromissos futuros.',
+      description: 'SEMPRE use esta tool quando o usuário perguntar sobre compromissos, eventos ou agenda — mesmo que o contexto já tenha informações. A agenda em tempo real é a única fonte confiável.',
       parameters: {
         type: 'object',
         properties: {
