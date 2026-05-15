@@ -17,25 +17,46 @@ export async function executeSalvarEvento(
   }, 
   authUserId: string, numericUserId: string, sessionId: string
 ): Promise<string> {
+  // Validação do título
+  const tituloLimpo = p.titulo?.trim() ?? '';
+  const TITULOS_INVALIDOS = ['evento', 'compromisso', 'reunião', 'tarefa', 'lembrete', 'item'];
+  if (tituloLimpo.length < 3 || TITULOS_INVALIDOS.includes(tituloLimpo.toLowerCase())) {
+    return `Erro: título "${p.titulo}" é genérico demais. Informe um título descritivo (ex: "Consulta Dr. Adriano", "Reunião com cliente").`;
+  }
+
+  // Validação da data
+  const dataISO = new Date(p.data_hora);
+  if (isNaN(dataISO.getTime())) {
+    return `Erro: data/hora inválida "${p.data_hora}". Use o formato ISO (ex: 2026-05-16T14:00:00).`;
+  }
+  if (dataISO < new Date()) {
+    return `Erro: não é possível agendar eventos no passado (${p.data_hora}).`;
+  }
+
   try {
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
     
     const result = await coreCriarEvento(Number(targetId), {
-      titulo: p.titulo,
+      titulo:           tituloLimpo,
       data_hora_inicio: p.data_hora,
-      categoria: p.categoria,
-      notas: p.notas,
+      categoria:        p.categoria,
+      notas:            p.notas,
       minutos_lembrete: p.minutos_lembrete ? [p.minutos_lembrete] : [30],
       sincronizar_google: p.sincronizar_google,
-      forcar_conflito: p.forcar,
-      source: 'lev',
-      sessionId: sessionId
+      forcar_conflito:  p.forcar,
+      source:           'lev',
+      sessionId,
     });
 
     const dataFormatada = result.startDate.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    return `📅 Sucesso: Evento "${p.titulo}" salvo para ${dataFormatada}.${result.avisoGoogle}`;
-  } catch (err: any) { 
-    return `Erro ao salvar evento: ${err.message}`; 
+    return `📅 Evento "${tituloLimpo}" salvo para ${dataFormatada}.${result.avisoGoogle ?? ''}`;
+
+  } catch (err: any) {
+    // Instrui o modelo a agir em vez de perguntar
+    if (err.message?.includes('CONFLITO_DETECTADO') || err.message?.includes('conflito')) {
+      return `CONFLITO_DETECTADO: Já existe um evento neste horário. Para forçar o agendamento, chame agenda_salvar_evento novamente com forcar: true.`;
+    }
+    return `Erro ao salvar evento: ${err.message}`;
   }
 }
 
