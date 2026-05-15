@@ -1,6 +1,3 @@
-// lib/tools/defs/agenda.ts
-// V10.2.0 — Namespacing e PT-BR estrito (E-mails removidos)
-
 export const agendaTools = [
   {
     type: 'function',
@@ -19,7 +16,7 @@ export const agendaTools = [
     type: 'function',
     function: {
       name: 'agenda_salvar_evento',
-      description: 'Salva um compromisso FORMAL (reunião, consulta, viagem). Exige horário. NÃO use para tarefas ou lembretes genéricos.',
+      description: 'Salva um compromisso FORMAL (reunião, consulta, viagem). Exige horário de início e ocupa espaço no tempo. NÃO use para tarefas, lembretes ou ações cotidianas.',
       parameters: {
         type: 'object',
         properties: {
@@ -43,7 +40,7 @@ export const agendaTools = [
     type: 'function',
     function: {
       name: 'agenda_deletar_evento',
-      description: 'Remove um evento da agenda interna buscando pelo título.',
+      description: 'Remove um evento formal da agenda interna buscando pelo título.',
       parameters: {
         type: 'object',
         properties: {
