@@ -29,12 +29,10 @@ export const ModuloAgenda: ModuleDefinition = {
       return '';
     }
   },
-  tools: [
-    'salvar_evento', 
-    'consultar_agenda',
-    'deletar_evento',
-    'criar_evento_agenda',
-    'listar_emails_recentes'
-  ],
+ tools: [
+  'agenda_salvar_evento', 
+  'agenda_consultar',
+  'agenda_deletar_evento',
+],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
