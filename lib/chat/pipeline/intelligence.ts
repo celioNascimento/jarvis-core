@@ -1,6 +1,6 @@
 // lib/chat/pipeline/intelligence.ts
 // Fase 2 — Inteligência e Contexto
-// V2.1.0 — Bypass de embedding para ruído + Cache do god RPC no Redis + Type-Safe
+// V2.1.1 — Reforço de Contexto Imediato + Cache Redis + Bypasses
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -18,12 +18,9 @@ const redis = new Redis({
 });
 
 const MAX_MSG_CHARS = 800;
-const MASTER_CONTEXT_TTL = 5 * 60; // 5 minutos em segundos
+const MASTER_CONTEXT_TTL = 5 * 60; // 5 minutos
 
-// ─── Detecção de ruído ────────────────────────────────────────────────────────
-// Mensagens que não têm valor semântico para a memória vetorial.
-// Bypass zera a chamada de embedding (~424ms) e o match_l3_chunks (~53ms).
-
+// ─── Detecção de ruído (Mantido rigorosamente) ──────────────────────────────
 const NOISE_REGEX = /^(ok|oi|olá|sim|não|nao|faz|claro|certo|blz|vlw|valeu|obrigad|show|ótimo|otimo|perfeito|legal|bom dia|boa tarde|boa noite|pode|vai|vamos|tá|ta|ok|s|n|👍|👎|😊|🤝)[!?.,:… ]*$/i;
 
 export function isNoiseMessage(message: string): boolean {
@@ -33,61 +30,35 @@ export function isNoiseMessage(message: string): boolean {
   return false;
 }
 
-// ─── Cache do MasterContext ───────────────────────────────────────────────────
-
+// ─── Cache do MasterContext (Mantido rigorosamente) ───────────────────────────
 function masterContextKey(userId: number, sessionId: string): string {
   return `master_ctx:${userId}:${sessionId}`;
 }
 
-/**
- * Lê o masterContext do Redis ou vai ao Supabase se expirado.
- * TTL: 5 minutos. Invalidado explicitamente por tools que escrevem dados.
- */
 async function getMasterContext(userId: number, sessionId: string): Promise<any> {
   const key = masterContextKey(userId, sessionId);
-
   try {
     const cached = await redis.get<any>(key);
-    if (cached) {
-      console.info('[Intelligence] MasterContext cache hit');
-      return cached;
-    }
-  } catch {
-    // Redis falhou — cai no Supabase silenciosamente
-  }
+    if (cached) return cached;
+  } catch {}
 
-  // Cache miss — busca no Supabase
   const { data } = await supabase.rpc('get_consolidated_context', {
     p_user_id:  userId,
     p_session_id: sessionId,
   });
 
   const result = data || { history: [], config: {}, profile: {} };
-
-  // Salva no Redis sem bloquear
   redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(() => {});
-
   return result;
 }
 
-/**
- * Invalida o cache do masterContext para um usuário/sessão.
- * Chamado pelo tools-executor após qualquer tool que escreva dados.
- */
-export async function invalidateMasterContextCache(
-  userId: number,
-  sessionId: string
-): Promise<void> {
+export async function invalidateMasterContextCache(userId: number, sessionId: string): Promise<void> {
   try {
     await redis.del(masterContextKey(userId, sessionId));
-    console.info(`[Intelligence] MasterContext cache invalidado para user ${userId}`);
-  } catch {
-    // Silencioso — na pior das hipóteses o cache expira em 5 min
-  }
+  } catch {}
 }
 
 // ─── Tipos exportados ─────────────────────────────────────────────────────────
-
 export interface HistoryMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -101,71 +72,79 @@ export interface ChatIntelligence {
   isStressed: boolean;
   memory: any;
   emotional: EmotionalScoreResult;
-  isNoise: boolean; // ← exposto para o assembler poder adaptar o prompt
+  isNoise: boolean;
 }
 
-// ─── buildRecentHistory ───────────────────────────────────────────────────────
-
+// ─── buildRecentHistory (RECONSTRUÍDA COM ANCORAGEM DE CONTEXTO) ──────────────
 function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
   if (!Array.isArray(rawHistory)) return [];
-  const recentHistory: HistoryMessage[] = [];
+  
+  // O consolidated_context traz o histórico. Precisamos garantir que
+  // a ordem seja cronológica para o LLM entender a linha do tempo.
+  const history: HistoryMessage[] = [];
   let lastAddedRole: string | null = null;
 
-  for (const row of [...rawHistory].reverse()) {
+  // Processamos do mais antigo para o mais novo
+  const processedRows = [...rawHistory].reverse();
+  const totalRows = processedRows.length;
+
+  processedRows.forEach((row, index) => {
     const uMsg = (row.content || '').trim();
     const aRep = (row.metadata?.ai_reply || '').trim();
 
+    // Regra de Ouro: As últimas 3 mensagens do usuário recebem um marcador de ancoragem
+    // Isso evita que o modelo ignore o fato de que o assunto mudou para "Davi" agora.
+    const isVeryRecent = (totalRows - index) <= 3;
+    const anchor = isVeryRecent ? "📍 [CONTEXTO ATUAL]: " : "";
+
     if (uMsg.length > 2 && lastAddedRole !== 'user') {
-      recentHistory.push({ role: 'user', content: uMsg.slice(0, MAX_MSG_CHARS) });
+      history.push({ 
+        role: 'user', 
+        content: anchor + uMsg.slice(0, MAX_MSG_CHARS) 
+      });
       lastAddedRole = 'user';
     }
+    
     if (aRep.length > 2 && lastAddedRole !== 'assistant') {
-      recentHistory.push({ role: 'assistant', content: aRep.slice(0, MAX_MSG_CHARS) });
+      history.push({ 
+        role: 'assistant', 
+        content: aRep.slice(0, MAX_MSG_CHARS) 
+      });
       lastAddedRole = 'assistant';
     }
-  }
-  return recentHistory;
+  });
+
+  return history;
 }
 
-// ─── Pipeline principal ───────────────────────────────────────────────────────
-
+// ─── Pipeline principal (Mantido com melhorias de tipagem) ─────────────────────
 export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<ChatIntelligence> {
   const { message, user, sessionId } = ctx;
-
   const isNoise = isNoiseMessage(message);
 
-  // 1. MasterContext — via cache Redis (economiza ~72ms em hits)
+  // 1. MasterContext (Cache-First)
   const masterContext = await getMasterContext(user.id, sessionId);
   const safeContext = masterContext || { history: [], config: {}, profile: {} };
 
-  // 2. Processamento paralelo
-  //    - Embedding: pulado se for ruído (economiza ~477ms: embed + match_l3_chunks)
-  //    - detectAndLogCorrection: roda sempre (é leve e importante)
+  // 2. Processamento paralelo com Bypass inteligente
   const [queryEmbedding, contexts, isStressed] = await Promise.all([
     isNoise
-      ? Promise.resolve(null)                                          // ← BYPASS
+      ? Promise.resolve(null)
       : getCachedEmbedding(message).catch(() => null),
     
-    // CORREÇÃO: user.id numérico e safeContext injetado
     classifyContextWithL4(message, user.id, user.auth_user_id, safeContext).catch(() => []),
     
     llmGateway.isOverloaded().catch(() => false),
     
-    // CORREÇÃO: safeContext injetado
+    // Detector de correções (Ex: "Não é o Miguel, é o Davi")
     detectAndLogCorrection(message, user.id, safeContext).catch(() => {}),
   ]);
 
-  if (isNoise) {
-    console.info(`[Intelligence] Noise bypass — embedding pulado para: "${message.substring(0, 30)}"`);
-  }
-
-  // 3. Memória (blindada)
-  //    Se for ruído, passa queryEmbedding=null — o MemoryManager já trata isso
-  //    e pula o match_l3_chunks internamente.
-  let memory: any = { hd: { memories: [] }, ram: { ramBlock: '' } };
+  // 3. Gestão de Memória (RAM + HD)
+  let memory: any = { hd: { memories: [] }, ram: { ramBlock: '' }, l3: { content: '' }, events: { block: '' }, relationship: { block: '' }, topics: { relatedTopicsBlock: '' } };
   try {
     const memoryData = await MemoryManager.read({
-      userId:        user.id, // CORREÇÃO: Removido o String(). O MemoryManager exige number.
+      userId:        user.id,
       authUserId:    user.auth_user_id,
       sessionId,
       message,
@@ -173,31 +152,24 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
       emotionalScore: 0,
       authorName:    user.nickname,
       assistantName: user.assistant_name,
-      queryEmbedding,             // null para ruído — MemoryManager pula busca vetorial
+      queryEmbedding, // Se for null (noise), o MemoryManager pula a busca vetorial
       masterContext: safeContext,
     });
     if (memoryData) memory = memoryData;
   } catch (e) {
-    console.error('[Intelligence] Memory bypass');
+    console.error('[Intelligence] Memory error bypass');
   }
 
-  // 4. Score emocional
+  // 4. Score Emocional
   const emotional = await computeEmotionalScore(
     message,
-    String(user.id), // Mantido como string caso o roteador emocional espere assim internamente
+    String(user.id),
     memory?.hd?.memories || [],
     memory?.ram?.ramBlock || ''
   ).catch(() => ({
     score: 0,
     primaryEmotion: 'neutral',
-    secondaryEmotion: 'neutral',
-    trajectory: 'stable',
-    triggers: [],
-    needsEscalation: false,
-    memoryScore: 0,
-    personScore: 0,
-    moodAdjustment: 0,
-    escalatingCount: 0
+    trajectory: 'stable'
   } as unknown as EmotionalScoreResult));
 
   return {
