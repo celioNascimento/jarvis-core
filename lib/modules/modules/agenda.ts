@@ -12,23 +12,21 @@ export const ModuloAgenda: ModuleDefinition = {
     contexts: ['agenda', 'evento'],
     keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos|compromisso/i
   },
-  buildContextBlock: async (opts) => {
-    try {
-      if ((opts as any).masterContext?.calendar) {
-        return `[AGENDA INTERNA LEV - PRÓXIMOS DIAS]\n${(opts as any).masterContext.calendar}`;
-      }
-      const targetId = await getEffectiveUserId(opts.userId, opts.userId);
-      const { data, error } = await supabase.rpc('get_calendar_context_for_jarvis', {
-        p_user_id: Number(targetId),
-        p_days: 7,
-      });
-      if (error || !data) return 'Nenhum compromisso na agenda interna para os próximos 7 dias.';
-      return `[AGENDA INTERNA LEV - PRÓXIMOS DIAS]\n${data}`;
-    } catch (e) {
-      console.error('[ModuloAgenda] Erro:', e);
-      return '';
-    }
-  },
+ buildContextBlock: async (opts) => {
+  try {
+    // NUNCA use masterContext.calendar aqui — dados podem estar desatualizados
+    const targetId = await getEffectiveUserId(opts.userId, opts.userId);
+    const { data, error } = await supabase.rpc('get_calendar_context_for_jarvis', {
+      p_user_id: Number(targetId),
+      p_days: 7,
+    });
+    if (error || !data) return 'Nenhum compromisso na agenda interna para os próximos 7 dias.';
+    return `[AGENDA INTERNA LEV - PRÓXIMOS DIAS]\n${data}`;
+  } catch (e) {
+    console.error('[ModuloAgenda] Erro:', e);
+    return '';
+  }
+},
  tools: [
   'agenda_salvar_evento', 
   'agenda_consultar',
