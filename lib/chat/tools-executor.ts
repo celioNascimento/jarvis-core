@@ -1,5 +1,5 @@
 // lib/chat/tools-executor.ts
-// Dispatcher V10.1.0 — Arquitetura de Roteamento por Dicionário (Zero Switch)
+// Dispatcher V10.2.0 — Roteamento Modular 100% PT-BR com Service Layer Support
 
 import { supabase } from '@/lib/jarvis';
 import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
@@ -21,24 +21,28 @@ import { logToolExecution } from '@/lib/tools/executors/learning';
 import { executeGerenciarGuideline } from '@/lib/tools/executors/guidelines';
 import { executeAlternarPermissao } from '../tools/executors/relationships';
 
-// ── Tools que escrevem dados (Invalidação de Cache) ──────────────────────────
+// ── Tools que escrevem dados (Invalidação de Cache - Nomes Atualizados) ──────
 const WRITE_TOOLS = new Set([
-  'agenda_salvar_evento', 'agenda_deletar_evento', 'email_excluir', 'rem_criar_lembrete', 'rem_cancelar',
-  'gerenciar_eisenhower', 'quebrar_tarefa', 'criar_rotina', 'registrar_no_diario', 'atualizar_meta',
-  'registrar_transacao', 'criar_orcamento', 'gerenciar_projeto', 'gerenciar_topico', 'gerenciar_entry',
-  'gerenciar_membros_projeto', 'salvar_lugar', 'adicionar_item_lista', 'marcar_item_comprado',
-  'adicionar_diretriz_dinamica', 'gerenciar_guideline', 'registrar_abastecimento', 'registrar_manutencao',
-  'atualizar_odometro', 'alternar_permissao_contato'
+  'agenda_salvar_evento', 'agenda_deletar_evento', 'email_excluir', 
+  'lembrete_criar', 'lembrete_cancelar', 'tdah_gerenciar_eisenhower', 
+  'tdah_quebrar_tarefa', 'tdah_criar_rotina', 'tdah_registrar_diario', 
+  'tdah_atualizar_meta', 'financas_registrar_transacao', 'financas_criar_orcamento', 
+  'projeto_gerenciar', 'projeto_gerenciar_topico', 'projeto_gerenciar_entry',
+  'projeto_gerenciar_membros', 'lugar_salvar', 'compra_adicionar_item', 
+  'compra_marcar_comprado', 'memoria_adicionar_diretriz', 'sistema_gerenciar_guideline', 
+  'veiculo_registrar_abastecimento', 'veiculo_registrar_manutencao', 
+  'veiculo_atualizar_odometro', 'contato_alternar_permissao' // ← ATUALIZADO AQUI
 ]);
 
 // ── Tipagem do Handler Modular ───────────────────────────────────────────────
 type ToolHandler = (p: any, authUserId: string, numericUserIdStr: string, sessionId: string) => Promise<string>;
 
-// ── Roteador Modular (O Fim do Switch Gigante) ────────────────────────────────
+// ── Roteador Modular (100% PT-BR) ────────────────────────────────────────────
 const TOOL_ROUTER: Record<string, ToolHandler> = {
-  // ── Memória
-  'buscar_memoria_longa':        (p, a, n) => executeBuscarMemoriaLonga(p, a, n),
-  'adicionar_diretriz_dinamica': (p, a, n) => executeAdicionarDiretrizDinamica(p, a, n),
+  // ── Memória e Sistema
+  'memoria_buscar_longa':        (p, a, n) => executeBuscarMemoriaLonga(p, a, n),
+  'memoria_adicionar_diretriz':  (p, a, n) => executeAdicionarDiretrizDinamica(p, a, n),
+  'sistema_gerenciar_guideline': (p, a, n) => executeGerenciarGuideline(p, a, n),
 
   // ── Agenda
   'agenda_consultar':      (p, a, n) => executeConsultarAgenda(p, a, n),
@@ -46,11 +50,11 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   'agenda_deletar_evento': (p, a, n, s) => executeDeletarEvento(p, a, n, s),
 
   // ── Lembretes
-  'rem_consultar_ativos': (p, a, n) => executeConsultarLembretes(p, a, n),
-  'rem_criar_lembrete':   (p, a, n, s) => executeCreateReminder(p, a, n, s),
-  'rem_cancelar':         (p, a, n, s) => executeCancelarLembrete(p, a, n, s),
+  'lembrete_consultar': (p, a, n) => executeConsultarLembretes(p, a, n),
+  'lembrete_criar':     (p, a, n, s) => executeCreateReminder(p, a, n, s),
+  'lembrete_cancelar':  (p, a, n, s) => executeCancelarLembrete(p, a, n, s),
 
-  // ── E-mails (Lógica Isolada)
+  // ── E-mails
   'email_listar_recentes': async (p) => {
     if (p.provedor === 'google') return await executeGoogleListarEmails(p);
     if (p.provedor === 'outlook') return await executeMicrosoftListarEmails(p);
@@ -63,44 +67,43 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   },
 
   // ── Veículos
-  'registrar_abastecimento': (p, a, n) => executeRegistrarAbastecimento(p, a, n),
-  'registrar_manutencao':    (p, a, n) => executeRegistrarManutencao(p, a, n),
-  'atualizar_odometro':      (p, a, n) => executeAtualizarOdometro(p, a, n),
+  'veiculo_registrar_abastecimento': (p, a, n) => executeRegistrarAbastecimento(p, a, n),
+  'veiculo_registrar_manutencao':    (p, a, n) => executeRegistrarManutencao(p, a, n),
+  'veiculo_atualizar_odometro':      (p, a, n) => executeAtualizarOdometro(p, a, n),
 
   // ── Lugares e Compras
-  'salvar_lugar':           (p, a, n) => executeSalvarLugar(p, a, n),
-  'adicionar_item_lista':   (p, a, n) => executeAdicionarItemLista(p, a, n),
-  'ver_lista':              (p, a, n) => executeVerLista(p, a, n),
-  'marcar_item_comprado':   (p, a, n) => executeMarcarItemComprado(p, a, n),
-  'listar_compras_projeto': (p, a, n) => executeListarComprasProjeto(p, a, n),
+  'lugar_salvar':            (p, a, n) => executeSalvarLugar(p, a, n),
+  'compra_adicionar_item':   (p, a, n) => executeAdicionarItemLista(p, a, n),
+  'compra_ver_lista':        (p, a, n) => executeVerLista(p, a, n),
+  'compra_marcar_comprado':  (p, a, n) => executeMarcarItemComprado(p, a, n),
+  'compra_listar_projeto':   (p, a, n) => executeListarComprasProjeto(p, a, n),
 
   // ── TDAH e Diário
-  'gerenciar_eisenhower': (p, a, n) => executeGerenciarEisenhower(p, a, n),
-  'quebrar_tarefa':       (p, a, n) => executeQuebrarTarefa(p, a, n),
-  'criar_rotina':         (p, a, n) => executeCriarRotina(p, a, n),
-  'registrar_no_diario':  (p, a, n) => executeRegistrarNoDiario(p, a, n),
-  'atualizar_meta':       (p, a, n) => executeAtualizarMeta(p, a, n),
+  'tdah_gerenciar_eisenhower': (p, a, n) => executeGerenciarEisenhower(p, a, n),
+  'tdah_quebrar_tarefa':       (p, a, n) => executeQuebrarTarefa(p, a, n),
+  'tdah_criar_rotina':         (p, a, n) => executeCriarRotina(p, a, n),
+  'tdah_registrar_diario':     (p, a, n) => executeRegistrarNoDiario(p, a, n),
+  'tdah_atualizar_meta':       (p, a, n) => executeAtualizarMeta(p, a, n),
 
   // ── Finanças
-  'registrar_transacao': (p, a, n) => executeRegistrarTransacao(p, a, n),
-  'consultar_financas':  (p, a, n) => executeConsultarFinancas(p, a, n),
-  'criar_orcamento':     (p, a, n) => executeCriarOrcamento(p, a, n),
-  'listar_orcamentos':   (_, a, n) => executeListarOrcamentos(a, n),
+  'financas_registrar_transacao': (p, a, n) => executeRegistrarTransacao(p, a, n),
+  'financas_consultar':           (p, a, n) => executeConsultarFinancas(p, a, n),
+  'financas_criar_orcamento':     (p, a, n) => executeCriarOrcamento(p, a, n),
+  'financas_listar_orcamentos':   (_, a, n) => executeListarOrcamentos(a, n),
 
   // ── Projetos
-  'gerenciar_projeto':         (p, a, n) => executeGerenciarProjeto(p, a, n),
-  'listar_projetos':           (p, a, n) => executeListarProjetos(p, a, n),
-  'gerenciar_topico':          (p, a, n) => executeGerenciarTopico(p, a, n),
-  'listar_topicos':            (p, a, n) => executeListarTopicos(p, a, n),
-  'gerenciar_entry':           (p, a, n) => executeGerenciarEntry(p, a, n),
-  'listar_entries':            (p, a, n) => executeListarEntries(p, a, n),
-  'gerenciar_membros_projeto': (p, a, n) => executeGerenciarMembrosProjeto(p, a, n),
+  'projeto_gerenciar':         (p, a, n) => executeGerenciarProjeto(p, a, n),
+  'projeto_listar':            (p, a, n) => executeListarProjetos(p, a, n),
+  'projeto_gerenciar_topico':  (p, a, n) => executeGerenciarTopico(p, a, n),
+  'projeto_listar_topicos':    (p, a, n) => executeListarTopicos(p, a, n),
+  'projeto_gerenciar_entry':   (p, a, n) => executeGerenciarEntry(p, a, n),
+  'projeto_listar_entries':    (p, a, n) => executeListarEntries(p, a, n),
+  'projeto_gerenciar_membros': (p, a, n) => executeGerenciarMembrosProjeto(p, a, n),
 
-  // ── Integrações Externas e Outros
-  'searchWeb':                  (p) => searchWeb(p.query),
-  'getWeatherForecast':         (p) => getWeatherForecast(p.lat, p.lng),
-  'alternar_permissao_contato': (p, a, n) => executeAlternarPermissao(p, a, n),
-  'gerenciar_guideline':        (p, a, n) => executeGerenciarGuideline(p, a, n),
+  // ── Integrações Externas e Contatos
+  'web_pesquisar':              (p) => searchWeb(p.query),
+  'web_previsao_tempo':         (p) => getWeatherForecast(p.lat, p.lng),
+  'contato_alternar_permissao': (p, a, n) => executeAlternarPermissao(p, a, n), // ← ATUALIZADO AQUI
 };
 
 // ── Idempotência ──────────────────────────────────────────────────────────────
