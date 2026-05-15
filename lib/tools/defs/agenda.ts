@@ -22,15 +22,18 @@ export const agendaTools = [
         properties: {
           titulo: { type: 'string', description: 'Título claro do compromisso.' },
           data_hora: { type: 'string', description: 'Data e hora no formato ISO (ex: 2026-05-15T14:00:00).' },
-          categoria: { 
-            type: 'string', 
+          categoria: {
+            type: 'string',
             enum: ['health', 'work', 'school', 'family', 'personal'],
-            description: 'Categoria do evento para organização visual.' 
+            description: 'Categoria do evento para organização visual.'
           },
           notas: { type: 'string', description: 'Detalhes, links ou observações adicionais.' },
           minutos_lembrete: { type: 'integer', description: 'Minutos de antecedência para o alerta (padrão: 30).' },
           sincronizar_google: { type: 'boolean', description: 'Se true, cria o evento também no Google Calendar.' },
-          forcar: { type: 'boolean', description: 'Se true, ignora avisos de conflito de horário.' }
+          forcar: {
+            type: 'boolean',
+            description: 'MUITO IMPORTANTE: O padrão é SEMPRE false. Use true APENAS se o usuário pedir explicitamente usando palavras como "force o agendamento" ou "ignore o aviso". NUNCA deduza isso sozinho.'
+          }
         },
         required: ['titulo', 'data_hora'],
       },
