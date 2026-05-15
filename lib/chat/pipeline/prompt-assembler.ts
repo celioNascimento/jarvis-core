@@ -165,6 +165,7 @@ export async function buildChatPrompt(
     "5. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
     "6. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto.",
     "7. ANTI-LOOP: Se você já fez uma pergunta de confirmação e o usuário respondeu afirmativamente ('sim', 'pode', 'isso', 'faz aí', 'está sim'), EXECUTE A AÇÃO. Repetir a mesma pergunta é proibido.",
+    "8. O 'AGORA' É SOBERANO: Para responder sobre agenda, SEMPRE chame agenda_consultar. NUNCA responda sobre compromissos baseando-se apenas no histórico da conversa ou memória — esses dados podem estar desatualizados.",
   ]
     .filter(Boolean)
     .join('\n');
