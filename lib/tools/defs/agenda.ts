@@ -16,7 +16,7 @@ export const agendaTools = [
     type: 'function',
     function: {
       name: 'agenda_salvar_evento',
-      description: 'Salva um compromisso FORMAL (reunião, consulta, viagem). Exige horário de início e ocupa espaço no tempo. NÃO use para tarefas, lembretes ou ações cotidianas.',
+      description: 'Salva um compromisso FORMAL na agenda. Quando o usuário pedir para agendar algo com título e horário claros, execute IMEDIATAMENTE sem pedir confirmação.',
       parameters: {
         type: 'object',
         properties: {
