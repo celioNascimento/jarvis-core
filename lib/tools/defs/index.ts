@@ -10,10 +10,19 @@ import { projectsTools } from './projects';
 import { guidelinesTools } from './guidelines';
 import { relationshipsTools } from './relationships';
 
-export const tools = [
+type ToolDef = {
+  type: string;
+  function?: {
+    name: string;
+    description: string;
+    parameters?: any;
+  };
+};
+
+export const tools: ToolDef[] = [
   ...memoryTools,
   ...agendaTools,
-  ...remindersTools, // ← NOVO
+  ...remindersTools,
   ...financesTools,
   ...lugaresTools,
   ...comprasTools,
@@ -24,10 +33,11 @@ export const tools = [
   ...relationshipsTools,
 ];
 
+
 export {
   memoryTools,
   agendaTools,
-  remindersTools, // ← NOVO
+  remindersTools,
   financesTools,
   lugaresTools,
   comprasTools,
