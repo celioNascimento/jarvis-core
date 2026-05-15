@@ -20,6 +20,7 @@ export const ModuloAgenda: ModuleDefinition = {
       p_user_id: Number(targetId),
       p_days: 7,
     });
+    console.log('[ModuloAgenda] RPC result:', { data, error });
     if (error || !data) return 'Nenhum compromisso na agenda interna para os próximos 7 dias.';
     return `[AGENDA INTERNA LEV - PRÓXIMOS DIAS]\n${data}`;
   } catch (e) {
