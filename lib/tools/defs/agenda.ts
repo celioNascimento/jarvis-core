@@ -16,7 +16,7 @@ export const agendaTools = [
     type: 'function',
     function: {
       name: 'salvar_evento',
-      description: 'Salva um novo compromisso na agenda interna. Verifica conflitos automaticamente.',
+      description: 'Salva um novo compromisso(reunião, consulta) na agenda interna. Verifica conflitos automaticamente. IMPORTANTE: NÃO USE ESTA FERRAMENTA PARA LEMBRETES SIMPLES (use create_reminder para isso).',
       parameters: {
         type: 'object',
         properties: {
