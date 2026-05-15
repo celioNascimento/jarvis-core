@@ -9,8 +9,17 @@ import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 
+// --- INTERFACES EXPORTADAS ---
+export interface ChatPrompt {
+  systemPrompt: string;
+  tools: any[];
+  model: string;
+  conversationMessages: any[];
+}
+
+// --- CONSTANTES E AUXILIARES ---
 const FAMILY_DATE_SIGNALS = [
-  /aniversário/i, /casamento/i, /filh[oa]/i, /esposa|marido/i,
+  /aniversário/i, /casamento/i, /fil[ho]a/i, /esposa|marido/i,
   /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
 ];
 
@@ -35,6 +44,7 @@ function filterL3ByAffect(l3: string, recentHistoryText: string, message: string
     .trim();
 }
 
+// --- FUNÇÃO PRINCIPAL ---
 export async function buildChatPrompt(
   ctx: ChatRequestContext,
   intel: ChatIntelligence
@@ -113,9 +123,9 @@ export async function buildChatPrompt(
     alertaRadar,
     
     "\n[⚠️ HIERARQUIA DE VERDADE E CONTEXTO]",
-    "1. O 'AGORA' É SOBERANO: O que o usuário disse nas últimas 5 mensagens deste chat anula qualquer informação do histórico de longo prazo (HD/L3).",
-    "2. SEPARAÇÃO DE ENTIDADES: Se o usuário mencionou um nome nesta sessão (ex: Davi), mantenha o foco nele. Não troque por nomes do HD (ex: Miguel) sem pedido explícito.",
-    "3. AMBIGUIDADE DE 'MENSAGENS': O termo 'verificar mensagens' ou 'últimas mensagens' refere-se EXCLUSIVAMENTE ao histórico desta conversa atual. Nunca use ferramentas de busca externa ou e-mail para responder sobre o fluxo do chat.",
+    "1. O 'AGORA' É SOBERANO: O que o usuário disse nas últimas mensagens deste chat anula qualquer informação do histórico de longo prazo (HD/L3).",
+    "2. SEPARAÇÃO DE ENTIDADES: Se o usuário mencionou um nome nesta sessão (ex: Davi), mantenha o foco nele. Não confunda com nomes do HD (ex: Miguel) sem pedido explícito.",
+    "3. AMBIGUIDADE DE 'MENSAGENS': O termo 'verificar mensagens' refere-se EXCLUSIVAMENTE ao histórico desta conversa atual. Nunca use ferramentas de busca externa para responder sobre o fluxo do chat.",
     "----------------------------",
 
     contextText,
@@ -147,9 +157,9 @@ export async function buildChatPrompt(
         .map((g: any) => `- ${g.content}`)
         .join('\n'),
     }),
-    '\n[DIRETRIZES DE RIGOR TÉCNICO E ATENÇÃO]',
+    '\n[DIRETRIZES DE RIGOR TÉCNICO]',
     "1. ANTES DE RESPONDER: Valide o sujeito da frase no histórico recente.",
-    "2. Se o contexto envolver urgência doméstica ou saúde, ignore distrações de newsletters ou finanças.",
+    "2. Em situações de urgência doméstica ou saúde, ignore distrações financeiras ou newsletters.",
     "3. Use 'salvar_evento' como fonte primária.",
     "4. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
     "5. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
