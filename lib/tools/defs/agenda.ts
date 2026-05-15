@@ -39,18 +39,18 @@ export const agendaTools = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'agenda_deletar_evento',
-      description: 'Remove um evento formal da agenda interna buscando pelo título.',
-      parameters: {
-        type: 'object',
-        properties: {
-          busca: { type: 'string', description: 'Termo de busca para encontrar o evento a ser removido.' },
-        },
-        required: ['busca'],
+ {
+  name: 'agenda_deletar_evento',
+  description: 'Remove um evento da agenda. Quando o usuário referenciar um evento por data/hora em vez de título (ex: "o evento de amanhã às 14h"), consulte a agenda primeiro com agenda_consultar para descobrir o título, depois delete pelo título encontrado.',
+  parameters: {
+    type: 'object',
+    properties: {
+      busca: { 
+        type: 'string', 
+        description: 'Título ou parte do título do evento. Se o usuário não informou o título, extraia-o da agenda antes de chamar esta tool.' 
       },
     },
-  }
+    required: ['busca'],
+  },
+}
 ];
