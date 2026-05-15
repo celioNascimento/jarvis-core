@@ -1,12 +1,11 @@
 // lib/tools/defs/relationships.ts
-
 export const relationshipsTools = [
   {
     type: 'function',
     function: {
-      name: 'alternar_permissao_contato',
-      description: `Ativa ou desativa a permissão de compartilhar módulos (como projetos ou listas de compras) com um contato.
-Use quando o usuário disser: "Permita que a Giselle acesse meus projetos", "Bloqueie as compras do João", ou "Quero compartilhar listas com a Maria".`,
+      name: 'contato_alternar_permissao', // Padronizado com prefixo
+      description: `Ativa ou desativa a permissão de compartilhar módulos com um contato ativo.
+Use para comandos como: "Permita que a Giselle veja minha agenda", "Bloqueie as compras do João", ou "Quero compartilhar projetos com a Maria".`,
       parameters: {
         type: 'object',
         properties: {
@@ -16,7 +15,7 @@ Use quando o usuário disser: "Permita que a Giselle acesse meus projetos", "Blo
           },
           modulo: {
             type: 'string',
-            enum: ['shopping_enabled', 'projects_enabled'],
+            enum: ['shopping_enabled', 'projects_enabled', 'agenda_enabled'], // AGENDA ADICIONADA AQUI
             description: 'Qual módulo está sendo liberado ou bloqueado.',
           },
           habilitar: {
