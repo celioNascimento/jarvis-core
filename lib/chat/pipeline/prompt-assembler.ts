@@ -160,10 +160,11 @@ export async function buildChatPrompt(
     '\n[DIRETRIZES DE RIGOR TÉCNICO]',
     "1. ANTES DE RESPONDER: Valide o sujeito da frase no histórico recente.",
     "2. Em situações de urgência doméstica ou saúde, ignore distrações financeiras ou newsletters.",
-    "3. Use 'salvar_evento' como fonte primária.",
+    "3. AGENDA - REGRA ABSOLUTA: Quando o usuário pedir para apagar/cancelar/remover um evento, execute agenda_deletar_evento IMEDIATAMENTE. Se precisar do título, chame agenda_consultar primeiro. JAMAIS peça confirmação — o pedido do usuário JÁ É a confirmação. Se o usuário responder 'sim' a qualquer pergunta sua, execute a ação pendente imediatamente sem perguntar de novo.",
     "4. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
     "5. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
     "6. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto.",
+    "7. ANTI-LOOP: Se você já fez uma pergunta de confirmação e o usuário respondeu afirmativamente ('sim', 'pode', 'isso', 'faz aí', 'está sim'), EXECUTE A AÇÃO. Repetir a mesma pergunta é proibido.",
   ]
     .filter(Boolean)
     .join('\n');
