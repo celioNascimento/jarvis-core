@@ -19,7 +19,7 @@ export async function executeCreateReminder(
   p: { title?: string; message?: string; type?: string; scheduled_time?: string; delay_minutes?: number; frequency?: string; },
   authUserId: string,
   numericUserId: string,
-  sessionId: string // Adicionado para invalidação
+  sessionId: string
 ): Promise<string> {
   try {
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
@@ -28,20 +28,40 @@ export async function executeCreateReminder(
     let freq = p.frequency;
     let scheduled_time = p.scheduled_time;
 
+    // ── LÓGICA DE TEMPO BLINDADA (IMUNE AO UTC DA VERCEL) ──
     if (p.delay_minutes) {
+      // Se for delay (ex: "em 10 min"), o Date() local do runtime resolve bem
       scheduled_time = new Date(agora.getTime() + p.delay_minutes * 60000).toISOString();
-    } else if (scheduled_time && scheduled_time.length <= 8 && scheduled_time.includes(':')) {
+    }
+    else if (scheduled_time && scheduled_time.length <= 8 && scheduled_time.includes(':')) {
       const [h, m] = scheduled_time.split(':').map(Number);
-      const dataRef = new Date(agora);
-      dataRef.setHours(h, m, 0, 0);
-      if (dataRef.getTime() <= agora.getTime()) dataRef.setDate(dataRef.getDate() + 1);
-      scheduled_time = dataRef.toISOString();
-    } else if (!scheduled_time) {
+
+      // 1. Pega a data YYYY-MM-DD atual no fuso de São Paulo
+      const dataBR = new Intl.DateTimeFormat('fr-CA', { timeZone: 'America/Sao_Paulo' }).format(agora);
+
+      // 2. Monta a string forçando o offset de Brasília (-03:00)
+      // Isso evita que o servidor interprete "06:15" como UTC e subtraia 3 horas.
+      const targetDate = new Date(`${dataBR}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00-03:00`);
+
+      // 3. Se o horário já passou hoje, agenda para amanhã no mesmo horário
+      if (targetDate.getTime() <= agora.getTime()) {
+        targetDate.setDate(targetDate.getDate() + 1);
+      }
+      scheduled_time = targetDate.toISOString();
+    }
+    else if (scheduled_time && scheduled_time.endsWith('Z')) {
+      // Se a IA enviou com 'Z' (UTC) por vício, reajustamos para o nosso fuso
+      const fixedTime = scheduled_time.replace('Z', '-03:00');
+      scheduled_time = new Date(fixedTime).toISOString();
+    }
+    else if (!scheduled_time) {
+      // Fallback: daqui a 5 minutos
       scheduled_time = new Date(agora.getTime() + 5 * 60000).toISOString();
     }
 
     if (freq?.toLowerCase().includes('útil')) freq = 'weekdays';
 
+    // ── PERSISTÊNCIA NO SUPABASE ──
     const { data: reminder, error } = await supabase
       .from('reminders')
       .insert({
@@ -56,10 +76,11 @@ export async function executeCreateReminder(
       .single();
 
     if (error) throw error;
-    
-    // 🔥 AÇÃO CRÍTICA: Invalida o cache para o lembrete aparecer na próxima mensagem
+
+    // 🔥 INVALIDAÇÃO DE CACHE: Garante que o Jarvis "veja" o lembrete na resposta imediata
     await invalidateMasterContextCache(Number(targetId), sessionId);
 
+    // ── AGENDAMENTO NO QSTASH ──
     const qstashId = await scheduleReminderOnQStash({
       reminderId: String(reminder.id),
       userId: String(targetId),
@@ -70,12 +91,18 @@ export async function executeCreateReminder(
     });
 
     if (qstashId) {
-      await supabase.from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
+      await supabase
+        .from('reminders')
+        .update({ qstash_message_id: qstashId })
+        .eq('id', reminder.id);
     }
 
-    return `Sucesso: Lembrete "${title}" agendado para ${new Date(scheduled_time).toLocaleString('pt-BR')}.`;
-  } catch (err: any) { 
-    return `Erro ao processar lembrete: ${err.message}`; 
+    const formattedTime = new Date(scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    return `Sucesso: Lembrete "${title}" agendado para ${formattedTime}.`;
+
+  } catch (err: any) {
+    console.error('[Tool: CreateReminder] Erro Crítico:', err.message);
+    return `Erro ao processar lembrete: ${err.message}`;
   }
 }
 
@@ -105,7 +132,7 @@ export async function executeCancelarLembrete(
     if (!r) return 'Lembrete não encontrado.';
     if (r.qstash_message_id) await cancelReminderOnQStash(r.qstash_message_id);
     await supabase.from('reminders').update({ status: 'cancelled' }).eq('id', r.id);
-    
+
     await invalidateMasterContextCache(Number(targetId), sessionId);
     return `Lembrete "${r.title}" cancelado.`;
   } catch { return 'Erro ao cancelar.'; }
