@@ -101,7 +101,8 @@ export async function coreConsultarLembretes(userId: number): Promise<string> {
 export async function coreCriarLembrete(
   userId: number,
   authUserId: string,
-  payload: ReminderPayload
+  payload: ReminderPayload,
+  sharedWithUserIds: number[] = [] // 👥 Novo parâmetro para IDs compartilhados
 ): Promise<{ id: string; title: string; scheduled_time: string }> {
   const agora = new Date();
   let scheduled_time: string;
@@ -145,6 +146,21 @@ export async function coreCriarLembrete(
 
   if (error) throw new Error(`Falha no banco: ${error.message}`);
 
+  // 👥 PERSISTÊNCIA COMPARTILHADA: Alimenta a tabela de interseção se houver parceiros ativos
+  if (sharedWithUserIds.length > 0) {
+    const sharesPayload = sharedWithUserIds.map(partnerId => ({
+      reminder_id: reminder.id,
+      shared_with_id: partnerId,
+      active: true
+    }));
+    
+    const { error: shareError } = await supabase
+      .from('reminder_shares')
+      .insert(sharesPayload);
+      
+    if (shareError) console.error('[ReminderService] Erro ao criar reminder_shares:', shareError.message);
+  }
+
   const cron = freq ? frequencyToCron(freq, scheduled_time) : null;
 
   let qstashId: string | null = null;
@@ -166,8 +182,6 @@ export async function coreCriarLembrete(
       .from('reminders')
       .update({ qstash_message_id: qstashId })
       .eq('id', reminder.id);
-  } else {
-    console.warn(`[QStash] qstash_message_id nulo para reminder ${reminder.id} — notificação NÃO agendada.`);
   }
 
   return { id: reminder.id, title: payload.title, scheduled_time };
