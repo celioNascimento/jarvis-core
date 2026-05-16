@@ -1,116 +1,87 @@
 // lib/tools/executors/tdah.ts
-// Domínio: Foco, TDAH e Diário
-// Tools: gerenciar_eisenhower, quebrar_tarefa, criar_rotina,
-//        registrar_no_diario, atualizar_meta
+// V1.0.0 — Executor de TDAH e Foco Integrado à SSOT
 
 import { supabase } from '@/lib/jarvis';
-import { extractDiary, updateGoalProgress } from '@/lib/diary';
+import { getEffectiveUserId } from '@/lib/modules/relationships';
+import { 
+  coreCreateBrainDump, 
+  coreCreateTaskBreakdown, 
+  coreCreateEisenhowerItem, 
+  coreCreateFocusSession, 
+  coreGetFocusSummary 
+} from '@/lib/services/tdah.service';
 
-// ─── gerenciar_eisenhower ─────────────────────────────────────────────────────
-
-export async function executeGerenciarEisenhower(
-  p: {
-    acao: 'adicionar' | 'completar' | 'mover';
-    texto: string;
-    quadrante?: string;
-  },
-  _authUserId: string,
-  numericUserId: string
-): Promise<string> {
+export async function executeGerenciarEisenhower(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
-    if (p.acao === 'adicionar') {
-      await supabase
-        .schema('jarvis')
-        .from('eisenhower_items')
-        .insert({ user_id: numericUserId, text: p.texto, quadrant: p.quadrante || 'q2' });
-      return `Tarefa "${p.texto}" adicionada ao quadrante ${p.quadrante || 'q2'} da Matriz.`;
+    const targetId = Number(await getEffectiveUserId(authUserId, numericUserId));
+    const { acao, item_id, text, quadrant, completed } = p;
+
+    if (acao === 'criar') {
+      const item = await coreCreateEisenhowerItem(targetId, { text, quadrant, completed });
+      return `Tarefa "${item.text}" adicionada ao quadrante ${item.quadrant.toUpperCase()}.`;
     }
 
-    if (p.acao === 'completar') {
-      await supabase
-        .schema('jarvis')
-        .from('eisenhower_items')
-        .update({ completed: true, completed_at: new Date() })
-        .eq('user_id', numericUserId)
-        .ilike('text', `%${p.texto}%`);
-      return 'Tarefa concluída com sucesso.';
+    if (acao === 'listar') {
+      const { data, error } = await supabase.schema('jarvis').from('eisenhower_items')
+        .select('*').eq('user_id', targetId).eq('completed', false).order('created_at', { ascending: false });
+      if (error) throw error;
+      if (!data?.length) return 'Matriz de Eisenhower está vazia.';
+      return data.map(i => `[${i.quadrant.toUpperCase()}] ${i.text} (ID: ${i.id})`).join('\n');
     }
 
-    return 'Ação processada na Matriz de Eisenhower.';
-  } catch (err: any) {
-    return `Erro na Matriz: ${err.message}`;
-  }
+    if (!item_id) return 'ID do item é obrigatório para atualizar ou remover.';
+
+    if (acao === 'atualizar') {
+      const updates: any = {};
+      if (text) updates.text = text;
+      if (quadrant) updates.quadrant = quadrant;
+      if (completed !== undefined) updates.completed = completed;
+
+      const { error } = await supabase.schema('jarvis').from('eisenhower_items')
+        .update(updates).eq('id', item_id).eq('user_id', targetId);
+      if (error) throw error;
+      return 'Item atualizado com sucesso.';
+    }
+
+    if (acao === 'remover') {
+      const { error } = await supabase.schema('jarvis').from('eisenhower_items')
+        .delete().eq('id', item_id).eq('user_id', targetId);
+      if (error) throw error;
+      return 'Item removido da matriz.';
+    }
+
+    return 'Ação não reconhecida.';
+  } catch (err: any) { return `Erro na Matriz: ${err.message}`; }
 }
 
-// ─── quebrar_tarefa ───────────────────────────────────────────────────────────
-
-export async function executeQuebrarTarefa(
-  p: { tarefa_principal: string; estado_cognitivo: string },
-  _authUserId: string,
-  numericUserId: string
-): Promise<string> {
-  await supabase.from('brain').insert([{
-    user_id:     Number(numericUserId),
-    category:    'Nota',
-    content:     `Iniciou quebra de tarefa: ${p.tarefa_principal}`,
-    project_tag: 'foco',
-  }]);
-
-  return `[MODO TDAH] Tarefa: "${p.tarefa_principal}".\n1. Primeiro passo minúsculo (< 2 min).\n2. Diga "feito" para o próximo passo.`;
-}
-
-// ─── criar_rotina ─────────────────────────────────────────────────────────────
-
-export async function executeCriarRotina(
-  p: { anchor: string; action: string; period: string },
-  _authUserId: string,
-  numericUserId: string
-): Promise<string> {
+export async function executeQuebrarTarefa(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
-    const { error } = await supabase
-      .schema('jarvis')
-      .from('routines')
-      .insert({
-        user_id: Number(numericUserId),
-        anchor:  p.anchor,
-        action:  p.action,
-        period:  p.period,
-        active:  true,
-      });
-
-    return error
-      ? `Erro ao criar rotina: ${error.message}`
-      : `Rotina criada: "${p.anchor}" → "${p.action}" (${p.period}).`;
-  } catch (err: any) {
-    return `Erro técnico: ${err.message}`;
-  }
+    const targetId = Number(await getEffectiveUserId(authUserId, numericUserId));
+    await coreCreateTaskBreakdown(targetId, p);
+    return `Quebra da tarefa "${p.original_task}" salva com sucesso.`;
+  } catch (err: any) { return `Erro ao quebrar tarefa: ${err.message}`; }
 }
 
-// ─── registrar_no_diario ──────────────────────────────────────────────────────
-
-export async function executeRegistrarNoDiario(
-  p: { texto: string; categoria?: string },
-  _authUserId: string,
-  numericUserId: string
-): Promise<string> {
+export async function executeRegistrarDespejo(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
-    await extractDiary(numericUserId, p.texto, p.categoria as any || 'anytime');
-    return 'Entrada registrada no seu diário pessoal.';
-  } catch (err: any) {
-    return `Erro no diário: ${err.message}`;
-  }
+    const targetId = Number(await getEffectiveUserId(authUserId, numericUserId));
+    await coreCreateBrainDump(targetId, p);
+    return 'Despejo mental registrado com sucesso. A mente está mais leve!';
+  } catch (err: any) { return `Erro ao registrar despejo: ${err.message}`; }
 }
 
-// ─── atualizar_meta ───────────────────────────────────────────────────────────
-
-export async function executeAtualizarMeta(
-  p: { titulo_parcial: string; progresso: number; etapa_concluida?: string },
-  _authUserId: string,
-  numericUserId: string
-): Promise<string> {
+export async function executeRegistrarSessaoFoco(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
-    return await updateGoalProgress(numericUserId, p.titulo_parcial, p.progresso, p.etapa_concluida);
-  } catch (err: any) {
-    return `Erro na meta: ${err.message}`;
-  }
+    const targetId = Number(await getEffectiveUserId(authUserId, numericUserId));
+    await coreCreateFocusSession(targetId, p);
+    return 'Sessão de foco registrada no banco de dados.';
+  } catch (err: any) { return `Erro ao registrar sessão: ${err.message}`; }
+}
+
+export async function executeConsultarResumoFoco(p: any, authUserId: string, numericUserId: string): Promise<string> {
+  try {
+    const targetId = Number(await getEffectiveUserId(authUserId, numericUserId));
+    const summary = await coreGetFocusSummary(targetId);
+    return summary;
+  } catch (err: any) { return `Erro ao buscar resumo: ${err.message}`; }
 }
