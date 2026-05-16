@@ -1,5 +1,6 @@
 // app/api/reminders/fire/route.ts
-// Motor V8.4.0 — status alinhado com schema + guard de cancelamento
+// Motor V8.5.0 — Consultas lineares seguras + Unswallowed Errors
+
 export const runtime = 'edge';
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -24,47 +25,70 @@ export async function POST(req: NextRequest) {
     const bodyText = await req.text();
     const signature = req.headers.get('upstash-signature') ?? '';
 
-    // 1. Validação QStash
+    // 1. Validação do QStash
     const isValid = await receiver.verify({ signature, body: bodyText }).catch(() => false);
     if (!isValid) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
     const payload = JSON.parse(bodyText);
     const { reminderId, message } = payload;
 
-    // 2. Busca lembrete + destinatários (inclui status para o guard)
+    // 2. Consulta 1: Busca o lembrete de forma atômica
     const { data: reminder, error: remError } = await supabase
-      .schema('jarvis')
       .from('reminders')
-      .select(`
-        id, type, status,
-        users!fk_reminders_user (push_token, telegram_chat_id),
-        reminder_shares (
-          active,
-          shared_with:users!reminder_shares_shared_with_id_fkey (push_token, telegram_chat_id)
-        )
-      `)
+      .select('id, type, status, user_id')
       .eq('id', reminderId)
-      .single();
+      .maybeSingle();
 
-    if (remError || !reminder) {
-      console.error('[ReminderFire] Lembrete não encontrado:', reminderId);
+    // Proteção contra erros de banco reais (unswallowed)
+    if (remError) {
+      console.error('[ReminderFire] Erro de infraestrutura no Supabase:', remError.message);
+      return NextResponse.json({ error: 'database_error', details: remError.message }, { status: 500 });
+    }
+
+    if (!reminder) {
+      console.error('[ReminderFire] Lembrete realmente não existe no banco:', reminderId);
       return NextResponse.json({ error: 'not_found' }, { status: 404 });
     }
 
-    // 3. Guard — QStash pode disparar após o usuário cancelar
+    // 3. Guard — Se o usuário cancelou no chat, interrompe o disparo imediatamente
     if (reminder.status === 'cancelled') {
-      console.log(`[ReminderFire] Lembrete ${reminderId} cancelado — disparo ignorado`);
+      console.log(`[ReminderFire] Lembrete ${reminderId} já estava cancelado — disparo ignorado`);
       return NextResponse.json({ ok: true, skipped: true });
     }
 
-    // 4. Destinatários (owner + shares ativos)
+    // 4. Coleta de Destinatários de forma linear (Owner + Shares)
     const recipients: any[] = [];
-    if (reminder.users) recipients.push(reminder.users);
-    reminder.reminder_shares?.forEach((s: any) => {
-      if (s.active && s.shared_with) recipients.push(s.shared_with);
-    });
 
-    // 5. Push Expo (Edge-safe — fetch nativo)
+    // Consulta 2: Dados de Push do Dono do Lembrete
+    const { data: ownerUser } = await supabase
+      .from('users')
+      .select('push_token, telegram_chat_id')
+      .eq('id', reminder.user_id)
+      .maybeSingle();
+
+    if (ownerUser) recipients.push(ownerUser);
+
+    // Consulta 3: Vínculos e compartilhamentos ativos
+    const { data: shares } = await supabase
+      .from('reminder_shares')
+      .select('shared_with_id')
+      .eq('reminder_id', reminderId)
+      .eq('active', true);
+
+    const sharedUserIds = shares?.map(s => s.shared_with_id) || [];
+
+    if (sharedUserIds.length > 0) {
+      const { data: sharedUsers } = await supabase
+        .from('users')
+        .select('push_token, telegram_chat_id')
+        .in('id', sharedUserIds);
+      
+      if (sharedUsers) {
+        recipients.push(...sharedUsers);
+      }
+    }
+
+    // 5. Preparação e disparo do Push Expo (Edge-safe fetch)
     const pushPayloads = recipients
       .filter(r => r.push_token)
       .map(r => ({
@@ -88,12 +112,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 6. Atualização de status
-    //    Recorrente volta a 'pending' (cron continua disparando)
-    //    Único vai para 'triggered' (único status válido no CHECK constraint)
+    // 6. Atualização de status em conformidade com as regras do banco
     const isRecurring = reminder.type === 'recurring';
+    
     await supabase
-      .schema('jarvis')
       .from('reminders')
       .update({
         status:     isRecurring ? 'pending' : 'triggered',
@@ -103,11 +125,11 @@ export async function POST(req: NextRequest) {
       })
       .eq('id', reminderId);
 
-    console.log(`[ReminderFire] OK — ${pushPayloads.length} push(es) enviado(s) para lembrete ${reminderId}`);
+    console.log(`[ReminderFire] Sucesso — ${pushPayloads.length} push(es) enviado(s) para o lembrete ${reminderId}`);
     return NextResponse.json({ ok: true, sent: pushPayloads.length });
 
   } catch (err: any) {
-    console.error('[ReminderFire] Erro crítico:', err.message);
-    return NextResponse.json({ error: 'internal_error' }, { status: 500 });
+    console.error('[ReminderFire] Erro crítico na execução da rota:', err.message);
+    return NextResponse.json({ error: 'internal_error', msg: err.message }, { status: 500 });
   }
 }
