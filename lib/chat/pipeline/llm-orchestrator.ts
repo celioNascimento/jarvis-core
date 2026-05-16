@@ -1,5 +1,5 @@
 // lib/chat/pipeline/llm-orchestrator.ts
-// V11.1.0 — Correção de Payload Tool Choice para Modelos Gemini/OpenRouter
+// V11.2.0 — Temperatura Determinística (0.1) para Casamento Estrito de Tools
 
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
@@ -8,10 +8,8 @@ import type { ChatPrompt } from './prompt-assembler';
 
 interface ToolCallResult { tc: any; result: string; }
 
-// ── Solução de Resiliência para Gemini ───────────────────────────────────────
 function resolveToolChoice(message: string, availableTools: any[]): 'auto' | 'none' {
-  // O uso de objetos { type: 'function' } quebra a tradução do OpenRouter para Gemini (Erro 400).
-  // Retornamos 'auto' e deixamos o rigor técnico do System Prompt guiar a chamada.
+  // Mantido em auto para evitar erro 400 de tradução de protocolo no OpenRouter com Gemini
   return 'auto';
 }
 
@@ -58,8 +56,9 @@ export async function runLLMOrchestrator(ctx: ChatRequestContext, prompt: ChatPr
 
   const toolChoice = resolveToolChoice(message, tools);
 
+  // ✅ CORREÇÃO: Reduzido de 0.7 para 0.1 para forçar o acionamento estrito da ferramenta
   const firstResponse = await callOpenRouterWithPriority(
-    1, 'never', requestSignature, conversationMessages, tools, requestedModel, 0.7,
+    1, 'never', requestSignature, conversationMessages, tools, requestedModel, 0.1,
     25000, undefined, toolChoice
   );
 
@@ -81,6 +80,7 @@ export async function runLLMOrchestrator(ctx: ChatRequestContext, prompt: ChatPr
 
   const toolMessages = buildToolCallMessages(firstResponse.content, firstResponse.toolCalls, toolResults);
 
+  // Mantido em 0.7 na síntese para que a resposta final mantenha a fluidez humana do Jarvis
   const secondResponse = await callOpenRouterWithPriority(
     1, 'never', `${requestSignature}_synth`,
     [...conversationMessages, ...toolMessages], [], requestedModel, 0.7
