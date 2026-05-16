@@ -1,11 +1,29 @@
 // lib/services/projects.service.ts
-// V1.0.0 — Fonte Única da Verdade (SSOT) para Projetos — Schema Jarvis
+// V1.1.0 — Fonte Única da Verdade (SSOT) para Projetos & Membros — Schema Jarvis
 
 import { supabase } from '@/lib/jarvis';
 
+// ─── HELPER DE PERMISSÃO (DRY) ────────────────────────────────────────────────
+async function validarPermissaoProjeto(userId: number, projectId: string, requiresEditor: boolean = false) {
+  const { data: member, error } = await supabase
+    .schema('jarvis')
+    .from('project_members')
+    .select('role')
+    .eq('project_id', projectId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error || !member) throw new Error('Projeto não encontrado ou acesso negado.');
+  
+  if (requiresEditor && !['owner', 'editor'].includes(member.role)) {
+    throw new Error('FORBIDDEN: Sem permissão de edição neste projeto.');
+  }
+  
+  return member.role;
+}
+
 // ─── 1. LISTAR PROJETOS DO USUÁRIO ───────────────────────────────────────────
 export async function coreListarProjetos(userId: number, status?: string) {
-  // Busca os IDs dos projetos onde o usuário é membro
   const { data: memberships, error: memErr } = await supabase
     .schema('jarvis')
     .from('project_members')
@@ -31,7 +49,6 @@ export async function coreListarProjetos(userId: number, status?: string) {
   const { data: projects, error: projErr } = await query;
   if (projErr) throw new Error(`Erro ao listar projetos: ${projErr.message}`);
 
-  // Anexa o papel do usuário no payload de resposta para o frontend
   return projects.map(p => {
     const mem = memberships.find(m => m.project_id === p.id);
     return {
@@ -44,7 +61,6 @@ export async function coreListarProjetos(userId: number, status?: string) {
 
 // ─── 2. CRIAR PROJETO ────────────────────────────────────────────────────────
 export async function coreCriarProjeto(userId: number, payload: any) {
-  // 1. Cria o projeto
   const { data: project, error: projErr } = await supabase
     .schema('jarvis')
     .from('projects')
@@ -63,7 +79,6 @@ export async function coreCriarProjeto(userId: number, payload: any) {
 
   if (projErr) throw new Error(`Falha ao criar projeto: ${projErr.message}`);
 
-  // 2. Insere o dono automaticamente como membro Owner ativo
   await supabase
     .schema('jarvis')
     .from('project_members')
@@ -76,25 +91,6 @@ export async function coreCriarProjeto(userId: number, payload: any) {
     });
 
   return project;
-}
-
-// ─── HELPER DE PERMISSÃO (DRY) ────────────────────────────────────────────────
-async function validarPermissaoProjeto(userId: number, projectId: string, requiresEditor: boolean = false) {
-  const { data: member, error } = await supabase
-    .schema('jarvis')
-    .from('project_members')
-    .select('role')
-    .eq('project_id', projectId)
-    .eq('user_id', userId)
-    .single();
-
-  if (error || !member) throw new Error('Projeto não encontrado ou acesso negado.');
-  
-  if (requiresEditor && !['owner', 'editor'].includes(member.role)) {
-    throw new Error('FORBIDDEN: Sem permissão de edição neste projeto.');
-  }
-  
-  return member.role;
 }
 
 // ─── 3. ATUALIZAR PROJETO ────────────────────────────────────────────────────
@@ -128,9 +124,8 @@ export async function coreDeletarProjeto(userId: number, projectId: string) {
   if (error) throw new Error(`Falha ao deletar projeto: ${error.message}`);
   return true;
 }
-// ─── 5. COMPARTILHAMENTO E MEMBROS (SSOT) ────────────────────────────────────
 
-// Lista todos os membros atuais de um projeto
+// ─── 5. COMPARTILHAMENTO E MEMBROS (SSOT) ────────────────────────────────────
 export async function coreListarMembrosProjeto(projectId: string) {
   const { data, error } = await supabase
     .schema('jarvis')
@@ -139,10 +134,9 @@ export async function coreListarMembrosProjeto(projectId: string) {
     .eq('project_id', projectId);
   
   if (error) throw new Error(`Erro ao listar membros: ${error.message}`);
-  return data;
+  return data || [];
 }
 
-// Altera o status/papel de um membro no projeto
 export async function coreAtualizarMembroProjeto(
   ownerId: number, 
   projectId: string, 
@@ -150,7 +144,6 @@ export async function coreAtualizarMembroProjeto(
   active: boolean, 
   role: string = 'editor'
 ) {
-  // 1. Valida se quem está pedindo a ação é dono ou editor do projeto
   await validarPermissaoProjeto(ownerId, projectId, true);
 
   if (active) {
@@ -179,4 +172,3 @@ export async function coreAtualizarMembroProjeto(
   }
   return true;
 }
-
