@@ -1,5 +1,5 @@
 // lib/chat/tools-executor.ts
-// Dispatcher V10.3.0 — Roteamento Modular com Módulo de Rotinas SSOT
+// Dispatcher V10.4.0 — Imports Corrigidos (TDAH & Rotinas SSOT)
 
 import { supabase } from '@/lib/jarvis';
 import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
@@ -13,10 +13,10 @@ import { executeMicrosoftListarEmails } from '@/lib/tools/executors/microsoft-co
 import { executeRegistrarAbastecimento, executeRegistrarManutencao, executeAtualizarOdometro } from '@/lib/tools/executors/veiculos';
 import { executeSalvarLugar } from '@/lib/tools/executors/lugares';
 import { executeAdicionarItemLista, executeVerLista, executeMarcarItemComprado, executeListarComprasProjeto } from '@/lib/tools/executors/compras';
-import { executeGerenciarEisenhower, executeQuebrarTarefa, executeCriarRotina, executeRegistrarNoDiario, executeAtualizarMeta } from '@/lib/tools/executors/tdah';
+import { executeGerenciarEisenhower, executeQuebrarTarefa, executeRegistrarDespejo, executeRegistrarSessaoFoco, executeConsultarResumoFoco } from '@/lib/tools/executors/tdah';
 import { executeRegistrarTransacao, executeConsultarFinancas, executeCriarOrcamento, executeListarOrcamentos } from '@/lib/finances/executor';
 import { executeGerenciarProjeto, executeListarProjetos, executeGerenciarTopico, executeListarTopicos, executeGerenciarEntry, executeListarEntries, executeGerenciarMembrosProjeto } from '@/lib/tools/executors/projects';
-import { executeListarRotinas, executeGerenciarRotina, executeFazerCheckinRotina } from '@/lib/tools/executors/routines'; // ← NOVO MÓDULO AQUI
+import { executeListarRotinas, executeGerenciarRotina, executeFazerCheckinRotina } from '@/lib/tools/executors/routines';
 import { searchWeb, getWeatherForecast } from '@/lib/google';
 import { logToolExecution } from '@/lib/tools/executors/learning';
 import { executeGerenciarGuideline } from '@/lib/tools/executors/guidelines';
@@ -25,15 +25,15 @@ import { executeAlternarPermissao } from '../tools/executors/relationships';
 // ── Tools que escrevem dados (Invalidação de Cache) ──────────────────────────
 const WRITE_TOOLS = new Set([
   'agenda_salvar_evento', 'agenda_deletar_evento', 'email_excluir', 
-  'lembrete_criar', 'lembrete_cancelar', 'tdah_gerenciar_eisenhower', 
-  'tdah_quebrar_tarefa', 'tdah_criar_rotina', 'tdah_registrar_diario', 
-  'tdah_atualizar_meta', 'financas_registrar_transacao', 'financas_criar_orcamento', 
+  'lembrete_criar', 'lembrete_cancelar', 
+  'tdah_gerenciar_eisenhower', 'tdah_quebrar_tarefa', 'tdah_registrar_despejo_mental', 'tdah_registrar_sessao_foco', 
+  'financas_registrar_transacao', 'financas_criar_orcamento', 
   'projeto_gerenciar', 'projeto_gerenciar_topico', 'projeto_gerenciar_entry',
   'projeto_gerenciar_membros', 'lugar_salvar', 'compra_adicionar_item', 
   'compra_marcar_comprado', 'memoria_adicionar_diretriz', 'sistema_gerenciar_guideline', 
   'veiculo_registrar_abastecimento', 'veiculo_registrar_manutencao', 
   'veiculo_atualizar_odometro', 'contato_alternar_permissao',
-  'gerenciar_rotina', 'fazer_checkin_rotina' // ← ROTINAS ADICIONADAS AQUI
+  'gerenciar_rotina', 'fazer_checkin_rotina'
 ]);
 
 // ── Tipagem do Handler Modular ───────────────────────────────────────────────
@@ -80,14 +80,14 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   'compra_marcar_comprado':  (p, a, n) => executeMarcarItemComprado(p, a, n),
   'compra_listar_projeto':   (p, a, n) => executeListarComprasProjeto(p, a, n),
 
-  // ── TDAH e Diário
-  'tdah_gerenciar_eisenhower': (p, a, n) => executeGerenciarEisenhower(p, a, n),
-  'tdah_quebrar_tarefa':       (p, a, n) => executeQuebrarTarefa(p, a, n),
-  'tdah_criar_rotina':         (p, a, n) => executeCriarRotina(p, a, n),
-  'tdah_registrar_diario':     (p, a, n) => executeRegistrarNoDiario(p, a, n),
-  'tdah_atualizar_meta':       (p, a, n) => executeAtualizarMeta(p, a, n),
+  // ── TDAH e Foco
+  'tdah_gerenciar_eisenhower':     (p, a, n) => executeGerenciarEisenhower(p, a, n),
+  'tdah_quebrar_tarefa':           (p, a, n) => executeQuebrarTarefa(p, a, n),
+  'tdah_registrar_despejo_mental': (p, a, n) => executeRegistrarDespejo(p, a, n),
+  'tdah_registrar_sessao_foco':    (p, a, n) => executeRegistrarSessaoFoco(p, a, n),
+  'tdah_consultar_resumo':         (p, a, n) => executeConsultarResumoFoco(p, a, n),
 
-  // ── Rotinas (NOVO)
+  // ── Rotinas
   'listar_rotinas':       (p, a, n) => executeListarRotinas(p, a, n),
   'gerenciar_rotina':     (p, a, n) => executeGerenciarRotina(p, a, n),
   'fazer_checkin_rotina': (p, a, n) => executeFazerCheckinRotina(p, a, n),
