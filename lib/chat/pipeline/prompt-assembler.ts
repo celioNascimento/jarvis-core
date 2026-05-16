@@ -1,5 +1,5 @@
-// lib/chat/pipeline/prompt-assembler.ts
-// V11.2.0 — Proteção Permanente de Core Tools contra desidratação (Rotinas & Clima inclusos)
+    // lib/chat/pipeline/prompt-assembler.ts
+// V11.3.0 — Proteção de Core Tools Permanente (Inclusão de Esportes e Web Search)
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
@@ -26,7 +26,7 @@ const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
 
 // ✅ CORE TOOLS BLINDADO: Impede a perda das ferramentas mesmo em respostas curtas (ex: "sim")
 const ALWAYS_ENABLED_TOOLS = new Set([
-  // Projetos (Nomes atualizados com a SSOT)
+  // Projetos
   'projeto_gerenciar',
   'projeto_listar',
   'projeto_gerenciar_topico',
@@ -44,13 +44,20 @@ const ALWAYS_ENABLED_TOOLS = new Set([
   'lembrete_cancelar',
   'contato_alternar_permissao',
 
-  // Rotinas (Adicionados para proteção do novo módulo)
+  // Rotinas
   'listar_rotinas',
   'gerenciar_rotina',
   'fazer_checkin_rotina',
 
   // Clima
-  'clima_consultar_atual'
+  'clima_consultar_atual',
+
+  // Esportes (Proteção do novo ecossistema)
+  'esportes_consultar_placar_ao_vivo',
+  'esportes_consultar_tabela',
+
+  // Busca Global de Internet (Plano B caso precise pesquisar ligas de fora / outros esportes)
+  'web_pesquisar'
 ]);
 
 function filterL3ByAffect(l3: string, recentHistoryText: string, message: string): string {
@@ -134,7 +141,7 @@ export async function buildChatPrompt(
 
     "\n[⚠️ HIERARQUIA DE VERDADE E CONTEXTO]",
     "1. O 'AGORA' É SOBERANO: O que o usuário disse nas últimas mensagens deste chat anula qualquer informação do histórico de longo prazo (HD/L3).",
-    "2. SEPARAÇÃO DE ENTIDADES: Se o usuário mencionou um nome nesta sessão (ex: Davi), mantenha o foco nele. Não confunda com nomes do HD (ex: Miguel) sem pedido explícito.",
+    "2. SEPARAÇÃO DE ENTIDADES: Se o usuário mencionou um nome nesta sessão (ex: Davi), mantenha o foco nele. Não confunda com nomes do HD (ex: Miguel) sem pedido explicitamente.",
     "3. AMBIGUIDADE DE 'MENSAGENS': O termo 'verificar mensagens' refere-se EXCLUSIVAMENTE ao histórico desta conversa atual. Nunca use ferramentas de busca externa para responder sobre o fluxo do chat.",
     "----------------------------",
 
@@ -181,7 +188,9 @@ export async function buildChatPrompt(
     "11. LEMBRETES - CANCELAR: Para cancelar, chame lembrete_cancelar diretamente. Se precisar do título, chame lembrete_consultar primeiro.",
     "12. LEMBRETES - CONSULTAR: Para responder sobre lembretes ativos, SEMPRE chame lembrete_consultar.",
     "13. ROTINAS & HÁBITOS: Use listar_rotinas para ver o progresso, gerenciar_rotina para alterar e fazer_checkin_rotina para computar os hábitos do dia.",
-    "14. CLIMA: Sempre que o usuário perguntar sobre o tempo ou demonstrar dúvida sobre sair de casa, consulte o clima atual com clima_consultar_atual."
+    "14. CLIMA: Sempre que o usuário perguntar sobre o tempo ou demonstrar dúvida sobre sair de casa, consulte o clima atual com clima_consultar_atual.",
+    "15. ESPORTES: Sempre que houver perguntas sobre o resultado, tabela, classificação ou placar de futebol de hoje das ligas brasileiras ou europeias, chame esportes_consultar_placar_ao_vivo ou esportes_consultar_tabela.",
+    "16. INTERNET: Se a pergunta de esporte envolver ligas não mapeadas (ex: NBA, NFL) ou se as ferramentas de futebol retornarem vazio, use web_pesquisar imediatamente para obter a resposta em tempo real."
   ]
     .filter(Boolean)
     .join('\n');
