@@ -1,7 +1,8 @@
 // lib/modules/compras.ts
+// Definição do Módulo de Compras integrado à SSOT Core
+
 import type { ModuleDefinition } from '../types';
-import { supabase } from '@/lib/jarvis';
-import { getEffectiveUserId } from '../../modules/relationships';
+import { coreListarCompras } from '@/lib/services/shopping.service';
 
 export const ModuloCompras: ModuleDefinition = {
   id: 'compras',
@@ -9,55 +10,44 @@ export const ModuloCompras: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
-    // Corrigido para 'projeto' (singular) conforme seu ContextType
     contexts: ['compras', 'foco', 'projeto'],
     keywords: /comprar|lista|mercado|item|preciso de|material|insumo|reforma/i
   },
 
- buildContextBlock: async (opts) => {
-    // 1. Resolve o ID real para que o Jarvis enxergue o que o App mostra
-    const effectiveId = await getEffectiveUserId(opts.userId, opts.userId);
+  buildContextBlock: async (opts) => {
+    try {
+      // Carrega os itens do usuário e os compartilhados com ele via SSOT
+      const data = await coreListarCompras(Number(opts.userId));
+      
+      const pendentes = data.filter((i: any) => i.done === false);
+      if (!pendentes.length) return '';
 
-    const { data, error } = await supabase
-      .from('shopping_items')
-      .select(`
-        item, 
-        category, 
-        project_id,
-        projects ( name, tag )
-      `)
-      .eq('user_id', effectiveId) 
-      .eq('done', false)
-      .eq('archived', false);
+      const pessoais = pendentes.filter((i: any) => !i.project_id);
+      const deProjeto = pendentes.filter((i: any) => i.project_id);
 
-    if (error || !data?.length) return '';
+      const linhas = ['### 🛒 LISTA DE COMPRAS ATIVA (Inclui Itens Compartilhados)'];
 
-    // Segmentação: Pessoais vs Materiais de Projeto
-    const pessoais = data.filter(i => !i.project_id);
-    const deProjeto = data.filter(i => i.project_id);
+      if (pessoais.length) {
+        linhas.push('\n**🛍️ Itens Pessoais:**');
+        linhas.push(...pessoais.map((i: any) => `- ${i.item} [${i.category}]`));
+      }
 
-    const linhas = ['### 🛒 LISTA DE COMPRAS ATIVA'];
+      if (deProjeto.length) {
+        linhas.push('\n**🏗️ Materiais de Projetos:**');
+        linhas.push(...deProjeto.map((i: any) => {
+          const p = Array.isArray(i.projects) ? i.projects[0] : i.projects;
+          const projInfo = p ? `(Projeto: ${p.name || p.tag})` : '';
+          return `- ${i.item} ${projInfo}`;
+        }));
+      }
 
-    if (pessoais.length) {
-      linhas.push('\n**🛍️ Itens Pessoais:**');
-      linhas.push(...pessoais.map(i => `- ${i.item} [${i.category}]`));
+      return linhas.join('\n');
+    } catch (err) {
+      console.error('[ModuloCompras] Erro ao montar bloco de contexto:', err);
+      return '';
     }
-
-    if (deProjeto.length) {
-      linhas.push('\n**🏗️ Materiais de Projetos:**');
-      linhas.push(...deProjeto.map(i => {
-        // Tratamento seguro para o join do Supabase que retorna array
-        const p: any = Array.isArray(i.projects) ? i.projects[0] : i.projects;
-        const projInfo = p ? `(Projeto: ${p.name || p.tag})` : '';
-        
-        return `- ${i.item} ${projInfo}`;
-      }));
-    }
-
-    return linhas.join('\n');
   },
 
-  // Ferramentas registradas em lib/tools/defs/compras.ts
   tools: [
     'adicionar_item_lista',
     'ver_lista',
