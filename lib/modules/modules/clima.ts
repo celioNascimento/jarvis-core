@@ -1,4 +1,6 @@
 // lib/modules/modules/clima.ts
+// V1.0.1 — Correção de ContextType para Build
+
 import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
 import { fetchWeather } from '@/lib/openmeteo';
@@ -9,13 +11,12 @@ export const ModuloClima: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
-    contexts: ['clima', 'tempo'],
+    contexts: ['clima'], // ← Mantido apenas o contexto válido no enum do sistema
     keywords: /clima|tempo|chover|chuva|sol|frio|calor|previsão|temperatura|guarda-chuva/i
   },
   
   buildContextBlock: async (opts) => {
     try {
-      // Puxa silenciosamente o clima atual para a IA ter o contexto sem precisar gastar tool call
       const { data: locData } = await supabase
         .schema('jarvis')
         .from('config')
@@ -26,7 +27,8 @@ export const ModuloClima: ModuleDefinition = {
       let lat = -23.27, lon = -51.2;
       if (locData?.value) {
         const parsed = JSON.parse(locData.value);
-        lat = parseFloat(parsed.latitude); lon = parseFloat(parsed.longitude);
+        lat = parseFloat(parsed.latitude); 
+        lon = parseFloat(parsed.longitude);
       }
 
       const weather = await fetchWeather(lat, lon);
