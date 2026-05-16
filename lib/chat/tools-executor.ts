@@ -1,5 +1,5 @@
 // lib/chat/tools-executor.ts
-// Dispatcher V10.2.0 — Roteamento Modular 100% PT-BR com Service Layer Support
+// Dispatcher V10.3.0 — Roteamento Modular com Módulo de Rotinas SSOT
 
 import { supabase } from '@/lib/jarvis';
 import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
@@ -16,12 +16,13 @@ import { executeAdicionarItemLista, executeVerLista, executeMarcarItemComprado, 
 import { executeGerenciarEisenhower, executeQuebrarTarefa, executeCriarRotina, executeRegistrarNoDiario, executeAtualizarMeta } from '@/lib/tools/executors/tdah';
 import { executeRegistrarTransacao, executeConsultarFinancas, executeCriarOrcamento, executeListarOrcamentos } from '@/lib/finances/executor';
 import { executeGerenciarProjeto, executeListarProjetos, executeGerenciarTopico, executeListarTopicos, executeGerenciarEntry, executeListarEntries, executeGerenciarMembrosProjeto } from '@/lib/tools/executors/projects';
+import { executeListarRotinas, executeGerenciarRotina, executeFazerCheckinRotina } from '@/lib/tools/executors/routines'; // ← NOVO MÓDULO AQUI
 import { searchWeb, getWeatherForecast } from '@/lib/google';
 import { logToolExecution } from '@/lib/tools/executors/learning';
 import { executeGerenciarGuideline } from '@/lib/tools/executors/guidelines';
 import { executeAlternarPermissao } from '../tools/executors/relationships';
 
-// ── Tools que escrevem dados (Invalidação de Cache - Nomes Atualizados) ──────
+// ── Tools que escrevem dados (Invalidação de Cache) ──────────────────────────
 const WRITE_TOOLS = new Set([
   'agenda_salvar_evento', 'agenda_deletar_evento', 'email_excluir', 
   'lembrete_criar', 'lembrete_cancelar', 'tdah_gerenciar_eisenhower', 
@@ -31,7 +32,8 @@ const WRITE_TOOLS = new Set([
   'projeto_gerenciar_membros', 'lugar_salvar', 'compra_adicionar_item', 
   'compra_marcar_comprado', 'memoria_adicionar_diretriz', 'sistema_gerenciar_guideline', 
   'veiculo_registrar_abastecimento', 'veiculo_registrar_manutencao', 
-  'veiculo_atualizar_odometro', 'contato_alternar_permissao' // ← ATUALIZADO AQUI
+  'veiculo_atualizar_odometro', 'contato_alternar_permissao',
+  'gerenciar_rotina', 'fazer_checkin_rotina' // ← ROTINAS ADICIONADAS AQUI
 ]);
 
 // ── Tipagem do Handler Modular ───────────────────────────────────────────────
@@ -85,6 +87,11 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   'tdah_registrar_diario':     (p, a, n) => executeRegistrarNoDiario(p, a, n),
   'tdah_atualizar_meta':       (p, a, n) => executeAtualizarMeta(p, a, n),
 
+  // ── Rotinas (NOVO)
+  'listar_rotinas':       (p, a, n) => executeListarRotinas(p, a, n),
+  'gerenciar_rotina':     (p, a, n) => executeGerenciarRotina(p, a, n),
+  'fazer_checkin_rotina': (p, a, n) => executeFazerCheckinRotina(p, a, n),
+
   // ── Finanças
   'financas_registrar_transacao': (p, a, n) => executeRegistrarTransacao(p, a, n),
   'financas_consultar':           (p, a, n) => executeConsultarFinancas(p, a, n),
@@ -103,7 +110,7 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   // ── Integrações Externas e Contatos
   'web_pesquisar':              (p) => searchWeb(p.query),
   'web_previsao_tempo':         (p) => getWeatherForecast(p.lat, p.lng),
-  'contato_alternar_permissao': (p, a, n) => executeAlternarPermissao(p, a, n), // ← ATUALIZADO AQUI
+  'contato_alternar_permissao': (p, a, n) => executeAlternarPermissao(p, a, n),
 };
 
 // ── Idempotência ──────────────────────────────────────────────────────────────
