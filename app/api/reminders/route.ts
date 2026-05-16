@@ -1,11 +1,11 @@
 // app/api/reminders/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
-import { 
-  coreListarLembretes, 
-  coreCriarLembrete, 
-  coreAtualizarLembrete, 
-  coreDeletarLembrete 
+import {
+  coreListarLembretes,
+  coreCriarLembrete,
+  coreAtualizarLembrete,
+  coreDeletarLembrete
 } from '@/lib/services/reminders.service';
 
 async function getJarvisUser(req: NextRequest) {
@@ -30,9 +30,11 @@ export async function GET(req: NextRequest) {
   if (error) return NextResponse.json({ error }, { status });
 
   try {
-    const reminders = await coreListarLembretes(user!.id);
+    const incluirHistorico = new URL(req.url).searchParams.get('historico') === 'true';
+    const reminders = await coreListarLembretes(user!.id, incluirHistorico);
     return NextResponse.json({ ok: true, reminders });
   } catch (e: any) {
+    console.error('[Reminders GET] Erro:', e.message);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
