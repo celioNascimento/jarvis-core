@@ -1,21 +1,43 @@
 // lib/tools/executors/esportes.ts
-// V1.0.0 — Executor de Esportes integrado à SSOT
+// V1.1.0 — Executor de Esportes com Tratamento de Status Completo
 
-import { coreGetLiveMatches, coreGetLeagueTable } from '@/lib/services/sports.service';
+import { coreGetMatchesToday, coreGetLeagueTable } from '@/lib/services/sports.service';
 
 export async function executeConsultarPlacarAoVivo(p: any): Promise<string> {
   try {
-    const partidas = await coreGetLiveMatches(p.liga_tag);
-    if (!partidas.length) return 'Não há partidas acontecendo ao vivo no momento para este filtro.';
+    // Se a IA não inferir a liga, usamos o Brasileirão Série A como padrão nacional
+    const liga = p.liga_tag || 'brasileirao_a';
+    const partidas = await coreGetMatchesToday(liga);
+    
+    if (!partidas.length) {
+      return `Não foram encontradas partidas agendadas ou realizadas para a liga de tag "${liga}" na data de hoje.`;
+    }
 
     return partidas.map((match: any) => {
       const { fixture, teams, goals } = match;
-      const status = fixture.status.short === 'HT' ? 'Intervalo' : `${fixture.status.elapsed}'`;
-      return `⚽ [${match.league.name}] ${teams.home.name} ${goals.home} x ${goals.away} ${teams.away.name} (${status})`;
+      const shortStatus = fixture.status.short;
+      
+      let statusFormatado = '';
+      if (shortStatus === 'NS') {
+        // Pega apenas o horário (HH:MM) da data de início
+        const hora = new Date(fixture.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+        statusFormatado = `Não Iniciado - às ${hora}`;
+      } else if (['FT', 'AET', 'PEN'].includes(shortStatus)) {
+        statusFormatado = 'Encerrado';
+      } else if (shortStatus === 'HT') {
+        statusFormatado = 'Intervalo';
+      } else {
+        statusFormatado = `Em Andamento: ${fixture.status.elapsed}'`;
+      }
+
+      const placarCasa = goals.home !== null ? goals.home : 0;
+      const placarFora = goals.away !== null ? goals.away : 0;
+
+      return `⚽ [${match.league.name}] ${teams.home.name} ${placarCasa} x ${placarFora} ${teams.away.name} (${statusFormatado})`;
     }).join('\n');
 
   } catch (err: any) {
-    return `Erro ao buscar placares: ${err.message}`;
+    return `Erro ao buscar dados de jogos: ${err.message}`;
   }
 }
 
