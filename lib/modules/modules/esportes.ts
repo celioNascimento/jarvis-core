@@ -13,9 +13,9 @@ export const ModuloEsportes: ModuleDefinition = {
     keywords: /futebol|brasileirão|placar|tabela|classificação|jogo de hoje|campeonato|champions|premier league/i
   },
   buildContextBlock: async () => {
-    return `[MÓDULO DE ESPORTES ATIVO]
-Diretriz: Para responder sobre placares, resultados recentes ou classificação de tabelas, use obrigatoriamente as ferramentas esportivas disponíveis. Não tente adivinhar resultados futuros ou passados fora do seu conhecimento.`;
-  },
+  return `[MÓDULO DE ESPORTES ATIVO]
+  Diretriz: Para responder sobre placares, resultados recentes ou classificação de tabelas, use obrigatoriamente as ferramentas esportivas disponíveis...`;
+  }
   tools: ['esportes_consultar_placar_ao_vivo', 'esportes_consultar_tabela'],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
-};
+  };
