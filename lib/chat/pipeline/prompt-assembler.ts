@@ -1,4 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
+// V11.1.0 — Proteção de Core Tools Permanente contra desidratação de contexto
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
@@ -9,7 +10,6 @@ import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 
-// --- INTERFACES EXPORTADAS ---
 export interface ChatPrompt {
   systemPrompt: string;
   tools: any[];
@@ -17,14 +17,14 @@ export interface ChatPrompt {
   conversationMessages: any[];
 }
 
-// --- CONSTANTES E AUXILIARES ---
 const FAMILY_DATE_SIGNALS = [
   /aniversário/i, /casamento/i, /fil[ho]a/i, /esposa|marido/i,
   /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
 ];
 
-const DEFAULT_MODEL = 'google/gemini-2.0-flash';
+const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
 
+// ✅ CORE TOOLS FIXO: Impede que as ferramentas sumam em respostas curtas (ex: "sim")
 const ALWAYS_ENABLED_TOOLS = new Set([
   'gerenciar_projeto',
   'listar_projetos',
@@ -33,6 +33,13 @@ const ALWAYS_ENABLED_TOOLS = new Set([
   'gerenciar_entry',
   'listar_entries',
   'gerenciar_membros_projeto',
+  'agenda_consultar',
+  'agenda_salvar_evento',
+  'agenda_deletar_evento',
+  'lembrete_criar',
+  'lembrete_consultar',
+  'lembrete_cancelar',
+  'contato_alternar_permissao'
 ]);
 
 function filterL3ByAffect(l3: string, recentHistoryText: string, message: string): string {
@@ -44,7 +51,6 @@ function filterL3ByAffect(l3: string, recentHistoryText: string, message: string
     .trim();
 }
 
-// --- FUNÇÃO PRINCIPAL ---
 export async function buildChatPrompt(
   ctx: ChatRequestContext,
   intel: ChatIntelligence
@@ -52,7 +58,6 @@ export async function buildChatPrompt(
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, memory, masterContext, recentHistory, isStressed } = intel;
 
-  // 1. Módulos ativos + modelo resolvido
   const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
     {
       userId: String(user.id),
@@ -71,7 +76,6 @@ export async function buildChatPrompt(
     ? resolvedModel
     : DEFAULT_MODEL;
 
-  // 2. Contexto dinâmico
   const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
     userId: String(user.id),
     authUserId: user.auth_user_id,
@@ -82,7 +86,6 @@ export async function buildChatPrompt(
     masterContext,
   });
 
-  // 3. Radar de proximidade
   let alertaRadar = '';
   if (resolvedLocation?.lat && resolvedLocation?.lng) {
     const radar = await verificarProximidade(
@@ -93,7 +96,6 @@ export async function buildChatPrompt(
     if (radar.temAlerta) alertaRadar = `\n[ALERTA RADAR]: ${radar.mensagem}`;
   }
 
-  // 4. Data/hora e geo
   const nowSP = new Date(
     new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' })
   );
@@ -104,18 +106,15 @@ export async function buildChatPrompt(
     ? `\n[DIRETRIZ CRÍTICA]: O usuário está REALMENTE em: ${resolvedLocation.label || 'Londrina'}. Ignore qualquer endereço divergente do histórico.`
     : `\n[STATUS GPS]: INDISPONÍVEL. Proibido adivinhar localização baseando-se no histórico.`;
 
-  // 5. Filtro de afeto no L3
   const historyText = recentHistory.map(h => h.content).join(' ');
   const filteredL3 = filterL3ByAffect(memory.l3.content, historyText, message);
 
-  // 6. Urgentes e Insights
   const urgentes = (masterContext?.reminders || [])
     .map((u: any) => u.title)
     .join(', ');
 
   const learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
 
-  // 7. System prompt final com Hierarquia de Verdade
   const systemPrompt = [
     `[RELÓGIO DO SISTEMA]: ${dataHoraSP}`,
     geoBlock,
@@ -160,21 +159,20 @@ export async function buildChatPrompt(
     '\n[DIRETRIZES DE RIGOR TÉCNICO]',
     "1. ANTES DE RESPONDER: Valide o sujeito da frase no histórico recente.",
     "2. Em situações de urgência doméstica ou saúde, ignore distrações financeiras ou newsletters.",
-    "3. AGENDA - SALVAR: Ao receber pedido de agendamento com pessoa e horário identificáveis, chame agenda_salvar_evento IMEDIATAMENTE. O título é extraído da frase (ex: 'consulta com Dr. Adriano' → título: 'Consulta Dr. Adriano'). NUNCA peça contato, confirmação ou informações extras para criar um evento.",
-    "4. AGENDA - DELETAR: Quando o usuário pedir para apagar/cancelar/remover um evento, execute agenda_deletar_evento IMEDIATAMENTE. Se precisar do título, chame agenda_consultar primeiro. JAMAIS peça confirmação.",
+    "3. AGENDA - SALVAR: Ao receber pedido de agendamento com pessoa e horário identificáveis, chame agenda_salvar_evento IMEDIATAMENTE. O título é extraído da frase. NUNCA peça contato, confirmação ou informações extras.",
+    "4. AGENDA - DELETAR: Quando o usuário pedir para apagar/cancelar/remover um evento, execute agenda_deletar_evento IMEDIATAMENTE. JAMAIS peça confirmação.",
     "5. AGENDA - CONSULTAR: Para responder sobre compromissos, SEMPRE chame agenda_consultar. NUNCA responda baseando-se apenas no histórico ou memória.",
-    "6. ANTI-LOOP: Se você já fez uma pergunta de confirmação e o usuário respondeu afirmativamente ('sim', 'pode', 'isso', 'faz aí', 'está sim'), EXECUTE A AÇÃO. Repetir a mesma pergunta é proibido.",
+    "6. ANTI-LOOP: Se você já fez uma pergunta de confirmação e o usuário respondeu afirmativamente ('sim', 'pode', 'isso'), EXECUTE A AÇÃO. Repetir a mesma pergunta é proibido.",
     "7. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
     "8. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
     "9. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto.",
     "10. LEMBRETES - CRIAR: Ao receber pedido de lembrete com título e horário identificáveis, chame lembrete_criar IMEDIATAMENTE. NUNCA peça confirmação.",
     "11. LEMBRETES - CANCELAR: Para cancelar, chame lembrete_cancelar diretamente. Se precisar do título, chame lembrete_consultar primeiro.",
-    "12. LEMBRETES - CONSULTAR: Para responder sobre lembretes ativos, SEMPRE chame lembrete_consultar. NUNCA responda que não tem acesso sem ter executado a tool.",
+    "12. LEMBRETES - CONSULTAR: Para responder sobre lembretes ativos, SEMPRE chame lembrete_consultar.",
   ]
     .filter(Boolean)
     .join('\n');
 
-  // 8. Ferramentas autorizadas
   const allActiveTools = new Set([
     ...activeTools,
     ...dynamicTools,
@@ -183,15 +181,11 @@ export async function buildChatPrompt(
 
   const toolsHabilitadas = ALL_TOOLS.filter(t => t.function && allActiveTools.has(t.function.name));
 
-  // 9. Mensagens para o LLM
   const conversationMessages = [
     { role: 'system', content: systemPrompt },
     ...recentHistory,
     { role: 'user', content: message },
   ];
-
-  console.log('[PromptAssembler] allActiveTools:', [...allActiveTools]);
-  console.log('[PromptAssembler] toolsHabilitadas:', toolsHabilitadas);
 
   return {
     systemPrompt,
