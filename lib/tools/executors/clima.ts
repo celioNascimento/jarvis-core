@@ -1,14 +1,14 @@
 // lib/tools/executors/clima.ts
-// V1.0.0 — Executor de Clima Integrado à Localização GPS e Open-Meteo
+// V1.0.2 — Proteção Absoluta contra Coordenadas Inválidas (Anti-NaN)
 
 import { supabase } from '@/lib/jarvis';
-import { fetchWeather } from '@/lib/openmeteo'; // Sua função já existente
+import { fetchWeather } from '@/lib/openmeteo';
 
 export async function executeConsultarClimaAtual(_p: any, _authUserId: string, numericUserId: string): Promise<string> {
   try {
     const targetId = Number(numericUserId);
     
-    // 1. Busca a última localização conhecida do usuário na SSOT
+    // 1. Busca a última localização conhecida do usuário
     const { data: locData } = await supabase
       .schema('jarvis')
       .from('config')
@@ -17,17 +17,29 @@ export async function executeConsultarClimaAtual(_p: any, _authUserId: string, n
       .limit(1)
       .maybeSingle();
 
-    // Fallback: Londrina se não tiver GPS salvo
+    // Fallback padrão e seguro: Londrina/PR
     let lat = -23.27;
     let lon = -51.2;
 
     if (locData?.value) {
       try {
         const parsed = JSON.parse(locData.value);
-        lat = parseFloat(parsed.latitude);
-        lon = parseFloat(parsed.longitude);
-      } catch { /* Usa o fallback silenciosamente */ }
+        const parsedLat = parseFloat(parsed.latitude);
+        const parsedLon = parseFloat(parsed.longitude);
+
+        // 🔥 VALIDAÇÃO CRÍTICA: Só substitui o fallback se os números forem reais e válidos
+        if (!isNaN(parsedLat) && !isNaN(parsedLon) && parsedLat !== 0 && parsedLon !== 0) {
+          lat = parsedLat;
+          lon = parsedLon;
+        }
+      } catch {
+        // Se o JSON estiver corrompido, mantém Londrina silenciosamente
+      }
     }
+
+    // Limita a 4 casas decimais (padrão ideal para APIs de mapa/clima)
+    lat = Number(lat.toFixed(4));
+    lon = Number(lon.toFixed(4));
 
     // 2. Busca o Clima no Open-Meteo
     const weather = await fetchWeather(lat, lon);
@@ -42,6 +54,7 @@ export async function executeConsultarClimaAtual(_p: any, _authUserId: string, n
 
     return out;
   } catch (err: any) {
-    return `Erro ao consultar o clima: ${err.message}`;
+    console.error('[executeConsultarClimaAtual] Erro:', err.message);
+    return `Não foi possível obter as condições climáticas agora devido a uma falha de comunicação com o serviço meteorológico.`;
   }
 }
