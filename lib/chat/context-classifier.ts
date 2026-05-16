@@ -2,7 +2,7 @@
 // V9.3.1 — Blindagem Total (Zero DB Calls, Tipagem Estrita e Regex Segura)
 
 import { supabase } from '@/lib/jarvis';
-import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; 
+import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -34,9 +34,9 @@ export type ContextType =
   | 'veiculos'
   | 'planejamento'
   | 'foco'
-  | 'relacao'   
-  | 'casa'      
-  | 'sistema'  
+  | 'relacao'
+  | 'casa'
+  | 'sistema'
   | 'estudo'
   | 'lembrete'     // ← NOVO
   | 'notificacao'; // ← NOVO
@@ -83,6 +83,8 @@ const RULES_NORMALIZED: Array<[RegExp, ContextType]> = ([
   [norm('casa|reforma|construção|construcao|conserto|parede|tinta|piso|led|iluminação|iluminacao|eletrodoméstico|eletro|lava louça|geladeira|tomada'), 'casa'],
   [norm('diretriz|system prompt|regra|comportamento|aja como|não diga mais|nunca mais use|a partir de agora|instrução|mude seu prompt'), 'sistema'],
   [norm('estudar|estudando|aprender|aula|curso|certificac|certificaç|prova|inglês|ingles|idioma|traduz|traduza|pronúncia|praticar inglês'), 'estudo'],
+  [norm('lembrete|lembretes|me lembra|me avisa|me avise|me notifica|me notifique|consulte meus|quais lembretes|cancelar lembrete|apagar lembrete'), 'lembrete'],
+  [norm('notificacao|notificação|push|alerta|avisar|notificar|me manda|me envia'), 'notificacao'],
 ] as Array<[string, ContextType]>).map(([src, ctx]) => [new RegExp(src, 'i'), ctx]);
 
 const RULES_VERBATIM: Array<[RegExp, ContextType]> = [
@@ -112,7 +114,7 @@ export function classifyContextRegex(text: string): ContextType[] {
 
 const HIGH_CONFIDENCE_CONTEXTS: ContextType[] = [
   'math', 'trivial', 'financas', 'esporte', 'clima', 'email', 'agenda',
-  'compras', 'saude', 'noticias', 'retrospecto', 'veiculos'
+  'compras', 'saude', 'noticias', 'retrospecto', 'veiculos', 'lembrete', 'notificacao'
 ];
 
 function needsLLMClassification(text: string, regexContexts: ContextType[]): boolean {
@@ -139,14 +141,14 @@ export async function classifyContextWithL4(
   }
 
   // Tratamento resiliente de argumentos para garantir que o safeContext seja capturado
-  const actualSafeContext = typeof authUserIdOrSafeContext === 'object' 
-    ? authUserIdOrSafeContext 
+  const actualSafeContext = typeof authUserIdOrSafeContext === 'object'
+    ? authUserIdOrSafeContext
     : safeContextFallback;
 
   if (regexContexts.length > 2) {
     // Tenta usar o contexto em memória primeiro (Zero DB call)
     const topicWeights = actualSafeContext?.topics || [];
-    
+
     if (topicWeights.length) {
       const sorted = [...topicWeights].sort((a: any, b: any) => (b.weight || 0) - (a.weight || 0));
       const prioritized = sorted.map((t) => t.topic as ContextType);
@@ -163,14 +165,14 @@ export async function classifyContextWithL4(
           .select('topic, weight')
           .eq('user_id', userId)
           .in('topic', regexContexts);
-        
+
         if (dbTopics?.length) {
-           const sorted = [...dbTopics].sort((a, b) => (b.weight || 0) - (a.weight || 0));
-           const prioritized = sorted.map((t) => t.topic as ContextType);
-           const missing = regexContexts.filter((c) => !prioritized.includes(c));
-           return [...prioritized, ...missing] as ContextType[];
+          const sorted = [...dbTopics].sort((a, b) => (b.weight || 0) - (a.weight || 0));
+          const prioritized = sorted.map((t) => t.topic as ContextType);
+          const missing = regexContexts.filter((c) => !prioritized.includes(c));
+          return [...prioritized, ...missing] as ContextType[];
         }
-      } catch {}
+      } catch { }
     }
   }
 
@@ -182,17 +184,17 @@ export async function classifyContextWithL4(
     );
 
     const rawText = typeof rawResponse === 'string' ? rawResponse : (rawResponse.text || rawResponse.content || '');
-    
+
     // ✅ CORREÇÃO APLICADA: Sintaxe `{3}` evita a quebra de linha em formatadores e erros no Turbopack
     const cleaned = rawText.trim().replace(/`{3}json|`{3}/g, '').trim();
-    
+
     const parsed = JSON.parse(cleaned);
     const llmContexts = (parsed.contexts as ContextType[]).filter((c) => ALL_CONTEXTS.includes(c));
 
     return [...new Set([...regexContexts, ...llmContexts])] as ContextType[];
   } catch (e: any) {
     if (e.message === 'GATEKEEPER_DROPPED_TASK') {
-       console.log(`[ContextL4/Gateway] ✂️ Classificação LLM abortada por alto tráfego. Usando fallback.`);
+      console.log(`[ContextL4/Gateway] ✂️ Classificação LLM abortada por alto tráfego. Usando fallback.`);
     }
     return regexContexts;
   }
@@ -210,7 +212,7 @@ export function routeModel(
   if (effectiveEmotional > 0.7) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet-emocional' };
   if (contexts.some((c) => ['emocao', 'familia', 'saude', 'diario'].includes(c))) return { model: 'anthropic/claude-sonnet-4-5', label: 'sonnet-pessoal' };
   if (contexts.some((c) => ['trabalho', 'projeto', 'meta', 'financas'].includes(c))) return { model: 'google/gemini-2.5-pro', label: 'pro-trabalho' };
-  
+
   const flashFriendly: ContextType[] = ['esporte', 'noticias', 'clima', 'casual', 'rotina', 'alias', 'preferencia', 'recomendacao', 'math', 'trivial', 'compras', 'veiculos'];
   if (contexts.includes('agenda') && effectiveEmotional < 0.4) return { model: 'google/gemini-2.0-flash-001', label: 'flash-agenda' };
   if (contexts.some((c) => flashFriendly.includes(c))) return { model: 'google/gemini-2.0-flash-001', label: 'flash-default' };
@@ -226,7 +228,7 @@ export function getTemperature(contexts: ContextType[]): number {
   if (contexts.some((c) => ['emocao', 'familia'].includes(c))) return 0.85;
   if (contexts.some((c) => ['casual', 'projeto', 'meta', 'esporte', 'trivial'].includes(c))) return 0.7;
   if (contexts.some((c) => ['trabalho', 'projeto'].includes(c))) return 0.5;
-  if (contexts.some((c) => ['financas', 'veiculos'])) return 0.3; 
+  if (contexts.some((c) => ['financas', 'veiculos'])) return 0.3;
   if (contexts.some((c) => ['rotina', 'alias', 'preferencia', 'recomendacao', 'noticias', 'clima', 'compras'].includes(c))) return 0.5;
   if (contexts.some((c) => ['agenda', 'evento', 'email', 'saude'].includes(c))) return 0.3;
   return 0.7;
@@ -253,7 +255,7 @@ export function planContextualBlocks(
   const wantsShopping = has('compras', 'casa');
   const wantsPlaces = wantsShopping || (has('rotina', 'recomendacao') && /perto|próximo|aqui|bairro/.test(msg));
   const isRetrospecto = has('retrospecto') || /você me (disse|falou|indicou|sugeriu|recomendou)|me indicou|falamos (sobre|de)|ontem você|antes você|última vez/i.test(msg);
-  
+
   const needsHD = (hasRealEmotion || has('diario', 'familia', 'saude') || wantsFinances || isRetrospecto) && !isTrivial && !isCasualOnly;
   const needsAshes = (has('diario', 'emocao', 'meta', 'familia') && (hasRealEmotion || wantsDiary)) && !isTrivial;
   const needsGaps = (wantsCalendar || wantsFinances || has('projeto', 'meta', 'trabalho')) && !isTrivial;
