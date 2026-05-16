@@ -1,24 +1,25 @@
+// lib/tools/defs/reminders.ts
 export const remindersTools = [
   {
     type: 'function',
     function: {
-      name: 'create_reminder',
-      description: 'Cria um lembrete com agendamento via QStash. Suporta recorrência e inteligência de dias úteis.',
+      name: 'lembrete_criar',
+      description: 'Cria um lembrete com agendamento. Quando o usuário pedir para ser lembrado de algo, execute IMEDIATAMENTE sem pedir confirmação. Suporta recorrência e dias úteis.',
       parameters: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'O que deve ser lembrado.' },
-          type: { 
-            type: 'string', 
+          type: {
+            type: 'string',
             enum: ['temporary', 'recurring', 'location'],
-            description: 'Tipo do lembrete. Use "recurring" se houver frequência.' 
+            description: 'Tipo do lembrete. Use "recurring" se houver frequência.'
           },
-          scheduled_time: { type: 'string', description: 'Hora ou data específica (ex: "08:00" ou ISO).' },
+          scheduled_time: { type: 'string', description: 'Hora ou data específica (ex: "08:00" ou ISO completo).' },
           delay_minutes: { type: 'integer', description: 'Minutos a partir de agora (caso não haja hora fixa).' },
-          frequency: { 
-            type: 'string', 
+          frequency: {
+            type: 'string',
             enum: ['daily', 'weekly', 'monthly', 'weekdays'],
-            description: 'Frequência da repetição. "weekdays" pula finais de semana.' 
+            description: 'Frequência da repetição. "weekdays" pula finais de semana.'
           },
         },
         required: ['title'],
@@ -28,16 +29,16 @@ export const remindersTools = [
   {
     type: 'function',
     function: {
-      name: 'consultar_lembretes',
-      description: 'Lista todos os lembretes que ainda não foram disparados.',
+      name: 'lembrete_consultar',
+      description: 'Lista todos os lembretes pendentes. Use quando o usuário perguntar sobre lembretes ativos.',
       parameters: { type: 'object', properties: {} },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'cancelar_lembrete',
-      description: 'Cancela um lembrete pendente buscando pelo título.',
+      name: 'lembrete_cancelar',
+      description: 'Cancela um lembrete pendente pelo título. Execute IMEDIATAMENTE sem pedir confirmação.',
       parameters: {
         type: 'object',
         properties: {
@@ -46,5 +47,5 @@ export const remindersTools = [
         required: ['query'],
       },
     },
-  }
+  },
 ];
