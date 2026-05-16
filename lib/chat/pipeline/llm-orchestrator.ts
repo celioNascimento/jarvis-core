@@ -1,4 +1,5 @@
 // lib/chat/pipeline/llm-orchestrator.ts
+// V11.1.0 — Correção de Payload Tool Choice para Modelos Gemini/OpenRouter
 
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
@@ -7,25 +8,14 @@ import type { ChatPrompt } from './prompt-assembler';
 
 interface ToolCallResult { tc: any; result: string; }
 
-// ── Forçar tool_choice para intenções claras ──────────────────────────────────
-const FORCE_TOOL_PATTERNS: Array<{ pattern: RegExp; tool: string }> = [
-  { pattern: /me lembra|lembrete|daqui a \d+|me avisa/i,         tool: 'lembrete_criar' },
-  { pattern: /cancela.*(lembrete|aviso)/i,                         tool: 'lembrete_cancelar' },
-  { pattern: /agenda|compromisso|reunião|consulta.*(às|amanhã)/i, tool: 'agenda_salvar_evento' },
-  { pattern: /quais.*(lembrete|compromisso)|tenho.*hoje/i,         tool: 'lembrete_consultar' },
-];
-
-function resolveToolChoice(message: string, availableTools: any[]): any {
-  for (const { pattern, tool } of FORCE_TOOL_PATTERNS) {
-    if (pattern.test(message) && availableTools.some(t => t.function?.name === tool)) {
-      console.log(`[Orchestrator] Forçando tool_choice: ${tool}`);
-      return { type: 'function', function: { name: tool } };
-    }
-  }
+// ── Solução de Resiliência para Gemini ───────────────────────────────────────
+function resolveToolChoice(message: string, availableTools: any[]): 'auto' | 'none' {
+  // O uso de objetos { type: 'function' } quebra a tradução do OpenRouter para Gemini (Erro 400).
+  // Retornamos 'auto' e deixamos o rigor técnico do System Prompt guiar a chamada.
   return 'auto';
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers de Execução ───────────────────────────────────────────────────────
 async function executeToolCalls(
   toolCalls: any[],
   authUserId: string,
