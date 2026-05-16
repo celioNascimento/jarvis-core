@@ -119,26 +119,17 @@ export async function executeListarTopicos(p: any, authUserId: string, numericUs
   } catch (err: any) { return `Erro: ${err.message}`; }
 }
 
-export async function executeGerenciarEntry(p: any, authUserId: string, numericUserId: string): Promise<string> {
+export async function executeListarEntries(p: any, _authUserId: string, _numericUserId: string): Promise<string> {
   try {
-    const targetId = await getEffectiveUserId(authUserId, numericUserId);
-    const { acao, topic_id, entry_id, type, title, body, status, order_index, metadata } = p;
-
-    if (acao === 'criar') {
-      const { data, error } = await supabase.schema('jarvis').from('project_entries').insert({ topic_id, type: type || 'note', title, body, status: status || 'open', order_index: order_index || 0, created_by: Number(targetId), metadata: metadata || {} }).select('id').single();
-      if (error) throw error; return `Entry registrada (ID: ${data.id}).`;
-    }
-    if (acao === 'atualizar') {
-      const { error } = await supabase.schema('jarvis').from('project_entries').update({ type, title, body, status, order_index, metadata }).eq('id', entry_id);
-      if (error) throw error; return 'Entry atualizada.';
-    }
-    if (acao === 'remover') {
-      const { error } = await supabase.schema('jarvis').from('project_entries').delete().eq('id', entry_id);
-      if (error) throw error; return 'Entry removida.';
-    }
-    return 'Ação inválida.';
+    let query = supabase.schema('jarvis').from('project_entries').select('*').eq('topic_id', p.topic_id);
+    if (p.type) query = query.eq('type', p.type);
+    if (p.status) query = query.eq('status', p.status);
+    const { data, error } = await query.order('created_at', { ascending: false });
+    if (error) throw error;
+    return data?.map(e => `[${e.type.toUpperCase()}] ${e.title || 'Sem título'} (ID: ${e.id})`).join('\n') || 'Nenhuma entry.';
   } catch (err: any) { return `Erro: ${err.message}`; }
 }
+
 
 export async function executeListarEntries(p: any): Promise<string> {
   try {
