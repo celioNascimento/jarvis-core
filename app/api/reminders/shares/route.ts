@@ -1,26 +1,29 @@
 // app/api/reminders/shares/route.ts
-// Motor V1.2.0 — Alinhamento de Autenticação BigInt (Padrão Calendar Engine)
+// Motor V1.3.0 — Rigor de Escopo de Schema + Ampla Listagem de Vínculos
 
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
 
-// ── Helper de Extração de ID Numérico (Idêntico ao do Calendar Engine) ───────
+// ── Helper de Extração de ID Numérico (Alinhado com o Schema Jarvis) ─────────
 async function getUserIdFromReq(req: NextRequest): Promise<number | null> {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   if (!token) return null;
   const { data } = await supabase.auth.getUser(token);
   if (!data?.user) return null;
+  
   const { data: profile } = await supabase
+    .schema('jarvis') // 🔥 Garante o escopo correto na autenticação
     .from('users')
     .select('id')
     .eq('auth_user_id', data.user.id)
     .single();
+    
   return profile?.id || null;
 }
 
 // ── GET OPTIONS ──────────────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
-  const userId = await getUserIdFromReq(req); // Retorna o ID numérico (BigInt) correto
+  const userId = await getUserIdFromReq(req);
   if (!userId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
   try {
@@ -28,10 +31,11 @@ export async function GET(req: NextRequest) {
     const reminder_id = searchParams.get('reminder_id');
     if (!reminder_id) return NextResponse.json({ error: 'reminder_id ausente' }, { status: 400 });
 
-    // 1. Busca os relacionamentos ativos comparando Número com Número (Zero conflitos)
+    // 1. Busca ampla de relacionamentos ativos no schema correto
     const { data: relationships, error: relError } = await supabase
+      .schema('jarvis') // 🔥 Encadeamento estrito de schema
       .from('relationships')
-      .select('user_id_a, user_id_b, settings, contact_name')
+      .select('user_id_a, user_id_b, contact_name')
       .eq('status', 'active')
       .or(`user_id_a.eq.${userId},user_id_b.eq.${userId}`);
 
@@ -40,22 +44,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: true, options: [] });
     }
 
-    // Filtra parceiros com sincronização de lembretes ou agenda ativa
-    const activePartners = relationships.filter(rel => {
-      const settings = rel.settings || {};
-      return settings.reminders === true || settings.reminder === true || settings.agenda_enabled === true;
-    });
-
-    if (activePartners.length === 0) {
-      return NextResponse.json({ ok: true, options: [] });
-    }
-
-    const partnerIds = activePartners.map(rel => 
+    // Coleta os IDs de todos os parceiros ativos sem restrição de flags de settings
+    const partnerIds = relationships.map(rel => 
       rel.user_id_a === userId ? rel.user_id_b : rel.user_id_a
     );
 
-    // Busca os dados cadastrais dos parceiros pelos IDs numéricos obtidos
+    // Busca os metadados dos parceiros ativos
     const { data: partnerUsers, error: usersError } = await supabase
+      .schema('jarvis') // 🔥 Encadeamento estrito de schema
       .from('users')
       .select('id, auth_user_id, nickname')
       .in('id', partnerIds);
@@ -65,8 +61,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: true, options: [] });
     }
 
-    // 2. Coleta quais compartilhamentos já estão ativos para este lembrete específico
+    // 2. Coleta quais compartilhamentos já estão gravados para este lembrete
     const { data: shares, error: sharesError } = await supabase
+      .schema('jarvis') // 🔥 Encadeamento estrito de schema
       .from('reminder_shares')
       .select('shared_with_id')
       .eq('reminder_id', reminder_id)
@@ -77,12 +74,12 @@ export async function GET(req: NextRequest) {
 
     const activeIds = new Set(shares?.map(s => String(s.shared_with_id)));
 
-    // 3. Monta o payload mapeando de forma segura para o front-end
+    // 3. Monta as opções para renderização no App
     const options = partnerUsers.map(u => {
-      const relDoc = activePartners.find(rel => rel.user_id_a === u.id || rel.user_id_b === u.id);
+      const relDoc = relationships.find(rel => rel.user_id_a === u.id || rel.user_id_b === u.id);
       return {
-        user_id: u.auth_user_id,       // UUID string esperado pelo componente visual do App
-        bigint_id: u.id,               // ID numérico para queries internas do banco
+        user_id: u.auth_user_id,
+        bigint_id: u.id,
         contact_name: relDoc?.contact_name || u.nickname || 'Parceiro',
         is_active: activeIds.has(String(u.id)),
       };
@@ -97,7 +94,7 @@ export async function GET(req: NextRequest) {
 
 // ── POST MUTATION ─────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
-  const userId = await getUserIdFromReq(req); // Retorna BigInt
+  const userId = await getUserIdFromReq(req);
   if (!userId) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
   try {
@@ -110,8 +107,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Confirma posse comparando BigInt (banco) com BigInt (usuário logado)
+    // Confirma posse do lembrete no escopo do schema jarvis
     const { data: reminder, error: remError } = await supabase
+      .schema('jarvis') // 🔥 Encadeamento estrito de schema
       .from('reminders')
       .select('user_id')
       .eq('id', reminder_id)
@@ -121,8 +119,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Lembrete não encontrado ou permissão negada' }, { status: 404 });
     }
 
-    // Realiza a persistência do vínculo compartilhado
+    // Persiste ou atualiza o estado do compartilhamento
     const { error } = await supabase
+      .schema('jarvis') // 🔥 Encadeamento estrito de schema
       .from('reminder_shares')
       .upsert(
         { reminder_id, shared_with_id: Number(shared_with_id), active },
