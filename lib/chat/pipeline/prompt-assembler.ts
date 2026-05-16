@@ -37,7 +37,7 @@ const ALWAYS_ENABLED_TOOLS = new Set([
 
 function filterL3ByAffect(l3: string, recentHistoryText: string, message: string): string {
   const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
-  const hasFamilySignal  = FAMILY_DATE_SIGNALS.some(p => p.test(recentHistoryText + message));
+  const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentHistoryText + message));
   if (isHighAlertMonth || hasFamilySignal) return l3;
   return l3
     .replace(/##\s*(datas?|aniversário|famil[íi]a|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
@@ -55,12 +55,12 @@ export async function buildChatPrompt(
   // 1. Módulos ativos + modelo resolvido
   const { contextBlocks, activeTools, resolvedModel } = await loadActiveModules(
     {
-      userId:         String(user.id),
-      authUserId:     user.auth_user_id,
+      userId: String(user.id),
+      authUserId: user.auth_user_id,
       message,
       contexts,
       emotionalScore: emotional.score,
-      location:       normalizedLocation,
+      location: normalizedLocation,
       masterContext,
     },
     user.plan,
@@ -73,10 +73,10 @@ export async function buildChatPrompt(
 
   // 2. Contexto dinâmico
   const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
-    userId:         String(user.id),
-    authUserId:     user.auth_user_id,
+    userId: String(user.id),
+    authUserId: user.auth_user_id,
     message,
-    location:       normalizedLocation,
+    location: normalizedLocation,
     contexts,
     emotionalScore: emotional.score,
     masterContext,
@@ -106,7 +106,7 @@ export async function buildChatPrompt(
 
   // 5. Filtro de afeto no L3
   const historyText = recentHistory.map(h => h.content).join(' ');
-  const filteredL3  = filterL3ByAffect(memory.l3.content, historyText, message);
+  const filteredL3 = filterL3ByAffect(memory.l3.content, historyText, message);
 
   // 6. Urgentes e Insights
   const urgentes = (masterContext?.reminders || [])
@@ -121,7 +121,7 @@ export async function buildChatPrompt(
     geoBlock,
     gpsInstruction,
     alertaRadar,
-    
+
     "\n[⚠️ HIERARQUIA DE VERDADE E CONTEXTO]",
     "1. O 'AGORA' É SOBERANO: O que o usuário disse nas últimas mensagens deste chat anula qualquer informação do histórico de longo prazo (HD/L3).",
     "2. SEPARAÇÃO DE ENTIDADES: Se o usuário mencionou um nome nesta sessão (ex: Davi), mantenha o foco nele. Não confunda com nomes do HD (ex: Miguel) sem pedido explícito.",
@@ -135,37 +135,38 @@ export async function buildChatPrompt(
       : '',
     '---',
     composeSystemPrompt({
-      assistantName:    user.assistant_name,
-      authorName:       user.nickname,
-      isLikelyNoise:    message.length < 15,
+      assistantName: user.assistant_name,
+      authorName: user.nickname,
+      isLikelyNoise: message.length < 15,
       isSystemStressed: isStressed,
-      emotionalScore:   emotional.score,
+      emotionalScore: emotional.score,
       detectedContexts: contexts,
       contextBlocks,
       memoryBlocks: {
-        truncatedL3:     `[ARQUIVO BIOGRÁFICO - PODE ESTAR DESATUALIZADO]\n${filteredL3.slice(0, 3000)}`,
-        truncatedHd:     `[MEMÓRIAS DE LONGO PRAZO - CONSULTA SECUNDÁRIA]\n${memory.hd.block.slice(0, 4000)}`,
+        truncatedL3: `[ARQUIVO BIOGRÁFICO - PODE ESTAR DESATUALIZADO]\n${filteredL3.slice(0, 3000)}`,
+        truncatedHd: `[MEMÓRIAS DE LONGO PRAZO - CONSULTA SECUNDÁRIA]\n${memory.hd.block.slice(0, 4000)}`,
         truncatedEvents: memory.events.block.slice(0, 2000),
-        relationship:    memory.relationship.block.slice(0, 2000),
-        topics:          masterContext?.topics || memory.topics.relatedTopicsBlock,
+        relationship: memory.relationship.block.slice(0, 2000),
+        topics: masterContext?.topics || memory.topics.relatedTopicsBlock,
       },
       canonicalDateTimeBlock: dataHoraSP,
-      canonicalDateISO:       nowSP.toISOString().split('T')[0],
-      systemWarning:          '',
-      intent:                 'personal',
-      dynamicGuidelines:      (masterContext?.guidelines || [])
+      canonicalDateISO: nowSP.toISOString().split('T')[0],
+      systemWarning: '',
+      intent: 'personal',
+      dynamicGuidelines: (masterContext?.guidelines || [])
         .map((g: any) => `- ${g.content}`)
         .join('\n'),
     }),
     '\n[DIRETRIZES DE RIGOR TÉCNICO]',
     "1. ANTES DE RESPONDER: Valide o sujeito da frase no histórico recente.",
     "2. Em situações de urgência doméstica ou saúde, ignore distrações financeiras ou newsletters.",
-    "3. AGENDA - REGRA ABSOLUTA: Quando o usuário pedir para apagar/cancelar/remover um evento, execute agenda_deletar_evento IMEDIATAMENTE. Se precisar do título, chame agenda_consultar primeiro. JAMAIS peça confirmação — o pedido do usuário JÁ É a confirmação. Se o usuário responder 'sim' a qualquer pergunta sua, execute a ação pendente imediatamente sem perguntar de novo.",
-    "4. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
-    "5. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
-    "6. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto.",
-    "7. ANTI-LOOP: Se você já fez uma pergunta de confirmação e o usuário respondeu afirmativamente ('sim', 'pode', 'isso', 'faz aí', 'está sim'), EXECUTE A AÇÃO. Repetir a mesma pergunta é proibido.",
-    "8. O 'AGORA' É SOBERANO: Para responder sobre agenda, SEMPRE chame agenda_consultar. NUNCA responda sobre compromissos baseando-se apenas no histórico da conversa ou memória — esses dados podem estar desatualizados.",
+    "3. AGENDA - SALVAR: Ao receber pedido de agendamento com pessoa e horário identificáveis, chame agenda_salvar_evento IMEDIATAMENTE. O título é extraído da frase (ex: 'consulta com Dr. Adriano' → título: 'Consulta Dr. Adriano'). NUNCA peça contato, confirmação ou informações extras para criar um evento.",
+    "4. AGENDA - DELETAR: Quando o usuário pedir para apagar/cancelar/remover um evento, execute agenda_deletar_evento IMEDIATAMENTE. Se precisar do título, chame agenda_consultar primeiro. JAMAIS peça confirmação.",
+    "5. AGENDA - CONSULTAR: Para responder sobre compromissos, SEMPRE chame agenda_consultar. NUNCA responda baseando-se apenas no histórico ou memória.",
+    "6. ANTI-LOOP: Se você já fez uma pergunta de confirmação e o usuário respondeu afirmativamente ('sim', 'pode', 'isso', 'faz aí', 'está sim'), EXECUTE A AÇÃO. Repetir a mesma pergunta é proibido.",
+    "7. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
+    "8. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
+    "9. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto.",
   ]
     .filter(Boolean)
     .join('\n');
@@ -188,8 +189,8 @@ export async function buildChatPrompt(
 
   return {
     systemPrompt,
-    tools:                toolsHabilitadas,
-    model:                finalModel,
+    tools: toolsHabilitadas,
+    model: finalModel,
     conversationMessages,
   };
 }

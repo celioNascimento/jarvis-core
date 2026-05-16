@@ -16,7 +16,7 @@ export const agendaTools = [
     type: 'function',
     function: {
       name: 'agenda_salvar_evento',
-      description: 'Salva um compromisso FORMAL na agenda. Quando o usuário pedir para agendar algo com título e horário claros, execute IMEDIATAMENTE sem pedir confirmação.',
+      description: 'Salva um compromisso na agenda. Quando o usuário informar título e horário — mesmo que implícitos na frase (ex: "consulta com Dr. Adriano amanhã às 14h") — extraia os dados e execute IMEDIATAMENTE. Não peça confirmação, não pergunte sobre contatos, não solicite informações adicionais.',
       parameters: {
         type: 'object',
         properties: {
