@@ -1,5 +1,4 @@
 // lib/tools/extractors/reminders.extractor.ts
-// Extração passiva de intenções de lembrete no pipeline de chat
 
 import { callOpenRouter } from '@/lib/jarvis';
 import { coreCriarLembrete } from '@/lib/services/reminders.service';
@@ -27,9 +26,8 @@ export async function extractReminder(
   userId: string,
   authUserId: string,
   userMessage: string,
-  nowISO: string // injeta o "agora" do sistema para evitar drift de fuso
+  nowISO: string
 ): Promise<void> {
-  // Só extrai se houver sinal claro — evita falsos positivos
   if (!hasReminderIntent(userMessage)) return;
 
   const prompt = `
@@ -54,7 +52,7 @@ Regras:
 `.trim();
 
   try {
-    const raw = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4);
+    const raw    = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4); // ← corrigido
     const parsed = JSON.parse(CLEAN_JSON(raw));
 
     if (!parsed?.found || !parsed?.title) return;

@@ -18,6 +18,7 @@ import OpenAI from 'openai';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './prompt-assembler';
+import { extractReminder, hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -82,29 +83,25 @@ function persistInBackground(
   reply: string
 ): void {
   void (async () => {
-    // 1. Detecta repergunta ANTES de salvar a mensagem atual —
-    //    assim a comparação é sempre com a mensagem imediatamente anterior.
-    detectImplicitNegativeFeedback(ctx.message, ctx.user.id).catch(() => {});
+    detectImplicitNegativeFeedback(ctx.message, ctx.user.id).catch(() => { });
 
-    // 2. Persiste a mensagem atual no brain
     try {
       await supabase.from('brain').insert({
-        user_id:    ctx.user.id,
+        user_id: ctx.user.id,
         session_id: ctx.sessionId,
-        content:    ctx.message,
-        category:   ctx.message.length < 15 ? 'noise' : 'info',
+        content: ctx.message,
+        category: ctx.message.length < 15 ? 'noise' : 'info',
         metadata: {
-          role:     'user',
+          role: 'user',
           ai_reply: reply,
           contexts: intel.contexts,
-          model:    prompt.model,
+          model: prompt.model,
         },
       });
     } catch (e: any) {
       console.error('[ResponseFinalizer] Brain save error:', e.message);
     }
 
-    // 3. Extração e sumarização
     try {
       await extractAndSummarize(
         String(ctx.user.id),
@@ -115,9 +112,18 @@ function persistInBackground(
     } catch (e: any) {
       console.error('[ResponseFinalizer] Extractor error:', e.message);
     }
+
+    // Extração passiva de lembretes — só dispara se houver sinal na mensagem
+    if (hasReminderIntent(ctx.message)) {
+      extractReminder(
+        String(ctx.user.id),
+        ctx.user.auth_user_id,
+        ctx.message,
+        new Date().toISOString()
+      ).catch(e => console.error('[ResponseFinalizer] Reminder extractor error:', e.message));
+    }
   })();
 }
-
 // ─── Entrypoint público ───────────────────────────────────────────────────────
 
 export async function finalizeResponse(
@@ -127,7 +133,7 @@ export async function finalizeResponse(
   reply: string
 ): Promise<NextResponse> {
   // 1. Cache da resposta (para dedup de requisições duplicadas)
-  await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => {});
+  await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => { });
 
   // 2. TTS
   const audioBase64 = ctx.speak && ctx.voiceSettings
@@ -141,9 +147,9 @@ export async function finalizeResponse(
   return NextResponse.json({
     reply,
     audioBase64,
-    ok:           true,
-    sessionId:    ctx.sessionId,
+    ok: true,
+    sessionId: ctx.sessionId,
     assistantName: ctx.user.assistant_name || 'Lev',
-    performance:  `${Date.now() - ctx.startTime}ms`,
+    performance: `${Date.now() - ctx.startTime}ms`,
   });
 }
