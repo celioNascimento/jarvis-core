@@ -1,5 +1,5 @@
 // lib/modules/registry.ts
-// V12.3.0 (Type-Safe DB Query + Módulo de Clima)
+// V12.4.0 (Type-Safe DB Query + Módulo de Clima + Módulo de Esportes)
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -17,7 +17,8 @@ import { ModuloProjetos }    from './modules/projetos';
 import { ModuloRelacionamentos } from '../modules/modules/relacionamentos';
 import { ModuloReminders } from './modules/reminders';
 import { ModuloCompras }       from './modules/compras';
-import { ModuloClima }         from './modules/clima'; // ← NOVO MÓDULO AQUI
+import { ModuloClima }         from './modules/clima';
+import { ModuloEsportes }      from './modules/esportes'; // ← NOVO MÓDULO AQUI
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -35,7 +36,8 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloRelacionamentos,
   ModuloReminders,
   ModuloCompras,
-  ModuloClima, // ← REGISTRADO AQUI
+  ModuloClima,
+  ModuloEsportes, // ← REGISTRADO AQUI
 ];
 
 export async function loadActiveModules(
