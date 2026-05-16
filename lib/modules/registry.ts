@@ -1,5 +1,5 @@
 // lib/modules/registry.ts
-// V12.2.0 (Type-Safe DB Query para evitar Erro 400 no PostgREST)
+// V12.3.0 (Type-Safe DB Query + Módulo de Clima)
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -17,6 +17,7 @@ import { ModuloProjetos }    from './modules/projetos';
 import { ModuloRelacionamentos } from '../modules/modules/relacionamentos';
 import { ModuloReminders } from './modules/reminders';
 import { ModuloCompras }       from './modules/compras';
+import { ModuloClima }         from './modules/clima'; // ← NOVO MÓDULO AQUI
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -34,6 +35,7 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloRelacionamentos,
   ModuloReminders,
   ModuloCompras,
+  ModuloClima, // ← REGISTRADO AQUI
 ];
 
 export async function loadActiveModules(
