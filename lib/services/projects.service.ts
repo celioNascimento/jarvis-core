@@ -128,3 +128,55 @@ export async function coreDeletarProjeto(userId: number, projectId: string) {
   if (error) throw new Error(`Falha ao deletar projeto: ${error.message}`);
   return true;
 }
+// ─── 5. COMPARTILHAMENTO E MEMBROS (SSOT) ────────────────────────────────────
+
+// Lista todos os membros atuais de um projeto
+export async function coreListarMembrosProjeto(projectId: string) {
+  const { data, error } = await supabase
+    .schema('jarvis')
+    .from('project_members')
+    .select('user_id, role, status, users ( name, preferred_name, nickname, email )')
+    .eq('project_id', projectId);
+  
+  if (error) throw new Error(`Erro ao listar membros: ${error.message}`);
+  return data;
+}
+
+// Altera o status/papel de um membro no projeto
+export async function coreAtualizarMembroProjeto(
+  ownerId: number, 
+  projectId: string, 
+  targetUserId: number, 
+  active: boolean, 
+  role: string = 'editor'
+) {
+  // 1. Valida se quem está pedindo a ação é dono ou editor do projeto
+  await validarPermissaoProjeto(ownerId, projectId, true);
+
+  if (active) {
+    const { error } = await supabase
+      .schema('jarvis')
+      .from('project_members')
+      .upsert(
+        { 
+          project_id: projectId, 
+          user_id: targetUserId, 
+          invited_by: ownerId,
+          role: role, 
+          status: 'active' 
+        },
+        { onConflict: 'project_id,user_id' }
+      );
+    if (error) throw new Error(`Falha ao adicionar membro: ${error.message}`);
+  } else {
+    const { error } = await supabase
+      .schema('jarvis')
+      .from('project_members')
+      .delete()
+      .eq('project_id', projectId)
+      .eq('user_id', targetUserId);
+    if (error) throw new Error(`Falha ao remover membro: ${error.message}`);
+  }
+  return true;
+}
+
