@@ -1,26 +1,18 @@
 // app/api/routines/[id]/route.ts
-// DELETE: desativa (soft delete via is_active = false) uma rotina
-
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/jarvis'; // Importação central e segura
+import { supabase } from '@/lib/jarvis';
+import { coreUpdateRoutine, coreDeleteRoutine } from '@/lib/services/routines.service';
 
 async function getUserId(req: NextRequest): Promise<number | null> {
   const auth = req.headers.get('authorization') ?? '';
   const token = auth.replace('Bearer ', '');
   if (!token) return null;
-
   const { data: { user }, error } = await supabase.auth.getUser(token);
   if (error || !user) return null;
-
-  const { data } = await supabase
-    .from('users')
-    .select('id')
-    .eq('auth_user_id', user.id)
-    .single();
-
+  const { data } = await supabase.from('users').select('id').eq('auth_user_id', user.id).single();
   return data?.id ?? null;
 }
-// ── DELETE /api/routines/[id] ─────────────────────────────────────────────────
+
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -30,22 +22,14 @@ export async function DELETE(
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const { id } = await params;
-
-    const { error } = await supabase
-      .from('routines')
-      .update({ is_active: false })
-      .eq('id', id)
-      .eq('user_id', userId);
-
-    if (error) throw error;
+    await coreDeleteRoutine(userId, id);
     return NextResponse.json({ deleted: true });
   } catch (err: any) {
     console.error('[routines DELETE]', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
-// ── PATCH /api/routines/[id] ──────────────────────────────────────────────────
-// Para editar campos: anchor, action, period, goal_tag, sort_order, is_active
+
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -56,30 +40,12 @@ export async function PATCH(
 
     const { id } = await params;
     const body = await req.json();
-
-    const allowed = ['anchor', 'action', 'period', 'goal_tag', 'sort_order', 'is_active'];
-    const updates: Record<string, any> = {};
     
-    for (const key of allowed) {
-      if (key in body) updates[key] = body[key];  
-    }
-
-    if (!Object.keys(updates).length) {
-      return NextResponse.json({ error: 'Nenhum campo para atualizar' }, { status: 400 });
-    }
-
-    const { data, error } = await supabase
-      .from('routines') // O schema 'jarvis' já vem configurado do lib/jarvis
-      .update(updates)
-      .eq('id', id)
-      .eq('user_id', userId)
-      .select()
-      .single();
-
-    if (error) throw error;
-    return NextResponse.json({ routine: data });
+    const routine = await coreUpdateRoutine(userId, id, body);
+    return NextResponse.json({ routine });
   } catch (err: any) {
     console.error('[routines PATCH]', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    const status = err.message.includes('Nenhum campo') ? 400 : 500;
+    return NextResponse.json({ error: err.message }, { status });
   }
 }
