@@ -1,5 +1,5 @@
 // lib/services/reminders.service.ts
-// V1.2.0 — TDAH-first: foco em pendentes, histórico opcional
+// V1.3.0 — status alinhados com CHECK constraint do banco
 
 import { supabase } from '@/lib/jarvis';
 import { scheduleReminderOnQStash, cancelReminderOnQStash, frequencyToCron } from '@/lib/qstash';
@@ -24,8 +24,6 @@ export interface ReminderUpdatePayload {
 }
 
 // ─── 1. LISTAR (APP) ──────────────────────────────────────────────────────────
-// TDAH-first: por padrão mostra só pendentes futuros + fired das últimas 24h
-// Histórico completo disponível via incluirHistorico=true
 export async function coreListarLembretes(
   userId: number,
   incluirHistorico = false
@@ -39,7 +37,8 @@ export async function coreListarLembretes(
     const agoraISO = new Date().toISOString();
     const ontemISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     query = query.or(
-      `and(status.eq.pending,scheduled_time.gte.${agoraISO}),and(status.eq.fired,fired_at.gte.${ontemISO})`
+      // 'fired' não existe no schema — status correto é 'triggered'
+      `and(status.eq.pending,scheduled_time.gte.${agoraISO}),and(status.eq.triggered,fired_at.gte.${ontemISO})`
     );
   }
 
@@ -48,7 +47,6 @@ export async function coreListarLembretes(
 
   if (error) throw new Error(`Falha ao listar lembretes: ${error.message}`);
 
-  // Lembretes compartilhados (sempre só pendentes — não faz sentido histórico alheio)
   const { data: shares } = await supabase
     .from('reminder_shares')
     .select('reminder_id')
@@ -132,37 +130,34 @@ export async function coreCriarLembrete(
   const { data: reminder, error } = await supabase
     .from('reminders')
     .insert({
-      user_id: userId,
-      title: payload.title,
-      type: payload.type ?? (freq ? 'recurring' : 'temporary'),
-      frequency: freq ?? null,
+      user_id:          userId,
+      title:            payload.title,
+      type:             payload.type ?? (freq ? 'recurring' : 'temporary'),
+      frequency:        freq ?? null,
       scheduled_time,
       location_trigger: payload.location_trigger ?? null,
-      metadata: payload.metadata ?? null,
-      status: 'pending',
-      source: 'lev',
+      metadata:         payload.metadata ?? null,
+      status:           'pending',
+      source:           'lev',
     })
     .select('id')
     .single();
 
   if (error) throw new Error(`Falha no banco: ${error.message}`);
 
-  // Substitua o bloco do QStash em coreCriarLembrete por este:
-
   const cron = freq ? frequencyToCron(freq, scheduled_time) : null;
 
   let qstashId: string | null = null;
   try {
     qstashId = await scheduleReminderOnQStash({
-      reminderId: String(reminder.id),
-      userId: String(userId),
+      reminderId:    String(reminder.id),
+      userId:        String(userId),
       authUserId,
-      message: payload.title,
+      message:       payload.title,
       scheduledTime: scheduled_time,
       cron,
     });
   } catch (qstashError: any) {
-    // Lembrete persiste no banco mas notificação falhou — logar claramente
     console.error(`[QStash FALHA] Lembrete ${reminder.id} criado sem agendamento:`, qstashError.message);
   }
 
@@ -172,7 +167,6 @@ export async function coreCriarLembrete(
       .update({ qstash_message_id: qstashId })
       .eq('id', reminder.id);
   } else {
-    // Marcar que o agendamento QStash falhou para reprocessamento futuro
     console.warn(`[QStash] qstash_message_id nulo para reminder ${reminder.id} — notificação NÃO agendada.`);
   }
 
@@ -212,10 +206,10 @@ export async function coreAtualizarLembrete(
       : null;
 
     const qstashId = await scheduleReminderOnQStash({
-      reminderId: updated.id,
-      userId: String(userId),
+      reminderId:    updated.id,
+      userId:        String(userId),
       authUserId,
-      message: updated.title,
+      message:       updated.title,
       scheduledTime: updated.scheduled_time,
       cron,
     });

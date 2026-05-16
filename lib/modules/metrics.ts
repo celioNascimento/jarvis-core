@@ -12,8 +12,8 @@ export async function recordModuleMetrics(
       .insert({
         module_id: moduleId,
         user_id: userId,
-        execution_time_ms: payload.latencyMs,
-        tokens_used: payload.tokens,
+        latency_ms: payload.latencyMs,    
+        tokens_estimated: payload.tokens,        
         activated: payload.activated
       });
 
