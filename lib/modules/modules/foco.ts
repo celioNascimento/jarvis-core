@@ -1,5 +1,6 @@
-import { supabase } from '@/lib/jarvis';
+// lib/modules/modules/foco.ts
 import type { ModuleDefinition } from '../types';
+import { coreGetFocusSummary } from '@/lib/services/tdah.service';
 
 export const ModuloFoco: ModuleDefinition = {
   id: 'foco',
@@ -8,17 +9,28 @@ export const ModuloFoco: ModuleDefinition = {
   plan: 'free',
   trigger: {
     contexts: ['foco'],
-    keywords: /prioridade|urgente|eisenhower|quadrante|focar|tarefa|estou travado/i
+    keywords: /prioridade|urgente|eisenhower|quadrante|focar|tarefa|estou travado|pomodoro|despejo mental/i
   },
+  
   buildContextBlock: async (opts) => {
-    const { data: tasks } = await supabase.from('eisenhower_items').select('*').eq('user_id', opts.userId).eq('completed', false);
-    if (!tasks?.length) return '';
-
-    const qMap: any = { q1: '🔥 Crise/Urgente', q2: '📅 Planejamento', q3: '⚖️ Delegação', q4: '🗑️ Eliminar' };
-    const lines = tasks.map(t => `[${qMap[t.quadrant] || 'S/Q'}] ${t.text}`);
-    
-    return `[MÓDULO FOCO — MATRIZ EISENHOWER]\n${lines.join('\n')}`;
+    try {
+      // Usa a SSOT para resgatar o panorama completo (Matriz + Sessões + Brain Dumps)
+      const summary = await coreGetFocusSummary(Number(opts.userId));
+      return summary;
+    } catch (err) {
+      console.error('[ModuloFoco] Erro ao carregar contexto:', err);
+      return '[Erro ao carregar contexto de Foco e TDAH]';
+    }
   },
-  tools: ['gerenciar_eisenhower', 'iniciar_sessao_foco', 'quebrar_tarefa'],
+
+  // Nomes exatos conforme registrados no lib/tools/defs/tdah.ts
+  tools: [
+    'tdah_gerenciar_eisenhower', 
+    'tdah_quebrar_tarefa', 
+    'tdah_registrar_despejo_mental',
+    'tdah_registrar_sessao_foco',
+    'tdah_consultar_resumo'
+  ],
+  
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
