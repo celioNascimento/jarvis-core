@@ -1,5 +1,5 @@
 // lib/services/reminders.service.ts
-// V1.3.0 — status alinhados com CHECK constraint do banco
+// V1.4.0 — Autopopulate reminder_shares via Active Relationships
 
 import { supabase } from '@/lib/jarvis';
 import { scheduleReminderOnQStash, cancelReminderOnQStash, frequencyToCron } from '@/lib/qstash';
@@ -37,7 +37,6 @@ export async function coreListarLembretes(
     const agoraISO = new Date().toISOString();
     const ontemISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     query = query.or(
-      // 'fired' não existe no schema — status correto é 'triggered'
       `and(status.eq.pending,scheduled_time.gte.${agoraISO}),and(status.eq.triggered,fired_at.gte.${ontemISO})`
     );
   }
@@ -76,7 +75,7 @@ export async function coreListarLembretes(
   });
 }
 
-// ─── 2. CONSULTAR (CHAT — só pendentes futuros) ───────────────────────────────
+// ─── 2. CONSULTAR (CHAT) ──────────────────────────────────────────────────────
 export async function coreConsultarLembretes(userId: number): Promise<string> {
   const { data, error } = await supabase
     .from('reminders')
@@ -97,12 +96,11 @@ export async function coreConsultarLembretes(userId: number): Promise<string> {
   }).join('\n');
 }
 
-// ─── 3. CRIAR (CHAT & APP) ────────────────────────────────────────────────────
+// ─── 3. CRIAR WITH AUTO-SHARE (CHAT & APP) ────────────────────────────────────
 export async function coreCriarLembrete(
   userId: number,
   authUserId: string,
-  payload: ReminderPayload,
-  sharedWithUserIds: number[] = [] // 👥 Novo parâmetro para IDs compartilhados
+  payload: ReminderPayload
 ): Promise<{ id: string; title: string; scheduled_time: string }> {
   const agora = new Date();
   let scheduled_time: string;
@@ -128,6 +126,7 @@ export async function coreCriarLembrete(
 
   if (freq?.toLowerCase().includes('útil')) freq = 'weekdays';
 
+  // 1. Salva o Lembrete base
   const { data: reminder, error } = await supabase
     .from('reminders')
     .insert({
@@ -146,24 +145,50 @@ export async function coreCriarLembrete(
 
   if (error) throw new Error(`Falha no banco: ${error.message}`);
 
-  // 👥 PERSISTÊNCIA COMPARTILHADA: Alimenta a tabela de interseção se houver parceiros ativos
-  if (sharedWithUserIds.length > 0) {
-    const sharesPayload = sharedWithUserIds.map(partnerId => ({
-      reminder_id: reminder.id,
-      shared_with_id: partnerId,
-      active: true
-    }));
-    
-    const { error: shareError } = await supabase
-      .from('reminder_shares')
-      .insert(sharesPayload);
-      
-    if (shareError) console.error('[ReminderService] Erro ao criar reminder_shares:', shareError.message);
+  // 👥 2. CRUZAMENTO DE VÍNCULOS MULTIPLAYER AUTOMÁTICO
+  try {
+    const { data: relationships } = await supabase
+      .from('relationships')
+      .select('user_id_a, user_id_b, settings')
+      .eq('status', 'active')
+      .or(`user_id_a.eq.${authUserId},user_id_b.eq.${authUserId}`);
+
+    if (relationships && relationships.length > 0) {
+      for (const rel of relationships) {
+        const settings = rel.settings || {};
+        // Verifica se a chave de sincronização de lembretes está ativa no vínculo
+        if (settings.reminders === true || settings.reminder === true) {
+          const partnerAuthId = rel.user_id_a === authUserId ? rel.user_id_b : rel.user_id_a;
+
+          // Busca o ID numérico do parceiro para inserir em reminder_shares
+          const { data: partnerUser } = await supabase
+            .from('users')
+            .select('id')
+            .eq('auth_user_id', partnerAuthId)
+            .maybeSingle();
+
+          if (partnerUser) {
+            await supabase
+              .from('reminder_shares')
+              .insert({
+                reminder_id: reminder.id,
+                shared_with_id: partnerUser.id,
+                active: true
+              });
+            console.log(`[Multiplayer] Lembrete ${reminder.id} compartilhado automaticamente com ID: ${partnerUser.id}`);
+          }
+        }
+      }
+    }
+  } catch (shareErr: any) {
+    // Abafa erros de compartilhamento para não travar a criação principal do lembrete
+    console.error('[Multiplayer Share Error] Falha silenciosa:', shareErr.message);
   }
 
+  // 3. Agendamento no QStash
   const cron = freq ? frequencyToCron(freq, scheduled_time) : null;
-
   let qstashId: string | null = null;
+  
   try {
     qstashId = await scheduleReminderOnQStash({
       reminderId:    String(reminder.id),
@@ -174,7 +199,7 @@ export async function coreCriarLembrete(
       cron,
     });
   } catch (qstashError: any) {
-    console.error(`[QStash FALHA] Lembrete ${reminder.id} criado sem agendamento:`, qstashError.message);
+    console.error(`[QStash FALHA] Lembrete ${reminder.id} sem agendamento:`, qstashError.message);
   }
 
   if (qstashId) {
@@ -215,9 +240,7 @@ export async function coreAtualizarLembrete(
   if (updateError) throw new Error(`Falha ao atualizar: ${updateError.message}`);
 
   if (updated.status === 'pending' && updated.scheduled_time && updated.type !== 'location') {
-    const cron = updated.frequency
-      ? frequencyToCron(updated.frequency, updated.scheduled_time)
-      : null;
+    const cron = updated.frequency ? frequencyToCron(updated.frequency, updated.scheduled_time) : null;
 
     const qstashId = await scheduleReminderOnQStash({
       reminderId:    updated.id,
@@ -253,6 +276,7 @@ export async function coreCancelarLembrete(userId: number, query: string): Promi
   if (!reminder) return `Nenhum lembrete encontrado com "${query}".`;
 
   if (reminder.qstash_message_id) await cancelReminderOnQStash(reminder.qstash_message_id);
+  
   await supabase
     .from('reminders')
     .update({ status: 'cancelled' })
