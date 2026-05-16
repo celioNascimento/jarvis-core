@@ -1,7 +1,26 @@
 // lib/chat/pipeline/extractors/agenda.extractor.ts
 import { supabase, callOpenRouter } from '@/lib/jarvis';
-import { scheduleReminderOnQStash } from '@/lib/qstash';
+import { coreCriarEvento } from '@/lib/services/agenda.service';
+import { coreCriarLembrete } from '@/lib/services/reminders.service';
 import { mapCategoriaToCategory } from './helpers';
+
+export interface EventPayload {
+  titulo: string;
+  data_hora_inicio: string;
+  data_hora_fim?: string;
+  categoria?: string;
+  notas?: string;
+  minutos_lembrete?: number[];
+  sincronizar_google?: boolean;
+  forcar_conflito?: boolean;
+  source?: 'lev' | 'app';
+  sessionId?: string;
+  // Campos para eventos comemorativas
+  priority?: string;
+  decay_type?: string;
+  emotional_weight?: number;
+  is_recurring?: boolean;
+}
 
 export async function extractAgenda(userId: string, userMessage: string): Promise<void> {
   const anoAtual = new Date().getFullYear();
@@ -27,72 +46,52 @@ export async function extractAgenda(userId: string, userMessage: string): Promis
 
   try {
     const raw = await callOpenRouter(prompt as any, "google/gemini-2.0-flash-001", 0.1, 4);
-    let cleanJson = raw.replace(/```json|```/g, '').trim();
+    const cleanJson = raw.replace(/```json|```/g, '').trim();
     const data = JSON.parse(cleanJson);
     if (!data?.compromissos) return;
 
-    const { data: userData } = await supabase.from('users').select('auth_user_id').eq('id', userId).single();
+    const { data: userData } = await supabase
+      .from('users')
+      .select('auth_user_id')
+      .eq('id', userId)
+      .single();
+
     const authUserId = userData?.auth_user_id;
+    if (!authUserId) return;
 
     for (const comp of data.compromissos) {
       if (!comp.descricao || !comp.data_hora) continue;
 
-      const startAt = new Date(comp.data_hora);
-      if (isNaN(startAt.getTime())) continue;
+      try {
+        // Cria o evento via service — inclui checagem de conflito e dedup
+        await coreCriarEvento(Number(userId), {
+          titulo: comp.descricao,
+          data_hora_inicio: comp.data_hora,
+          categoria: mapCategoriaToCategory(comp.categoria),
+          minutos_lembrete: [comp.aviso_minutos ?? 30],
+          source: 'lev',
+        });
 
-      const endAt = new Date(startAt.getTime() + 3600000);
-
-      // Checa duplicata
-      const { data: duplicate } = await supabase.schema('jarvis').from('events')
-        .select('id').eq('user_id', Number(userId)).eq('title', comp.descricao).eq('start_at', startAt.toISOString()).maybeSingle();
-
-      if (duplicate) continue;
-
-      const { error: evError } = await supabase.schema('jarvis').from('events').insert({
-        user_id: Number(userId),
-        title: comp.descricao,
-        start_at: startAt.toISOString(),
-        end_at: endAt.toISOString(),
-        all_day: false,
-        category: mapCategoriaToCategory(comp.categoria),
-        source: 'lev',
-        reminder_minutes: [comp.aviso_minutos ?? 30],
-      });
-
-      if (evError) continue;
-
-      // Configura push antecipado com QStash
-      if (authUserId) {
+        // Cria o lembrete de push via service
+        const startAt = new Date(comp.data_hora);
         const delayMinutes = comp.aviso_minutos ?? 30;
-        const notifyTime = new Date(startAt.getTime() - delayMinutes * 60000).toISOString();
+        const notifyTime = new Date(startAt.getTime() - delayMinutes * 60000);
 
-        if (new Date(notifyTime).getTime() > Date.now()) {
-          const { data: reminder } = await supabase.schema('jarvis').from('reminders').insert({
-            user_id: Number(userId),
+        if (notifyTime.getTime() > Date.now()) {
+          await coreCriarLembrete(Number(userId), authUserId, {
             title: `📅 ${comp.descricao}`,
-            type: 'agenda',
-            scheduled_time: notifyTime,
-            status: 'pending',
-            metadata: { auth_user_id: authUserId },
-          }).select('id').single();
-
-          if (reminder) {
-            const qstashId = await scheduleReminderOnQStash({
-              reminderId: String(reminder.id),
-              userId,
-              authUserId,
-              message: `📅 [Agenda] ${comp.descricao}`,
-              scheduledTime: notifyTime,
-            });
-
-            if (qstashId) {
-              await supabase.schema('jarvis').from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
-            }
-          }
+            type: 'temporary',
+            scheduled_time: notifyTime.toISOString(),
+            metadata: { auth_user_id: authUserId, source: 'agenda_extractor' },
+          });
         }
+      } catch (e: any) {
+        // Conflito de agenda ou duplicata — ignora silenciosamente
+        if (e.message?.includes('CONFLITO_AGENDA')) continue;
+        console.error('[Extrator/Agenda] Erro ao processar compromisso:', e.message);
       }
     }
   } catch (e) {
-    console.error('[Extrator/Agenda] Erro ao processar:', e);
+    console.error('[Extrator/Agenda] Erro geral:', e);
   }
 }
