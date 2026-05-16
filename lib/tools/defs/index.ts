@@ -1,6 +1,6 @@
 import { memoryTools }   from './memory';
 import { agendaTools }   from './agenda';
-import { remindersTools} from './reminders'; // ← NOVO
+import { remindersTools} from './reminders';
 import { lugaresTools }  from './lugares';
 import { comprasTools }  from './compras';
 import { veiculosTools } from './veiculos';
@@ -9,6 +9,7 @@ import { financesTools } from './finances';
 import { projectsTools } from './projects';
 import { guidelinesTools } from './guidelines';
 import { relationshipsTools } from './relationships';
+import { routinesTools } from './routines'; // ← NOVO
 
 type ToolDef = {
   type: string;
@@ -31,8 +32,8 @@ export const tools: ToolDef[] = [
   ...projectsTools,
   ...guidelinesTools,
   ...relationshipsTools,
+  ...routinesTools, 
 ];
-
 
 export {
   memoryTools,
@@ -45,5 +46,6 @@ export {
   tdahTools,
   projectsTools,
   guidelinesTools,
-  relationshipsTools
+  relationshipsTools,
+  routinesTools 
 };
