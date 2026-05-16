@@ -1,32 +1,27 @@
+// app/api/tdah/focus_sessions/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
-import { getUserFromToken } from '@/lib/auth';
+import { coreCreateFocusSession } from '@/lib/services/tdah.service';
+
+async function getUserId(req: NextRequest): Promise<number | null> {
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  if (!token) return null;
+  const { data: { user } } = await supabase.auth.getUser(token);
+  if (!user) return null;
+  const { data } = await supabase.schema('jarvis').from('users').select('id').eq('auth_user_id', user.id).single();
+  return data?.id ?? null;
+}
 
 export async function POST(req: NextRequest) {
-  const authHeader = req.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  const userId = await getUserFromToken(token);
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  try {
+    const userId = await getUserId(req);
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const body = await req.json();
-  const { started_at, ended_at, task_original, steps_completed, steps_total, cancelled, reward_chosen, halt_triggered } = body;
-
-  const { data, error } = await supabase
-    .from('focus_sessions')
-    .insert({
-      user_id: userId,
-      started_at: started_at || new Date().toISOString(),
-      ended_at,
-      task_original,
-      steps_completed,
-      steps_total,
-      cancelled,
-      reward_chosen,
-      halt_triggered,
-    })
-    .select()
-    .single();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ success: true, session: data });
+    const payload = await req.json();
+    const session = await coreCreateFocusSession(userId, payload);
+    
+    return NextResponse.json({ success: true, session });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 }
