@@ -1,60 +1,72 @@
 // lib/modules/modules/rotinas.ts
-import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
+import { coreGetRoutines, coreGetCheckins } from '@/lib/services/routines.service';
 
 export const ModuloRotinas: ModuleDefinition = {
   id: 'rotinas',
   label: 'Gestão de Rotinas e Hábitos',
   preferredModel: 'flash',
-  plan: 'free', // Rotinas são essenciais para o suporte TDAH, plano free.
+  plan: 'free',
   trigger: {
-    // Ativa em contextos de rotina ou quando se fala de hábitos e horários
     contexts: ['rotina', 'foco'],
-    keywords: /rotina|hábito|costume|todo dia|sempre faço|manhã|tarde|noite|ancora|âncora/i,
-    // Sempre carrega se o usuário perguntar o que tem para fazer "hoje"
+    keywords: /rotina|hábito|costume|todo dia|sempre faço|manhã|tarde|noite|ancora|âncora|checkin/i,
     condition: (opts) => opts.message.toLowerCase().includes('hoje') || opts.message.toLowerCase().includes('agora')
   },
+  
   buildContextBlock: async (opts) => {
     try {
-      // Busca rotinas ativas do usuário
-      const { data: routines, error } = await supabase
-        .from('routines')
-        .select('anchor, action, period')
-        .eq('user_id', opts.userId)
-        .eq('is_active', true)
-        .order('sort_order', { ascending: true });
+      const targetId = Number(opts.userId);
+      const todayStr = new Date().toISOString().split('T')[0];
 
-      if (error) throw error;
+      // Busca rotinas e check-ins do dia via SSOT
+      const [routines, checkins] = await Promise.all([
+        coreGetRoutines(targetId),
+        coreGetCheckins(targetId, todayStr)
+      ]);
+
       if (!routines || routines.length === 0) return '';
 
-      // Organiza por período para o Jarvis entender a cronologia
-      const morning = routines.filter(r => r.period === 'morning');
-      const afternoon = routines.filter(r => r.period === 'afternoon');
-      const evening = routines.filter(r => r.period === 'evening');
-      const anytime = routines.filter(r => r.period === 'anytime');
+      const formatGroup = (title: string, period: string) => {
+        const list = routines.filter((r: any) => r.period === period);
+        if (!list.length) return '';
 
-      const formatGroup = (title: string, list: any[]) => 
-        list.length > 0 ? `* ${title}:\n${list.map(r => `  - [${r.anchor}] -> ${r.action}`).join('\n')}` : '';
+        const lines = list.map((r: any) => {
+          const checkin = checkins.find((c: any) => c.routine_id === r.id);
+          let statusIcon = '⏳ (Pendente)';
+          if (checkin?.status === 'done') statusIcon = '✅ (Feito)';
+          if (checkin?.status === 'skipped') statusIcon = '⏭️ (Pulado)';
+          
+          return `  - [${r.anchor}] -> ${r.action} ${statusIcon}`;
+        });
+
+        return `* ${title}:\n${lines.join('\n')}`;
+      };
 
       const blocks = [
-        formatGroup('MANHÃ', morning),
-        formatGroup('TARDE', afternoon),
-        formatGroup('NOITE', evening),
-        formatGroup('QUALQUER MOMENTO', anytime)
+        formatGroup('MANHÃ', 'morning'),
+        formatGroup('TARDE', 'afternoon'),
+        formatGroup('NOITE', 'evening'),
+        formatGroup('QUALQUER MOMENTO', 'anytime')
       ].filter(Boolean);
 
-      return `[MÓDULO DE ROTINAS ATIVO]
-Suas rotinas configuradas para hoje:
+      return `[MÓDULO DE ROTINAS ATIVO - STATUS DE HOJE]
+Suas rotinas e o status atual:
 ${blocks.join('\n\n')}
 
-INSTRUÇÃO: Use estas rotinas para dar previsibilidade ao usuário. Se ele parecer perdido, sugira seguir a próxima âncora disponível.`;
+INSTRUÇÃO: Use estas rotinas para dar previsibilidade. Se o usuário parecer perdido, sugira seguir a próxima âncora pendente (⏳). Elogie se ele já concluiu as tarefas (✅).`;
       
     } catch (e) {
       console.error('[ModuloRotinas] Erro ao carregar rotinas:', e);
       return '';
     }
   },
+
   // Ferramentas que este módulo habilita no cérebro do Jarvis
-  tools: ['criar_rotina'],
+  tools: [
+    'listar_rotinas', 
+    'gerenciar_rotina', 
+    'fazer_checkin_rotina'
+  ],
+  
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
