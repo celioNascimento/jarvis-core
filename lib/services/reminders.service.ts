@@ -36,8 +36,8 @@ export async function coreListarLembretes(
     .eq('user_id', userId);
 
   if (!incluirHistorico) {
-    const agoraISO  = new Date().toISOString();
-    const ontemISO  = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const agoraISO = new Date().toISOString();
+    const ontemISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     query = query.or(
       `and(status.eq.pending,scheduled_time.gte.${agoraISO}),and(status.eq.fired,fired_at.gte.${ontemISO})`
     );
@@ -132,36 +132,48 @@ export async function coreCriarLembrete(
   const { data: reminder, error } = await supabase
     .from('reminders')
     .insert({
-      user_id:          userId,
-      title:            payload.title,
-      type:             payload.type ?? (freq ? 'recurring' : 'temporary'),
-      frequency:        freq ?? null,
+      user_id: userId,
+      title: payload.title,
+      type: payload.type ?? (freq ? 'recurring' : 'temporary'),
+      frequency: freq ?? null,
       scheduled_time,
       location_trigger: payload.location_trigger ?? null,
-      metadata:         payload.metadata ?? null,
-      status:           'pending',
-      source:           'lev',
+      metadata: payload.metadata ?? null,
+      status: 'pending',
+      source: 'lev',
     })
     .select('id')
     .single();
 
   if (error) throw new Error(`Falha no banco: ${error.message}`);
 
+  // Substitua o bloco do QStash em coreCriarLembrete por este:
+
   const cron = freq ? frequencyToCron(freq, scheduled_time) : null;
-  const qstashId = await scheduleReminderOnQStash({
-    reminderId:    String(reminder.id),
-    userId:        String(userId),
-    authUserId,
-    message:       payload.title,
-    scheduledTime: scheduled_time,
-    cron,
-  });
+
+  let qstashId: string | null = null;
+  try {
+    qstashId = await scheduleReminderOnQStash({
+      reminderId: String(reminder.id),
+      userId: String(userId),
+      authUserId,
+      message: payload.title,
+      scheduledTime: scheduled_time,
+      cron,
+    });
+  } catch (qstashError: any) {
+    // Lembrete persiste no banco mas notificação falhou — logar claramente
+    console.error(`[QStash FALHA] Lembrete ${reminder.id} criado sem agendamento:`, qstashError.message);
+  }
 
   if (qstashId) {
     await supabase
       .from('reminders')
       .update({ qstash_message_id: qstashId })
       .eq('id', reminder.id);
+  } else {
+    // Marcar que o agendamento QStash falhou para reprocessamento futuro
+    console.warn(`[QStash] qstash_message_id nulo para reminder ${reminder.id} — notificação NÃO agendada.`);
   }
 
   return { id: reminder.id, title: payload.title, scheduled_time };
@@ -200,10 +212,10 @@ export async function coreAtualizarLembrete(
       : null;
 
     const qstashId = await scheduleReminderOnQStash({
-      reminderId:    updated.id,
-      userId:        String(userId),
+      reminderId: updated.id,
+      userId: String(userId),
       authUserId,
-      message:       updated.title,
+      message: updated.title,
       scheduledTime: updated.scheduled_time,
       cron,
     });
