@@ -169,6 +169,7 @@ export async function buildChatPrompt(
     "9. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto.",
     "10. LEMBRETES - CRIAR: Ao receber pedido de lembrete com título e horário identificáveis, chame lembrete_criar IMEDIATAMENTE. NUNCA peça confirmação.",
     "11. LEMBRETES - CANCELAR: Para cancelar, chame lembrete_cancelar diretamente. Se precisar do título, chame lembrete_consultar primeiro.",
+    "12. LEMBRETES - CONSULTAR: Para responder sobre lembretes ativos, SEMPRE chame lembrete_consultar. NUNCA responda que não tem acesso sem ter executado a tool.",
   ]
     .filter(Boolean)
     .join('\n');
