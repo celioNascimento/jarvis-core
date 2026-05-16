@@ -1,5 +1,5 @@
 // lib/chat/tools-executor.ts
-// Dispatcher V10.5.0 — Clima Integrado ao Open-Meteo e Localização
+// Dispatcher V10.6.0 — Integração do Módulo de Esportes (API-Sports)
 
 import { supabase } from '@/lib/jarvis';
 import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
@@ -17,7 +17,8 @@ import { executeGerenciarEisenhower, executeQuebrarTarefa, executeRegistrarDespe
 import { executeRegistrarTransacao, executeConsultarFinancas, executeCriarOrcamento, executeListarOrcamentos } from '@/lib/finances/executor';
 import { executeGerenciarProjeto, executeListarProjetos, executeGerenciarTopico, executeListarTopicos, executeGerenciarEntry, executeListarEntries, executeGerenciarMembrosProjeto } from '@/lib/tools/executors/projects';
 import { executeListarRotinas, executeGerenciarRotina, executeFazerCheckinRotina } from '@/lib/tools/executors/routines';
-import { executeConsultarClimaAtual } from '@/lib/tools/executors/clima'; // ← IMPORT DO CLIMA AQUI
+import { executeConsultarClimaAtual } from '@/lib/tools/executors/clima';
+import { executeConsultarPlacarAoVivo, executeConsultarTabela } from '@/lib/tools/executors/esportes'; // ← NOVO IMPORT AQUI
 import { searchWeb, getWeatherForecast } from '@/lib/google';
 import { logToolExecution } from '@/lib/tools/executors/learning';
 import { executeGerenciarGuideline } from '@/lib/tools/executors/guidelines';
@@ -108,9 +109,13 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   'projeto_listar_entries':    (p, a, n) => executeListarEntries(p, a, n),
   'projeto_gerenciar_membros': (p, a, n) => executeGerenciarMembrosProjeto(p, a, n),
 
+  // ── Esportes (Futebol)
+  'esportes_consultar_placar_ao_vivo': (p) => executeConsultarPlacarAoVivo(p), // ← NOVO
+  'esportes_consultar_tabela':         (p) => executeConsultarTabela(p),        // ← NOVO
+
   // ── Integrações Externas e Clima
   'web_pesquisar':              (p) => searchWeb(p.query),
-  'clima_consultar_atual':      (p, a, n) => executeConsultarClimaAtual(p, a, n), // ← REGISTRO DO CLIMA AQUI (Substituiu a chamada antiga do google)
+  'clima_consultar_atual':      (p, a, n) => executeConsultarClimaAtual(p, a, n),
   'contato_alternar_permissao': (p, a, n) => executeAlternarPermissao(p, a, n),
 };
 
