@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// V11.1.0 — Proteção de Core Tools Permanente contra desidratação de contexto
+// V11.2.0 — Proteção Permanente de Core Tools contra desidratação (Rotinas & Clima inclusos)
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
@@ -24,22 +24,33 @@ const FAMILY_DATE_SIGNALS = [
 
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
 
-// ✅ CORE TOOLS FIXO: Impede que as ferramentas sumam em respostas curtas (ex: "sim")
+// ✅ CORE TOOLS BLINDADO: Impede a perda das ferramentas mesmo em respostas curtas (ex: "sim")
 const ALWAYS_ENABLED_TOOLS = new Set([
-  'gerenciar_projeto',
-  'listar_projetos',
-  'gerenciar_topico',
-  'listar_topicos',
-  'gerenciar_entry',
-  'listar_entries',
-  'gerenciar_membros_projeto',
+  // Projetos (Nomes atualizados com a SSOT)
+  'projeto_gerenciar',
+  'projeto_listar',
+  'projeto_gerenciar_topico',
+  'projeto_listar_topicos',
+  'projeto_gerenciar_entry',
+  'projeto_listar_entries',
+  'projeto_gerenciar_membros',
+  
+  // Agenda & Lembretes
   'agenda_consultar',
   'agenda_salvar_evento',
   'agenda_deletar_evento',
   'lembrete_criar',
   'lembrete_consultar',
   'lembrete_cancelar',
-  'contato_alternar_permissao'
+  'contato_alternar_permissao',
+
+  // Rotinas (Adicionados para proteção do novo módulo)
+  'listar_rotinas',
+  'gerenciar_rotina',
+  'fazer_checkin_rotina',
+
+  // Clima
+  'clima_consultar_atual'
 ]);
 
 function filterL3ByAffect(l3: string, recentHistoryText: string, message: string): string {
@@ -164,11 +175,13 @@ export async function buildChatPrompt(
     "5. AGENDA - CONSULTAR: Para responder sobre compromissos, SEMPRE chame agenda_consultar. NUNCA responda baseando-se apenas no histórico ou memória.",
     "6. ANTI-LOOP: Se você já fez uma pergunta de confirmação e o usuário respondeu afirmativamente ('sim', 'pode', 'isso'), EXECUTE A AÇÃO. Repetir a mesma pergunta é proibido.",
     "7. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
-    "8. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
-    "9. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto.",
+    "8. Gerencie projetos com projeto_gerenciar/projeto_listar/projeto_gerenciar_topico/projeto_gerenciar_entry.",
+    "9. Para compartilhar projetos, SEMPRE use projeto_gerenciar_membros.",
     "10. LEMBRETES - CRIAR: Ao receber pedido de lembrete com título e horário identificáveis, chame lembrete_criar IMEDIATAMENTE. NUNCA peça confirmação.",
     "11. LEMBRETES - CANCELAR: Para cancelar, chame lembrete_cancelar diretamente. Se precisar do título, chame lembrete_consultar primeiro.",
     "12. LEMBRETES - CONSULTAR: Para responder sobre lembretes ativos, SEMPRE chame lembrete_consultar.",
+    "13. ROTINAS & HÁBITOS: Use listar_rotinas para ver o progresso, gerenciar_rotina para alterar e fazer_checkin_rotina para computar os hábitos do dia.",
+    "14. CLIMA: Sempre que o usuário perguntar sobre o tempo ou demonstrar dúvida sobre sair de casa, consulte o clima atual com clima_consultar_atual."
   ]
     .filter(Boolean)
     .join('\n');
