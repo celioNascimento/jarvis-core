@@ -167,6 +167,8 @@ export async function buildChatPrompt(
     "7. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
     "8. Gerencie projetos com gerenciar_projeto/listar_projetos/gerenciar_topico/gerenciar_entry.",
     "9. Para compartilhar projetos, SEMPRE use gerenciar_membros_projeto.",
+    "10. LEMBRETES - CRIAR: Ao receber pedido de lembrete com título e horário identificáveis, chame lembrete_criar IMEDIATAMENTE. NUNCA peça confirmação.",
+    "11. LEMBRETES - CANCELAR: Para cancelar, chame lembrete_cancelar diretamente. Se precisar do título, chame lembrete_consultar primeiro.",
   ]
     .filter(Boolean)
     .join('\n');
