@@ -9,7 +9,7 @@ export const ModuloReminders: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
-    always: false,
+    always: true,
     contexts: ['lembrete', 'notificacao'],
     keywords: /lembrete|me lembra|avisar|daqui a pouco|notificar/i
   },

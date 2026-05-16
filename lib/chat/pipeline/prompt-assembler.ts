@@ -190,6 +190,9 @@ export async function buildChatPrompt(
     { role: 'user', content: message },
   ];
 
+  console.log('[PromptAssembler] allActiveTools:', [...allActiveTools]);
+  console.log('[PromptAssembler] toolsHabilitadas:', toolsHabilitadas);
+
   return {
     systemPrompt,
     tools: toolsHabilitadas,
