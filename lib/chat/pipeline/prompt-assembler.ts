@@ -23,7 +23,7 @@ const FAMILY_DATE_SIGNALS = [
   /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
 ];
 
-const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
+const DEFAULT_MODEL = 'google/gemini-2.0-flash';
 
 const ALWAYS_ENABLED_TOOLS = new Set([
   'gerenciar_projeto',
