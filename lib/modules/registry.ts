@@ -15,6 +15,8 @@ import { ModuloAgenda }      from './modules/agenda';
 import { ModuloLocalizacao } from './modules/localizacao';
 import { ModuloProjetos }    from './modules/projetos';
 import { ModuloRelacionamentos } from '../modules/modules/relacionamentos';
+import { ModuloReminders } from './modules/reminders';
+import { ModuloCompras }       from './modules/compras';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -29,7 +31,9 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloAgenda,
   ModuloLocalizacao,
   ModuloProjetos,
-  ModuloRelacionamentos
+  ModuloRelacionamentos,
+  ModuloReminders,
+  ModuloCompras,
 ];
 
 export async function loadActiveModules(
