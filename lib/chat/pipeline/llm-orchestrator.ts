@@ -10,10 +10,15 @@ interface ToolCallResult { tc: any; result: string; }
 
 // ── Padrões Estritos de Intenção Ativa ────────────────────────────────────────
 const IMPERATIVE_INTENT_PATTERNS = [
-  /me lembra|lembrete|daqui a \d+|me avisa|notifica/i,
+  // Exige ação: "me lembra", "crie um lembrete", "me avisa", "daqui a x minutos"
+  /(?:me\s+)?lembr[ae]|crie\s+(?:um\s+)?lembrete|me\s+avisa|notifica|daqui\s+a\s+\d+/i,
+  // Exige ação de cancelamento
   /cancela.*(lembrete|aviso|evento|compromisso)/i,
-  /agenda|compromisso|reunião|consulta|marcar/i,
-  /quais.*(lembrete|compromisso)|tenho.*hoje|listar lembretes/i,
+  // Exige ação de agenda: "agende", "marque", "insira na agenda"
+  /agend[ae]|marqu?e|insira.*agenda|consulta\s+amanhã|reunião\s+às/i,
+  // Consulta de pendências reais (não perguntas genéricas sobre o sistema)
+  /(?:quais|listar)\s+(?:são\s+os\s+)?(?:lembretes|compromissos|tarefas)\s+(?:ativos|pendentes|de\s+hoje)/i,
+  // Exige ação de remoção
   /apaga.*evento|deleta.*evento|remove.*evento/i
 ];
 
