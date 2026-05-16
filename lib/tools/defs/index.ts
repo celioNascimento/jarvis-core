@@ -9,7 +9,9 @@ import { financesTools } from './finances';
 import { projectsTools } from './projects';
 import { guidelinesTools } from './guidelines';
 import { relationshipsTools } from './relationships';
-import { routinesTools } from './routines'; // ← NOVO
+import { routinesTools } from './routines'; 
+import { climaTools } from './clima';
+
 
 type ToolDef = {
   type: string;
@@ -33,6 +35,7 @@ export const tools: ToolDef[] = [
   ...guidelinesTools,
   ...relationshipsTools,
   ...routinesTools, 
+  ...climaTools,
 ];
 
 export {
@@ -47,5 +50,6 @@ export {
   projectsTools,
   guidelinesTools,
   relationshipsTools,
-  routinesTools 
+  routinesTools,
+  climaTools
 };
