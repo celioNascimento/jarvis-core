@@ -45,8 +45,8 @@ export async function executeAdicionarItemLista(
     await coreCriarCompra(targetId, {
       item: p.item,
       category: p.category,
-      project_id: resolvedProjectId,
-      place_id: pid
+      project_id: resolvedProjectId || undefined, // 🔥 Força undefined no lugar de null
+      place_id: pid || undefined                  // 🔥 Força undefined no lugar de null
     });
 
     return `"${p.item}" adicionado à lista com sucesso.`;
