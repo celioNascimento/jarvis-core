@@ -1,7 +1,7 @@
 // lib/modules/modules/projetos.ts
 import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
-import { getEffectiveUserId } from '../relationships/identity';
+import { coreListarProjetos } from '@/lib/services/projects.service';
 
 export const ModuloProjetos: ModuleDefinition = {
   id: 'projetos_lev',
@@ -16,34 +16,20 @@ export const ModuloProjetos: ModuleDefinition = {
 
   buildContextBlock: async (opts) => {
     try {
-      // 1. Resolve o ID real para ler os projetos vinculados ao perfil do App
-      const effectiveId = await getEffectiveUserId(opts.userId, opts.userId);
+      // Usa a SSOT para buscar todos os projetos que o usuário pode ver
+      const projects = await coreListarProjetos(Number(opts.userId));
+      
+      // Filtra apenas projetos ativos/em pausa
+      const activeProjects = projects.filter((p: any) => 
+        ['em_desenvolvimento', 'em_pausa'].includes(p.status)
+      ).slice(0, 10);
 
-      // Busca projetos onde o usuário é membro (ou dono)
-      const { data: memberships, error: mErr } = await supabase
-        .from('project_members')
-        .select('project_id, role')
-        .eq('user_id', Number(effectiveId))
-        .eq('status', 'active');
-
-      if (mErr || !memberships?.length) return '';
-
-      const ids = memberships.map(m => m.project_id);
-      const roleMap = Object.fromEntries(memberships.map(m => [m.project_id, m.role]));
-
-      const { data: projects, error: pErr } = await supabase
-        .from('projects')
-        .select('id, tag, name, description, status, updated_at')
-        .in('id', ids)
-        .in('status', ['em_desenvolvimento', 'em_pausa'])
-        .order('updated_at', { ascending: false })
-        .limit(10);
-
-      if (pErr || !projects?.length) return '';
+      if (!activeProjects.length) return '';
 
       const topicBlocks = await Promise.all(
-        projects.map(async proj => {
+        activeProjects.map(async (proj: any) => {
           const { data: topics } = await supabase
+            .schema('jarvis')
             .from('project_topics')
             .select('id, tag, name')
             .eq('project_id', proj.id)
@@ -51,8 +37,7 @@ export const ModuloProjetos: ModuleDefinition = {
             .order('order_index', { ascending: true })
             .limit(8);
 
-          const role = roleMap[proj.id];
-          const roleLabel = role !== 'owner' ? ` [Papel: ${role}]` : '';
+          const roleLabel = proj.my_role !== 'owner' ? ` [Papel: ${proj.my_role}]` : '';
           const header = `• ${proj.name ?? proj.tag} (${proj.tag})${roleLabel} [Status: ${proj.status}] — id: ${proj.id}`;
           const topicList = topics?.length
             ? '\n  Tópicos Raiz: ' + topics.map(t => `${t.name ?? t.tag}`).join(', ')
