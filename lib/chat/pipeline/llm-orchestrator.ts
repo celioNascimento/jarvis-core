@@ -1,5 +1,5 @@
 // lib/chat/pipeline/llm-orchestrator.ts
-// V11.2.0 — Temperatura Determinística (0.1) para Casamento Estrito de Tools
+// V11.3.0 — Tool Choice "required" de Alta Resiliência para Modelos Gemini
 
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
@@ -8,8 +8,25 @@ import type { ChatPrompt } from './prompt-assembler';
 
 interface ToolCallResult { tc: any; result: string; }
 
-function resolveToolChoice(message: string, availableTools: any[]): 'auto' | 'none' {
-  // Mantido em auto para evitar erro 400 de tradução de protocolo no OpenRouter com Gemini
+// ── Padrões Estritos de Intenção Ativa ────────────────────────────────────────
+const IMPERATIVE_INTENT_PATTERNS = [
+  /me lembra|lembrete|daqui a \d+|me avisa|notifica/i,
+  /cancela.*(lembrete|aviso|evento|compromisso)/i,
+  /agenda|compromisso|reunião|consulta|marcar/i,
+  /quais.*(lembrete|compromisso)|tenho.*hoje|listar lembretes/i,
+  /apaga.*evento|deleta.*evento|remove.*evento/i
+];
+
+/**
+ * Determina se a IA pode escolher conversar ('auto') ou se deve ser
+ * terminantemente obrigada a disparar uma ferramenta ('required').
+ */
+function resolveToolChoice(message: string): 'auto' | 'required' {
+  const isImperative = IMPERATIVE_INTENT_PATTERNS.some(pattern => pattern.test(message));
+  if (isImperative) {
+    console.log(`[Orchestrator] 🎯 Intenção estrita detectada. Forçando tool_choice: "required"`);
+    return 'required';
+  }
   return 'auto';
 }
 
@@ -54,14 +71,16 @@ export async function runLLMOrchestrator(ctx: ChatRequestContext, prompt: ChatPr
   const { user, requestSignature, sessionId, message } = ctx;
   const { conversationMessages, tools, model: requestedModel } = prompt;
 
-  const toolChoice = resolveToolChoice(message, tools);
+  // Resolve dinamicamente se bloqueia a conversação comum
+  const toolChoice = resolveToolChoice(message);
 
-  // ✅ CORREÇÃO: Reduzido de 0.7 para 0.1 para forçar o acionamento estrito da ferramenta
   const firstResponse = await callOpenRouterWithPriority(
     1, 'never', requestSignature, conversationMessages, tools, requestedModel, 0.1,
     25000, undefined, toolChoice
   );
 
+  // Se o modo era 'required' e por algum motivo bizarro não veio toolCalls, 
+  // significa que a infraestrutura barrou ou o cinto de ferramentas veio vazio.
   if (!firstResponse.toolCalls?.length) {
     return appendResilienceNotice(
       firstResponse.content || 'Entendido.',
@@ -80,7 +99,7 @@ export async function runLLMOrchestrator(ctx: ChatRequestContext, prompt: ChatPr
 
   const toolMessages = buildToolCallMessages(firstResponse.content, firstResponse.toolCalls, toolResults);
 
-  // Mantido em 0.7 na síntese para que a resposta final mantenha a fluidez humana do Jarvis
+  // Segunda fase (síntese) roda com temperatura humana (0.7) para gerar a resposta amigável
   const secondResponse = await callOpenRouterWithPriority(
     1, 'never', `${requestSignature}_synth`,
     [...conversationMessages, ...toolMessages], [], requestedModel, 0.7
