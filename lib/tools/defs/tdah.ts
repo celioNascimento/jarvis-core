@@ -1,81 +1,104 @@
-// Definições de ferramentas: Foco, TDAH, Diário e Metas
+// lib/tools/defs/tdah.ts
+// Definições de ferramentas: Foco e TDAH
 
 export const tdahTools = [
   {
     type: 'function',
     function: {
-      name: 'gerenciar_eisenhower',
-      description: 'Adiciona ou completa itens na Matriz de Eisenhower.',
+      name: 'tdah_gerenciar_eisenhower',
+      description: 'Cria, lista, atualiza ou remove tarefas na Matriz de Eisenhower.',
       parameters: {
         type: 'object',
         properties: {
-          acao: { type: 'string', enum: ['adicionar', 'completar', 'mover'] },
-          texto: { type: 'string' },
-          quadrante: { type: 'string', enum: ['q1', 'q2', 'q3', 'q4'] },
+          acao: {
+            type: 'string',
+            enum: ['listar', 'criar', 'atualizar', 'remover'],
+          },
+          item_id: {
+            type: 'string',
+            description: 'UUID do item. Obrigatório para atualizar e remover.',
+          },
+          text: {
+            type: 'string',
+            description: 'A tarefa em si.',
+          },
+          quadrant: {
+            type: 'string',
+            enum: ['q1', 'q2', 'q3', 'q4'],
+            description: 'Q1: Urgente/Importante, Q2: Não Urg/Imp, Q3: Urg/Não Imp, Q4: Não Urg/Não Imp.',
+          },
+          completed: {
+            type: 'boolean',
+            description: 'Status da tarefa.',
+          },
         },
-        required: ['acao', 'texto'],
+        required: ['acao'],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'criar_rotina',
-      description: 'Cria uma nova rotina (gatilho + ação). Vital para TDAH.',
+      name: 'tdah_quebrar_tarefa',
+      description: 'Salva uma quebra de tarefa no banco de dados para auxiliar na redução de atrito (TDAH).',
       parameters: {
         type: 'object',
         properties: {
-          anchor: { type: 'string', description: 'Gatilho (ex: Ao acordar)' },
-          action: { type: 'string', description: 'Ação (ex: Beber água)' },
-          period: { type: 'string', enum: ['morning', 'afternoon', 'evening', 'anytime'] },
+          original_task: { type: 'string' },
+          spice_level: { type: 'integer', description: 'Nível de "tempero/dificuldade" percebido (1 a 5).' },
+          steps: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Os passos menores da tarefa.',
+          },
+          used_in_focus: { type: 'boolean' },
         },
-        required: ['anchor', 'action', 'period'],
+        required: ['original_task', 'steps'],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'quebrar_tarefa',
-      description: 'Decompõe tarefa complexa em micro-passos.',
+      name: 'tdah_registrar_despejo_mental',
+      description: 'Salva um pensamento, preocupação ou ideia solta como "Brain Dump" para limpar a mente do usuário.',
       parameters: {
         type: 'object',
         properties: {
-          tarefa_principal: { type: 'string' },
-          estado_cognitivo: { type: 'string', enum: ['sobrecarregado', 'sem_energia', 'neutro'] },
+          text: { type: 'string', description: 'O texto do despejo mental.' },
+          category: { type: 'string', description: 'Ex: "trabalho", "pessoal", "ideia", "ansiedade".' },
         },
-        required: ['tarefa_principal', 'estado_cognitivo'],
+        required: ['text'],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'registrar_no_diario',
-      description: 'Adiciona uma entrada no diário pessoal.',
+      name: 'tdah_registrar_sessao_foco',
+      description: 'Salva os resultados de uma sessão de foco ou Pomodoro recém finalizada.',
       parameters: {
         type: 'object',
         properties: {
-          texto: { type: 'string' },
-          categoria: { type: 'string', enum: ['reflexao', 'acontecimento', 'gratidao', 'qualquer'] },
+          task_original: { type: 'string', description: 'A tarefa que o usuário tentou focar.' },
+          steps_completed: { type: 'integer', description: 'Quantos passos concluiu.' },
+          steps_total: { type: 'integer', description: 'Total de passos planejados.' },
+          cancelled: { type: 'boolean', description: 'Verdadeiro se a sessão foi interrompida antes do fim.' },
+          reward_chosen: { type: 'string', description: 'A recompensa escolhida.' },
+          halt_triggered: { type: 'boolean', description: 'Verdadeiro se o usuário acionou protocolo HALT.' },
         },
-        required: ['texto'],
+        required: ['task_original'],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'atualizar_meta',
-      description: 'Atualiza o progresso de uma meta existente.',
+      name: 'tdah_consultar_resumo',
+      description: 'Consulta o resumo executivo dos últimos 7 dias de foco, tarefas pendentes na matriz e despejos mentais.',
       parameters: {
         type: 'object',
-        properties: {
-          titulo_parcial: { type: 'string' },
-          progresso: { type: 'integer', minimum: 0, maximum: 100 },
-          etapa_concluida: { type: 'string' },
-        },
-        required: ['titulo_parcial', 'progresso'],
+        properties: {},
       },
     },
   },
