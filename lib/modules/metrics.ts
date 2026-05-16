@@ -30,7 +30,7 @@ export async function getModuleMetricsSummary(userId: string) {
   const { data } = await supabase
     .schema('jarvis')
     .from('module_metrics')
-    .select('module_id, latency_ms, tokens_estimated, activated, recorded_at')
+    .select('module_id, execution_time_ms, tokens_used, activated, recorded_at') // ← corrigido
     .eq('user_id', userId)
     .gte('recorded_at', new Date(Date.now() - 7 * 86400000).toISOString())
     .order('recorded_at', { ascending: false });
@@ -43,8 +43,8 @@ export async function getModuleMetricsSummary(userId: string) {
       grouped[row.module_id] = { count: 0, totalLatency: 0, totalTokens: 0, activations: 0 };
     }
     grouped[row.module_id].count++;
-    grouped[row.module_id].totalLatency += row.latency_ms;
-    grouped[row.module_id].totalTokens += row.tokens_estimated;
+    grouped[row.module_id].totalLatency += row.execution_time_ms; // ← corrigido
+    grouped[row.module_id].totalTokens += row.tokens_used;       // ← corrigido
     if (row.activated) grouped[row.module_id].activations++;
   }
 
