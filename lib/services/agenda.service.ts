@@ -46,6 +46,10 @@ export async function coreConsultarAgenda(userId: number, dias: number = 7) {
     getGoogleContext().catch(() => null),
     getMicrosoftCalendarContext().catch(() => null),
   ]);
+
+  console.log('[coreConsultarAgenda] lev:', levRes.status, (levRes as any).value?.data?.substring(0, 100));
+  console.log('[coreConsultarAgenda] google:', googleRes.status);
+  console.log('[coreConsultarAgenda] outlook:', outlookRes.status)
   
   const lev = (levRes.status === 'fulfilled' && levRes.value?.data) ? levRes.value.data : 'Nenhum evento na Agenda Lev.';
   let result = `[AGENDA LEV]\n${lev}`;
