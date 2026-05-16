@@ -1,5 +1,5 @@
 // lib/tools/executors/reminders.ts
-import { coreConsultarLembretes, coreCriarLembrete, coreCancelarLembrete } from '@/lib/chat/pipeline/extractors/reminders.service';
+import { coreConsultarLembretes, coreCriarLembrete, coreCancelarLembrete } from '@/lib/services/reminders.service';
 import { getEffectiveUserId } from '@/lib/modules/relationships';
 import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
 
@@ -13,18 +13,18 @@ export async function executeCreateReminder(
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
     const title = p.title ?? p.message ?? 'Lembrete';
 
-    const { title: t, scheduled_time } = await coreCriarLembrete(Number(targetId), authUserId, {
+    const result = await coreCriarLembrete(Number(targetId), authUserId, {
       title,
-      type: p.type as any,
+      type:           p.type as any,
       scheduled_time: p.scheduled_time,
-      delay_minutes: p.delay_minutes,
-      frequency: p.frequency,
+      delay_minutes:  p.delay_minutes,
+      frequency:      p.frequency,
     });
 
     await invalidateMasterContextCache(Number(targetId), sessionId);
 
-    const hora = new Date(scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    return `⏰ Lembrete "${t}" agendado para ${hora}.`;
+    const hora = new Date(result.scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    return `⏰ Lembrete "${result.title}" agendado para ${hora}.`;
   } catch (err: any) {
     return `Erro ao criar lembrete: ${err.message}`;
   }

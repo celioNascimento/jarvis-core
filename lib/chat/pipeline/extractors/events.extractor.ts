@@ -1,7 +1,6 @@
 // lib/chat/pipeline/extractors/events.extractor.ts
-// V1.0.3 — Regex corrigida, campo notas, .schema() removido (cliente já usa jarvis)
-
 import { supabase, callOpenRouter } from '@/lib/jarvis';
+import { coreCriarEvento } from '@/lib/services/agenda.service';
 import { getCategoryFromType, normalizeDate } from './helpers';
 
 const EVENT_WEIGHTS: Record<string, { priority: string; decay_type: string; emotional_weight: number }> = {
@@ -35,8 +34,6 @@ Ano base: ${anoAtual}`,
 
   try {
     const raw = await callOpenRouter(prompt as any, 'google/gemini-2.0-flash-001', 0.1, 4);
-
-    // Remove blocos markdown caso o modelo os inclua mesmo sendo instruído a não
     const cleanJson = raw.replace(/```(?:json)?\r?\n?/g, '').trim();
     const parsed = JSON.parse(cleanJson);
 
@@ -50,39 +47,31 @@ Ano base: ${anoAtual}`,
       if (!safeDate || safeDate.length < 10) continue;
 
       const w = EVENT_WEIGHTS[ev.tipo] ?? EVENT_WEIGHTS.default;
-      const mmdd = safeDate.slice(5);
       const titleClean = String(ev.titulo).trim();
 
-      const { data: existing } = await supabase
-        .from('events')
-        .select('id')
-        .eq('user_id', userId)
-        .like('start_at', `%-${mmdd}`)
-        .ilike('title', titleClean)
-        .maybeSingle();
-
-      if (!existing) {
-        await supabase
-          .from('events')
-          .insert({
-            user_id:          userId,
-            title:            titleClean,
-            start_at:         safeDate,
-            category:         getCategoryFromType(ev.tipo),
-            priority:         w.priority,
-            decay_type:       w.decay_type,
-            emotional_weight: w.emotional_weight,
-            is_recurring:     ev.recorrente ?? w.decay_type === 'recurring_annual',
-            notes:            ev.notas ? String(ev.notas) : null,
-            relevance_score:  1.0,
-          });
-
+      try {
+        await coreCriarEvento(Number(userId), {
+          titulo:           titleClean,
+          data_hora_inicio: safeDate,
+          categoria:        getCategoryFromType(ev.tipo),
+          notas:            ev.notas ? String(ev.notas) : undefined,
+          // Eventos sem hora são all_day — sem lembrete
+          minutos_lembrete: [],
+          source:           'lev',
+          // Campos extras via metadata não suportados pelo service —
+          // passamos forcar_conflito false para dedup via conflito de horário
+          forcar_conflito:  false,
+        });
         console.log('[Extrator/Eventos] Inserido:', titleClean);
-      } else {
-        console.log('[Extrator/Eventos] Duplicata ignorada:', titleClean);
+      } catch (e: any) {
+        if (e.message?.includes('CONFLITO_AGENDA')) {
+          console.log('[Extrator/Eventos] Duplicata ignorada:', titleClean);
+          continue;
+        }
+        console.error('[Extrator/Eventos] Erro ao inserir:', e.message);
       }
     }
   } catch (e) {
-    console.error('[Extrator/Eventos] Erro ao processar:', e);
+    console.error('[Extrator/Eventos] Erro geral:', e);
   }
 }
