@@ -1,15 +1,22 @@
 // lib/chat/pipeline/extractors/profile.extractor.ts
-// V1.0.1 — Regex corrigida, preferências movidas para personality_notes
+// V1.1.0 — Fonte única da verdade via profile.service
 
-import { supabase, callOpenRouter } from '@/lib/jarvis';
+import { callOpenRouter } from '@/lib/jarvis';
+import {
+  coreAtualizarRotina,
+  coreAppendPersonalityNotes,
+  coreAtualizarPerfil,
+} from '@/lib/services/profile.service';
 
 const CLEAN_JSON = (raw: string) => raw.replace(/```(?:json)?\r?\n?/g, '').trim();
 
+// ─── ROTINA ───────────────────────────────────────────────────────────────────
 export async function extractRotina(userId: string, userMessage: string): Promise<void> {
-  const prompt = `Extraia marcas de horários ou rituais de rotina: "${userMessage}". Retorne: {"despertar": null, "dormir": null, "academia_horario": null, "trabalho_entrada": null, "trabalho_saida": null, "lembretes": []}`;
+  const prompt = `Extraia marcas de horários ou rituais de rotina: "${userMessage}". 
+Retorne: {"despertar": null, "dormir": null, "academia_horario": null, "trabalho_entrada": null, "trabalho_saida": null}`;
 
   try {
-    const raw = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4);
+    const raw    = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4);
     const parsed = JSON.parse(CLEAN_JSON(raw));
 
     const parts: string[] = [];
@@ -20,59 +27,60 @@ export async function extractRotina(userId: string, userMessage: string): Promis
     if (parsed.trabalho_saida)   parts.push(`Saída: ${parsed.trabalho_saida}`);
     if (parts.length === 0) return;
 
-    const { data: prof } = await supabase
-      .from('user_profiles')
-      .select('personality_notes')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    const old = prof?.personality_notes || '';
-    const newBlock = `[ROTINA] ${parts.join(' | ')}`;
-    const updated = /\[ROTINA\]/i.test(old)
-      ? old.replace(/\[ROTINA\][^\n]*/i, newBlock)
-      : `${old}\n${newBlock}`.trim();
-
-    await supabase.from('user_profiles').upsert(
-      { user_id: userId, personality_notes: updated, updated_at: new Date().toISOString() },
-      { onConflict: 'user_id' }
-    );
+    await coreAtualizarRotina(Number(userId), `[ROTINA] ${parts.join(' | ')}`);
   } catch (e) {
     console.error('[Extrator/Rotina] Erro:', e);
   }
 }
 
+// ─── PREFERÊNCIAS ─────────────────────────────────────────────────────────────
 export async function extractPreferencia(userId: string, userMessage: string): Promise<void> {
-  const prompt = `Extraia gostos, hobbies e preferências: "${userMessage}". Retorne: {"preferencias": [{"tipo": "comida|filme|musica|hobby", "descricao": "..."}]}`;
+  const prompt = `Extraia gostos, hobbies e preferências: "${userMessage}". 
+Retorne: {"preferencias": [{"tipo": "comida|filme|musica|hobby", "descricao": "..."}]}`;
 
   try {
-    const raw = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4);
+    const raw    = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4);
     const parsed = JSON.parse(CLEAN_JSON(raw));
-    if (!parsed?.preferencias || parsed.preferencias.length === 0) return;
+    if (!parsed?.preferencias?.length) return;
 
-    const { data: prof } = await supabase
-      .from('user_profiles')
-      .select('personality_notes')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    const old = prof?.personality_notes || '';
-
-    // Evita duplicata checando a primeira preferência extraída
-    if (old.includes(parsed.preferencias[0].descricao)) return;
-
-    const newLine = parsed.preferencias
-      .map((p: any) => `[${p.tipo}] ${p.descricao}`)
-      .join(' | ');
-
-    await supabase.from('user_profiles').upsert(
-      {
-        user_id:           userId,
-        personality_notes: old ? `${old} | ${newLine}` : newLine,
-        updated_at:        new Date().toISOString(),
-      },
-      { onConflict: 'user_id' }
-    );
+    for (const p of parsed.preferencias) {
+      await coreAppendPersonalityNotes(
+        Number(userId),
+        `[${p.tipo}] ${p.descricao}`
+      );
+    }
   } catch (e) {
     console.error('[Extrator/Preferencias] Erro:', e);
+  }
+}
+
+// ─── DADOS BIOGRÁFICOS ────────────────────────────────────────────────────────
+export async function extractDadosBiograficos(userId: string, userMessage: string): Promise<void> {
+  const prompt = `Extraia dados biográficos explícitos mencionados pelo usuário: "${userMessage}".
+Retorne APENAS campos com valor identificado, null nos demais:
+{
+  "full_name": null, "birth_date": null, "birth_city": null, "birth_state": null,
+  "gender": null, "father_name": null, "mother_name": null, "siblings_count": null,
+  "faith_profile": null, "education_level": null, "current_job": null,
+  "company": null, "profession": null, "city": null, "state": null,
+  "spouse_name": null, "spouse_birthday": null, "spouse_phone": null,
+  "whatsapp": null, "phone": null
+}`;
+
+  try {
+    const raw    = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4);
+    const parsed = JSON.parse(CLEAN_JSON(raw));
+
+    // Remove campos nulos antes de persistir
+    const payload = Object.fromEntries(
+      Object.entries(parsed).filter(([_, v]) => v !== null && v !== undefined)
+    );
+
+    if (Object.keys(payload).length === 0) return;
+
+    await coreAtualizarPerfil(Number(userId), payload);
+    console.log('[Extrator/Biografico] Atualizado:', Object.keys(payload).join(', '));
+  } catch (e) {
+    console.error('[Extrator/Biografico] Erro:', e);
   }
 }
