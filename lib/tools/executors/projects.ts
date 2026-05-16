@@ -1,5 +1,5 @@
 // lib/tools/executors/projects.ts
-// V12.1.0 — Totalmente Delegado para a Fonte Única da Verdade (SSOT)
+// V12.1.1 — Correção de Build (Parâmetros e Exports)
 
 import { supabase } from '@/lib/jarvis';
 import { 
@@ -76,7 +76,7 @@ export async function executeListarProjetos(p: any, authUserId: string, numericU
   } catch (err: any) { return `Erro ao listar: ${err.message}`; }
 }
 
-// ─── TÓPICOS E ENTRIES (Mantidos Inalterados) ─────────────────────────────────
+// ─── TÓPICOS ──────────────────────────────────────────────────────────────────
 
 export async function executeGerenciarTopico(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
@@ -119,19 +119,30 @@ export async function executeListarTopicos(p: any, authUserId: string, numericUs
   } catch (err: any) { return `Erro: ${err.message}`; }
 }
 
-export async function executeListarEntries(p: any, _authUserId: string, _numericUserId: string): Promise<string> {
+// ─── ENTRIES ──────────────────────────────────────────────────────────────────
+
+export async function executeGerenciarEntry(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
-    let query = supabase.schema('jarvis').from('project_entries').select('*').eq('topic_id', p.topic_id);
-    if (p.type) query = query.eq('type', p.type);
-    if (p.status) query = query.eq('status', p.status);
-    const { data, error } = await query.order('created_at', { ascending: false });
-    if (error) throw error;
-    return data?.map(e => `[${e.type.toUpperCase()}] ${e.title || 'Sem título'} (ID: ${e.id})`).join('\n') || 'Nenhuma entry.';
+    const targetId = await getEffectiveUserId(authUserId, numericUserId);
+    const { acao, topic_id, entry_id, type, title, body, status, order_index, metadata } = p;
+
+    if (acao === 'criar') {
+      const { data, error } = await supabase.schema('jarvis').from('project_entries').insert({ topic_id, type: type || 'note', title, body, status: status || 'open', order_index: order_index || 0, created_by: Number(targetId), metadata: metadata || {} }).select('id').single();
+      if (error) throw error; return `Entry registrada (ID: ${data.id}).`;
+    }
+    if (acao === 'atualizar') {
+      const { error } = await supabase.schema('jarvis').from('project_entries').update({ type, title, body, status, order_index, metadata }).eq('id', entry_id);
+      if (error) throw error; return 'Entry atualizada.';
+    }
+    if (acao === 'remover') {
+      const { error } = await supabase.schema('jarvis').from('project_entries').delete().eq('id', entry_id);
+      if (error) throw error; return 'Entry removida.';
+    }
+    return 'Ação inválida.';
   } catch (err: any) { return `Erro: ${err.message}`; }
 }
 
-
-export async function executeListarEntries(p: any): Promise<string> {
+export async function executeListarEntries(p: any, _authUserId: string, _numericUserId: string): Promise<string> {
   try {
     let query = supabase.schema('jarvis').from('project_entries').select('*').eq('topic_id', p.topic_id);
     if (p.type) query = query.eq('type', p.type);
