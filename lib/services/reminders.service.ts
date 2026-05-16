@@ -1,4 +1,5 @@
 // lib/services/reminders.service.ts
+// V1.2.0 — TDAH-first: foco em pendentes, histórico opcional
 
 import { supabase } from '@/lib/jarvis';
 import { scheduleReminderOnQStash, cancelReminderOnQStash, frequencyToCron } from '@/lib/qstash';
@@ -22,16 +23,32 @@ export interface ReminderUpdatePayload {
   metadata?: Record<string, any>;
 }
 
-// ─── 1. LISTAR (APP — todos os status + compartilhados) ───────────────────────
-export async function coreListarLembretes(userId: number): Promise<any[]> {
-  const { data: own, error } = await supabase
+// ─── 1. LISTAR (APP) ──────────────────────────────────────────────────────────
+// TDAH-first: por padrão mostra só pendentes futuros + fired das últimas 24h
+// Histórico completo disponível via incluirHistorico=true
+export async function coreListarLembretes(
+  userId: number,
+  incluirHistorico = false
+): Promise<any[]> {
+  let query = supabase
     .from('reminders')
     .select('*')
-    .eq('user_id', userId)
+    .eq('user_id', userId);
+
+  if (!incluirHistorico) {
+    const agoraISO  = new Date().toISOString();
+    const ontemISO  = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    query = query.or(
+      `and(status.eq.pending,scheduled_time.gte.${agoraISO}),and(status.eq.fired,fired_at.gte.${ontemISO})`
+    );
+  }
+
+  const { data: own, error } = await query
     .order('scheduled_time', { ascending: true, nullsFirst: false });
 
   if (error) throw new Error(`Falha ao listar lembretes: ${error.message}`);
 
+  // Lembretes compartilhados (sempre só pendentes — não faz sentido histórico alheio)
   const { data: shares } = await supabase
     .from('reminder_shares')
     .select('reminder_id')
@@ -47,6 +64,7 @@ export async function coreListarLembretes(userId: number): Promise<any[]> {
       .select('*')
       .in('id', sharedIds)
       .eq('status', 'pending')
+      .gte('scheduled_time', new Date().toISOString())
       .order('scheduled_time', { ascending: true, nullsFirst: false });
 
     if (sharedError) throw new Error(`Falha ao listar compartilhados: ${sharedError.message}`);
@@ -140,7 +158,10 @@ export async function coreCriarLembrete(
   });
 
   if (qstashId) {
-    await supabase.from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
+    await supabase
+      .from('reminders')
+      .update({ qstash_message_id: qstashId })
+      .eq('id', reminder.id);
   }
 
   return { id: reminder.id, title: payload.title, scheduled_time };
@@ -174,7 +195,10 @@ export async function coreAtualizarLembrete(
   if (updateError) throw new Error(`Falha ao atualizar: ${updateError.message}`);
 
   if (updated.status === 'pending' && updated.scheduled_time && updated.type !== 'location') {
-    const cron = updated.frequency ? frequencyToCron(updated.frequency, updated.scheduled_time) : null;
+    const cron = updated.frequency
+      ? frequencyToCron(updated.frequency, updated.scheduled_time)
+      : null;
+
     const qstashId = await scheduleReminderOnQStash({
       reminderId:    updated.id,
       userId:        String(userId),
@@ -183,8 +207,12 @@ export async function coreAtualizarLembrete(
       scheduledTime: updated.scheduled_time,
       cron,
     });
+
     if (qstashId) {
-      await supabase.from('reminders').update({ qstash_message_id: qstashId }).eq('id', updated.id);
+      await supabase
+        .from('reminders')
+        .update({ qstash_message_id: qstashId })
+        .eq('id', updated.id);
     }
   }
 
@@ -205,7 +233,10 @@ export async function coreCancelarLembrete(userId: number, query: string): Promi
   if (!reminder) return `Nenhum lembrete encontrado com "${query}".`;
 
   if (reminder.qstash_message_id) await cancelReminderOnQStash(reminder.qstash_message_id);
-  await supabase.from('reminders').update({ status: 'cancelled' }).eq('id', reminder.id);
+  await supabase
+    .from('reminders')
+    .update({ status: 'cancelled' })
+    .eq('id', reminder.id);
 
   return reminder.title;
 }
