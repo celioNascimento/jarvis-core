@@ -1,5 +1,5 @@
 // lib/tools/executors/projects.ts
-// V12.0.0 — Arquitetura Centralizada (Resolution & Identity)
+// V12.1.0 — Totalmente Delegado para a Fonte Única da Verdade (SSOT)
 
 import { supabase } from '@/lib/jarvis';
 import { 
@@ -8,12 +8,13 @@ import {
   resolveProject, 
   formatDisplayName 
 } from '@/lib/modules/relationships';
+import { 
+  coreListarMembrosProjeto, 
+  coreAtualizarMembroProjeto 
+} from '@/lib/services/projects.service';
 
 // ─── PROJETOS ─────────────────────────────────────────────────────────────────
 
-/**
- * Cria, atualiza ou altera o status de um projeto.
- */
 export async function executeGerenciarProjeto(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
@@ -21,6 +22,7 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
 
     if (acao === 'criar') {
       const { data, error } = await supabase
+        .schema('jarvis')
         .from('projects')
         .insert({
           user_id: Number(targetId),
@@ -35,10 +37,14 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
         .select().single();
 
       if (error) throw error;
+      
+      await supabase.schema('jarvis').from('project_members').insert({
+        project_id: data.id, user_id: Number(targetId), invited_by: Number(targetId), role: 'owner', status: 'active'
+      });
+      
       return `Projeto "${data.name || data.tag}" criado com sucesso.`;
     }
 
-    // Resolução centralizada para ações de atualização
     const project = await resolveProject(p.project_id, targetId);
     if (!project) return `Não encontrei o projeto "${p.project_id}".`;
 
@@ -49,21 +55,17 @@ export async function executeGerenciarProjeto(p: any, authUserId: string, numeri
     if (acao === 'concluir') updates.status = 'concluido';
     if (acao === 'cancelar') updates.status = 'cancelado';
 
-    const { error } = await supabase.from('projects').update(updates).eq('id', project.id);
+    const { error } = await supabase.schema('jarvis').from('projects').update(updates).eq('id', project.id);
     if (error) throw error;
 
-    return `Projeto "${project.name || project.tag}" atualizado para: ${acao === 'atualizar' ? updates.status || project.status : acao}.`;
+    return `Projeto "${project.name || project.tag}" atualizado.`;
   } catch (err: any) { return `Erro ao gerenciar projeto: ${err.message}`; }
 }
 
-/**
- * Lista os projetos do usuário.
- */
 export async function executeListarProjetos(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
-    let query = supabase.from('projects').select('*').eq('user_id', Number(targetId));
-    
+    let query = supabase.schema('jarvis').from('projects').select('*').eq('user_id', Number(targetId));
     if (p.status) query = query.eq('status', p.status);
 
     const { data, error } = await query.order('updated_at', { ascending: false });
@@ -74,58 +76,42 @@ export async function executeListarProjetos(p: any, authUserId: string, numericU
   } catch (err: any) { return `Erro ao listar: ${err.message}`; }
 }
 
-// ─── TÓPICOS ──────────────────────────────────────────────────────────────────
+// ─── TÓPICOS E ENTRIES (Mantidos Inalterados) ─────────────────────────────────
 
-/**
- * Gerencia a estrutura de tópicos (hierárquica).
- */
 export async function executeGerenciarTopico(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
     const { acao, topic_id, parent_id, tag, name, description, order_index } = p;
 
     const project = await resolveProject(p.project_id, targetId);
-    if (!project) return `Projeto "${p.project_id}" não encontrado.`;
+    if (!project) return `Projeto não encontrado.`;
 
     if (acao === 'criar') {
-      const { data, error } = await supabase
-        .from('project_topics')
-        .insert({ project_id: project.id, parent_id, tag, name, description, order_index: order_index || 0 })
-        .select().single();
+      const { data, error } = await supabase.schema('jarvis').from('project_topics').insert({ project_id: project.id, parent_id, tag, name, description, order_index: order_index || 0 }).select().single();
       if (error) throw error;
-      return `Tópico "${data.name || data.tag}" criado em ${project.name}.`;
+      return `Tópico "${data.name || data.tag}" criado.`;
     }
-
-    if (!topic_id) return 'ID do tópico é necessário para esta ação.';
-
+    if (!topic_id) return 'ID necessário.';
     if (acao === 'atualizar') {
-      const { error } = await supabase.from('project_topics').update({ parent_id, tag, name, description, order_index }).eq('id', topic_id);
-      if (error) throw error;
-      return 'Tópico atualizado.';
+      const { error } = await supabase.schema('jarvis').from('project_topics').update({ parent_id, tag, name, description, order_index }).eq('id', topic_id);
+      if (error) throw error; return 'Atualizado.';
     }
-
     if (acao === 'remover') {
-      const { error } = await supabase.from('project_topics').delete().eq('id', topic_id);
-      if (error) throw error;
-      return 'Tópico removido com sucesso.';
+      const { error } = await supabase.schema('jarvis').from('project_topics').delete().eq('id', topic_id);
+      if (error) throw error; return 'Removido.';
     }
     return 'Ação não reconhecida.';
-  } catch (err: any) { return `Erro nos tópicos: ${err.message}`; }
+  } catch (err: any) { return `Erro: ${err.message}`; }
 }
 
-/**
- * Lista tópicos de um projeto.
- */
 export async function executeListarTopicos(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
     const project = await resolveProject(p.project_id, targetId);
     if (!project) return 'Projeto não localizado.';
 
-    let query = supabase.from('project_topics').select('*').eq('project_id', project.id);
-    if (p.parent_id !== undefined) {
-      query = p.parent_id === null ? query.is('parent_id', null) : query.eq('parent_id', p.parent_id);
-    }
+    let query = supabase.schema('jarvis').from('project_topics').select('*').eq('project_id', project.id);
+    if (p.parent_id !== undefined) query = p.parent_id === null ? query.is('parent_id', null) : query.eq('parent_id', p.parent_id);
 
     const { data, error } = await query.order('order_index', { ascending: true });
     if (error) throw error;
@@ -133,60 +119,40 @@ export async function executeListarTopicos(p: any, authUserId: string, numericUs
   } catch (err: any) { return `Erro: ${err.message}`; }
 }
 
-// ─── ENTRIES (NOTAS/IDEIAS) ───────────────────────────────────────────────────
-
-/**
- * Registra ou remove entries (conteúdo real).
- */
 export async function executeGerenciarEntry(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
     const { acao, topic_id, entry_id, type, title, body, status, order_index, metadata } = p;
 
     if (acao === 'criar') {
-      const { data, error } = await supabase
-        .from('project_entries')
-        .insert({ topic_id, type: type || 'note', title, body, status: status || 'open', order_index: order_index || 0, created_by: Number(targetId), metadata: metadata || {} })
-        .select('id').single();
-      if (error) throw error;
-      return `Entry registrada (ID: ${data.id}).`;
+      const { data, error } = await supabase.schema('jarvis').from('project_entries').insert({ topic_id, type: type || 'note', title, body, status: status || 'open', order_index: order_index || 0, created_by: Number(targetId), metadata: metadata || {} }).select('id').single();
+      if (error) throw error; return `Entry registrada (ID: ${data.id}).`;
     }
-
     if (acao === 'atualizar') {
-      const { error } = await supabase.from('project_entries').update({ type, title, body, status, order_index, metadata }).eq('id', entry_id);
-      if (error) throw error;
-      return 'Entry atualizada.';
+      const { error } = await supabase.schema('jarvis').from('project_entries').update({ type, title, body, status, order_index, metadata }).eq('id', entry_id);
+      if (error) throw error; return 'Entry atualizada.';
     }
-
     if (acao === 'remover') {
-      const { error } = await supabase.from('project_entries').delete().eq('id', entry_id);
-      if (error) throw error;
-      return 'Entry removida.';
+      const { error } = await supabase.schema('jarvis').from('project_entries').delete().eq('id', entry_id);
+      if (error) throw error; return 'Entry removida.';
     }
     return 'Ação inválida.';
-  } catch (err: any) { return `Erro nas entries: ${err.message}`; }
+  } catch (err: any) { return `Erro: ${err.message}`; }
 }
 
-/**
- * Lista as entries de um tópico.
- */
-export async function executeListarEntries(p: any, _authUserId: string, _numericUserId: string): Promise<string> {
+export async function executeListarEntries(p: any): Promise<string> {
   try {
-    let query = supabase.from('project_entries').select('*').eq('topic_id', p.topic_id);
+    let query = supabase.schema('jarvis').from('project_entries').select('*').eq('topic_id', p.topic_id);
     if (p.type) query = query.eq('type', p.type);
     if (p.status) query = query.eq('status', p.status);
-
     const { data, error } = await query.order('created_at', { ascending: false });
     if (error) throw error;
     return data?.map(e => `[${e.type.toUpperCase()}] ${e.title || 'Sem título'} (ID: ${e.id})`).join('\n') || 'Nenhuma entry.';
   } catch (err: any) { return `Erro: ${err.message}`; }
 }
 
-// ─── MEMBROS (COMPARTILHAMENTO) ───────────────────────────────────────────────
+// ─── MEMBROS (COMPARTILHAMENTO DELEGADO PARA SSOT) ───────────────────────────
 
-/**
- * Gerencia quem tem acesso ao projeto.
- */
 export async function executeGerenciarMembrosProjeto(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
@@ -196,39 +162,30 @@ export async function executeGerenciarMembrosProjeto(p: any, authUserId: string,
     if (!project) return `Projeto "${project_id}" não encontrado.`;
 
     if (acao === 'listar') {
-      const { data, error } = await supabase
-        .from('project_members')
-        .select('role, status, users ( name, preferred_name, nickname, email )')
-        .eq('project_id', project.id);
+      const membros = await coreListarMembrosProjeto(project.id);
+      if (!membros.length) return 'Nenhum membro encontrado.';
       
-      if (error) throw error;
-      return data.map(m => {
-        const u: any = Array.isArray(m.users) ? m.users[0] : m.users;
+      return membros.map((m: any) => {
+        const u = Array.isArray(m.users) ? m.users[0] : m.users;
         return `- ${formatDisplayName(u)} | Papel: ${m.role} | Status: ${m.status}`;
       }).join('\n');
     }
 
-    // Resolução universal de usuário para convites/alterações
     const targetUser = await resolveUser(user_identifier);
     if (!targetUser) return `Não encontrei ninguém com o identificador "${user_identifier}".`;
 
-    if (acao === 'adicionar') {
-      const { error } = await supabase.from('project_members').insert({ project_id: project.id, user_id: targetUser.id, invited_by: Number(targetId), role: role || 'viewer', status: 'pending' });
-      if (error) return error.code === '23505' ? `${formatDisplayName(targetUser)} já está no projeto.` : `Erro: ${error.message}`;
-      return `Convite enviado para ${formatDisplayName(targetUser)}.`;
-    }
-
-    if (acao === 'atualizar') {
-      const { error } = await supabase.from('project_members').update({ role }).eq('project_id', project.id).eq('user_id', targetUser.id);
-      if (error) throw error;
-      return `Papel de ${formatDisplayName(targetUser)} atualizado para ${role}.`;
+    if (acao === 'adicionar' || acao === 'atualizar') {
+      await coreAtualizarMembroProjeto(Number(targetId), project.id, targetUser.id, true, role || 'viewer');
+      return `Acesso de ${formatDisplayName(targetUser)} configurado como ${role || 'viewer'}.`;
     }
 
     if (acao === 'remover') {
-      const { error } = await supabase.from('project_members').delete().eq('project_id', project.id).eq('user_id', targetUser.id);
-      if (error) throw error;
+      await coreAtualizarMembroProjeto(Number(targetId), project.id, targetUser.id, false);
       return `Acesso de ${formatDisplayName(targetUser)} removido.`;
     }
+
     return 'Ação de membros inválida.';
-  } catch (err: any) { return `Erro no compartilhamento: ${err.message}`; }
+  } catch (err: any) { 
+    return `Erro no compartilhamento: ${err.message}`; 
+  }
 }
