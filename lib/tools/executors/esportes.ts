@@ -1,16 +1,17 @@
 // lib/tools/executors/esportes.ts
-// V1.1.0 — Executor de Esportes com Tratamento de Status Completo
+// V1.2.0 — Executor de Esportes com Redirecionamento Dinâmico de Fallback (Anti-Robô)
 
 import { coreGetMatchesToday, coreGetLeagueTable } from '@/lib/services/sports.service';
 
 export async function executeConsultarPlacarAoVivo(p: any): Promise<string> {
   try {
-    // Se a IA não inferir a liga, usamos o Brasileirão Série A como padrão nacional
     const liga = p.liga_tag || 'brasileirao_a';
     const partidas = await coreGetMatchesToday(liga);
     
     if (!partidas.length) {
-      return `Não foram encontradas partidas agendadas ou realizadas para a liga de tag "${liga}" na data de hoje.`;
+      // 🔥 AGENT STEERING: O retorno da ferramenta força a IA a encadear a busca web em vez de encerrar a execução
+      return `[AVISO DO SISTEMA]: Nenhuma partida agendada ou realizada para a liga "${liga}" na data de hoje.
+      DIRETRIZ MANDATÓRIA: Não responda de forma vazia ou incompleta para o usuário. Como ele perguntou de um time específico, acione IMEDIATAMENTE a ferramenta de fallback 'web_pesquisar' agora mesmo para descobrir quando joga este time ou o resultado recente dele na internet, ou consulte a classificação com 'esportes_consultar_tabela'.`;
     }
 
     return partidas.map((match: any) => {
@@ -19,7 +20,6 @@ export async function executeConsultarPlacarAoVivo(p: any): Promise<string> {
       
       let statusFormatado = '';
       if (shortStatus === 'NS') {
-        // Pega apenas o horário (HH:MM) da data de início
         const hora = new Date(fixture.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
         statusFormatado = `Não Iniciado - às ${hora}`;
       } else if (['FT', 'AET', 'PEN'].includes(shortStatus)) {
