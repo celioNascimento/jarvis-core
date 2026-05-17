@@ -1,5 +1,5 @@
 // lib/services/sports.service.ts
-// V1.1.0 — Suporte a Jogos do Dia (Encerrados, Ao Vivo e Agendados)
+// V1.2.0 — Correção Definitiva de Fuso Horário (Intl) e Remoção de Redundância de Season
 
 const API_SPORTS_KEY = process.env.API_SPORTS_KEY!;
 const BASE_URL = 'https://v3.football.api-sports.io';
@@ -24,14 +24,19 @@ export async function coreGetMatchesToday(ligaTag: string) {
   const ligaId = LIGAS_MAP[ligaTag];
   if (!ligaId) throw new Error(`Liga "${ligaTag}" não mapeada no sistema.`);
 
-  // Obtém a data de hoje no fuso do Brasil (AAAA-MM-DD)
-  const hojeBR = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-  const dataStr = hojeBR.toISOString().split('T')[0];
+  // 🔥 CORREÇÃO DE FUSO: Usa Intl com padrão fr-CA para gerar um 'AAAA-MM-DD' exato no fuso de Brasília
+  const formatter = new Intl.DateTimeFormat('fr-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const dataStr = formatter.format(new Date());
 
-  // Busca todas as partidas daquela liga para a data de hoje
-  const url = `${BASE_URL}/fixtures?league=${ligaId}&date=${dataStr}&season=2026`;
+  // Remove o parâmetro &season para evitar conflitos de indexação junto com o filtro de data estável
+  const url = `${BASE_URL}/fixtures?league=${ligaId}&date=${dataStr}`;
 
-  const res = await fetch(url, { headers, next: { revalidate: 60 } }); // Cache de 1 minuto
+  const res = await fetch(url, { headers, next: { revalidate: 60 } }); 
   if (!res.ok) throw new Error(`Erro na API de esportes: ${res.statusText}`);
 
   const data = await res.json();
