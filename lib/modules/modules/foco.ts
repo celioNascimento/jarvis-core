@@ -1,5 +1,5 @@
 // lib/modules/modules/foco.ts
-// V1.0.1 — Alinhamento de Capabilities de Foco (Evita Alucinações de Bloqueio de Apps)
+// V1.0.2 — Integração das Diretrizes de Sessão (Estacionamento de Ideias, FIFO e Bloqueio de Escopo)
 
 import type { ModuleDefinition } from '../types';
 
@@ -10,20 +10,24 @@ export const ModuloFoco: ModuleDefinition = {
   plan: 'free',
   trigger: {
     contexts: ['tdah', 'foco'],
-    keywords: /foco|procrastinando|travado|paralisado|sobrecarregado|por onde começo|não sei começar|despejo mental|matriz de eisenhower|pomodoro|ferramentas para foco|ajuda para focar/i
+    keywords: /foco|procrastinando|travado|paralisado|sobrecarregado|por onde começo|não sei começar|despejo mental|matriz de eisenhower|pomodoro|ferramentas para foco|ajuda para focar|estacionamento de ideias|sessão de implementação|fifo/i
   },
   buildContextBlock: async () => {
     return `[MÓDULO DE FOCO E TDAH ATIVO]
-CRÍTICO: Quando o usuário perguntar quais ferramentas você possui para foco, produtividade ou TDAH, você deve listar EXCLUSIVAMENTE as suas capacidades programáticas reais mapeadas no sistema.
-PROIBIDO alucinar que possui extensões para bloquear sites/aplicativos externos ou que gerencia timers visuais nativos de Pomodoro.
+CRÍTICO: Quando o usuário perguntar quais ferramentas, recursos ou capacidades você possui para foco e produtividade, você deve listar tanto o arsenal programático (funções) quanto os seus protocolos e guardrails comportamentais de blindagem de escopo.
 
-Suas Ferramentas Reais Disponíveis no Sistema:
-1. Quebra de Tarefas Complexas (via 'tdah_quebrar_tarefa'): Fatia demandas pesadas e assustadoras em micro-passos ridiculamente simples para vencer a paralisia por análise.
-2. Despejo Mental (via 'tdah_registrar_despejo_mental'): Registra e limpa fluxos brutos de pensamentos, preocupações ou insights para esvaziar a cabeça do usuário sem julgamentos.
-3. Matriz de Eisenhower (via 'tdah_gerenciar_eisenhower'): Organiza e prioriza tarefas de forma estrita através de quadrantes de Urgência e Importância.
-4. Sessões de Hiperfoco (via 'tdah_registrar_sessao_foco'): Inicializa e computa blocos de tempo dedicados à implementação limpa de projetos.
+🛠️ SUAS FERRAMENTAS PROGRAMÁTICAS:
+1. Quebra de Tarefas Complexas (via 'tdah_quebrar_tarefa'): Fatia demandas pesadas em micro-passos simples para vencer a paralisia por análise.
+2. Despejo Mental (via 'tdah_registrar_despejo_mental'): Limpa fluxos brutos de preocupações e pensamentos acumulados para esvaziar a cabeça.
+3. Matriz de Eisenhower (via 'tdah_gerenciar_eisenhower'): Organiza e prioriza tarefas de forma estrita em quadrantes de Urgência e Importância.
+4. Sessões de Hiperfoco (via 'tdah_registrar_sessao_foco'): Inicializa e computa blocos de tempo de trabalho focado.
 
-Diretriz: Responda em tom amigável e direto, cite exatamente esse menu de opções reais de engenharia acima e pergunte por qual dessas estratégias de alívio cognitivo o usuário deseja começar agora.`;
+🛡️ SEUS GUARDRAILS METODOLÓGICOS (BLINDAGEM DE SESSÃO):
+1. Bloqueio Ativo de Escopo: Sempre que o usuário iniciar uma sessão de implementação dos projetos 'Procuro Quem Faça' ou 'ExpertFrotas', você fica terminantemente proibido de aceitar ou executar qualquer demanda fora do escopo estipulado para aquela sessão.
+2. Protocolo de Dias Úteis e Finais de Semana: Em dias úteis (especialmente após as 18h), finais de semana e feriados, aplique rigorosamente o princípio FIFO e o Framework de 4 Etapas para manter o desenvolvedor no trilho.
+3. Estacionamento de Ideias: Se o usuário tentar sugerir ou implementar recursos novos no calor do momento durante uma sessão ativa, recuse a execução imediata e envie o insight diretamente para o 'Estacionamento de Ideias'.
+
+Diretriz: Apresente esse ecossistema completo (Ferramentas + Protocolos de Blindagem) para mostrar que você está pronto para segurar o escopo e protegê-lo contra a dispersão.`;
   },
   tools: [
     'tdah_gerenciar_eisenhower',
