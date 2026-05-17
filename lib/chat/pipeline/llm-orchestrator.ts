@@ -1,5 +1,5 @@
 // lib/chat/pipeline/llm-orchestrator.ts
-// V11.3.0 — Tool Choice "required" de Alta Resiliência para Modelos Gemini
+// V11.4.0 — Mecanismo de Execução Sequencial Multi-Steps (Cross-Module Orchestration)
 
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
@@ -10,22 +10,13 @@ interface ToolCallResult { tc: any; result: string; }
 
 // ── Padrões Estritos de Intenção Ativa ────────────────────────────────────────
 const IMPERATIVE_INTENT_PATTERNS = [
-  // Exige ação: "me lembra", "crie um lembrete", "me avisa", "daqui a x minutos"
   /(?:me\s+)?lembr[ae]|crie\s+(?:um\s+)?lembrete|me\s+avisa|notifica|daqui\s+a\s+\d+/i,
-  // Exige ação de cancelamento
   /cancela.*(lembrete|aviso|evento|compromisso)/i,
-  // Exige ação de agenda: "agende", "marque", "insira na agenda"
   /agend[ae]|marqu?e|insira.*agenda|consulta\s+amanhã|reunião\s+às/i,
-  // Consulta de pendências reais (não perguntas genéricas sobre o sistema)
   /(?:quais|listar)\s+(?:são\s+os\s+)?(?:lembretes|compromissos|tarefas)\s+(?:ativos|pendentes|de\s+hoje)/i,
-  // Exige ação de remoção
   /apaga.*evento|deleta.*evento|remove.*evento/i
 ];
 
-/**
- * Determina se a IA pode escolher conversar ('auto') ou se deve ser
- * terminantemente obrigada a disparar uma ferramenta ('required').
- */
 function resolveToolChoice(message: string): 'auto' | 'required' {
   const isImperative = IMPERATIVE_INTENT_PATTERNS.some(pattern => pattern.test(message));
   if (isImperative) {
@@ -76,38 +67,68 @@ export async function runLLMOrchestrator(ctx: ChatRequestContext, prompt: ChatPr
   const { user, requestSignature, sessionId, message } = ctx;
   const { conversationMessages, tools, model: requestedModel } = prompt;
 
-  // Resolve dinamicamente se bloqueia a conversação comum
   const toolChoice = resolveToolChoice(message);
 
-  const firstResponse = await callOpenRouterWithPriority(
-    1, 'never', requestSignature, conversationMessages, tools, requestedModel, 0.1,
-    25000, undefined, toolChoice
-  );
+  let currentMessages = [...conversationMessages];
+  let passoAtual = 0;
+  const MAX_STEPS = 4; // Teto de segurança para evitar loops infinitos ou timeouts na Vercel
+  let loopResponse = null;
+  let ferramentasExecutadas = false;
 
-  // Se o modo era 'required' e por algum motivo bizarro não veio toolCalls, 
-  // significa que a infraestrutura barrou ou o cinto de ferramentas veio vazio.
-  if (!firstResponse.toolCalls?.length) {
+  // ── FASE 1: Loop de Acúmulo e Encadeamento de Dados (Multi-Steps) ───────────
+  while (passoAtual < MAX_STEPS) {
+    passoAtual++;
+
+    // O required só força o primeiro passo. Os encadeamentos seguintes rodam em 'auto'
+    const currentToolChoice = passoAtual === 1 ? toolChoice : 'auto';
+    // Carimba o ID do passo a partir da segunda execução para blindar e isolar o cache do Redis
+    const stepSignature = passoAtual === 1 ? requestSignature : `${requestSignature}_step_${passoAtual}`;
+
+    loopResponse = await callOpenRouterWithPriority(
+      1, 'never', stepSignature, currentMessages, tools, requestedModel, 0.1,
+      25000, undefined, currentToolChoice
+    );
+
+    if (loopResponse.toolCalls?.length > 0) {
+      ferramentasExecutadas = true;
+      console.log(`[Orchestrator] 🚀 Passo ${passoAtual}: Executando ${loopResponse.toolCalls.length} tool(s).`);
+
+      const toolResults = await executeToolCalls(
+        loopResponse.toolCalls,
+        user.auth_user_id,
+        String(user.id),
+        sessionId,
+        currentMessages.slice(-3),
+      );
+
+      // Formata e empurra o bloco estruturado de requisição/resposta para a memória local do ciclo
+      const toolMessages = buildToolCallMessages(loopResponse.content, loopResponse.toolCalls, toolResults);
+      currentMessages.push(...toolMessages);
+
+      // Continua o loop para permitir o cruzamento de outros módulos
+      continue;
+    } else {
+      // IA decidiu não invocar ferramentas. Dados consolidados com sucesso.
+      break;
+    }
+  }
+
+  // ── FASE 2: Síntese Cognitiva Final ─────────────────────────────────────────
+  
+  // Otimização de tokens: se nenhuma ferramenta rodou no processo, devolve a resposta 
+  // do primeiro tiro imediatamente sem gastar uma nova chamada de síntese à toa.
+  if (!ferramentasExecutadas && loopResponse) {
     return appendResilienceNotice(
-      firstResponse.content || 'Entendido.',
+      loopResponse.content || 'Entendido.',
       requestedModel,
-      firstResponse.modelUsed || requestedModel
+      loopResponse.modelUsed || requestedModel
     );
   }
 
-  const toolResults = await executeToolCalls(
-    firstResponse.toolCalls,
-    user.auth_user_id,
-    String(user.id),
-    sessionId,
-    conversationMessages.slice(-3),
-  );
-
-  const toolMessages = buildToolCallMessages(firstResponse.content, firstResponse.toolCalls, toolResults);
-
-  // Segunda fase (síntese) roda com temperatura humana (0.7) para gerar a resposta amigável
+  // Se houve encadeamento, consolidamos todo o histórico de execuções em texto amigável (0.7)
   const secondResponse = await callOpenRouterWithPriority(
     1, 'never', `${requestSignature}_synth`,
-    [...conversationMessages, ...toolMessages], [], requestedModel, 0.7
+    currentMessages, [], requestedModel, 0.7
   );
 
   return appendResilienceNotice(
