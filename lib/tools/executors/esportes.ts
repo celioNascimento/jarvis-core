@@ -1,19 +1,34 @@
 // lib/tools/executors/esportes.ts
-// V1.2.0 — Executor de Esportes com Redirecionamento Dinâmico de Fallback (Anti-Robô)
+// V1.3.0 — Executor de Esportes com Automação de Fallback Interno via Web Search (Anti-Robô)
 
 import { coreGetMatchesToday, coreGetLeagueTable } from '@/lib/services/sports.service';
+import { searchWeb } from '@/lib/google'; // Reaproveita a infraestrutura de busca global existente
 
 export async function executeConsultarPlacarAoVivo(p: any): Promise<string> {
   try {
     const liga = p.liga_tag || 'brasileirao_a';
-    const partidas = await coreGetMatchesToday(liga);
     
+    // 1. Tenta buscar os dados oficiais na API de Esportes
+    const partidas = await coreGetMatchesToday(liga).catch(() => []);
+    
+    // 2. 🔥 FALLBACK AUTOMÁTICO: Se a API falhar ou vier vazia, o executor varre a Web imediatamente
     if (!partidas.length) {
-      // 🔥 AGENT STEERING: O retorno da ferramenta força a IA a encadear a busca web em vez de encerrar a execução
-      return `[AVISO DO SISTEMA]: Nenhuma partida agendada ou realizada para a liga "${liga}" na data de hoje.
-      DIRETRIZ MANDATÓRIA: Não responda de forma vazia ou incompleta para o usuário. Como ele perguntou de um time específico, acione IMEDIATAMENTE a ferramenta de fallback 'web_pesquisar' agora mesmo para descobrir quando joga este time ou o resultado recente dele na internet, ou consulte a classificação com 'esportes_consultar_tabela'.`;
+      console.debug(`[ExecutorEsportes] API vazia para hoje. Disparando Fallback Web Search interno...`);
+      
+      const termoBusca = `jogos do campeonato brasileiro serie a hoje placar resultados ao vivo campeonato brasileiro`;
+      const resumoWeb = await searchWeb(termoBusca).catch(() => null);
+      
+      if (resumoWeb) {
+        return `[RESULTADOS VIA BUSCA WEB - GOOGLE]
+A API oficial está temporariamente sem registros para esta rodada, mas localizei estas informações atualizadas diretamente na internet:
+
+${resumoWeb}`;
+      }
+      
+      return `Não encontrei nenhuma partida agendada ou acontecendo para o Brasileirão hoje, nem mesmo via busca externa de contingência.`;
     }
 
+    // 3. Se encontrar dados na API, segue o fluxo de formatação estruturado padrão
     return partidas.map((match: any) => {
       const { fixture, teams, goals } = match;
       const shortStatus = fixture.status.short;
@@ -37,7 +52,8 @@ export async function executeConsultarPlacarAoVivo(p: any): Promise<string> {
     }).join('\n');
 
   } catch (err: any) {
-    return `Erro ao buscar dados de jogos: ${err.message}`;
+    console.error('[executeConsultarPlacarAoVivo] Erro fatal:', err.message);
+    return `Erro ao processar dados de esporte: ${err.message}`;
   }
 }
 
