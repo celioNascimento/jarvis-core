@@ -1,8 +1,8 @@
 // lib/tools/executors/esportes.ts
-// V1.3.0 — Executor de Esportes com Automação de Fallback Interno via Web Search (Anti-Robô)
+// V1.3.1 — Fix de Contingência: Query de Busca Amarrada à Data Correta do Sistema
 
 import { coreGetMatchesToday, coreGetLeagueTable } from '@/lib/services/sports.service';
-import { searchWeb } from '@/lib/google'; // Reaproveita a infraestrutura de busca global existente
+import { searchWeb } from '@/lib/google';
 
 export async function executeConsultarPlacarAoVivo(p: any): Promise<string> {
   try {
@@ -11,24 +11,34 @@ export async function executeConsultarPlacarAoVivo(p: any): Promise<string> {
     // 1. Tenta buscar os dados oficiais na API de Esportes
     const partidas = await coreGetMatchesToday(liga).catch(() => []);
     
-    // 2. 🔥 FALLBACK AUTOMÁTICO: Se a API falhar ou vier vazia, o executor varre a Web imediatamente
+    // 2. FALLBACK AUTOMÁTICO CRÍTICO
     if (!partidas.length) {
-      console.debug(`[ExecutorEsportes] API vazia para hoje. Disparando Fallback Web Search interno...`);
+      console.debug(`[ExecutorEsportes] API sem registros. Disparando Fallback Web Search amarrado à data...`);
       
-      const termoBusca = `jogos do campeonato brasileiro serie a hoje placar resultados ao vivo campeonato brasileiro`;
+      // 🔥 CAPTURA DA DATA EXATA: Pega o dia de hoje no fuso BR (Ex: "16/05/2026")
+      const formatterBR = new Intl.DateTimeFormat('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+      const dataFormatada = formatterBR.format(new Date());
+      
+      // Injeta a data exata na query para evitar que o Google traga rodadas passadas por SEO
+      const termoBusca = `jogos brasileirao serie a ${dataFormatada} placar resultados rodada de hoje`;
       const resumoWeb = await searchWeb(termoBusca).catch(() => null);
       
       if (resumoWeb) {
-        return `[RESULTADOS VIA BUSCA WEB - GOOGLE]
-A API oficial está temporariamente sem registros para esta rodada, mas localizei estas informações atualizadas diretamente na internet:
+        return `[RESULTADOS CONTINGÊNCIA - DATA: ${dataFormatada}]
+A API oficial está atualizando, mas localizei estas informações em tempo real na internet para o dia de hoje:
 
 ${resumoWeb}`;
       }
       
-      return `Não encontrei nenhuma partida agendada ou acontecendo para o Brasileirão hoje, nem mesmo via busca externa de contingência.`;
+      return `Não encontrei nenhuma partida agendada ou acontecendo para o Brasileirão na data de hoje (${dataFormatada}).`;
     }
 
-    // 3. Se encontrar dados na API, segue o fluxo de formatação estruturado padrão
+    // 3. Retorno estruturado padrão caso a API tenha os dados
     return partidas.map((match: any) => {
       const { fixture, teams, goals } = match;
       const shortStatus = fixture.status.short;
