@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// ✅ VERSÃO v5.1 — Arquitetura por Princípios, Build Seguro
+// ✅ VERSÃO v5.2 — Arquitetura por Princípios + Compatibilidade com Orchestrator
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
@@ -10,10 +10,17 @@ import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 
+// -----------------------------------------------------------------------------
+// 🔧 INTERFACE CORRIGIDA: Restaurado conversationMessages para compatibilidade
+// TODO [pós-Sprint 5]: Remover conversationMessages daqui após refatorar llm-orchestrator
+// Motivo: separação de responsabilidades. Este módulo não deveria montar mensagens completas.
+// Issue relacionado: #127
+// -----------------------------------------------------------------------------
 export interface ChatPrompt {
   systemPrompt: string;
   tools: any[];
   model: string;
+  conversationMessages: Array<{ role: string; content: string }>;
 }
 
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
@@ -40,14 +47,14 @@ export async function buildChatPrompt(
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, memory, masterContext, recentHistory, isStressed } = intel;
 
-  // Carrega módulos ativos e ferramentas
-  const { activeTools: staticTools, resolvedModel } = await loadActiveModules(
+  // Carrega módulos ativos e ferramentas  const { activeTools: staticTools, resolvedModel } = await loadActiveModules(
     {
       userId: String(user.id),
       authUserId: user.auth_user_id,
       message,
       contexts,
-      emotionalScore: emotional.score,      location: normalizedLocation,
+      emotionalScore: emotional.score,
+      location: normalizedLocation,
       masterContext,
     },
     user.plan,
@@ -89,13 +96,13 @@ export async function buildChatPrompt(
     : `[GPS]: Indisponível. Não assuma localização.`;
 
   // Filtra memória L3 com base em sinal familiar
-  const historyText = recentHistory.map(h => h.content).join(' ');
-  const includeFamily = shouldIncludeFamilyContext(message, historyText);
+  const historyText = recentHistory.map(h => h.content).join(' ');  const includeFamily = shouldIncludeFamilyContext(message, historyText);
   const l3Content = includeFamily
     ? memory.l3.content
     : memory.l3.content
         .replace(/##\s*(datas?|aniversário|família|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
         .trim();
+
   // Pendências urgentes
   const urgentes = (masterContext?.reminders || [])
     .map((u: any) => u.title)
@@ -138,14 +145,14 @@ Se houver conflito: **utilidade > conformidade**.
 ### ⚙️ FRAMEWORK DE EXECUÇÃO
 1. **Classifique o conhecimento**:
    - Fato consolidado → afirme.
-   - Inferência → "Com base em X, infiro que..."
-   - Estimativa → "Estimo Y, pois Z."
+   - Inferência → "Com base em X, infiro que..."   - Estimativa → "Estimo Y, pois Z."
    - Dado dinâmico → use ferramenta ou avise sobre limite temporal (conhecimento até maio/2025).
    - Opinião → diga "Minha análise é...".
 
 2. **Responda com profundidade ajustada**:
    - Pergunta direta → resposta curta (1–3 frases).
-   - Problema complexo → entregue: contexto → opções → recomendação.   - Erro técnico → [CAUSA RAIZ] → [LOCAL] → [SOLUÇÃO].
+   - Problema complexo → entregue: contexto → opções → recomendação.
+   - Erro técnico → [CAUSA RAIZ] → [LOCAL] → [SOLUÇÃO].
 
 3. **Use ferramentas com propósito**:
    - Combine quando necessário (ex: clima + rotina).
@@ -187,7 +194,6 @@ ${l3Content.slice(0, 3000)}
 ✅ SIGA ESTE PROMPT COM PRINCÍPIOS, NÃO COM MEDO DE ERRAR.
 A melhor resposta nem sempre é a mais segura — é a que move a agulha.
 `.trim();
-
   // Combina todas as ferramentas ativas (nomes)
   const allTools = [...new Set([...staticTools, ...dynamicTools])];
 
@@ -195,10 +201,20 @@ A melhor resposta nem sempre é a mais segura — é a que move a agulha.
   const resolvedTools = ALL_TOOLS.filter(tool =>
     tool.function?.name && allTools.includes(tool.function.name)
   );
-  // Retorna apenas o necessário para o modelo
+
+  // Monta as mensagens completas para compatibilidade com llm-orchestrator
+  // TODO [pós-Sprint 5]: Remover esta construção aqui. Deve ser feita no handler.
+  const conversationMessages = [
+    { role: 'system', content: systemPrompt },
+    ...recentHistory,
+    { role: 'user', content: message }
+  ];
+
+  // Retorna tudo, incluindo conversationMessages (workaround controlado)
   return {
     systemPrompt,
     tools: resolvedTools,
     model: finalModel,
+    conversationMessages,
   };
 }
