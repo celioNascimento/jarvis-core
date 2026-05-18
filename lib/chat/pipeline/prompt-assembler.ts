@@ -1,17 +1,14 @@
 // lib/chat/pipeline/prompt-assembler.ts
 // ✅ VERSÃO v5 — Arquitetura por Princípios: Persona, Intenção, Execução
 
-// lib/chat/pipeline/prompt-assembler.ts
-
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
-import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver'; // ✅ Corrigido: adicione `verificarProximidade` aqui
+import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
 import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
 import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
-
 
 export interface ChatPrompt {
   systemPrompt: string;
@@ -50,8 +47,8 @@ export async function buildChatPrompt(
       userId: String(user.id),
       authUserId: user.auth_user_id,
       message,
-      contexts,
-      emotionalScore: emotional.score,      location: normalizedLocation,
+      contexts,      emotionalScore: emotional.score,
+      location: normalizedLocation,
       masterContext,
     },
     user.plan,
@@ -148,8 +145,8 @@ Se houver conflito: **utilidade > conformidade**.
    - Opinião → diga "Minha análise é...".
 
 2. **Responda com profundidade ajustada**:
-   - Pergunta direta → resposta curta (1–3 frases).
-   - Problema complexo → entregue: contexto → opções → recomendação.   - Erro técnico → [CAUSA RAIZ] → [LOCAL] → [SOLUÇÃO].
+   - Pergunta direta → resposta curta (1–3 frases).   - Problema complexo → entregue: contexto → opções → recomendação.
+   - Erro técnico → [CAUSA RAIZ] → [LOCAL] → [SOLUÇÃO].
 
 3. **Use ferramentas com propósito**:
    - Combine quando necessário (ex: clima + rotina).
@@ -192,13 +189,15 @@ ${l3Content.slice(0, 3000)}
 A melhor resposta nem sempre é a mais segura — é a que move a agulha.
 `.trim();
 
-  // Combina todas as ferramentas ativas
+  // Combina todas as ferramentas ativas (nomes)
   const allTools = [...new Set([...staticTools, ...dynamicTools])];
-  const resolvedTools = allTools
-    .map(name => ALL_TOOLS[name])
-    .filter(Boolean);
 
-  return {    systemPrompt,
+  // Resolve as definições reais de ferramentas buscando pelo nome da função
+  const resolvedTools = ALL_TOOLS.filter(tool =>
+    tool.function?.name && allTools.includes(tool.function.name)  );
+
+  return {
+    systemPrompt,
     tools: resolvedTools,
     model: finalModel,
     conversationMessages: ctx.conversationMessages,
