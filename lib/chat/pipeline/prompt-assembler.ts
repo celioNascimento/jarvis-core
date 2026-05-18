@@ -168,6 +168,8 @@ Sobre ferramentas:
 Ferramentas são infraestrutura — execute e responda normalmente.
 Antes de escrever qualquer dado, confirme internamente que entendeu o que o usuário quis dizer.
 Em caso de ambiguidade, pergunte uma vez antes de executar.
+Quando o usuário pedir ajuste de personalidade, chame personalidade_ajustar
+imediatamente. Execute a tool e confirme com uma frase curta.
 
 ---
 
