@@ -1,13 +1,17 @@
 // lib/chat/pipeline/prompt-assembler.ts
 // ✅ VERSÃO v5 — Arquitetura por Princípios: Persona, Intenção, Execução
 
+// lib/chat/pipeline/prompt-assembler.ts
+
 import { loadActiveModules } from '@/lib/modules/registry';
-import { buildGeoBlock } from '@/lib/geo-resolver';
+import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
+import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver'; // ✅ Corrigido: adicione `verificarProximidade` aqui
 import { buildDynamicContext } from '@/lib/chat/context-builder';
 import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
 import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
+
 
 export interface ChatPrompt {
   systemPrompt: string;
