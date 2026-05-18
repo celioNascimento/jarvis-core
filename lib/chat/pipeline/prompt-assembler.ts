@@ -13,7 +13,7 @@ import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
 import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
-import { tools as ALL_TOOLS, type ToolDef } from '@/lib/tools/defs/index';
+import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 
@@ -354,7 +354,6 @@ export async function buildChatPrompt(
 
     // ─────────────────────────────────────────────────────────────
     // BLOCO 17 — TRANSPARÊNCIA OPERACIONAL
-    // ✅ v3 fix: emoji trocado de 🔍 para 🔭 — evita colisão com Bloco 16
     // ─────────────────────────────────────────────────────────────
     "\n[🔭 TRANSPARÊNCIA OPERACIONAL]",
     "Se o usuário perguntar sobre seu raciocínio, limitações ou como você opera:",
@@ -409,9 +408,6 @@ export async function buildChatPrompt(
   // ═══════════════════════════════════════════════════════════════
   // MONTAGEM FINAL DE FERRAMENTAS
   // ═══════════════════════════════════════════════════════════════
-  // ✅ v4 fix: ToolDef shape é { type, function: { name, ... } }
-  // t.name é sempre undefined — o name real está em t.function.name.
-  // Filtrar por t.name retornava tools=[] → OpenRouter rejeitava em ~473ms.
   const allToolKeys = new Set<string>([
     ...Array.from(ALWAYS_ENABLED_TOOLS),
     ...(activeTools || []),
@@ -419,7 +415,7 @@ export async function buildChatPrompt(
   ]);
 
   const tools = ALL_TOOLS.filter(
-    (t: ToolDef) => t.function?.name && allToolKeys.has(t.function.name)
+    (t: any) => t.function?.name && allToolKeys.has(t.function.name)
   );
 
   return {
