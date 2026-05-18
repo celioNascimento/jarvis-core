@@ -18,12 +18,13 @@ import { executeRegistrarTransacao, executeConsultarFinancas, executeCriarOrcame
 import { executeGerenciarProjeto, executeListarProjetos, executeGerenciarTopico, executeListarTopicos, executeGerenciarEntry, executeListarEntries, executeGerenciarMembrosProjeto } from '@/lib/tools/executors/projects';
 import { executeListarRotinas, executeGerenciarRotina, executeFazerCheckinRotina } from '@/lib/tools/executors/routines';
 import { executeConsultarClimaAtual } from '@/lib/tools/executors/clima';
-import { executeConsultarPlacarAoVivo, executeConsultarTabela } from '@/lib/tools/executors/esportes'; // ← NOVO IMPORT AQUI
+import { executeConsultarPlacarAoVivo, executeConsultarTabela } from '@/lib/tools/executors/esportes'; 
 import { searchWeb, getWeatherForecast } from '@/lib/google';
 import { logToolExecution } from '@/lib/tools/executors/learning';
 import { executeGerenciarGuideline } from '@/lib/tools/executors/guidelines';
 import { executeAlternarPermissao } from '../tools/executors/relationships';
 import { executeAtualizarDossie, executeConsultarDossie } from '@/lib/tools/executors/dossie';
+import { executeAjustarPersonalidade, executeConsultarPersonalidade } from '@/lib/tools/executors/personality';
 
 // ── Tools que escrevem dados (Invalidação de Cache) ──────────────────────────
 const WRITE_TOOLS = new Set([
@@ -36,7 +37,7 @@ const WRITE_TOOLS = new Set([
   'compra_marcar_comprado', 'memoria_adicionar_diretriz', 'sistema_gerenciar_guideline', 
   'veiculo_registrar_abastecimento', 'veiculo_registrar_manutencao', 
   'veiculo_atualizar_odometro', 'contato_alternar_permissao',
-  'gerenciar_rotina', 'fazer_checkin_rotina', 'dossie_atualizar',
+  'gerenciar_rotina', 'fazer_checkin_rotina', 'dossie_atualizar', 'personalidade_ajustar',
 ]);
 
 // ── Tipagem do Handler Modular ───────────────────────────────────────────────
@@ -122,6 +123,10 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   // ── Dossiê
   'dossie_atualizar':  (p, a, n) => executeAtualizarDossie(p, a, n),
   'dossie_consultar':  (p, a, n) => executeConsultarDossie(p, a, n),
+
+  // ── Personalidade
+'personalidade_ajustar':   (p, a, n) => executeAjustarPersonalidade(p, a, n),
+'personalidade_consultar': (p, a, n) => executeConsultarPersonalidade(p, a, n),
 };
 
 // ── Idempotência ──────────────────────────────────────────────────────────────
