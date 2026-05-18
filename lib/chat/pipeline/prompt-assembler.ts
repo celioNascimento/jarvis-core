@@ -1,32 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
 // ✅ VERSÃO REVISADA v4 — Correções aplicadas após varredura de inconsistências:
-//
-//  [FIX-01] Bloco 18 item 5 reescrito: proibição negativa → redirecionamento positivo de persona.
-//           Impedia disclaimers mas não ensinava o comportamento correto, causando silêncio ou quebra.
-//  [FIX-02] Bloco 18 item 7 agora declara EXCEÇÃO EXPLÍCITA ao item 4 (zero preenchimento).
-//           Conflito entre as duas regras causava resposta em branco em saudações isoladas.
-//  [FIX-03] composeSystemPrompt() protegido com fallback ''. Retorno null/undefined gerava
-//           a string literal "null" ou "undefined" injetada no prompt.
-//  [FIX-04] alertaRadar estava sendo incluído no array mesmo quando vazio (''). Adicionado ao
-//           .filter(Boolean) implícito — agora retorna null quando vazio.
-//  [FIX-05] urgentes: condição ternária retornava string vazia ''. Unificado para null.
-//  [FIX-06] learnedInsightsBlock: mesmo padrão, retornava '' em vez de null no else.
-//  [FIX-07] finalModel declarado mas nunca usado — substituiu DEFAULT_MODEL nos dois
-//           buildDynamicContext e loadActiveModules mas não era passado para o return.
-//           Agora model: finalModel é o que vai no retorno.
-//  [FIX-08] activeTools e dynamicTools podiam ser undefined; Set spread lançava TypeError.
-//           Adicionado fallback ?? [] nos dois.
-//  [FIX-09] Bloco 3 (CALIBRAÇÃO EPISTÊMICA) e Bloco 16 (DECISÃO DE FERRAMENTAS) tinham
-//           sobreposição semântica em DADO DINÂMICO vs. prioridade de ferramentas. Fusão parcial
-//           e cross-reference explícito entre blocos.
-//  [FIX-10] Bloco 5 item 3 ("AMBIGUIDADE DE 'MENSAGENS'") era desnecessariamente restritivo e
-//           conflitava com ferramentas de agenda/lembrete que também são "mensagens" na UX.
-//           Reescrito para não criar falsos negativos.
-//  [FIX-11] filterL3ByAffect: índice de mês 4 = maio, 7 = agosto. Comentário adicionado para
-//           evitar confusão futura (JavaScript Date.getMonth() é 0-indexado).
-//  [FIX-12] Bloco 19 item 23 (ESCLARECIMENTO PROATIVO) conflitava com item 9 (ANTI-LOOP):
-//           "faça perguntas antes de executar" vs "se já perguntou, execute". Reescrito com
-//           condição de exclusão mútua explícita.
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
@@ -439,8 +412,8 @@ export async function buildChatPrompt(
     "21. CONSTRUÇÃO DE ROTINAS: Lista de ações sequenciais em contexto de planejamento = instrução de estruturação, não relato de ações realizadas. Acione gerenciar_rotina.",
     "22. MODO ESCUTA ATIVA: Se o usuário apontar resposta 'estranha', identifique a ferramenta que deveria ter sido usada e execute-a imediatamente.",
 
-    // [FIX-12] Condição de exclusão mútua com item 9 agora explícita
     "23. ESCLARECIMENTO PROATIVO: Se o pedido for ambíguo ou faltar informação crucial E ainda não houver confirmação prévia do usuário (ver item 9), faça até duas perguntas curtas antes de executar ferramentas. Se já houve confirmação, pule direto para a execução.",
+    "24. PROTOCOLO DE ABORTO IMEDIATO: Se o usuário expressar desejo de parar, cancelar ou mudar de assunto (ex: 'pare com isso', 'cancela', 'obrigado, já deu', 'deixa pra lá'), VOCÊ DEVE ENCERRAR O TÓPICO IMEDIATAMENTE. É ESTRITAMENTE PROIBIDO adicionar 'curiosidades', dar 'dicas extras' ou fazer perguntas de acompanhamento (ex: 'quer saber mais alguma coisa?'). Apenas confirme o encerramento de forma seca e executiva. Exemplo de resposta: 'Entendido. Assunto encerrado. Qual a próxima pauta?'.",
   ];
 
   const systemPrompt = systemParts
