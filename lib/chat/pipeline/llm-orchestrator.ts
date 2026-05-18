@@ -1,5 +1,5 @@
 // lib/chat/pipeline/llm-orchestrator.ts
-// V11.5.0 — Orquestrador Multi-Steps com Segurança de Tempo e Uso Eficiente de Tokens
+// V11.5.1 — Orquestrador Multi-Steps com Segurança de Tempo e Uso Eficiente de Tokens
 
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
@@ -37,15 +37,14 @@ async function executeToolCalls(
   sessionId: string,
   contextSnapshot: any[]
 ): Promise<ToolCallResult[]> {
-  // Timeout por tool: máximo 3 segundos
   return Promise.all(
-    toolCalls.map(async (tc) => ({
-      tc,
-      result: await Promise.race([
+    toolCalls.map(async (tc) => {
+      const result = await Promise.race([
         executeTool(tc, authUserId, numericUserId, contextSnapshot, sessionId),
-        new Promise((resolve) => setTimeout(() => resolve('Desculpe, esta ação demorou muito.'), 3000)),
-      ]),
-    }))
+        new Promise<string>((resolve) => setTimeout(() => resolve('Desculpe, esta ação demorou muito.'), 3000)),
+      ]);
+      return { tc, result };
+    })
   );
 }
 function buildToolCallMessages(
@@ -53,30 +52,35 @@ function buildToolCallMessages(
   toolCalls: any[],
   toolResults: ToolCallResult[]
 ): any[] {
-  return [
+  const messages = [
     {
       role: 'assistant',
       content: firstContent || null,
       tool_calls: toolCalls.map((tc) => ({
         id: tc.id,
         type: 'function',
-        function: { name: tc.function.name, arguments: tc.function.arguments },
+        function: {
+          name: tc.function.name,
+          arguments: tc.function.arguments,
+        },
       })),
     },
-    ...toolResults.map((tr) => ({
+  ];
+
+  toolResults.forEach((tr) => {
+    messages.push({
       role: 'tool',
       tool_call_id: tr.tc.id,
       content: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result),
-    })),
-  ];
+    });
+  });
+
+  return messages;
 }
 
 function appendResilienceNotice(text: string, requestedModel: string, usedModel: string): string {
   if (requestedModel.includes('pro') && usedModel.includes('flash')) {
-    return (
-      text +
-      `\n\n---\n*💡 Nota: O motor principal (Pro) está instável. Resposta gerada via reserva (Flash).*`
-    );
+    return text + `\n\n---\n*💡 Nota: O motor principal (Pro) está instável. Resposta gerada via reserva (Flash).*`;
   }
   return text;
 }
@@ -92,11 +96,11 @@ export async function runLLMOrchestrator(
   const toolChoice = resolveToolChoice(message);
   let currentMessages = [...conversationMessages];
   let passoAtual = 0;
-  const MAX_STEPS = 2; // 🔥 Reduzido de 4 para 2 → previne timeout na Vercel
-  let loopResponse = null;
+  const MAX_STEPS = 2;  let loopResponse: any = null;
   let ferramentasExecutadas = false;
 
-  // ── FASE 1: Loop de Acúmulo com Limite Estrito ──────────────────────────────  while (passoAtual < MAX_STEPS) {
+  // ── FASE 1: Loop de Acúmulo com Limite Estrito ──────────────────────────────
+  while (passoAtual < MAX_STEPS) {
     passoAtual++;
 
     const currentToolChoice = passoAtual === 1 ? toolChoice : 'auto';
@@ -112,15 +116,15 @@ export async function runLLMOrchestrator(
         requestedModel,
         0.1,
         25000,
-        8000, // ⏱️ timeoutMs: máximo 8s por chamada
+        8000,
         currentToolChoice
       );
     } catch (error) {
       console.error(`[Orchestrator] Erro na chamada LLM no passo ${passoAtual}:`, error);
-      break; // Sai do loop e tenta responder com o que tem
+      break; // Sai do loop se houver falha
     }
 
-    if (loopResponse.toolCalls?.length > 0) {
+    if (Array.isArray(loopResponse.toolCalls) && loopResponse.toolCalls.length > 0) {
       ferramentasExecutadas = true;
       console.log(`[Orchestrator] 🚀 Passo ${passoAtual}: Executando ${loopResponse.toolCalls.length} ferramenta(s).`);
 
@@ -135,23 +139,21 @@ export async function runLLMOrchestrator(
       const toolMessages = buildToolCallMessages(loopResponse.content, loopResponse.toolCalls, toolResults);
       currentMessages.push(...toolMessages);
 
-      continue; // Volta para tentar outro ciclo (ex: ferramenta A chama B)
+      continue; // Continua o loop para possível nova invocação
     } else {
-      break; // IA decidiu parar → saída natural
+      break; // Nenhuma tool call → saída natural
     }
   }
 
-  // ── FASE 2: Síntese Cognitiva Final (Opcional) ──────────────────────────────
-
-  // ✅ Otimização: pula síntese se nenhuma ferramenta foi usada
+  // ── FASE 2: Síntese Cognitiva Final (com fallback seguro) ──────────────────
   if (!ferramentasExecutadas && loopResponse) {
-    return appendResilienceNotice(      loopResponse.content || 'Entendido.',
+    return appendResilienceNotice(
+      loopResponse.content || 'Entendido.',
       requestedModel,
       loopResponse.modelUsed || requestedModel
     );
   }
 
-  // ❗ Se houve ferramentas, faz uma única síntese final (modelo leve, temperatura 0.7)
   try {
     const synthesisResponse = await callOpenRouterWithPriority(
       1,
@@ -159,10 +161,10 @@ export async function runLLMOrchestrator(
       `${requestSignature}_synth`,
       currentMessages,
       [],
-      requestedModel.replace('pro', 'fast').replace('large', 'base'), // usa modelo mais rápido
+      requestedModel.replace('pro', 'fast').replace('large', 'base'),
       0.7,
       15000,
-      6000 // timeout mais curto
+      6000
     );
 
     return appendResilienceNotice(
@@ -172,7 +174,6 @@ export async function runLLMOrchestrator(
     );
   } catch (error) {
     console.error('[Orchestrator] Falha na síntese final:', error);
-    // Retorna conteúdo parcial ou fallback seguro
     return (
       loopResponse?.content ||
       'Ação realizada, mas houve um problema ao formatar a resposta.'
