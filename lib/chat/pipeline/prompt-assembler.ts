@@ -415,7 +415,16 @@ export async function buildChatPrompt(
     ...(dynamicTools || []),
   ]);
 
-  const tools = ALL_TOOLS.filter((t: any) => allToolKeys.has(t.name));
+  // CORREÇÃO: Restaurando o mapeamento correto (t.function.name)
+  const tools = ALL_TOOLS.filter((t: any) => t.function && allToolKeys.has(t.function.name));
+
+  return {
+    systemPrompt,
+    tools,
+    model: finalModel,
+    conversationMessages: recentHistory,
+  };
+}
 
   return {
     systemPrompt,
