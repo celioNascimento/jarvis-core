@@ -1,34 +1,29 @@
 // app/api/chat/route.ts — Pipeline Director
-// V13.1.0
-//
-// Este arquivo NÃO deve ser editado para:
-//   - Adicionar ferramentas        → tools-executor.ts
-//   - Mudar comportamento do chat  → prompt-assembler.ts ou personality.ts
-//   - Mudar como o LLM é chamado   → llm-orchestrator.ts
-//   - Mudar como dados são salvos  → response-finalizer.ts
-//   - Corrigir bugs de localização → request-context.ts
-//
-// Este arquivo só muda se a ORDEM ou o NÚMERO de fases mudar.
+// V13.2.1 — Estável, compatível com Edge, Turbopack e Vercel
 
 import { NextRequest, NextResponse } from 'next/server';
+
+// ── Importações Críticas (garantidas como edge-compatible) ─────────────────────
 import { buildRequestContext } from '@/lib/chat/pipeline/request-context';
 import { runIntelligencePipeline } from '@/lib/chat/pipeline/intelligence';
 import { buildChatPrompt } from '@/lib/chat/pipeline/prompt-assembler';
 import { runLLMOrchestrator } from '@/lib/chat/pipeline/llm-orchestrator';
 import { finalizeResponse } from '@/lib/chat/pipeline/response-finalizer';
 
-// ✅ Remove maxDuration → indica função Edge
-export const runtime = 'edge'; // ← Ativa Edge Runtime oficialmente
+// ✅ Runtime oficial para Edge
+export const runtime = 'edge';
 
-export async function POST(req: NextRequest) {
-  const startTime = Date.now();
+// 🔥 Entrypoint principal
+export async function POST(req: NextRequest): Promise<Response> {
+  // 🚨 Log imediato: se não aparecer, o problema é de bundling
+  console.log('[API] /api/chat iniciado — V13.2.1');
 
   try {
-    // Fase 1: parse, auth, geo, dedup
+    // Fase 1: contexto (auth, cache, geo)
     const ctx = await buildRequestContext(req);
-
-    // Resposta cacheada (requisição duplicada)
+    
     if (ctx.isCachedReply && ctx.cachedReply) {
+      console.log('[API] Resposta em cache usada:', ctx.sessionId);
       return NextResponse.json({
         reply: ctx.cachedReply,
         ok: true,
@@ -37,23 +32,39 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Fase 2: embedding, classify, memória, emoção
+    // Fase 2: inteligência (emoção, memória, classificação)
     const intel = await runIntelligencePipeline(ctx);
 
-    // Fase 3: módulos, geo, system prompt, ferramentas
+    // Fase 3: montagem do prompt (system + tools + contexto)
     const prompt = await buildChatPrompt(ctx, intel);
 
-    // Fase 4: LLM + tool loop
+    // Fase 4: orquestração LLM + ferramentas
     const reply = await runLLMOrchestrator(ctx, prompt);
 
-    // Fase 5: cache, persist, TTS, resposta HTTP
-    return finalizeResponse(ctx, intel, prompt, reply, req); // ← passa req para waitUntil
+    // Fase 5: resposta + background (cache, persistência, TTS)
+    // Passa `req` para habilitar waitUntil
+    return finalizeResponse(ctx, intel, prompt, reply, req);
 
   } catch (e: any) {
+    // 🔐 Tratamento explícito de erro de autenticação
     if (e.statusCode === 401) {
+      console.warn('[API] Auth falhou:', e.message);
       return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
     }
-    console.error('[FATAL] Pipeline error:', e);
-    return NextResponse.json({ error: 'Erro no motor do Lev.' }, { status: 500 });
+
+    // 💥 Erro inesperado — log detalhado
+    console.error('[FATAL] Pipeline crash:', {
+      message: e.message,
+      stack: e.stack?.split('\n')[0],
+      time: new Date().toISOString(),
+    });
+
+    return NextResponse.json(
+      { 
+        error: 'Erro interno do assistente.', 
+        ok: false 
+      },
+      { status: 500 }
+    );
   }
 }
