@@ -12,6 +12,7 @@ import { relationshipsTools } from './relationships';
 import { routinesTools } from './routines'; 
 import { climaTools } from './clima';
 import { esportesTools } from './esportes'; // ← NOVO IMPORT AQUI
+import { dossieTools } from './dossie';
 
 type ToolDef = {
   type: string;
@@ -37,6 +38,7 @@ export const tools: ToolDef[] = [
   ...routinesTools, 
   ...climaTools,
   ...esportesTools, 
+  ...dossieTools,
 ];
 
 export {
@@ -53,5 +55,6 @@ export {
   relationshipsTools,
   routinesTools,
   climaTools,
-  esportesTools 
+  esportesTools,
+  dossieTools,
 };
