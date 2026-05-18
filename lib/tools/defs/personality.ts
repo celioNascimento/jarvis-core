@@ -5,7 +5,7 @@ export const personalityTools = [
     type: 'function',
     function: {
       name: 'personalidade_ajustar',
-      description: 'Ajusta um parâmetro de personalidade do Lev. Use quando o usuário pedir para mudar o tom, humor, franqueza ou modo de escuta — explicitamente ou por contexto ("seja mais direto", "pode relaxar um pouco", "quero que você ouça mais").',
+    description: 'Ajusta um parâmetro de personalidade do Lev. Dispara quando o usuário mencionar qualquer ajuste de tom, humor, franqueza, escuta ou formalidade — com número, porcentagem ou expressão ("mais leveza", "seja mais direto"). Converta porcentagem para inteiro (70% = 70).',
       parameters: {
         type: 'object',
         properties: {
