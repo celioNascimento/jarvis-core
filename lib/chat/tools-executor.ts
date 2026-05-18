@@ -23,6 +23,7 @@ import { searchWeb, getWeatherForecast } from '@/lib/google';
 import { logToolExecution } from '@/lib/tools/executors/learning';
 import { executeGerenciarGuideline } from '@/lib/tools/executors/guidelines';
 import { executeAlternarPermissao } from '../tools/executors/relationships';
+import { executeAtualizarDossie, executeConsultarDossie } from '@/lib/tools/executors/dossie';
 
 // ── Tools que escrevem dados (Invalidação de Cache) ──────────────────────────
 const WRITE_TOOLS = new Set([
@@ -35,7 +36,7 @@ const WRITE_TOOLS = new Set([
   'compra_marcar_comprado', 'memoria_adicionar_diretriz', 'sistema_gerenciar_guideline', 
   'veiculo_registrar_abastecimento', 'veiculo_registrar_manutencao', 
   'veiculo_atualizar_odometro', 'contato_alternar_permissao',
-  'gerenciar_rotina', 'fazer_checkin_rotina'
+  'gerenciar_rotina', 'fazer_checkin_rotina', 'dossie_atualizar',
 ]);
 
 // ── Tipagem do Handler Modular ───────────────────────────────────────────────
@@ -117,6 +118,10 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   'web_pesquisar':              (p) => searchWeb(p.query),
   'clima_consultar_atual':      (p, a, n) => executeConsultarClimaAtual(p, a, n),
   'contato_alternar_permissao': (p, a, n) => executeAlternarPermissao(p, a, n),
+
+  // ── Dossiê
+  'dossie_atualizar':  (p, a, n) => executeAtualizarDossie(p, a, n),
+  'dossie_consultar':  (p, a, n) => executeConsultarDossie(p, a, n),
 };
 
 // ── Idempotência ──────────────────────────────────────────────────────────────
