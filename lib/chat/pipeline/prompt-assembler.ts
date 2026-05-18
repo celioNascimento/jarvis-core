@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// ✅ VERSÃO v5 — Arquitetura por Princípios: Persona, Intenção, Execução
+// ✅ VERSÃO v5.1 — Arquitetura por Princípios, Build Seguro
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
@@ -14,7 +14,6 @@ export interface ChatPrompt {
   systemPrompt: string;
   tools: any[];
   model: string;
-  conversationMessages: any[];
 }
 
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
@@ -47,8 +46,8 @@ export async function buildChatPrompt(
       userId: String(user.id),
       authUserId: user.auth_user_id,
       message,
-      contexts,      emotionalScore: emotional.score,
-      location: normalizedLocation,
+      contexts,
+      emotionalScore: emotional.score,      location: normalizedLocation,
       masterContext,
     },
     user.plan,
@@ -145,8 +144,8 @@ Se houver conflito: **utilidade > conformidade**.
    - Opinião → diga "Minha análise é...".
 
 2. **Responda com profundidade ajustada**:
-   - Pergunta direta → resposta curta (1–3 frases).   - Problema complexo → entregue: contexto → opções → recomendação.
-   - Erro técnico → [CAUSA RAIZ] → [LOCAL] → [SOLUÇÃO].
+   - Pergunta direta → resposta curta (1–3 frases).
+   - Problema complexo → entregue: contexto → opções → recomendação.   - Erro técnico → [CAUSA RAIZ] → [LOCAL] → [SOLUÇÃO].
 
 3. **Use ferramentas com propósito**:
    - Combine quando necessário (ex: clima + rotina).
@@ -194,12 +193,12 @@ A melhor resposta nem sempre é a mais segura — é a que move a agulha.
 
   // Resolve as definições reais de ferramentas buscando pelo nome da função
   const resolvedTools = ALL_TOOLS.filter(tool =>
-    tool.function?.name && allTools.includes(tool.function.name)  );
-
+    tool.function?.name && allTools.includes(tool.function.name)
+  );
+  // Retorna apenas o necessário para o modelo
   return {
     systemPrompt,
     tools: resolvedTools,
     model: finalModel,
-    conversationMessages: ctx.conversationMessages,
   };
 }
