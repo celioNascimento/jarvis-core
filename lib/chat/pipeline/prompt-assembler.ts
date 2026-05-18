@@ -409,22 +409,18 @@ export async function buildChatPrompt(
   // ═══════════════════════════════════════════════════════════════
   // MONTAGEM FINAL DE FERRAMENTAS
   // ═══════════════════════════════════════════════════════════════
-  const allToolKeys = new Set([
+  // ✅ v4 fix: ToolDef shape é { type, function: { name, ... } }
+  // t.name é sempre undefined — o name real está em t.function.name.
+  // Filtrar por t.name retornava tools=[] → OpenRouter rejeitava em ~473ms.
+  const allToolKeys = new Set<string>([
     ...Array.from(ALWAYS_ENABLED_TOOLS),
     ...(activeTools || []),
     ...(dynamicTools || []),
   ]);
 
-  // CORREÇÃO: Restaurando o mapeamento correto (t.function.name)
-  const tools = ALL_TOOLS.filter((t: any) => t.function && allToolKeys.has(t.function.name));
-
-  return {
-    systemPrompt,
-    tools,
-    model: finalModel,
-    conversationMessages: recentHistory,
-  };
-}
+  const tools = ALL_TOOLS.filter(
+    (t: ToolDef) => t.function?.name && allToolKeys.has(t.function.name)
+  );
 
   return {
     systemPrompt,
