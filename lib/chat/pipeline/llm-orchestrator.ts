@@ -1,17 +1,41 @@
 // lib/chat/pipeline/llm-orchestrator.ts
-// V11.5.1 — Orquestrador Multi-Steps com Segurança de Tempo e Uso Eficiente de Tokens
+// V11.5.2 — Orquestrador Multi-Steps com Tipagem Segura e Suporte a Ferramentas
 
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
 import type { ChatRequestContext } from './request-context';
 import type { ChatPrompt } from './prompt-assembler';
 
+// ── Tipos Explícitos ─────────────────────────────────────────────────────────
+
+export type ToolCall = {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string; // JSON-stringified
+  };
+};
+
+export type ChatMessage =
+  | { role: 'system'; content: string | null }
+  | { role: 'user'; content: string | null }
+  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[] }
+  | { role: 'tool'; tool_call_id: string; content: string };
+
+export type LLMResponse = {
+  content: string | null;
+  toolCalls?: ToolCall[];
+  modelUsed: string;
+};
+
 interface ToolCallResult {
-  tc: any;
+  tc: ToolCall;
   result: string;
 }
 
 // ── Padrões Estritos de Intenção Ativa ────────────────────────────────────────
+
 const IMPERATIVE_INTENT_PATTERNS = [
   /(?:me\s+)?lembr[ae]|crie\s+(?:um\s+)?lembrete|me\s+avisa|notifica|daqui\s+a\s+\d+/i,
   /cancela.*(lembrete|aviso|evento|compromisso)/i,
@@ -23,55 +47,58 @@ const IMPERATIVE_INTENT_PATTERNS = [
 function resolveToolChoice(message: string): 'auto' | 'required' {
   const isImperative = IMPERATIVE_INTENT_PATTERNS.some((pattern) => pattern.test(message));
   if (isImperative) {
-    console.log(`[Orchestrator] 🎯 Intenção estrita detectada. Forçando tool_choice: "required"`);
-    return 'required';
+    console.log(`[Orchestrator] 🎯 Intenção estrita detectada. Forçando tool_choice: "required"`);    return 'required';
   }
   return 'auto';
 }
 
 // ── Helpers de Execução ───────────────────────────────────────────────────────
+
 async function executeToolCalls(
-  toolCalls: any[],
+  toolCalls: ToolCall[],
   authUserId: string,
   numericUserId: string,
   sessionId: string,
-  contextSnapshot: any[]
+  contextSnapshot: ChatMessage[]
 ): Promise<ToolCallResult[]> {
   return Promise.all(
     toolCalls.map(async (tc) => {
-      const result = await Promise.race([
-        executeTool(tc, authUserId, numericUserId, contextSnapshot, sessionId),
-        new Promise<string>((resolve) => setTimeout(() => resolve('Desculpe, esta ação demorou muito.'), 3000)),
-      ]);
-      return { tc, result };
+      try {
+        const rawResult = await Promise.race([
+          executeTool(tc, authUserId, numericUserId, contextSnapshot, sessionId),
+          new Promise<string>((resolve) =>
+            setTimeout(() => resolve('Desculpe, esta ação demorou muito.'), 3000)
+          ),
+        ]);
+        const result = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
+        return { tc, result };
+      } catch (err) {
+        return {
+          tc,
+          result: 'Não foi possível executar esta ação no momento.',
+        };
+      }
     })
   );
 }
+
 function buildToolCallMessages(
   firstContent: string | null,
-  toolCalls: any[],
+  toolCalls: ToolCall[],
   toolResults: ToolCallResult[]
-): any[] {
-  const messages = [
+): ChatMessage[] {
+  const messages: ChatMessage[] = [
     {
       role: 'assistant',
-      content: firstContent || null,
-      tool_calls: toolCalls.map((tc) => ({
-        id: tc.id,
-        type: 'function',
-        function: {
-          name: tc.function.name,
-          arguments: tc.function.arguments,
-        },
-      })),
+      content: firstContent,
+      tool_calls: toolCalls,
     },
   ];
 
   toolResults.forEach((tr) => {
-    messages.push({
-      role: 'tool',
+    messages.push({      role: 'tool',
       tool_call_id: tr.tc.id,
-      content: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result),
+      content: tr.result,
     });
   });
 
@@ -80,12 +107,13 @@ function buildToolCallMessages(
 
 function appendResilienceNotice(text: string, requestedModel: string, usedModel: string): string {
   if (requestedModel.includes('pro') && usedModel.includes('flash')) {
-    return text + `\n\n---\n*💡 Nota: O motor principal (Pro) está instável. Resposta gerada via reserva (Flash).*`;
+    return text + `\n\n---\n*💡 Nota: O motor principal (${requestedModel}) está instável. Resposta gerada via reserva (${usedModel}).*`;
   }
   return text;
 }
 
 // ── Entrypoint ────────────────────────────────────────────────────────────────
+
 export async function runLLMOrchestrator(
   ctx: ChatRequestContext,
   prompt: ChatPrompt
@@ -94,9 +122,10 @@ export async function runLLMOrchestrator(
   const { conversationMessages, tools, model: requestedModel } = prompt;
 
   const toolChoice = resolveToolChoice(message);
-  let currentMessages = [...conversationMessages];
+  let currentMessages = [...conversationMessages] as ChatMessage[];
   let passoAtual = 0;
-  const MAX_STEPS = 2;  let loopResponse: any = null;
+  const MAX_STEPS = 2;
+  let loopResponse: LLMResponse | null = null;
   let ferramentasExecutadas = false;
 
   // ── FASE 1: Loop de Acúmulo com Limite Estrito ──────────────────────────────
@@ -116,12 +145,11 @@ export async function runLLMOrchestrator(
         requestedModel,
         0.1,
         25000,
-        8000,
-        currentToolChoice
-      );
+        8000,        currentToolChoice
+      ) as LLMResponse;
     } catch (error) {
       console.error(`[Orchestrator] Erro na chamada LLM no passo ${passoAtual}:`, error);
-      break; // Sai do loop se houver falha
+      break;
     }
 
     if (Array.isArray(loopResponse.toolCalls) && loopResponse.toolCalls.length > 0) {
@@ -139,13 +167,14 @@ export async function runLLMOrchestrator(
       const toolMessages = buildToolCallMessages(loopResponse.content, loopResponse.toolCalls, toolResults);
       currentMessages.push(...toolMessages);
 
-      continue; // Continua o loop para possível nova invocação
+      continue;
     } else {
-      break; // Nenhuma tool call → saída natural
+      break;
     }
   }
 
   // ── FASE 2: Síntese Cognitiva Final (com fallback seguro) ──────────────────
+
   if (!ferramentasExecutadas && loopResponse) {
     return appendResilienceNotice(
       loopResponse.content || 'Entendido.',
@@ -155,17 +184,17 @@ export async function runLLMOrchestrator(
   }
 
   try {
-    const synthesisResponse = await callOpenRouterWithPriority(
+    const fastModel = requestedModel.replace(/pro(-\w+)?/, 'fast$1');
+    const synthesisResponse = (await callOpenRouterWithPriority(
       1,
       'never',
       `${requestSignature}_synth`,
       currentMessages,
       [],
-      requestedModel.replace('pro', 'fast').replace('large', 'base'),
+      fastModel,
       0.7,
       15000,
-      6000
-    );
+      6000    )) as LLMResponse;
 
     return appendResilienceNotice(
       synthesisResponse.content || 'Ação concluída.',
