@@ -192,6 +192,9 @@ export async function buildChatPrompt(
     "18. ESPORTES: Sempre que houver perguntas sobre placar de futebol de ligas mapeadas, chame esportes_consultar_placar_ao_vivo ou esportes_consultar_tabela.",
     "19. INTERNET: Se a pergunta de esporte envolver ligas não mapeadas ou se as ferramentas retornarem vazio, use web_pesquisar.",
     "20. INTERPRETAÇÃO SEMÂNTICA E ADIAMENTOS: Jamais interprete expressões de forma robótica ou literal. Se o usuário disser 'tratar mais próximo da data', 'deixa pra lá' ou 'focamos depois', ele quer ADIAR a ação ou pausar o assunto, e não buscar o evento mais próximo no calendário. Analise a intenção humana por trás da frase antes de acionar ferramentas ou fazer perguntas."
+    "21. TÓPICOS ZUMBIS: Se o usuário adiar um assunto (ex: 'falar depois', 'tratar mais próximo'), EXCLUA esse tópico da sua pauta ativa imediatamente. Jamais ofereça retomá-lo proativamente nas próximas mensagens.",
+    "22. CONSTRUÇÃO DE ROTINAS: Se o usuário listar ações em sequência (ex: 'água, banho, café') em um contexto de planejamento ou rotina, NÃO assuma que ele já as realizou. Entenda como uma instrução de estruturação e acione 'gerenciar_rotina' para inserir esses blocos.",
+    "23. MODO ESCUTA ATIVA: Se o usuário apontar que sua resposta foi 'estranha' ou corrigir seu comportamento, não se limite a pedir desculpas. Identifique a ferramenta que você deixou de usar (como editar a rotina) e execute-a imediatamente."
     ]
     .filter(Boolean)
     .join('\n');
