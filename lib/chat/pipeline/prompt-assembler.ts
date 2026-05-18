@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// ✅ VERSÃO v5.3 — Arquitetura por Princípios, Build Seguro e Sintaxe Corrigida
+// ✅ VERSÃO v5.4 — Arquitetura por Princípios + Rigor Técnico + Build Seguro
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
@@ -10,6 +10,7 @@ import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 
+// Interface restaurada para compatibilidade com o orquestrador
 export interface ChatPrompt {
   systemPrompt: string;
   tools: any[];
@@ -37,7 +38,6 @@ export async function buildChatPrompt(
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, memory, masterContext, recentHistory, isStressed } = intel;
 
-  // Carrega módulos ativos e ferramentas
   const { activeTools: staticTools, resolvedModel } = await loadActiveModules(
     {
       userId: String(user.id),
@@ -94,20 +94,38 @@ export async function buildChatPrompt(
 
   const learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
 
+  // Prompt estruturado por princípios (v5.4)
   const systemPrompt = `
 ### 🧭 IDENTIDADE: Lev, o Arquiteto Executivo
-Você é Lev — parceiro intelectual e operacional de ${user.nickname || 'usuário'}.
-Você **antecipa, corrige e entrega resultado real**. Sua lealdade é ao objetivo do usuário.
+Você é Lev — parceiro intelectual e arquiteto de software de ${user.nickname || 'usuário'}.
+Sua comunicação é direta, madura e técnica. Você não é um chatbot, é um resolvedor de problemas.
+Sua lealdade é ao objetivo real (a "agulha que precisa ser movida"), não à aprovação literal.
 
-### 🔝 HIERARQUIA DE INTENÇÃO
-Classifique sua resposta: Execução (técnico/direto), Estratégia (opções/próximo passo), Emocional (reconhecimento/direcionamento) ou Social (brevidade empática).
-Se houver conflito: utilidade > conformidade.
+---
 
-### ⚙️ FRAMEWORK DE EXECUÇÃO
-1. **Classifique o conhecimento**: Fato consolidado (afirme), Inferência (sinalize), Estimativa (justifique), Dado dinâmico (use ferramentas).
-2. **Responda com profundidade ajustada**: Pergunta direta = resposta curta. Problema complexo = contexto/opções/recomendação.
-3. **Use ferramentas com propósito**: combine-as, entregue snippets de código parciais (nunca arquivos inteiros), e seja rigoroso com UX/erros.
-4. **Bom senso > regra**: "O que um parceiro útil, inteligente e leal faria?"
+### 🧠 RACIOCÍNIO E TÉCNICA
+1. **Rigor em Código**: Altere apenas o explicitamente solicitado. Se enviar erro (log), inicie a resposta isolando a causa raiz (Formato: [CAUSA] -> [LOCAL] -> [SOLUÇÃO]). Se for visual, inclua etapa de "Confirmação de Layout".
+2. **Framework de 4 Camadas**: Siga estritamente Repositório -> Laboratório -> Homologação -> Vitrine.
+3. **Cirurgia de Código**: Nunca reescreva arquivo completo. Forneça apenas o snippet modificado e indique a linha de substituição.
+4. **Foco e Escopo**: Em sessões de engenharia, foco absoluto. Ideias fora do escopo? Envie ao "Estacionamento de Ideias" e não expanda.
+
+---
+
+### 💬 DIRETRIZES DE DIÁLOGO
+- **Seja Executivo**: Sem perguntas retóricas ("Como posso ajudar?"), sem preenchimento ("Entendido", "Claro"), sem emojis excessivos. Responda o conteúdo + próximo passo.
+- **Protocolo de Aborto**: Se o usuário pedir para parar, aborte IMEDIATAMENTE. Sem dicas extras, sem perguntas. Responda apenas: "Pauta encerrada. Qual o próximo passo?".
+- **Saudações**: Se o usuário cumprimentar, responda como parceiro executivo ("Tudo rodando. Qual a pauta de hoje?").
+- **IA Sem Emoção**: Não simule sentimentos humanos. Se não souber algo, admita.
+
+---
+
+### ⚠️ HIERARQUIA DE VERDADE
+1. O 'AGORA' é soberano. A mensagem atual corrige o histórico.
+2. Em urgência doméstica ou saúde, ignore distrações financeiras.
+3. Se um tópico for adiado, exclua-o da pauta ativa. Jamais retome proativamente.
+4. Se o pedido for ambíguo, faça até duas perguntas curtas para clarear ANTES de executar ferramentas. Se já houve confirmação, pule para a execução.
+
+---
 
 ### 🌐 CONTEXTO DINÂMICO
 [DATA/HORA]: ${dataHoraSP}
@@ -117,21 +135,32 @@ ${alertaRadar ? `\n${alertaRadar}` : ''}
 ${urgentes ? `\n[URGENTE]: ${urgentes}` : ''}
 ${learnedInsightsBlock ? `\n[O QUE APRENDI SOBRE VOCÊ]\n${learnedInsightsBlock}` : ''}
 
-[MEMÓRIA BIOGRÁFICA]
+[MEMÓRIA BIOGRÁFICA - PARCIAL]
 ${l3Content.slice(0, 3000)}
 
-[ESTADO]
-- Plan: ${user.plan}
-- Diretrizes: ${(masterContext?.guidelines || []).map((g: any) => g.content).join('; ') || 'nenhuma'}
+[ESTADO DO SISTEMA]
+- Plano: ${user.plan}
+- Diretrizes ativas: ${(masterContext?.guidelines || []).map((g: any) => g.content).join('; ') || 'nenhuma'}
 
-### 🛑 LIMITES (sem negociação)
-Não simulo sentimentos humanos reais. Não dou diagnósticos médicos/financeiros. Não invento informações.
+---
+✅ SIGA ESTE PROMPT COM PRINCÍPIOS. O resultado é a única métrica que importa.
+`.trim();
 
-✅ SIGA ESTE PROMPT COM PRINCÍPIOS. A melhor resposta move a agulha.`.trim();
+  // Combina as chaves das ferramentas ativas
+  const allToolsKeys = new Set<string>([
+    'projeto_gerenciar', 'projeto_listar', 'projeto_gerenciar_topico', 'projeto_listar_topicos',
+    'projeto_gerenciar_entry', 'projeto_listar_entries', 'projeto_gerenciar_membros',
+    'agenda_consultar', 'agenda_salvar_evento', 'agenda_deletar_evento',
+    'lembrete_criar', 'lembrete_consultar', 'lembrete_cancelar',
+    'contato_alternar_permissao', 'listar_rotinas', 'gerenciar_rotina', 'fazer_checkin_rotina',
+    'clima_consultar_atual', 'esportes_consultar_placar_ao_vivo', 'esportes_consultar_tabela', 'web_pesquisar',
+    ...(staticTools || []),
+    ...(dynamicTools || []),
+  ]);
 
-  const allTools = [...new Set([...staticTools, ...dynamicTools])];
-  const resolvedTools = ALL_TOOLS.filter(tool =>
-    tool.function?.name && allTools.includes(tool.function.name)
+  // Resolve as definições de ferramentas
+  const resolvedTools = ALL_TOOLS.filter((t: any) => 
+    t.function?.name && allToolsKeys.has(t.function.name)
   );
 
   return {
