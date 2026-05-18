@@ -1,15 +1,12 @@
 // lib/chat/pipeline/response-finalizer.ts
 // Fase 5 — Cache, Persistência, TTS e Resposta HTTP
 //
-// Responsabilidade única: receber a resposta do LLM e entregar
-// o NextResponse ao cliente, disparando todos os efeitos colaterais
-// (cache, banco, extração) sem bloquear o retorno.
+// Responsabilidade única: entregar a resposta ao cliente rapidamente
+// e disparar salvamento/extração em background via waitUntil.
 //
-// Para mudar como a resposta é salva: edite apenas este arquivo.
-// Para mudar o que é extraído das conversas: edite unified-extractor.ts.
-// Este arquivo só muda se o FORMATO DA RESPOSTA HTTP mudar.
+// A Vercel continuará processando após o retorno — sem 504, sem perda de dados.
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { supabase } from '@/lib/jarvis';
 import { extractAndSummarize } from '@/lib/extractor';
@@ -45,13 +42,12 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
         headers: {
           'Accept': 'audio/mpeg',
           'xi-api-key': process.env.ELEVENLABS_API_KEY,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           text: cleanText,
           model_id: 'eleven_multilingual_v2',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75 }
-        })
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },        }),
       });
 
       if (!elRes.ok) {
@@ -68,27 +64,39 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
       });
       return Buffer.from(await mp3.arrayBuffer()).toString('base64');
     }
-
   } catch (e) {
     console.error('[ResponseFinalizer] TTS Error:', e);
     return null;
   }
 }
 
-// ─── Persistência em background ───────────────────────────────────────────────
+// ─── Entrypoint público ───────────────────────────────────────────────────────
 
-function persistInBackground(
+export async function finalizeResponse(
   ctx: ChatRequestContext,
   intel: ChatIntelligence,
   prompt: ChatPrompt,
-  reply: string
-): void {
-  void (async () => {
-    detectImplicitNegativeFeedback(ctx.message, ctx.user.id).catch(() => { });
+  reply: string,
+  req: NextRequest // ← necessário para waitUntil
+): Promise<NextResponse> {
+  // 1. Cache da resposta (rápido)
+  await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => {});
+
+  // 2. Gera áudio se solicitado
+  const audioBase64 = ctx.speak && ctx.voiceSettings
+    ? await generateTTS(reply, ctx.voiceSettings.provider, ctx.voiceSettings.voiceId)
+    : null;
+
+  // 3. Define tarefas em background — NÃO usa await!
+  const backgroundTasks = (async () => {
+    try {
+      await detectImplicitNegativeFeedback(ctx.message, ctx.user.id);
+    } catch (e) {
+      console.debug('[Feedback] Falha silenciosa:', e);
+    }
 
     try {
-      await supabase.from('brain').insert({
-        user_id: ctx.user.id,
+      await supabase.from('brain').insert({        user_id: ctx.user.id,
         session_id: ctx.sessionId,
         content: ctx.message,
         category: ctx.message.length < 15 ? 'noise' : 'info',
@@ -114,37 +122,31 @@ function persistInBackground(
       console.error('[ResponseFinalizer] Extractor error:', e.message);
     }
 
-    // Extração passiva de lembretes — só dispara se houver sinal na mensagem
     if (hasReminderIntent(ctx.message)) {
-      extractReminder(
-        String(ctx.user.id),
-        ctx.user.auth_user_id,
-        ctx.message,
-        new Date().toISOString()
-      ).catch(e => console.error('[ResponseFinalizer] Reminder extractor error:', e.message));
+      try {
+        await extractReminder(
+          String(ctx.user.id),
+          ctx.user.auth_user_id,
+          ctx.message,
+          new Date().toISOString()
+        );
+      } catch (e: any) {
+        console.error('[ResponseFinalizer] Reminder extractor error:', e.message);
+      }
+    }
+
+    try {
+      await processStyleSignals(String(ctx.user.id), ctx.message);
+    } catch (e: any) {
+      console.error('[style-learner] erro silencioso:', e);
     }
   })();
-}
-// ─── Entrypoint público ───────────────────────────────────────────────────────
 
-export async function finalizeResponse(
-  ctx: ChatRequestContext,
-  intel: ChatIntelligence,
-  prompt: ChatPrompt,
-  reply: string
-): Promise<NextResponse> {
-  // 1. Cache da resposta (para dedup de requisições duplicadas)
-  await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => { });
-
-  // 2. TTS
-  const audioBase64 = ctx.speak && ctx.voiceSettings
-    ? await generateTTS(reply, ctx.voiceSettings.provider, ctx.voiceSettings.voiceId)
-    : null;
-
-  // 3. Efeitos colaterais em background (não bloqueiam)
-  persistInBackground(ctx, intel, prompt, reply);
-
-  // 4. Resposta HTTP
+  // ⏩ Permite que Vercel continue processando após o retorno
+  if ('waitUntil' in (req as any)) {
+    (req as any).waitUntil?.(backgroundTasks);
+  }
+  // 4. ✅ Responde IMEDIATAMENTE ao usuário — sem delay
   return NextResponse.json({
     reply,
     audioBase64,
@@ -152,9 +154,5 @@ export async function finalizeResponse(
     sessionId: ctx.sessionId,
     assistantName: ctx.user.assistant_name || 'Lev',
     performance: `${Date.now() - ctx.startTime}ms`,
-    // fire-and-forget — não bloqueia a resposta
-    processStyleSignals(String(ctx.user.id), ctx.message).catch(err =>
-    console.error('[style-learner] erro silencioso:', err)
-);
   });
 }
