@@ -19,6 +19,7 @@ import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './prompt-assembler';
 import { extractReminder, hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
+import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -151,5 +152,9 @@ export async function finalizeResponse(
     sessionId: ctx.sessionId,
     assistantName: ctx.user.assistant_name || 'Lev',
     performance: `${Date.now() - ctx.startTime}ms`,
+    // fire-and-forget — não bloqueia a resposta
+    processStyleSignals(String(ctx.user.id), ctx.message).catch(err =>
+    console.error('[style-learner] erro silencioso:', err)
+);
   });
 }
