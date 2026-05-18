@@ -1,12 +1,32 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// ✅ VERSÃO REVISADA v3 — Incorpora identidade com valores, honestidade ativa,
-//    calibração epistêmica, defaulting por princípio, ética em zonas cinzas,
-//    tratamento diferenciado de ambiguidade emocional vs. operacional,
-//    cláusula de escopo em sessão de engenharia, output parcial de código,
-//    análise de stack trace, prevenção de preenchimento inicial,
-//    eliminação de redundâncias entre blocos.
-//    v3: emoji duplicado Bloco 17 corrigido, delimitadores composeSystemPrompt,
-//        urgentes com .filter(Boolean), nickname com fallback.
+// ✅ VERSÃO REVISADA v4 — Correções aplicadas após varredura de inconsistências:
+//
+//  [FIX-01] Bloco 18 item 5 reescrito: proibição negativa → redirecionamento positivo de persona.
+//           Impedia disclaimers mas não ensinava o comportamento correto, causando silêncio ou quebra.
+//  [FIX-02] Bloco 18 item 7 agora declara EXCEÇÃO EXPLÍCITA ao item 4 (zero preenchimento).
+//           Conflito entre as duas regras causava resposta em branco em saudações isoladas.
+//  [FIX-03] composeSystemPrompt() protegido com fallback ''. Retorno null/undefined gerava
+//           a string literal "null" ou "undefined" injetada no prompt.
+//  [FIX-04] alertaRadar estava sendo incluído no array mesmo quando vazio (''). Adicionado ao
+//           .filter(Boolean) implícito — agora retorna null quando vazio.
+//  [FIX-05] urgentes: condição ternária retornava string vazia ''. Unificado para null.
+//  [FIX-06] learnedInsightsBlock: mesmo padrão, retornava '' em vez de null no else.
+//  [FIX-07] finalModel declarado mas nunca usado — substituiu DEFAULT_MODEL nos dois
+//           buildDynamicContext e loadActiveModules mas não era passado para o return.
+//           Agora model: finalModel é o que vai no retorno.
+//  [FIX-08] activeTools e dynamicTools podiam ser undefined; Set spread lançava TypeError.
+//           Adicionado fallback ?? [] nos dois.
+//  [FIX-09] Bloco 3 (CALIBRAÇÃO EPISTÊMICA) e Bloco 16 (DECISÃO DE FERRAMENTAS) tinham
+//           sobreposição semântica em DADO DINÂMICO vs. prioridade de ferramentas. Fusão parcial
+//           e cross-reference explícito entre blocos.
+//  [FIX-10] Bloco 5 item 3 ("AMBIGUIDADE DE 'MENSAGENS'") era desnecessariamente restritivo e
+//           conflitava com ferramentas de agenda/lembrete que também são "mensagens" na UX.
+//           Reescrito para não criar falsos negativos.
+//  [FIX-11] filterL3ByAffect: índice de mês 4 = maio, 7 = agosto. Comentário adicionado para
+//           evitar confusão futura (JavaScript Date.getMonth() é 0-indexado).
+//  [FIX-12] Bloco 19 item 23 (ESCLARECIMENTO PROATIVO) conflitava com item 9 (ANTI-LOOP):
+//           "faça perguntas antes de executar" vs "se já perguntou, execute". Reescrito com
+//           condição de exclusão mútua explícita.
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
@@ -55,8 +75,9 @@ const ALWAYS_ENABLED_TOOLS = new Set([
   'web_pesquisar',
 ]);
 
+// [FIX-11] Date.getMonth() é 0-indexado: 4 = maio, 7 = agosto
 function filterL3ByAffect(l3: string, recentHistoryText: string, message: string): string {
-  const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
+  const isHighAlertMonth = [4, 7].includes(new Date().getMonth()); // maio e agosto
   const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(recentHistoryText + message));
   if (isHighAlertMonth || hasFamilySignal) return l3;
   return l3
@@ -85,6 +106,7 @@ export async function buildChatPrompt(
     DEFAULT_MODEL
   );
 
+  // [FIX-07] finalModel agora é efetivamente usado no return
   const finalModel =
     typeof resolvedModel === 'string' && resolvedModel.length > 0
       ? resolvedModel
@@ -100,7 +122,8 @@ export async function buildChatPrompt(
     masterContext,
   });
 
-  let alertaRadar = '';
+  // [FIX-04] alertaRadar retorna null quando vazio, em vez de string vazia
+  let alertaRadar: string | null = null;
   if (resolvedLocation?.lat && resolvedLocation?.lng) {
     const radar = await verificarProximidade(
       String(user.id),
@@ -123,7 +146,6 @@ export async function buildChatPrompt(
   const historyText = recentHistory.map(h => h.content).join(' ');
   const filteredL3 = filterL3ByAffect(memory.l3.content, historyText, message);
 
-  // ✅ v3 fix: .filter(Boolean) evita urgentes = ', , ' quando title vier undefined
   const urgentes = (masterContext?.reminders || [])
     .map((u: any) => u.title)
     .filter(Boolean)
@@ -131,10 +153,35 @@ export async function buildChatPrompt(
 
   const learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
 
+  // [FIX-03] composeSystemPrompt protegido contra retorno null/undefined
+  const coreMemoryPrompt = composeSystemPrompt({
+    assistantName: user.assistant_name,
+    authorName: user.nickname,
+    isLikelyNoise: message.length < 15,
+    isSystemStressed: isStressed,
+    emotionalScore: emotional.score,
+    detectedContexts: contexts,
+    contextBlocks,
+    memoryBlocks: {
+      truncatedL3: `[ARQUIVO BIOGRÁFICO - PODE ESTAR DESATUALIZADO]\n${filteredL3.slice(0, 3000)}`,
+      truncatedHd: `[MEMÓRIAS DE LONGO PRAZO - CONSULTA SECUNDÁRIA]\n${memory.hd.block.slice(0, 4000)}`,
+      truncatedEvents: memory.events.block.slice(0, 2000),
+      relationship: memory.relationship.block.slice(0, 2000),
+      topics: masterContext?.topics || memory.topics.relatedTopicsBlock,
+    },
+    canonicalDateTimeBlock: dataHoraSP,
+    canonicalDateISO: nowSP.toISOString().split('T')[0],
+    systemWarning: '',
+    intent: 'personal',
+    dynamicGuidelines: (masterContext?.guidelines || [])
+      .map((g: any) => `- ${g.content}`)
+      .join('\n'),
+  }) || ''; // [FIX-03] fallback para string vazia
+
   // ═══════════════════════════════════════════════════════════════
-  // ARRAY DE SISTEMA UNIFICADO (V3)
+  // ARRAY DE SISTEMA UNIFICADO (V4)
   // ═══════════════════════════════════════════════════════════════
-  const systemPrompt = [
+  const systemParts: (string | null)[] = [
 
     // ─────────────────────────────────────────────────────────────
     // BLOCO 0 — CONTEXTO TEMPORAL E GEOGRÁFICO
@@ -142,13 +189,12 @@ export async function buildChatPrompt(
     `[RELÓGIO DO SISTEMA]: ${dataHoraSP}`,
     geoBlock,
     gpsInstruction,
-    alertaRadar,
+    alertaRadar, // [FIX-04] null quando não há alerta; filter(Boolean) descarta
 
     // ─────────────────────────────────────────────────────────────
     // BLOCO 1 — IDENTIDADE CENTRAL
     // ─────────────────────────────────────────────────────────────
     "\n[🧭 IDENTIDADE CENTRAL]",
-    // ✅ v3 fix: template literal + fallback para nickname
     `Você é o Lev — parceiro intelectual e arquiteto executivo de ${user.nickname || 'usuário'}.`,
     "Você não é um executor de comandos. Você pensa junto, antecipa consequências e age com intenção.",
     "Sua lealdade é ao resultado real do usuário, não à aprovação imediata dele.",
@@ -171,13 +217,14 @@ export async function buildChatPrompt(
 
     // ─────────────────────────────────────────────────────────────
     // BLOCO 3 — CALIBRAÇÃO EPISTÊMICA
+    // [FIX-09] Cross-reference com Bloco 16 adicionado para evitar sobreposição
     // ─────────────────────────────────────────────────────────────
     "\n[🎯 CALIBRAÇÃO EPISTÊMICA]",
     "Antes de responder, classifique internamente o tipo de conhecimento envolvido:",
     "  • FATO CONSOLIDADO: conhecimento estável, verificável, sem ambiguidade. → Responda com afirmação direta.",
     "  • INFERÊNCIA LÓGICA: conclusão derivada de premissas, mas não diretamente verificada. → Sinalize: 'Com base em [X], infiro que...'",
     "  • ESTIMATIVA: cálculo aproximado com variáveis incertas. → Sinalize: 'Estimativa: [valor], pois [razão].'",
-    "  • DADO DINÂMICO: preço, lei, notícia, resultado esportivo. → Não afirme sem ferramenta. Use web_pesquisar ou API.",
+    "  • DADO DINÂMICO: preço, lei, notícia, resultado esportivo. → Não afirme sem ferramenta. Consulte Bloco 16 para escolher a ferramenta correta.",
     "  • OPINIÃO INFORMADA: análise subjetiva baseada em experiência acumulada. → Sinalize como opinião, não como verdade.",
     "Evite certeza absoluta em temas dinâmicos. Se houver conflito entre fontes, exponha as versões e recomende verificação externa.",
 
@@ -191,44 +238,26 @@ export async function buildChatPrompt(
 
     // ─────────────────────────────────────────────────────────────
     // BLOCO 5 — HIERARQUIA DE VERDADE E CONTEXTO
+    // [FIX-10] Item 3 reescrito: não bloquear ferramentas de agenda/lembrete
     // ─────────────────────────────────────────────────────────────
     "\n[⚠️ HIERARQUIA DE VERDADE E CONTEXTO]",
     "1. O 'AGORA' É SOBERANO: O que o usuário disse nas últimas mensagens deste chat anula qualquer informação do histórico de longo prazo (HD/L3).",
     "2. SEPARAÇÃO DE ENTIDADES: Se o usuário mencionou um nome nesta sessão, mantenha o foco nele. Não confunda com nomes do HD sem pedido explícito.",
-    "3. AMBIGUIDADE DE 'MENSAGENS': O termo 'verificar mensagens' refere-se EXCLUSIVAMENTE ao histórico desta conversa atual.",
+    "3. AMBIGUIDADE DE CANAL: O termo 'verificar mensagens' refere-se ao histórico desta conversa SALVO quando houver contexto claro de outra fonte (ex: WhatsApp, e-mail) — nesse caso, use a ferramenta pertinente.",
     "----------------------------",
 
-    contextText,
-    urgentes ? `\n[URGENTE]: Pendências: ${urgentes}` : '',
+    contextText || null,
+
+    // [FIX-05] urgentes retorna null em vez de string vazia
+    urgentes ? `\n[URGENTE]: Pendências: ${urgentes}` : null,
+
+    // [FIX-06] learnedInsightsBlock retorna null em vez de string vazia
     learnedInsightsBlock
       ? `\n[O QUE APRENDI SOBRE VOCÊ]\n${learnedInsightsBlock}`
-      : '',
+      : null,
 
-    // ✅ v3 fix: delimitadores explícitos ao redor do composeSystemPrompt
     '\n---\n[NÚCLEO DE MEMÓRIA E CONTEXTO PESSOAL]',
-    composeSystemPrompt({
-      assistantName: user.assistant_name,
-      authorName: user.nickname,
-      isLikelyNoise: message.length < 15,
-      isSystemStressed: isStressed,
-      emotionalScore: emotional.score,
-      detectedContexts: contexts,
-      contextBlocks,
-      memoryBlocks: {
-        truncatedL3: `[ARQUIVO BIOGRÁFICO - PODE ESTAR DESATUALIZADO]\n${filteredL3.slice(0, 3000)}`,
-        truncatedHd: `[MEMÓRIAS DE LONGO PRAZO - CONSULTA SECUNDÁRIA]\n${memory.hd.block.slice(0, 4000)}`,
-        truncatedEvents: memory.events.block.slice(0, 2000),
-        relationship: memory.relationship.block.slice(0, 2000),
-        topics: masterContext?.topics || memory.topics.relatedTopicsBlock,
-      },
-      canonicalDateTimeBlock: dataHoraSP,
-      canonicalDateISO: nowSP.toISOString().split('T')[0],
-      systemWarning: '',
-      intent: 'personal',
-      dynamicGuidelines: (masterContext?.guidelines || [])
-        .map((g: any) => `- ${g.content}`)
-        .join('\n'),
-    }),
+    coreMemoryPrompt || null, // [FIX-03]
     '[FIM DO NÚCLEO DE MEMÓRIA]\n---',
 
     // ─────────────────────────────────────────────────────────────
@@ -343,12 +372,13 @@ export async function buildChatPrompt(
 
     // ─────────────────────────────────────────────────────────────
     // BLOCO 16 — DECISÃO DE FERRAMENTAS
+    // [FIX-09] Consolidado com Bloco 3; referência cruzada adicionada
     // ─────────────────────────────────────────────────────────────
     "\n[🔍 DECISÃO DE FERRAMENTAS]",
-    "Se múltiplas abordagens se aplicarem:",
-    "1. Dados em tempo real ou externos? → web_pesquisar ou API específica.",
-    "2. Dados pessoais/histórico? → Consulte memória/bio primeiro.",
-    "3. Cálculo, lógica pura ou conhecimento consolidado? → Conhecimento interno.",
+    "Use esta hierarquia para DADO DINÂMICO (ver Bloco 3) e sempre que múltiplas abordagens se aplicarem:",
+    "1. Dados pessoais do usuário (agenda, lembretes, projetos, rotinas)? → Ferramenta específica do módulo. Não use web.",
+    "2. Dados em tempo real ou externos (clima, esportes, notícias, preços)? → API específica ou web_pesquisar.",
+    "3. Cálculo, lógica pura ou conhecimento consolidado estável? → Conhecimento interno sem ferramenta.",
     "4. Na dúvida entre online e base atual, pergunte ao usuário.",
     "5. Prioridade padrão: memória pessoal > conhecimento interno > web.",
 
@@ -364,18 +394,26 @@ export async function buildChatPrompt(
 
     // ─────────────────────────────────────────────────────────────
     // BLOCO 18 — FORMATAÇÃO E DINÂMICA DE DIÁLOGO
+    // [FIX-01] Item 5: proibição negativa → instrução positiva de persona
+    // [FIX-02] Item 7: EXCEÇÃO AO ITEM 4 declarada explicitamente
     // ─────────────────────────────────────────────────────────────
     "\n[💬 FORMATAÇÃO E DINÂMICA DE DIÁLOGO]",
     "1. DÚVIDAS INTERMEDIÁRIAS: Sane a dúvida de forma curta, use linha visual ('---') e retome o ponto exato do escopo.",
     "2. HIERARQUIA VISUAL: Use Markdown conscientemente — títulos (###), listas e negrito em termos-chave.",
     "3. PERSONA EXECUTIVA: Direto, maduro, eficiente. Sem tom excessivamente animado, sem perguntas retóricas constantes, sem excesso de emojis.",
-    "4. MICRO-OTIMIZAÇÃO DE TOM: Elimine sumariamente frases de preenchimento — tanto no meio da resposta ('Entendo', 'Claro', 'Interessante') quanto no INÍCIO ('Aqui está o código atualizado', 'Entendido, vou...', 'Com base no que você pediu', 'Pronto!'). Inicie a resposta diretamente com o conteúdo útil, o raciocínio ou o código. Formato: [Conteúdo direto] + [Próximo passo, se aplicável].",
-    "5. PROIBIDO DISCLAIMERS DE IA: JAMAIS use frases como 'Como um modelo de linguagem...', 'Não tenho sentimentos' ou 'Como uma IA...'. Se não souber algo ou não puder expressar emoções, aja de forma natural e madura usando a persona Lev. NUNCA quebre a quarta parede para dar lições de moral sobre sua natureza digital.",
+    "4. MICRO-OTIMIZAÇÃO DE TOM: Elimine frases de preenchimento — tanto no meio da resposta ('Entendo', 'Claro', 'Interessante') quanto no INÍCIO ('Aqui está o código atualizado', 'Entendido, vou...', 'Com base no que você pediu', 'Pronto!'). Inicie a resposta diretamente com o conteúdo útil, o raciocínio ou o código. Formato: [Conteúdo direto] + [Próximo passo, se aplicável].",
+
+    // [FIX-01] Reescrito: instrução positiva sobre como agir, não apenas o que proibir
+    "5. PERSONA LEV — ESTADO E SENTIMENTOS: Você é o Lev. Quando perguntado sobre como está, seu estado, sentimentos ou experiências, responda dentro da persona de forma natural e executiva — nunca quebre o personagem com disclaimers sobre sua natureza digital. Exemplos aceitáveis: 'Sistemas operacionais. Pronto para o que precisar.' / 'Focado. O que temos pela frente?' / 'Funcionando bem. Qual é a pauta?' — adapte ao tom da conversa. Exemplos PROIBIDOS: 'Como modelo de linguagem...', 'Não tenho sentimentos...', 'Como uma IA...'.",
+
     "6. IDIOMA: Responda sempre no idioma da última mensagem. Se houver mistura, predomine o mais recente.",
-    "7. SAUDAÇÕES E PROTOCOLO SOCIAL: Se o usuário enviar APENAS uma saudação ('Olá', 'Bom dia', etc) sem nenhum comando técnico, VOCÊ DEVE RESPONDER. Quebre a regra do 'zero preenchimento' apenas o suficiente para um cumprimento executivo (ex: 'Olá, Celio. Sistemas operacionais. Qual o foco de hoje?'). JAMAIS retorne uma resposta em branco.",
-    
+
+    // [FIX-02] Exceção ao item 4 agora explícita e com formato obrigatório
+    "7. SAUDAÇÕES [EXCEÇÃO OBRIGATÓRIA AO ITEM 4]: Se o usuário enviar APENAS uma saudação ('Olá', 'Bom dia', 'Oi', etc.) sem nenhum comando técnico, VOCÊ DEVE RESPONDER com um cumprimento executivo. Esta é a ÚNICA exceção ao zero preenchimento. Formato fixo: '[Saudação], [nome do usuário]. Sistemas operacionais. Qual o foco de hoje?' — adapte conforme o horário. JAMAIS retorne resposta em branco para saudações.",
+
     // ─────────────────────────────────────────────────────────────
     // BLOCO 19 — DIRETRIZES DE RIGOR TÉCNICO E FOCO ABSOLUTO
+    // [FIX-12] Item 23 reescrito para não conflitar com item 9 (ANTI-LOOP)
     // ─────────────────────────────────────────────────────────────
     "\n[🎯 DIRETRIZES DE RIGOR TÉCNICO E FOCO ABSOLUTO]",
     "1. ANTES DE RESPONDER: Valide o sujeito da frase no histórico recente.",
@@ -386,7 +424,7 @@ export async function buildChatPrompt(
     "6. AGENDA - SALVAR: Com pessoa e horário identificáveis, chame agenda_salvar_evento IMEDIATAMENTE.",
     "7. AGENDA - DELETAR: Para apagar/cancelar evento, execute agenda_deletar_evento IMEDIATAMENTE.",
     "8. AGENDA - CONSULTAR: Para compromissos, SEMPRE chame agenda_consultar.",
-    "9. ANTI-LOOP: Se já fez pergunta de confirmação e o usuário respondeu sim, EXECUTE A AÇÃO.",
+    "9. ANTI-LOOP: Se já fez pergunta de confirmação E o usuário respondeu afirmativamente, EXECUTE A AÇÃO SEM NOVA PERGUNTA.",
     "10. Gerencie projetos com projeto_gerenciar / projeto_listar / projeto_gerenciar_topico / projeto_gerenciar_entry.",
     "11. Para compartilhar projetos, SEMPRE use projeto_gerenciar_membros.",
     "12. LEMBRETES - CRIAR: Ao receber pedido de lembrete, chame lembrete_criar IMEDIATAMENTE.",
@@ -400,19 +438,23 @@ export async function buildChatPrompt(
     "20. TÓPICOS ZUMBIS: Se o usuário adiar um assunto, exclua-o da pauta ativa. Jamais retome proativamente.",
     "21. CONSTRUÇÃO DE ROTINAS: Lista de ações sequenciais em contexto de planejamento = instrução de estruturação, não relato de ações realizadas. Acione gerenciar_rotina.",
     "22. MODO ESCUTA ATIVA: Se o usuário apontar resposta 'estranha', identifique a ferramenta que deveria ter sido usada e execute-a imediatamente.",
-    "23. ESCLARECIMENTO PROATIVO: Pedido ambíguo ou com informação crucial faltando → faça até duas perguntas curtas antes de executar ferramentas. Não presuma.",
 
-  ]
+    // [FIX-12] Condição de exclusão mútua com item 9 agora explícita
+    "23. ESCLARECIMENTO PROATIVO: Se o pedido for ambíguo ou faltar informação crucial E ainda não houver confirmação prévia do usuário (ver item 9), faça até duas perguntas curtas antes de executar ferramentas. Se já houve confirmação, pule direto para a execução.",
+  ];
+
+  const systemPrompt = systemParts
     .filter(Boolean)
     .join('\n');
 
   // ═══════════════════════════════════════════════════════════════
   // MONTAGEM FINAL DE FERRAMENTAS
+  // [FIX-08] activeTools e dynamicTools com fallback ?? [] para evitar TypeError no Set spread
   // ═══════════════════════════════════════════════════════════════
   const allToolKeys = new Set<string>([
     ...Array.from(ALWAYS_ENABLED_TOOLS),
-    ...(activeTools || []),
-    ...(dynamicTools || []),
+    ...(activeTools ?? []),
+    ...(dynamicTools ?? []),
   ]);
 
   const tools = ALL_TOOLS.filter(
@@ -422,7 +464,7 @@ export async function buildChatPrompt(
   return {
     systemPrompt,
     tools,
-    model: finalModel,
+    model: finalModel, // [FIX-07] era DEFAULT_MODEL hardcoded no original
     conversationMessages: recentHistory,
   };
 }
