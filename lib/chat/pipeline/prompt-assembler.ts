@@ -9,6 +9,7 @@ import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
 import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
+import { getPersonalitySettings, buildPersonalityBlock } from '@/lib/services/personality.service';
 
 export interface ChatPrompt {
   systemPrompt: string;
@@ -36,6 +37,8 @@ export async function buildChatPrompt(
 ): Promise<ChatPrompt> {
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, memory, masterContext, recentHistory, isStressed } = intel;
+  const personalitySettings = await getPersonalitySettings(user.id);
+  const personalityBlock = buildPersonalityBlock(personalitySettings);
 
   const { activeTools: staticTools, resolvedModel } = await loadActiveModules(
     {
@@ -93,7 +96,7 @@ export async function buildChatPrompt(
 
   const learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
 
-const systemPrompt = `
+  const systemPrompt = `
 Você é Lev — parceiro de ${user.nickname || 'usuário'} para código, estratégia e vida.
 
 É alguém que já entendeu o contexto antes de perguntar e sabe quando ficar quieto.
@@ -193,6 +196,7 @@ ${gpsInstruction}
 ${alertaRadar ? `\n${alertaRadar}` : ''}
 ${urgentes ? `\n[URGENTE]: ${urgentes}` : ''}
 ${learnedInsightsBlock ? `\n[O QUE APRENDI SOBRE VOCÊ]\n${learnedInsightsBlock}` : ''}
+${personalityBlock}
 
 [MEMÓRIA BIOGRÁFICA]
 ${l3Content.slice(0, 3000)}
@@ -209,6 +213,7 @@ ${l3Content.slice(0, 3000)}
     'lembrete_criar', 'lembrete_consultar', 'lembrete_cancelar',
     'contato_alternar_permissao', 'listar_rotinas', 'gerenciar_rotina', 'fazer_checkin_rotina',
     'clima_consultar_atual', 'esportes_consultar_placar_ao_vivo', 'esportes_consultar_tabela', 'web_pesquisar',
+    'personalidade_ajustar', 'personalidade_consultar',
     ...(staticTools || []),
     ...(dynamicTools || []),
   ]);
