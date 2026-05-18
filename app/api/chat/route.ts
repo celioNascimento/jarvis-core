@@ -1,5 +1,5 @@
 // app/api/chat/route.ts — Pipeline Director
-// V13.0.0
+// V13.1.0
 //
 // Este arquivo NÃO deve ser editado para:
 //   - Adicionar ferramentas        → tools-executor.ts
@@ -11,15 +11,18 @@
 // Este arquivo só muda se a ORDEM ou o NÚMERO de fases mudar.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { buildRequestContext }  from '@/lib/chat/pipeline/request-context';
+import { buildRequestContext } from '@/lib/chat/pipeline/request-context';
 import { runIntelligencePipeline } from '@/lib/chat/pipeline/intelligence';
-import { buildChatPrompt }      from '@/lib/chat/pipeline/prompt-assembler';
-import { runLLMOrchestrator }   from '@/lib/chat/pipeline/llm-orchestrator';
-import { finalizeResponse }     from '@/lib/chat/pipeline/response-finalizer';
+import { buildChatPrompt } from '@/lib/chat/pipeline/prompt-assembler';
+import { runLLMOrchestrator } from '@/lib/chat/pipeline/llm-orchestrator';
+import { finalizeResponse } from '@/lib/chat/pipeline/response-finalizer';
 
-export const maxDuration = 60;
+// ✅ Remove maxDuration → indica função Edge
+export const runtime = 'edge'; // ← Ativa Edge Runtime oficialmente
 
 export async function POST(req: NextRequest) {
+  const startTime = Date.now();
+
   try {
     // Fase 1: parse, auth, geo, dedup
     const ctx = await buildRequestContext(req);
@@ -27,9 +30,9 @@ export async function POST(req: NextRequest) {
     // Resposta cacheada (requisição duplicada)
     if (ctx.isCachedReply && ctx.cachedReply) {
       return NextResponse.json({
-        reply:       ctx.cachedReply,
-        ok:          true,
-        sessionId:   ctx.sessionId,
+        reply: ctx.cachedReply,
+        ok: true,
+        sessionId: ctx.sessionId,
         performance: '0ms (cache)',
       });
     }
@@ -44,14 +47,13 @@ export async function POST(req: NextRequest) {
     const reply = await runLLMOrchestrator(ctx, prompt);
 
     // Fase 5: cache, persist, TTS, resposta HTTP
-    return finalizeResponse(ctx, intel, prompt, reply);
+    return finalizeResponse(ctx, intel, prompt, reply, req); // ← passa req para waitUntil
 
   } catch (e: any) {
-    // Auth failure retorna 401
     if (e.statusCode === 401) {
       return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
     }
     console.error('[FATAL] Pipeline error:', e);
-    return NextResponse.json({ error: 'Erro no motor do Jarvis.' }, { status: 500 });
+    return NextResponse.json({ error: 'Erro no motor do Lev.' }, { status: 500 });
   }
 }
