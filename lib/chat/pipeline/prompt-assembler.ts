@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// V11.4.0 — Inclusão do Protocolo de Sinergia Inter-Módulos (Cross-Module Orchestration)
+// V11.4.1 — Protocolo de Sinergia Inter-Módulos + Anti-Dispersão e Execução em Lote
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
@@ -121,7 +121,8 @@ export async function buildChatPrompt(
 
   const learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
 
-    const systemPrompt = [
+  // 🟢 ARRAY UNIFICADO E CORRIGIDO
+  const systemPrompt = [
     `[RELÓGIO DO SISTEMA]: ${dataHoraSP}`,
     geoBlock,
     gpsInstruction,
@@ -190,65 +191,6 @@ export async function buildChatPrompt(
     "17. CLIMA: Sempre que o usuário perguntar sobre o tempo ou demonstrar dúvida sobre sair de casa, consulte o clima atual com clima_consultar_atual.",
     "18. ESPORTES: Sempre que houver perguntas sobre placar de futebol de ligas mapeadas, chame esportes_consultar_placar_ao_vivo ou esportes_consultar_tabela.",
     "19. INTERNET: Se a pergunta de esporte envolver ligas não mapeadas ou se as ferramentas retornarem vazio, use web_pesquisar."
-  ]
-    .filter(Boolean)
-    .join('\n');
-
-    contextText,
-    urgentes ? `\n[URGENTE]:  Pendências: ${urgentes}` : '',
-    learnedInsightsBlock
-      ? `\n[O QUE APRENDI SOBRE VOCÊ]\n${learnedInsightsBlock}`
-      : '',
-    '---',
-    composeSystemPrompt({
-      assistantName: user.assistant_name,
-      authorName: user.nickname,
-      isLikelyNoise: message.length < 15,
-      isSystemStressed: isStressed,
-      emotionalScore: emotional.score,
-      detectedContexts: contexts,
-      contextBlocks,
-      memoryBlocks: {
-        truncatedL3: `[ARQUIVO BIOGRÁFICO - PODE ESTAR DESATUALIZADO]\n${filteredL3.slice(0, 3000)}`,
-        truncatedHd: `[MEMÓRIAS DE LONGO PRAZO - CONSULTA SECUNDÁRIA]\n${memory.hd.block.slice(0, 4000)}`,
-        truncatedEvents: memory.events.block.slice(0, 2000),
-        relationship: memory.relationship.block.slice(0, 2000),
-        topics: masterContext?.topics || memory.topics.relatedTopicsBlock,
-      },
-      canonicalDateTimeBlock: dataHoraSP,
-      canonicalDateISO: nowSP.toISOString().split('T')[0],
-      systemWarning: '',
-      intent: 'personal',
-      dynamicGuidelines: (masterContext?.guidelines || [])
-        .map((g: any) => `- ${g.content}`)
-        .join('\n'),
-    }),
-
-    // 🔥 NOVA SEÇÃO DE ORQUESTRAÇÃO CROSS-MODULE
-    "\n[⚡ PROTOCOLO DE SINERGIA INTER-MÓDULOS]",
-    "Você tem permissão e o dever de COMBINAR e ENCADEAR ferramentas de módulos diferentes sequencialmente ou em paralelo para dar a melhor resposta técnica. Exemplos de receitas recomendadas:",
-    "- [PROJETOS + FOCO]: Ao criar ou listar uma tarefa complexa de desenvolvimento no módulo de projetos, chame 'tdah_quebrar_tarefa' em seguida para fatiá-la automaticamente em micro-passos.",
-    "- [CLIMA + ROTINAS]: Ao listar as rotinas matinais do usuário, execute em paralelo 'clima_consultar_atual' para enriquecer a resposta com alertas de chuva ou frio na execução das tarefas do dia.",
-    "- [ESPORTES + INTERNET]: Ao consultar placares ou jogos e o retorno da API especializada vier sem registros, acione imediatamente a ferramenta 'web_pesquisar' para buscar os dados em tempo real no Google e compor o resultado.",
-    "- [FINANÇAS + COMPRAS]: Ao adicionar um item de alto valor em uma lista de compras de projeto ou de casa, consulte o saldo ou os orçamentos ativos do usuário usando as ferramentas financeiras para emitir um feedback preventivo.",
-
-    '\n[DIRETRIZES DE RIGOR TÉCNICO]',
-    "1. ANTES DE RESPONDER: Valide o sujeito da frase no histórico recente.",
-    "2. Em situações de urgência doméstica ou saúde, ignore distrações financeiras ou newsletters.",
-    "3. AGENDA - SALVAR: Ao receber pedido de agendamento com pessoa e horário identificáveis, chame agenda_salvar_evento IMEDIATAMENTE.",
-    "4. AGENDA - DELETAR: Quando o usuário pedir para apagar/cancelar/remover um evento, execute agenda_deletar_evento IMEDIATAMENTE.",
-    "5. AGENDA - CONSULTAR: Para responder sobre compromissos, SEMPRE chame agenda_consultar.",
-    "6. ANTI-LOOP: Se você já fez uma pergunta de confirmação e o usuário respondeu afirmativamente, EXECUTE A AÇÃO.",
-    "7. Atue como Arquiteto do Expert Frotas/Procuro Quem Faça. Jamais responda 'Pronto'.",
-    "8. Gerencie projetos com projeto_gerenciar/projeto_listar/projeto_gerenciar_topico/projeto_gerenciar_entry.",
-    "9. Para compartilhar projetos, SEMPRE use projeto_gerenciar_membros.",
-    "10. LEMBRETES - CRIAR: Ao receber pedido de lembrete chame lembrete_criar IMEDIATAMENTE.",
-    "11. LEMBRETES - CANCELAR: Para cancelar, chame lembrete_cancelar diretamente.",
-    "12. LEMBRETES - CONSULTAR: Para responder sobre lembretes ativos, SEMPRE chame lembrete_consultar.",
-    "13. ROTINAS & HÁBITOS: Use listar_rotinas para ver o progresso, gerenciar_rotina para alterar e fazer_checkin_rotina para computar os hábitos do dia.",
-    "14. CLIMA: Sempre que o usuário perguntar sobre o tempo ou demonstrar dúvida sobre sair de casa, consulte o clima atual com clima_consultar_atual.",
-    "15. ESPORTES: Sempre que houver perguntas sobre o resultado, tabela, classificação ou placar de futebol de hoje das ligas brasileiras ou europeias, chame esportes_consultar_placar_ao_vivo ou esportes_consultar_tabela.",
-    "16. INTERNET: Se a pergunta de esporte envolver ligas não mapeadas (ex: NBA, NFL) ou se as ferramentas de futebol retornarem vazio, use web_pesquisar imediatamente para obter a resposta em tempo real."
   ]
     .filter(Boolean)
     .join('\n');
