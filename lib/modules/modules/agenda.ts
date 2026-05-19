@@ -2,7 +2,7 @@ import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
 import { getEffectiveUserId } from '../relationships/identity';
 
-Modulexport const ModuloAgenda: ModuleDefinition = {
+export const ModuloAgenda: ModuleDefinition = {
   id: 'agenda_lev',
   label: 'Agenda Interna (Lev)',
   preferredModel: 'flash',
