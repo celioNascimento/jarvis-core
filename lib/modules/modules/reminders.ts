@@ -9,40 +9,30 @@ export const ModuloReminders: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
-    always: true,
+    always: false,
     contexts: ['lembrete', 'notificacao'],
-    keywords: /lembrete|me lembra|avisar|daqui a pouco|notificar/i
+    keywords: /lembrete|me lembra|avisar|daqui a pouco|notificar|me avisa|não esquecer/i,
+    condition: (opts) => {
+      const reminders = (opts as any).masterContext?.reminders || [];
+      return reminders.length > 0;
+    },
   },
   buildContextBlock: async (opts) => {
     try {
-      const targetId = await getEffectiveUserId(opts.userId, opts.userId);
-      const { data, error } = await supabase
-        .from('reminders')
-        .select('title, scheduled_time, frequency, type')
-        .eq('user_id', Number(targetId))
-        .eq('status', 'pending')
-        .gte('scheduled_time', new Date().toISOString())
-        .order('scheduled_time', { ascending: true })
-        .limit(10);
+      const reminders = (opts as any).masterContext?.reminders || [];
+      if (!reminders.length) return '';
 
-      if (error || !data || data.length === 0) return 'Nenhum lembrete pendente.';
-
-      const linhas = data.map((r: any) => {
+      const linhas = reminders.map((r: any) => {
         const hora = new Date(r.scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
         const freq = r.frequency ? ` (${r.frequency})` : '';
         return `- ${r.title} → ${hora}${freq}`;
       }).join('\n');
 
       return `[LEMBRETES PENDENTES]\n${linhas}`;
-    } catch (e) {
-      console.error('[ModuloReminders] Erro:', e);
+    } catch {
       return '';
     }
   },
-  tools: [
-    'lembrete_criar',
-    'lembrete_consultar',
-    'lembrete_cancelar',
-  ],
+  tools: ['lembrete_criar', 'lembrete_consultar', 'lembrete_cancelar'],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
