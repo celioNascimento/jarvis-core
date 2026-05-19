@@ -22,19 +22,20 @@ export async function executeConsultarClimaAtual(_p: any, _authUserId: string, n
     let lon = -51.2;
 
     if (locData?.value) {
-      try {
-        const parsed = JSON.parse(locData.value);
-        const parsedLat = parseFloat(parsed.latitude);
-        const parsedLon = parseFloat(parsed.longitude);
+  try {
+    const parsed = JSON.parse(locData.value);
+    
+    // Suporta ambos os formatos
+    const parsedLat = parseFloat(parsed.latitude ?? parsed.lat);
+    const parsedLon = parseFloat(parsed.longitude ?? parsed.lng);
 
-        // 🔥 VALIDAÇÃO CRÍTICA: Só substitui o fallback se os números forem reais e válidos
-        if (!isNaN(parsedLat) && !isNaN(parsedLon) && parsedLat !== 0 && parsedLon !== 0) {
-          lat = parsedLat;
-          lon = parsedLon;
-        }
-      } catch {
-        // Se o JSON estiver corrompido, mantém Londrina silenciosamente
-      }
+    if (!isNaN(parsedLat) && !isNaN(parsedLon) && parsedLat !== 0 && parsedLon !== 0) {
+      lat = parsedLat;
+      lon = parsedLon;
+    }
+  } catch {
+    // mantém Londrina
+  }
     }
 
     // Limita a 4 casas decimais (padrão ideal para APIs de mapa/clima)
