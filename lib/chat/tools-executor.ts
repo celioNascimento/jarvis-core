@@ -48,7 +48,7 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   // ── Memória e Sistema
   'memoria_buscar_longa':        (p, a, n) => executeBuscarMemoriaLonga(p, a, n),
   'memoria_adicionar_diretriz':  (p, a, n) => executeAdicionarDiretrizDinamica(p, a, n),
-  'sistema_gerenciar_guideline': (p, a, n) => executeGerenciarGuideline(p, a, n),
+  'gerenciar_guideline':         (p, a, n) => executeGerenciarGuideline(p, a, n),
 
   // ── Agenda
   'agenda_consultar':      (p, a, n) => executeConsultarAgenda(p, a, n),
