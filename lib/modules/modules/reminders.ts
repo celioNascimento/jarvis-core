@@ -9,14 +9,15 @@ export const ModuloReminders: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
-    always: false,
-    contexts: ['lembrete', 'notificacao'],
-    keywords: /lembrete|me lembra|avisar|daqui a pouco|notificar|me avisa|não esquecer/i,
-    condition: (opts) => {
-      const reminders = (opts as any).masterContext?.reminders || [];
-      return reminders.length > 0;
-    },
+  always: false,
+  contexts: ['lembrete', 'notificacao'],
+  keywords: /lembrete|me lembra|avisar|daqui a pouco|notificar|me avisa|não esquecer/i,
+  condition: (opts) => {
+    const reminders = (opts as any).masterContext?.reminders || [];
+    const temKeyword = /lembrete|me lembra|avisar|notificar|me avisa/i.test(opts.message);
+    return reminders.length > 0 && temKeyword;
   },
+},
   buildContextBlock: async (opts) => {
     try {
       const reminders = (opts as any).masterContext?.reminders || [];
