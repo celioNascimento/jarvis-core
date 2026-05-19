@@ -10,9 +10,14 @@ export const ModuloRotinas: ModuleDefinition = {
   trigger: {
     contexts: ['rotina', 'foco'],
     keywords: /rotina|hábito|costume|todo dia|sempre faço|manhã|tarde|noite|ancora|âncora|checkin/i,
-    condition: (opts) => opts.message.toLowerCase().includes('hoje') || opts.message.toLowerCase().includes('agora')
+    condition: (opts) => {
+      const msg = opts.message.toLowerCase();
+      const temHoje = msg.includes('hoje') || msg.includes('agora');
+      const temRotina = /rotina|hábito|checkin|âncora|ancora/.test(msg);
+      return temHoje && temRotina;
+    }
   },
-  
+
   buildContextBlock: async (opts) => {
     try {
       const targetId = Number(opts.userId);
@@ -35,7 +40,7 @@ export const ModuloRotinas: ModuleDefinition = {
           let statusIcon = '⏳ (Pendente)';
           if (checkin?.status === 'done') statusIcon = '✅ (Feito)';
           if (checkin?.status === 'skipped') statusIcon = '⏭️ (Pulado)';
-          
+
           return `  - [${r.anchor}] -> ${r.action} ${statusIcon}`;
         });
 
@@ -54,7 +59,7 @@ Suas rotinas e o status atual:
 ${blocks.join('\n\n')}
 
 INSTRUÇÃO: Use estas rotinas para dar previsibilidade. Se o usuário parecer perdido, sugira seguir a próxima âncora pendente (⏳). Elogie se ele já concluiu as tarefas (✅).`;
-      
+
     } catch (e) {
       console.error('[ModuloRotinas] Erro ao carregar rotinas:', e);
       return '';
@@ -63,10 +68,10 @@ INSTRUÇÃO: Use estas rotinas para dar previsibilidade. Se o usuário parecer p
 
   // Ferramentas que este módulo habilita no cérebro do Jarvis
   tools: [
-    'listar_rotinas', 
-    'gerenciar_rotina', 
+    'listar_rotinas',
+    'gerenciar_rotina',
     'fazer_checkin_rotina'
   ],
-  
+
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };

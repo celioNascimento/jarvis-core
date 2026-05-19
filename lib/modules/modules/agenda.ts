@@ -8,7 +8,10 @@ export const ModuloAgenda: ModuleDefinition = {
   preferredModel: 'flash',
   plan: 'free',
   trigger: {
+<<<<<<< Updated upstream
     always: false,
+=======
+>>>>>>> Stashed changes
     contexts: ['agenda', 'evento'],
     keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos|compromisso|reunião|horário|cancelar|adiar/i,
     condition: (opts) => {
