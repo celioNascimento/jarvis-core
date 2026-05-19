@@ -10,7 +10,8 @@ import {
 } from '@/lib/modules/relationships';
 import { 
   coreListarMembrosProjeto, 
-  coreAtualizarMembroProjeto 
+  coreAtualizarMembroProjeto,
+  coreListarEntriesDoProjeto 
 } from '@/lib/services/projects.service';
 
 // ─── PROJETOS ─────────────────────────────────────────────────────────────────
@@ -142,15 +143,45 @@ export async function executeGerenciarEntry(p: any, authUserId: string, numericU
   } catch (err: any) { return `Erro: ${err.message}`; }
 }
 
-export async function executeListarEntries(p: any, _authUserId: string, _numericUserId: string): Promise<string> {
+export async function executeListarEntries(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
-    let query = supabase.schema('jarvis').from('project_entries').select('*').eq('topic_id', p.topic_id);
-    if (p.type) query = query.eq('type', p.type);
-    if (p.status) query = query.eq('status', p.status);
-    const { data, error } = await query.order('created_at', { ascending: false });
-    if (error) throw error;
-    return data?.map(e => `[${e.type.toUpperCase()}] ${e.title || 'Sem título'} (ID: ${e.id})`).join('\n') || 'Nenhuma entry.';
-  } catch (err: any) { return `Erro: ${err.message}`; }
+    const targetId = await getEffectiveUserId(authUserId, numericUserId);
+    const project = await resolveProject(p.project_id, targetId);
+    if (!project) return `Projeto "${p.project_id}" não localizado.`;
+
+    // Busca todas as tarefas usando a nova função do service
+    const entries = await coreListarEntriesDoProjeto(project.id);
+    
+    if (!entries || entries.length === 0) {
+      return `O quadro Kanban do projeto "${project.name}" está vazio.`;
+    }
+
+    // Filtra pela coluna se o Lev solicitou
+    const filtradas = p.status 
+      ? entries.filter(e => e.status?.toLowerCase() === p.status.toLowerCase()) 
+      : entries;
+
+    if (filtradas.length === 0) {
+      return `Nenhuma tarefa encontrada na coluna "${p.status}".`;
+    }
+
+    // Agrupa por coluna para o Lev entender o Kanban visualmente
+    const agrupado = filtradas.reduce((acc: any, entry: any) => {
+      const col = entry.status || 'Sem Coluna';
+      if (!acc[col]) acc[col] = [];
+      acc[col].push(`- [${entry.type}] ${entry.title} (ID: ${entry.id})`);
+      return acc;
+    }, {});
+
+    let resposta = `Quadro Kanban de "${project.name}":\n`;
+    for (const [coluna, tarefas] of Object.entries(agrupado)) {
+      resposta += `\n📌 COLUNA: ${coluna}\n${(tarefas as string[]).join('\n')}\n`;
+    }
+
+    return resposta;
+  } catch (err: any) { 
+    return `Erro ao ler o quadro: ${err.message}`; 
+  }
 }
 
 // ─── MEMBROS (COMPARTILHAMENTO DELEGADO PARA SSOT) ───────────────────────────

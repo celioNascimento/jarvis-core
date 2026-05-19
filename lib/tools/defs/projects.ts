@@ -133,13 +133,14 @@ Exemplos de trigger: "cria um projeto para a reforma", "pausa o projeto Lev", "m
     },
   },
 
-  // ── Entries ───────────────────────────────────────────────────────────────
+
+// ── Entries (Cards do Kanban) ─────────────────────────────────────────────
   {
     type: 'function',
     function: {
       name: 'gerenciar_entry',
       description:
-        'Registra, atualiza ou remove uma entry dentro de um tópico. O campo type é livre: "idea", "note", "tech_debt", "decision", "block", "link", "opcao", "referencia", etc.',
+        'Registra, atualiza ou remove uma entry (tarefa/card) de um projeto. Use esta ferramenta para mover cards no Kanban alterando o seu "status".',
       parameters: {
         type: 'object',
         properties: {
@@ -149,11 +150,11 @@ Exemplos de trigger: "cria um projeto para a reforma", "pausa o projeto Lev", "m
           },
           project_id: {
             type: 'string',
-            description: 'UUID, Nome ou Tag do projeto (para verificar acesso).',
+            description: 'UUID, Nome ou Tag do projeto.',
           },
           topic_id: {
             type: 'string',
-            description: 'UUID do tópico onde a entry será registrada.',
+            description: 'UUID do tópico (se a tarefa pertencer a um subtópico específico).',
           },
           entry_id: {
             type: 'string',
@@ -161,22 +162,17 @@ Exemplos de trigger: "cria um projeto para a reforma", "pausa o projeto Lev", "m
           },
           type: {
             type: 'string',
-            description: 'Categoria livre. Padrão: "note".',
+            description: 'Categoria da tarefa (ex: "task", "note", "bug"). Padrão: "task".',
           },
-          title: { type: 'string', description: 'Título curto da entry.' },
-          body: { type: 'string', description: 'Conteúdo completo.' },
+          title: { type: 'string', description: 'Título do card no Kanban.' },
+          body: { type: 'string', description: 'Conteúdo ou checklist interno.' },
           status: {
             type: 'string',
-            enum: ['open', 'em_analise', 'aprovado', 'descartado', 'concluido'],
-            description: 'Status da entry. Padrão: "open".',
+            description: 'A COLUNA DO KANBAN onde o card está (ex: "A Fazer", "Fazendo", "Feito", "Pausado").',
           },
           order_index: { type: 'integer' },
-          metadata: {
-            type: 'object',
-            description: 'Dados extras livres (ex: { "url": "...", "custo_estimado": 1200 }).',
-          },
         },
-        required: ['acao', 'project_id', 'topic_id'],
+        required: ['acao', 'project_id'],
       },
     },
   },
@@ -185,7 +181,7 @@ Exemplos de trigger: "cria um projeto para a reforma", "pausa o projeto Lev", "m
     type: 'function',
     function: {
       name: 'listar_entries',
-      description: 'Lista as entries de um tópico. Filtre por type ou status conforme necessário.',
+      description: 'Lista as tarefas/cards de um projeto ou tópico, organizadas por coluna do Kanban.',
       parameters: {
         type: 'object',
         properties: {
@@ -193,18 +189,12 @@ Exemplos de trigger: "cria um projeto para a reforma", "pausa o projeto Lev", "m
             type: 'string',
             description: 'UUID, Nome ou Tag do projeto.',
           },
-          topic_id: { type: 'string', description: 'UUID do tópico.' },
-          type: {
-            type: 'string',
-            description: 'Filtra pelo tipo. Omitir retorna todos.',
-          },
           status: {
             type: 'string',
-            enum: ['open', 'em_analise', 'aprovado', 'descartado', 'concluido'],
-            description: 'Filtra pelo status. Omitir retorna todos.',
+            description: 'Filtra por uma coluna específica (ex: "Fazendo"). Omitir retorna o quadro inteiro.',
           },
         },
-        required: ['project_id', 'topic_id'],
+        required: ['project_id'],
       },
     },
   },
