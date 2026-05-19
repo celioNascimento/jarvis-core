@@ -1,8 +1,7 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// ✅ VERSÃO v5.6 — Voz Natural + Rigor Técnico
+// v5.7 — Deduplicação de system prompt + consolidação de contexto operacional
 
 import { loadActiveModules } from '@/lib/modules/registry';
-import { composeSystemPrompt } from '@/lib/chat/prompt-engine';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
 import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
@@ -11,6 +10,20 @@ import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import { getPersonalitySettings, buildPersonalityBlock } from '@/lib/services/personality.service';
 
+// ── Constantes ────────────────────────────────────────────────────────────────
+
+const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
+
+// Nome canônico da tool de pesquisa — altere aqui se renomear no defs/index.ts
+const ALWAYS_ON_TOOLS = ['web_pesquisar'] as const;
+
+const FAMILY_DATE_SIGNALS = [
+  /aniversário/i, /casamento/i, /fil[ho]a/i, /esposa|marido/i,
+  /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
+];
+
+// ── Tipos ─────────────────────────────────────────────────────────────────────
+
 export interface ChatPrompt {
   systemPrompt: string;
   tools: any[];
@@ -18,12 +31,7 @@ export interface ChatPrompt {
   conversationMessages: Array<{ role: string; content: string }>;
 }
 
-const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
-
-const FAMILY_DATE_SIGNALS = [
-  /aniversário/i, /casamento/i, /fil[ho]a/i, /esposa|marido/i,
-  /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
-];
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function shouldIncludeFamilyContext(message: string, history: string): boolean {
   const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
@@ -31,203 +39,194 @@ function shouldIncludeFamilyContext(message: string, history: string): boolean {
   return isHighAlertMonth || hasFamilySignal;
 }
 
+function filterL3Content(content: string, includeFamily: boolean): string {
+  if (includeFamily) return content;
+  return content
+    .replace(/##\s*(datas?|aniversário|família|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
+    .trim();
+}
+
+function buildSystemPrompt(parts: {
+  nickname: string;
+  dataHoraSP: string;
+  geoBlock: string;
+  gpsInstruction: string;
+  alertaRadar: string | null;
+  urgentes: string;
+  learnedInsightsBlock: string;
+  personalityBlock: string;
+  l3Content: string;
+  plan: string;
+  guidelines: string;
+}): string {
+  const {
+    nickname, dataHoraSP, geoBlock, gpsInstruction,
+    alertaRadar, urgentes, learnedInsightsBlock, personalityBlock,
+    l3Content, plan, guidelines,
+  } = parts;
+
+  return `
+Você é Lev — parceiro estratégico, técnico e de rotina de ${nickname}.
+
+Sua comunicação é direta, prática e orientada para ação. Você age com confiança mesmo diante de ambiguidade: escolhe a interpretação mais provável, age com base nela e menciona brevemente a suposição feita. Quando precisar confirmar algo, faz uma única pergunta objetiva — nunca mais de uma por vez.
+
+[COMO VOCÊ PENSA E AGE]
+
+Diante de um comando técnico: confirme o entendimento em poucas palavras, entregue a solução com o local exato de inserção, e finalize com "Pronto para testar?". Ao modificar código, altere apenas o que foi pedido — estrutura, variáveis e lógica existentes permanecem intactas.
+
+Diante de erros técnicos: estruture a resposta como [CAUSA] → [LOCAL] → [SOLUÇÃO] em uma linha. Exemplo: "Timeout → fetchUser() linha 18 → adicione timeout: 5000".
+
+Diante de reflexão ou voz alta: faça uma pergunta direta para direcionar (ex: "O que mais te preocupa nisso?") e siga com uma sugestão prática sem esperar confirmação explícita.
+
+Diante de temas pessoais: valide com brevidade e calor, sem se aprofundar além do que o usuário trouxe.
+
+Diante de tópicos de saúde ou finanças: ofereça um conceito prático e direcione para um especialista.
+
+Quando o contexto estiver fragmentado após várias mensagens: resuma as hipóteses mais prováveis e pergunte qual delas seguir.
+
+[TOM E ENERGIA]
+
+Adapte a extensão e o tom à energia do usuário: comandos diretos recebem respostas ultra-concisas; momentos reflexivos recebem mais espaço. Quando perceber sinais de cansaço, encerre com validação e porta aberta.
+
+[MEMÓRIA E PERFIL]
+
+Use os dados do perfil e histórico para conectar o que o usuário trouxe ao que você já sabe sobre ele. Atualize mentalmente hábitos, projetos e preferências sem comentar sobre isso.
+
+[CONTEXTO ATIVO]
+Data/hora: ${dataHoraSP}
+${geoBlock}
+${gpsInstruction}
+${alertaRadar ? `Alerta: ${alertaRadar}` : ''}
+${urgentes ? `Urgente: ${urgentes}` : ''}
+${learnedInsightsBlock ? `Perfil\n${learnedInsightsBlock}` : ''}
+${personalityBlock}
+
+[MEMÓRIA ATIVA]
+${l3Content.slice(0, 3000).replace(/\n+/g, ' ').trim()}
+
+[CONTEXTO OPERACIONAL]
+Plano: ${plan}
+Diretrizes: ${guidelines}
+`.trim();
+}
+
+// ── Builder principal ─────────────────────────────────────────────────────────
+
 export async function buildChatPrompt(
   ctx: ChatRequestContext,
-  intel: ChatIntelligence
+  intel: ChatIntelligence,
 ): Promise<ChatPrompt> {
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
-  const { contexts, emotional, memory, masterContext, recentHistory, isStressed } = intel;
-  const personalitySettings = await getPersonalitySettings(user.id);
-  const personalityBlock = buildPersonalityBlock(personalitySettings);
+  const { contexts, emotional, memory, masterContext, recentHistory } = intel;
 
-  const { activeTools: staticTools, resolvedModel } = await loadActiveModules(
-    {
+  // ── Cargas paralelas ──────────────────────────────────────────────────────
+  const [
+    personalitySettings,
+    moduleResult,
+    dynamicResult,
+    learnedInsightsBlock,
+  ] = await Promise.all([
+    getPersonalitySettings(user.id),
+    loadActiveModules(
+      {
+        userId: String(user.id),
+        authUserId: user.auth_user_id,
+        message,
+        contexts,
+        emotionalScore: emotional.score,
+        location: normalizedLocation,
+        masterContext,
+      },
+      user.plan,
+      DEFAULT_MODEL,
+    ),
+    buildDynamicContext({
       userId: String(user.id),
       authUserId: user.auth_user_id,
       message,
+      location: normalizedLocation,
       contexts,
       emotionalScore: emotional.score,
-      location: normalizedLocation,
       masterContext,
-    },
-    user.plan,
-    DEFAULT_MODEL
-  );
+    }),
+    fetchLearnedInsights(String(user.id)),
+  ]);
 
-  const finalModel = resolvedModel || DEFAULT_MODEL;
+  const personalityBlock = buildPersonalityBlock(personalitySettings);
+  const finalModel = moduleResult.resolvedModel || DEFAULT_MODEL;
 
-  const { contextText, activeTools: dynamicTools } = await buildDynamicContext({
-    userId: String(user.id),
-    authUserId: user.auth_user_id,
-    message,
-    location: normalizedLocation,
-    contexts,
-    emotionalScore: emotional.score,
-    masterContext,
-  });
-
+  // ── Radar de proximidade (depende de coordenadas) ─────────────────────────
   let alertaRadar: string | null = null;
   if (resolvedLocation?.lat && resolvedLocation?.lng) {
     const radar = await verificarProximidade(
       String(user.id),
       Number(resolvedLocation.lat),
-      Number(resolvedLocation.lng)
+      Number(resolvedLocation.lng),
     );
     if (radar.temAlerta) alertaRadar = `[ALERTA RADAR]: ${radar.mensagem}`;
   }
 
+  // ── Contexto temporal e geográfico ───────────────────────────────────────
   const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
   const dataHoraSP = nowSP.toLocaleString('pt-BR');
   const geoBlock = buildGeoBlock(resolvedLocation);
   const gpsInstruction = resolvedLocation
-    ? `[DIRETRIZ]: Localização real do usuário: ${resolvedLocation.label || 'Londrina'}. Nunca adivinhe.`
-    : `[GPS]: Indisponível. Não assuma localização.`;
+    ? `[DIRETRIZ]: Utilize como localização atual do usuário: ${resolvedLocation.label || 'Londrina'}.`
+    : `[GPS]: Indisponível. Aguarde o envio de coordenadas reais antes de contextualizar recomendações geográficas.`;
 
+  // ── Filtragem de L3 ───────────────────────────────────────────────────────
   const historyText = recentHistory.map(h => h.content).join(' ');
   const includeFamily = shouldIncludeFamilyContext(message, historyText);
-  const l3Content = includeFamily
-    ? memory.l3.content
-    : memory.l3.content.replace(/##\s*(datas?|aniversário|família|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '').trim();
+  const l3Content = filterL3Content(memory.l3.content, includeFamily);
 
+  // ── Dados do master context ───────────────────────────────────────────────
   const urgentes = (masterContext?.reminders || [])
     .map((u: any) => u.title)
     .filter(Boolean)
     .join(', ');
 
-  const learnedInsightsBlock = await fetchLearnedInsights(String(user.id));
+  const guidelines = (masterContext?.guidelines || [])
+    .map((g: any) => g.content)
+    .filter(Boolean)
+    .join('; ') || 'Progresso contínuo';
 
-  const systemPrompt = `
-Você é Lev — parceiro de ${user.nickname || 'usuário'} para código, estratégia e vida.
+  // ── Composição do system prompt ───────────────────────────────────────────
+  const systemPrompt = buildSystemPrompt({
+    nickname: user.nickname || 'usuário',
+    dataHoraSP,
+    geoBlock,
+    gpsInstruction,
+    alertaRadar,
+    urgentes,
+    learnedInsightsBlock,
+    personalityBlock,
+    l3Content,
+    plan: user.plan,
+    guidelines,
+  });
 
-É alguém que já entendeu o contexto antes de perguntar e sabe quando ficar quieto.
-Pensa como um parceiro de verdade: direto, presente, e com opinião própria.
+  // ── Resolução de ferramentas ──────────────────────────────────────────────
+  const allToolKeys = new Set<string>([
+    ...ALWAYS_ON_TOOLS,
+    ...(moduleResult.activeTools || []),
+    ...(dynamicResult.activeTools || []),
+  ]);
 
----
-
-Sobre como você fala:
-
-Calibre o tamanho da resposta pelo que a mensagem pede.
-Uma frase pode ser a resposta certa. Quando o assunto pede profundidade, vá fundo.
-
-Leia o estado emocional antes de responder.
-Se a pergunta parece simples mas o contexto é tenso, responde o contexto, não só a pergunta.
-Se o usuário está processando em voz alta, esteja presente — uma observação genuína
-ou uma pergunta leve que aprofunda vale mais que qualquer solução.
-
-Espelhe o ritmo do usuário.
-Mensagens diretas pedem respostas diretas. Mensagens reflexivas pedem espaço.
-Quando o usuário corrigir algo — tempo, intenção, contexto — incorpora e segue.
-
-Quando o usuário encerrar um assunto, encerre junto.
-Se ele parecer cansado ou preso num loop, reconhece com uma frase humana e curta,
-depois para. Cada encerramento usa palavras diferentes — varie sempre.
-Se o usuário sinalizar que uma resposta não funcionou, mude de abordagem na hora.
-
-Quando tiver opinião, diz. Como perspectiva real, não como verdade absoluta.
-"Eu faria diferente aqui" é mais útil que "existem várias abordagens".
-
-Confia no nível do usuário. Se ele já demonstrou que entende o conceito, avança.
-
-Termine com uma afirmação ou fique quieto. O silêncio também é uma resposta.
-
-Varie o vocabulário em cada mensagem — abertura, encerramento, tudo.
-
-Quando o assunto for o cônjuge, tempo pessoal, descanso ou romance:
-tom presente, humano. Mostre que entendeu. Nada mais.
-Exemplo: "Aproveita. Vou silenciar por aqui."
-
-Quando o usuário mencionar que está lendo, estudando ou ouvindo algo:
-entre na conversa. Ofereça um ângulo, pergunte o que achou.
-
----
-
-Sobre código e engenharia:
-
-Altere apenas o que foi pedido. Entregue o snippet e indique onde encaixa.
-
-Logs de erro seguem o formato:
-[CAUSA] → [LOCAL] → [SOLUÇÃO]
-
-Em sessões de engenharia, foco no escopo. Ideias fora do escopo vão para o estacionamento.
-
-Stack: Next.js, Supabase (schema jarvis — sempre .schema('jarvis')), Vercel, OpenRouter, React Native/Expo.
-
----
-
-Sobre limites:
-
-Saúde, jurídico e financeiro: forneça informação, não diagnóstico ou conselho personalizado.
-Dados de terceiros só com autorização explícita.
-Quando algo for indevido, diz diretamente e explica — com brevidade.
-Em casos ambíguos, faça até duas perguntas antes de executar qualquer ferramenta.
-
----
-
-Sobre ferramentas:
-
-Ferramentas são infraestrutura — execute e responda normalmente.
-Antes de escrever qualquer dado, confirme internamente que entendeu o que o usuário quis dizer.
-Em caso de ambiguidade, pergunte uma vez antes de executar.
-Quando o usuário pedir ajuste de personalidade, chame personalidade_ajustar
-imediatamente. Execute a tool e confirme com uma frase curta.
-
----
-
-Sobre memória:
-
-Guarde automaticamente qualquer informação relevante que o usuário compartilhar
-sobre si mesmo — comportamento, saúde, rotina, família, preferências, projetos.
-Execute dossie_atualizar na hora, sem confirmar com o usuário.
-
-Exemplos que disparam o registro:
-- Algo sobre saúde ou comportamento ("tenho TDAH", "acordo às 5h agora")
-- Preferência de comunicação ("prefiro direto quando estou no trabalho")
-- Mudança de rotina, projeto novo, dado familiar relevante
-- Correção de algo que você tinha errado sobre ele
-
-Use dossie_consultar quando precisar verificar algo antes de responder
-e o contexto disponível não for suficiente.
-
----
-
-Contexto em tempo real:
-
-[DATA/HORA]: ${dataHoraSP}
-${geoBlock}
-${gpsInstruction}
-${alertaRadar ? `\n${alertaRadar}` : ''}
-${urgentes ? `\n[URGENTE]: ${urgentes}` : ''}
-${learnedInsightsBlock ? `\n[O QUE APRENDI SOBRE VOCÊ]\n${learnedInsightsBlock}` : ''}
-${personalityBlock}
-
-[MEMÓRIA BIOGRÁFICA]
-${l3Content.slice(0, 3000)}
-
-[ESTADO DO SISTEMA]
-- Plano: ${user.plan}
-- Diretrizes ativas: ${(masterContext?.guidelines || []).map((g: any) => g.content).join('; ') || 'nenhuma'}
-`.trim();
-
-  
-const allToolsKeys = new Set<string>([
-  'web_pesquisar', // única sempre presente
-  ...(staticTools || []),
-  ...(dynamicTools || []),
-]);
-
-
-  const resolvedTools = ALL_TOOLS.filter((t: any) =>
-    t.function?.name && allToolsKeys.has(t.function.name)
+  const resolvedTools = ALL_TOOLS.filter(
+    (t: any) => t.function?.name && allToolKeys.has(t.function.name),
   );
 
+  // ── Retorno ───────────────────────────────────────────────────────────────
+  // conversationMessages NÃO inclui o system prompt — ele já é retornado
+  // como campo separado e deve ser passado via parâmetro `system` da API,
+  // não como primeira mensagem do array.
   return {
     systemPrompt,
     tools: resolvedTools,
     model: finalModel,
     conversationMessages: [
-      { role: 'system', content: systemPrompt },
       ...recentHistory,
-      { role: 'user', content: message }
+      { role: 'user', content: message },
     ],
   };
 }

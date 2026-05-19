@@ -34,7 +34,7 @@ const WRITE_TOOLS = new Set([
   'financas_registrar_transacao', 'financas_criar_orcamento', 
   'projeto_gerenciar', 'projeto_gerenciar_topico', 'projeto_gerenciar_entry',
   'projeto_gerenciar_membros', 'lugar_salvar', 'compra_adicionar_item', 
-  'compra_marcar_comprado', 'memoria_adicionar_diretriz', 'sistema_gerenciar_guideline', 
+  'compra_marcar_comprado', 'memoria_adicionar_diretriz', 'gerenciar_guideline', 
   'veiculo_registrar_abastecimento', 'veiculo_registrar_manutencao', 
   'veiculo_atualizar_odometro', 'contato_alternar_permissao',
   'gerenciar_rotina', 'fazer_checkin_rotina', 'dossie_atualizar', 'personalidade_ajustar',
