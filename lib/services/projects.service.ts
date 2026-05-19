@@ -172,3 +172,35 @@ export async function coreAtualizarMembroProjeto(
   }
   return true;
 }
+
+// ─── 6. ENTRIES (TAREFAS / CARDS DO KANBAN) ──────────────────────────────────
+
+export async function coreListarEntriesDoProjeto(projectId: string) {
+  // Como as entries pertencem aos tópicos, fazemos um inner join para pegar 
+  // todas as tarefas vinculadas aos tópicos deste projeto específico.
+  const { data, error } = await supabase
+    .schema('jarvis')
+    .from('project_entries')
+    .select('*, project_topics!inner(project_id)')
+    .eq('project_topics.project_id', projectId)
+    .order('order_index', { ascending: true })
+    .order('created_at', { ascending: false });
+
+  if (error) throw new Error(`Erro ao listar tarefas do projeto: ${error.message}`);
+  return data || [];
+}
+
+export async function coreAtualizarStatusEntry(userId: number, entryId: string, novoStatus: string) {
+  // Atualiza a coluna (status) da tarefa
+  const { error } = await supabase
+    .schema('jarvis')
+    .from('project_entries')
+    .update({ 
+      status: novoStatus, 
+      updated_at: new Date().toISOString() 
+    })
+    .eq('id', entryId);
+
+  if (error) throw new Error(`Falha ao mover a tarefa: ${error.message}`);
+  return true;
+}
