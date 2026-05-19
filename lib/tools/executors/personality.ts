@@ -21,10 +21,9 @@ export async function executeAjustarPersonalidade(
   const { error } = await supabase
     .schema('jarvis')
     .from('user_settings')
-    .upsert(
-      { user_id: Number(numericUserId), key: p.key, value: p.value, updated_at: new Date().toISOString() },
-      { onConflict: 'user_id,key' }
-    );
+    .update({ value: p.value, updated_at: new Date().toISOString() })
+    .eq('user_id', Number(numericUserId))
+    .eq('key', p.key);
 
   if (error) return `Erro ao ajustar personalidade: ${error.message}`;
 
@@ -43,7 +42,6 @@ export async function executeConsultarPersonalidade(
     .eq('user_id', Number(numericUserId));
 
   if (error) return `Erro ao consultar personalidade: ${error.message}`;
-
   if (!data?.length) return `Nenhuma configuração encontrada.`;
 
   const labels: Record<string, string> = {
