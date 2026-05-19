@@ -3,28 +3,25 @@
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
-import { waitUntil } from '@vercel/functions'; 
+import { waitUntil } from '@vercel/functions';
 import type { ModuleDefinition, ModuleConditionOpts } from './types';
 import { recordModuleMetrics } from './metrics';
 
-import { ModuloFinancas }    from './modules/financas';
-import { ModuloVeiculos }    from './modules/veiculos';
-import { ModuloFoco }        from './modules/foco';
-import { ModuloRotinas }     from './modules/rotinas';
-import { ModuloAgenda }      from './modules/agenda';
+import { ModuloFinancas } from './modules/financas';
+import { ModuloVeiculos } from './modules/veiculos';
+import { ModuloFoco } from './modules/foco';
+import { ModuloRotinas } from './modules/rotinas';
+import { ModuloAgenda } from './modules/agenda';
 import { ModuloLocalizacao } from './modules/localizacao';
-import { ModuloProjetos }    from './modules/projetos';
+import { ModuloProjetos } from './modules/projetos';
 import { ModuloRelacionamentos } from '../modules/modules/relacionamentos';
 import { ModuloReminders } from './modules/reminders';
-import { ModuloCompras }       from './modules/compras';
-import { ModuloClima }         from './modules/clima';
-<<<<<<< Updated upstream
-import { ModuloEsportes }      from './modules/esportes';
-=======
-import { ModuloEsportes }      from './modules/esportes'; 
-import { ModuloDossie }         from './modules/dossie';
-import { ModuloPersonalidade }  from './modules/personalidade';
->>>>>>> Stashed changes
+import { ModuloCompras } from './modules/compras';
+import { ModuloClima } from './modules/clima';
+import { ModuloEsportes } from './modules/esportes';
+import { ModuloPersonalidade } from './modules/personalidade';
+import { ModuloDossie } from './modules/dossie';
+
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -43,13 +40,10 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloReminders,
   ModuloCompras,
   ModuloClima,
-<<<<<<< Updated upstream
   ModuloEsportes,
-=======
-  ModuloEsportes, // ← REGISTRADO AQUI
   ModuloDossie,
   ModuloPersonalidade,
->>>>>>> Stashed changes
+
 ];
 
 // ── Nova Função de Avaliação de Complexidade ──
@@ -86,18 +80,18 @@ export async function loadActiveModules(
   } else {
     const cacheKey = `modules_enabled:${opts.userId}`;
     enabledIds = await redis.get<string[]>(cacheKey);
-    
+
     if (!enabledIds) {
       // ── CORREÇÃO ERRO 400 ──
       // Converte explicitamente para Base 10 Inteiro. Evita vazamento de UUIDs na query.
       const safeNumericId = parseInt(String(opts.userId), 10);
-      
+
       const { data } = await supabase
         .from('user_modules')
         .select('module_id')
         .eq('user_id', safeNumericId)
         .eq('is_active', true);
-        
+
       enabledIds = data?.map(r => r.module_id) || [];
       await redis.set(cacheKey, enabledIds, { ex: 300 });
     }
@@ -105,13 +99,13 @@ export async function loadActiveModules(
 
   const activeModules = await Promise.all(ALL_MODULES.map(async mod => {
     if (!enabledIds?.includes(mod.id)) return null;
-    
+
     const planOrder = ['free', 'personal', 'family', 'family_plus', 'ultra'];
     if (planOrder.indexOf(userPlan) < planOrder.indexOf(mod.plan)) return null;
 
     const { trigger } = mod;
     let activated = trigger.always || false;
-    
+
     if (trigger.contexts?.some(c => opts.contexts.includes(c))) activated = true;
     if (trigger.keywords?.test(opts.message)) activated = true;
     if (trigger.condition && await trigger.condition(opts)) activated = true;
@@ -125,7 +119,7 @@ export async function loadActiveModules(
     const start = Date.now();
     try {
       const block = await mod.buildContextBlock(opts);
-      
+
       waitUntil(
         (async () => {
           await recordModuleMetrics(mod.id, parseInt(String(opts.userId), 10), {
