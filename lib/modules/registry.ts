@@ -1,5 +1,5 @@
 // lib/modules/registry.ts
-// V12.4.0 (Type-Safe DB Query + Módulo de Clima + Módulo de Esportes)
+// V12.5.0 (Type-Safe DB Query + Módulo de Clima + Esportes + Complexity Routing)
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -18,7 +18,7 @@ import { ModuloRelacionamentos } from '../modules/modules/relacionamentos';
 import { ModuloReminders } from './modules/reminders';
 import { ModuloCompras }       from './modules/compras';
 import { ModuloClima }         from './modules/clima';
-import { ModuloEsportes }      from './modules/esportes'; // ← NOVO MÓDULO AQUI
+import { ModuloEsportes }      from './modules/esportes';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -37,8 +37,29 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloReminders,
   ModuloCompras,
   ModuloClima,
-  ModuloEsportes, // ← REGISTRADO AQUI
+  ModuloEsportes,
 ];
+
+// ── Nova Função de Avaliação de Complexidade ──
+function evaluateTaskComplexity(message: string, activeResults: any[]): boolean {
+  // 1. Carga Cognitiva: Palavras-chave que exigem raciocínio profundo, análise ou código
+  const complexIntentRegex = /analis[ea]|compar[ea]|resum[ea]|refator[ea]|explic[ea]|arquitetura|dossiê|código|debug/i;
+  if (complexIntentRegex.test(message)) return true;
+
+  // 2. Volume de Dados: Mensagens longas geralmente contêm logs, textos grandes ou instruções detalhadas
+  if (message.length > 400) return true;
+
+  // 3. Sobrecarga de Contexto: Se muitos módulos foram engatilhados juntos, o LLM precisa de mais atenção (attention span)
+  if (activeResults.length >= 3) return true;
+
+  // 4. Peso do Módulo: Algum módulo ativo é estritamente analítico?
+  const heavyModules = ['projetos', 'dossie', 'financas'];
+  const hasHeavyModule = activeResults.some(r => heavyModules.includes(r.id));
+  if (hasHeavyModule) return true;
+
+  // Se passou por tudo isso, é uma tarefa transacional simples (clima, lembrete, agenda)
+  return false;
+}
 
 export async function loadActiveModules(
   opts: ModuleConditionOpts & { masterContext?: any },
@@ -103,15 +124,16 @@ export async function loadActiveModules(
         })()
       );
 
-      return { block, tools: mod.tools || [], model: mod.preferredModel };
+      return { id: mod.id, block, tools: mod.tools || [], model: mod.preferredModel };
     } catch (e) {
       console.error(`[ModuleRegistry] Erro em ${mod.id}:`, e);
-      return { block: '', tools: [], model: 'flash' };
+      return { id: mod.id, block: '', tools: [], model: 'flash' };
     }
   }));
 
-  const needsPro = results.some(r => r.model === 'pro');
-  const finalModel = needsPro ? 'google/gemini-2.0-pro-exp-02-05' : baseModel;
+  // ── AVALIAÇÃO DINÂMICA DE MODELO ──
+  const isComplex = evaluateTaskComplexity(opts.message, results);
+  const finalModel = isComplex ? 'google/gemini-2.5-pro' : baseModel;
 
   return {
     contextBlocks: results.map(r => r.block).filter(Boolean),
