@@ -207,18 +207,12 @@ ${l3Content.slice(0, 3000)}
 - Plano: ${user.plan}
 - Diretrizes ativas: ${(masterContext?.guidelines || []).map((g: any) => g.content).join('; ') || 'nenhuma'}
 `.trim();
-
-  const allToolsKeys = new Set<string>([
-    'projeto_gerenciar', 'projeto_listar', 'projeto_gerenciar_topico', 'projeto_listar_topicos',
-    'projeto_gerenciar_entry', 'projeto_listar_entries', 'projeto_gerenciar_membros',
-    'agenda_consultar', 'agenda_salvar_evento', 'agenda_deletar_evento',
-    'lembrete_criar', 'lembrete_consultar', 'lembrete_cancelar',
-    'contato_alternar_permissao', 'listar_rotinas', 'gerenciar_rotina', 'fazer_checkin_rotina',
-    'clima_consultar_atual', 'esportes_consultar_placar_ao_vivo', 'esportes_consultar_tabela', 'web_pesquisar',
-    'personalidade_ajustar', 'personalidade_consultar',
-    ...(staticTools || []),
-    ...(dynamicTools || []),
-  ]);
+  
+const allToolsKeys = new Set<string>([
+  'web_pesquisar', // única sempre presente
+  ...(staticTools || []),
+  ...(dynamicTools || []),
+]);
 
   const resolvedTools = ALL_TOOLS.filter((t: any) =>
     t.function?.name && allToolsKeys.has(t.function.name)
