@@ -18,7 +18,13 @@ import { ModuloRelacionamentos } from '../modules/modules/relacionamentos';
 import { ModuloReminders } from './modules/reminders';
 import { ModuloCompras }       from './modules/compras';
 import { ModuloClima }         from './modules/clima';
+<<<<<<< Updated upstream
 import { ModuloEsportes }      from './modules/esportes';
+=======
+import { ModuloEsportes }      from './modules/esportes'; 
+import { ModuloDossie }         from './modules/dossie';
+import { ModuloPersonalidade }  from './modules/personalidade';
+>>>>>>> Stashed changes
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -37,7 +43,13 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloReminders,
   ModuloCompras,
   ModuloClima,
+<<<<<<< Updated upstream
   ModuloEsportes,
+=======
+  ModuloEsportes, // ← REGISTRADO AQUI
+  ModuloDossie,
+  ModuloPersonalidade,
+>>>>>>> Stashed changes
 ];
 
 // ── Nova Função de Avaliação de Complexidade ──
