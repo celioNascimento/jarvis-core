@@ -50,78 +50,74 @@ export async function loadActiveModules(
   userPlan: string,
   baseModel: string,
 ) {
-  let enabledIds: string[] | null = null;
+  const numericUserId = parseInt(String(opts.userId), 10);
 
+  // 1. Hidratação Consolidada (O "Pulo do Gato")
+  // Em vez de buscar módulo a módulo, buscamos TUDO de uma vez ou usamos o masterContext
+  let enabledIds: string[];
+  
   if (opts.masterContext?.modules) {
     enabledIds = opts.masterContext.modules.map((m: any) => m.module_id);
-    console.debug(`[ModuleRegistry] Hidratação via God RPC: ${enabledIds?.length} módulos.`);
   } else {
-    const cacheKey = `modules_enabled:${opts.userId}`;
-    enabledIds = await redis.get<string[]>(cacheKey);
-
-    if (!enabledIds) {
-      const safeNumericId = parseInt(String(opts.userId), 10);
-
+    const cacheKey = `modules_enabled:${numericUserId}`;
+    enabledIds = await redis.get<string[]>(cacheKey) || [];
+    
+    if (enabledIds.length === 0) {
       const { data } = await supabase
         .from('user_modules')
         .select('module_id')
-        .eq('user_id', safeNumericId)
+        .eq('user_id', numericUserId)
         .eq('is_active', true);
-
       enabledIds = data?.map(r => r.module_id) || [];
       await redis.set(cacheKey, enabledIds, { ex: 300 });
     }
   }
 
-  const activeModules = await Promise.all(ALL_MODULES.map(async mod => {
-    if (!enabledIds?.includes(mod.id)) return null;
+  // 2. Pré-filtro inicial (evita instanciar módulos inativos)
+  const relevantModules = ALL_MODULES.filter(mod => 
+    enabledIds.includes(mod.id) && 
+    ['free', 'personal', 'family', 'family_plus', 'ultra'].indexOf(userPlan) >= 
+    ['free', 'personal', 'family', 'family_plus', 'ultra'].indexOf(mod.plan)
+  );
 
-    const planOrder = ['free', 'personal', 'family', 'family_plus', 'ultra'];
-    if (planOrder.indexOf(userPlan) < planOrder.indexOf(mod.plan)) return null;
-
+  // 3. Execução Controlada (Batch)
+  const results = await Promise.all(relevantModules.map(async mod => {
     const { trigger } = mod;
     let activated = trigger.always || false;
 
     if (trigger.contexts?.some(c => opts.contexts.includes(c))) activated = true;
-    if (trigger.keywords?.test(opts.message)) activated = true;
-    if (trigger.condition && await trigger.condition(opts)) activated = true;
+    else if (trigger.keywords?.test(opts.message)) activated = true;
+    else if (trigger.condition && await trigger.condition(opts)) activated = true;
 
-    return activated ? mod : null;
-  }));
+    if (!activated) return null;
 
-  const finalModules = activeModules.filter(Boolean) as ModuleDefinition[];
-
-  const results = await Promise.all(finalModules.map(async mod => {
     const start = Date.now();
     try {
       const block = await mod.buildContextBlock(opts);
-
+      
+      // O registro de métricas continua em background sem bloquear o retorno
       waitUntil(
-        (async () => {
-          await recordModuleMetrics(mod.id, parseInt(String(opts.userId), 10), {
-            latencyMs: Date.now() - start,
-            tokens: Math.ceil(block.length / 4),
-            activated: block.length > 0,
-          }).catch(e => console.error('[Metrics Error]', e));
-        })()
+        recordModuleMetrics(mod.id, numericUserId, {
+          latencyMs: Date.now() - start,
+          tokens: Math.ceil(block.length / 4),
+          activated: block.length > 0,
+        }).catch(e => console.error('[Metrics Error]', e))
       );
 
-      return { id: mod.id, block, tools: mod.tools || [], model: mod.preferredModel };
+      return { block, tools: mod.tools || [] };
     } catch (e) {
       console.error(`[ModuleRegistry] Erro em ${mod.id}:`, e);
-      return { id: mod.id, block: '', tools: [], model: 'flash' };
+      return null;
     }
   }));
 
-  // ── Roteamento dinâmico por contexto e score emocional ──
-  const { model: routedModel } = routeModel(
-    opts.contexts,
-    opts.emotionalScore,
-  );
+  const validResults = results.filter(Boolean) as { block: string, tools: any[] }[];
+
+  const { model: routedModel } = routeModel(opts.contexts, opts.emotionalScore);
 
   return {
-    contextBlocks: results.map(r => r.block).filter(Boolean),
-    activeTools: [...new Set(results.flatMap(r => r.tools))],
+    contextBlocks: validResults.map(r => r.block),
+    activeTools: [...new Set(validResults.flatMap(r => r.tools))],
     resolvedModel: routedModel,
   };
 }
