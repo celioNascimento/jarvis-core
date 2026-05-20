@@ -1,9 +1,5 @@
 // lib/chat/pipeline/request-context.ts
 // Fase 1 — Parse, Auth, Geo, Dedup
-//
-// Responsabilidade única: receber o NextRequest bruto e devolver
-// um ChatRequestContext tipado e validado para as fases seguintes.
-// Nenhuma outra fase toca em NextRequest, FormData ou JSON direto.
 
 import { NextRequest } from 'next/server';
 import { Redis } from '@upstash/redis';
@@ -44,6 +40,11 @@ export interface VoiceSettings {
   voiceId: string;
 }
 
+export interface LocalMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface ChatRequestContext {
   // Request
   message: string;
@@ -65,8 +66,11 @@ export interface ChatRequestContext {
 
   // Localização
   rawLocation: ParsedLocation | null;
-  resolvedLocation: GeoState | null;           // ← agora é GeoState (fonte única)
+  resolvedLocation: GeoState | null;
   normalizedLocation: ReturnType<typeof normalizeLocationForModules>;
+
+  // Histórico local (frontend)
+  localHistory: LocalMessage[];
 
   // Dedup
   dedupKey: string;
@@ -97,7 +101,6 @@ function parseLocation(raw: unknown): ParsedLocation | null {
   }
 }
 
-// Converte GeoState para UserLocation (compatibilidade com normalizeLocationForModules)
 function geoStateToUserLocation(state: GeoState): UserLocation {
   return {
     lat:     state.lat,
@@ -109,7 +112,7 @@ function geoStateToUserLocation(state: GeoState): UserLocation {
   };
 }
 
-// ─── Extrator de body (multipart ou JSON) ─────────────────────────────────────
+// ─── Extrator de body ─────────────────────────────────────────────────────────
 
 async function extractBody(req: NextRequest): Promise<{
   message: string;
@@ -118,6 +121,7 @@ async function extractBody(req: NextRequest): Promise<{
   voiceSettings: VoiceSettings | null;
   sessionId: string | null;
   rawLocation: ParsedLocation | null;
+  localHistory: LocalMessage[];
 }> {
   const contentType = req.headers.get('content-type') || '';
   const isMultipart = contentType.includes('multipart');
@@ -130,25 +134,32 @@ async function extractBody(req: NextRequest): Promise<{
       if (vsStr) parsedVoice = JSON.parse(vsStr);
     } catch { }
 
+    let localHistory: LocalMessage[] = [];
+    try {
+      const lhStr = body.get('localHistory') as string;
+      if (lhStr) localHistory = JSON.parse(lhStr);
+    } catch { }
+
     return {
-      message:       (body.get('message') as string) || '',
-      userEmail:     (body.get('userEmail') as string) || '',
-      speak:         body.get('speak') === 'true',
+      message:      (body.get('message') as string) || '',
+      userEmail:    (body.get('userEmail') as string) || '',
+      speak:        body.get('speak') === 'true',
       voiceSettings: parsedVoice,
-      sessionId:     (body.get('sessionId') as string | null),
-      rawLocation:   parseLocation(body.get('location')),
-      localHistory: body.localHistory || [],
+      sessionId:    (body.get('sessionId') as string | null),
+      rawLocation:  parseLocation(body.get('location')),
+      localHistory,
     };
   }
 
   const body = await req.json();
   return {
-    message:       body.message || '',
-    userEmail:     body.userEmail || '',
-    speak:         !!body.speak,
+    message:      body.message || '',
+    userEmail:    body.userEmail || '',
+    speak:        !!body.speak,
     voiceSettings: body.voiceSettings || null,
-    sessionId:     body.sessionId ?? null,
-    rawLocation:   parseLocation(body.location),
+    sessionId:    body.sessionId ?? null,
+    rawLocation:  parseLocation(body.location),
+    localHistory: body.localHistory || [],
   };
 }
 
@@ -188,7 +199,10 @@ export async function buildRequestContext(
   const startTime = Date.now();
 
   // 1. Extrai body
-  const { message, userEmail, speak, voiceSettings, sessionId: incomingSessionId, rawLocation } = await extractBody(req);
+  const {
+    message, userEmail, speak, voiceSettings,
+    sessionId: incomingSessionId, rawLocation, localHistory,
+  } = await extractBody(req);
 
   // 2. Autentica usuário
   const { data: user } = await supabase
@@ -207,42 +221,34 @@ export async function buildRequestContext(
   // 4. Dedup
   const dedup = await checkDedup(sessionId, message);
 
-  // 5. Geo — via GeoStateManager (único caminho)
-  //    updateGeoState decide internamente se chama Nominatim ou retorna cache.
-  //    Se não há GPS nessa request, getGeoState retorna o último estado salvo.
-  
+  // 5. Geo
   let resolvedLocation: GeoState | null = null;
 
   if (rawLocation?.lat != null && rawLocation.lng != null) {
-    console.log('[GEO] chamando updateGeoState:', rawLocation.lat, rawLocation.lng);
     resolvedLocation = await updateGeoState(
       String(user.id),
       rawLocation.lat,
       rawLocation.lng
     );
-    console.log('[GEO] resultado:', resolvedLocation?.city, resolvedLocation?.label);
   } else {
-    console.log('[GEO] sem GPS — usando cache');
     const { getGeoState } = await import('@/lib/geo-resolver');
     resolvedLocation = await getGeoState(String(user.id));
-    console.log('[GEO] cache:', resolvedLocation?.city, resolvedLocation?.label);
   }
-  // 6. normalizedLocation para os módulos (mantém compatibilidade de tipo)
+
+  // 6. normalizedLocation
   const normalizedLocation = resolvedLocation
     ? normalizeLocationForModules(geoStateToUserLocation(resolvedLocation))
     : null;
 
-  // 7. Assinatura da request
+  // 7. Assinatura
   const timeSlot = Math.floor(Date.now() / 60000);
   const requestSignature = `${sessionId}_${Buffer.from(message.substring(0, 40)).toString('base64')}_${timeSlot}`;
 
-  // 8. Consolidação de voz
+  // 8. Voz
   const dbVoice = user.preferred_voice || 'alloy';
   const inferredProvider = dbVoice.length > 10 ? 'elevenlabs' : 'openai';
   const finalVoiceSettings = voiceSettings || { provider: inferredProvider, voiceId: dbVoice };
-  
-  console.log('[DEBUG rawLocation]', rawLocation);
-  
+
   return {
     message,
     userEmail,
@@ -261,8 +267,8 @@ export async function buildRequestContext(
     rawLocation,
     resolvedLocation,
     normalizedLocation,
+    localHistory,
     ...dedup,
     startTime,
   };
 }
- 
