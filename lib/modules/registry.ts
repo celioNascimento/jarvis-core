@@ -142,11 +142,14 @@ export async function loadActiveModules(
   const isComplex = evaluateTaskComplexity(opts.message, results);
   const finalModel = isComplex ? 'google/gemini-2.0-flash-001' : baseModel;
 
-  console.log('[MODEL]', { isComplex, finalModel, activeModules: results.map(r => r.id) });
-  
+  const { model: routedModel } = routeModel(
+    opts.contexts as any[],
+    opts.emotionalScore ?? 0,
+  );
+
   return {
     contextBlocks: results.map(r => r.block).filter(Boolean),
     activeTools: [...new Set(results.flatMap(r => r.tools))],
-    resolvedModel: finalModel,
+    resolvedModel: routedModel,
   };
 }
