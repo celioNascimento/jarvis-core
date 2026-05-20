@@ -142,6 +142,7 @@ export async function loadActiveModules(
   const finalModel = isComplex ? 'google/gemini-2.5-pro' : baseModel;
 
   console.log('[MODEL]', { isComplex, finalModel, activeModules: results.map(r => r.id) });
+  
   return {
     contextBlocks: results.map(r => r.block).filter(Boolean),
     activeTools: [...new Set(results.flatMap(r => r.tools))],
