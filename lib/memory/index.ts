@@ -152,7 +152,7 @@ async function readTopics(userId: number, contexts: string[], message: string): 
         const [topicBlock, recommendationsBlock, relatedTopicsBlock] = await Promise.all([
             buildTopicBlock(String(userId), message).catch(() => ''), // Mantido String apenas para os extratores que não refatoramos
             buildRecommendationsBlock(String(userId), message).catch(() => ''),
-            getRelatedTopics(String(userId), safeContext).catch(() => '')
+            getRelatedTopics({ masterContext: safeContext })
         ]);
         return { topicBlock, recommendationsBlock, relatedTopicsBlock };
     } catch {
