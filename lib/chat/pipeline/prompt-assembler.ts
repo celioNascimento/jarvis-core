@@ -170,10 +170,23 @@ export async function buildChatPrompt(
   const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
   const dataHoraSP = nowSP.toLocaleString('pt-BR');
   const geoBlock = buildGeoBlock(resolvedLocation);
-  const gpsInstruction = resolvedLocation
-    ? `[DIRETRIZ]: Utilize como localização atual do usuário: ${resolvedLocation.label || 'Londrina'}.`
-    : `[GPS]: Indisponível. Aguarde o envio de coordenadas reais antes de contextualizar recomendações geográficas.`;
+  
+const geoBlock = buildGeoBlock(resolvedLocation);
 
+const gpsCity    = resolvedLocation?.city  || '';
+const gpsState   = resolvedLocation?.state || '';
+const gpsLabel   = resolvedLocation?.label || '';
+const isCoordOnly = /^-?\d/.test(gpsLabel); // label é coordenada bruta = Nominatim falhou
+
+const locationDisplay = gpsCity
+  ? `${gpsCity}${gpsState ? `, ${gpsState}` : ''}`   // "Londrina, PR"
+  : isCoordOnly
+    ? 'localização obtida via GPS'                    // evita coordenada no prompt
+    : gpsLabel || 'não disponível';
+
+const gpsInstruction = resolvedLocation
+  ? `[DIRETRIZ]: Localização atual do usuário confirmada — ${locationDisplay}.${gpsLabel && !isCoordOnly ? ` Endereço aproximado: ${gpsLabel}.` : ''}`
+  : `[GPS]: Indisponível. Não faça suposições sobre localização do usuário.`;
   // ── Filtragem de L3 ───────────────────────────────────────────────────────
   const historyText = recentHistory.map(h => h.content).join(' ');
   const includeFamily = shouldIncludeFamilyContext(message, historyText);
