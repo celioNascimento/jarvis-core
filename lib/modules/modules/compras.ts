@@ -1,5 +1,5 @@
-// lib/modules/compras.ts
-// Definição do Módulo de Compras integrado à SSOT Core
+// lib/modules/modules/compras.ts
+// V12.3.0 — Injeção de Contexto Preparada e Fallback de Hidratação
 
 import type { ModuleDefinition } from '../types';
 import { coreListarCompras } from '@/lib/services/shopping.service';
@@ -16,9 +16,16 @@ export const ModuloCompras: ModuleDefinition = {
 
   buildContextBlock: async (opts) => {
     try {
-      // Carrega os itens do usuário e os compartilhados com ele via SSOT
-      const data = await coreListarCompras(Number(opts.userId));
-      
+      // 1. Tenta a Injeção de Contexto (Se no futuro o God RPC trouxer as 'compras')
+      let data = (opts as any).masterContext?.compras;
+
+      // 2. Fallback de Segurança (Se chamado isoladamente ou se o God RPC não trouxer)
+      if (!data) {
+        data = await coreListarCompras(Number(opts.userId));
+      }
+
+      if (!data || !data.length) return '';
+
       const pendentes = data.filter((i: any) => i.done === false);
       if (!pendentes.length) return '';
 
