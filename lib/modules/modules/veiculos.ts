@@ -13,7 +13,7 @@ export const ModuloVeiculos: ModuleDefinition = {
   },
   buildContextBlock: async (opts) => {
     // Busca dados consolidados dos veículos do usuário
-    const { data: vehicles } = await supabase.schema('jarvis').from('vehicles').select('*').eq('user_id', opts.userId);
+    const vehicles = opts.masterContext?.vehicles || [];
     if (!vehicles?.length) return '';
 
     const vehicleIds = vehicles.map(v => v.id);
