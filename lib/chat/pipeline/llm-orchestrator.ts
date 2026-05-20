@@ -131,84 +131,102 @@ export async function runLLMOrchestrator(
   let loopResponse: LLMResponse | null = null;
   let ferramentasExecutadas = false;
 
-  // ── FASE 1: Loop de Acúmulo com Limite Estrito ──────────────────────────────
-  while (passoAtual < MAX_STEPS) {
-    passoAtual++;
+// ── FASE 1: Loop de Acúmulo com Limite Estrito ──────────────────────────────
+while (passoAtual < MAX_STEPS) {
+  passoAtual++;
 
-    const currentToolChoice = passoAtual === 1 ? toolChoice : 'auto';
-    const stepSignature = passoAtual === 1 ? requestSignature : `${requestSignature}_step_${passoAtual}`;
+  const currentToolChoice = passoAtual === 1 ? toolChoice : 'auto';
+  const stepSignature =
+    passoAtual === 1 ? requestSignature : `${requestSignature}_step_${passoAtual}`;
 
-    try {
-      loopResponse = await callOpenRouterWithPriority(
-        1,
-        'never',
-        stepSignature,
-        currentMessages,
-        tools,
-        requestedModel,
-        0.1,
-        25000,
-        8000,        currentToolChoice
-      ) as LLMResponse;
-    } catch (error) {
-      console.error(`[Orchestrator] Erro na chamada LLM no passo ${passoAtual}:`, error);
-      break;
-    }
-
-    if (Array.isArray(loopResponse.toolCalls) && loopResponse.toolCalls.length > 0) {
-      ferramentasExecutadas = true;
-      console.log(`[Orchestrator] 🚀 Passo ${passoAtual}: Executando ${loopResponse.toolCalls.length} ferramenta(s).`);
-
-      const toolResults = await executeToolCalls(
-        loopResponse.toolCalls,
-        user.auth_user_id,
-        String(user.id),
-        ctx.sessionId,
-        currentMessages.slice(-3)
-      );
-
-      const toolMessages = buildToolCallMessages(loopResponse.content, loopResponse.toolCalls, toolResults);
-      currentMessages.push(...toolMessages);
-
-      continue;
-    } else {
-      break;
-    }
-  }
-
-  // ── FASE 2: Síntese Cognitiva Final (com fallback seguro) ──────────────────
-
-  if (!ferramentasExecutadas && loopResponse) {
-    return appendResilienceNotice(
-      loopResponse.content || 'Entendido.',
-      requestedModel,
-      loopResponse.modelUsed || requestedModel
-    );
-  }
+  let stepFailed = false;
 
   try {
-    const fastModel = requestedModel.replace(/pro(-\w+)?/, 'fast$1');
-    const synthesisResponse = (await callOpenRouterWithPriority(
+    loopResponse = (await callOpenRouterWithPriority(
       1,
       'never',
-      `${requestSignature}_synth`,
+      stepSignature,
       currentMessages,
-      [],
-      fastModel,
-      0.7,
-      15000,
-      6000    )) as LLMResponse;
-
-    return appendResilienceNotice(
-      synthesisResponse.content || 'Ação concluída.',
+      tools,
       requestedModel,
-      synthesisResponse.modelUsed || requestedModel
-    );
+      0.1,
+      25000,
+      8000,
+      currentToolChoice
+    )) as LLMResponse;
   } catch (error) {
-    console.error('[Orchestrator] Falha na síntese final:', error);
-    return (
-      loopResponse?.content ||
-      'Ação realizada, mas houve um problema ao formatar a resposta.'
-    );
+    // Loga apenas no servidor — nunca propaga para o cliente
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[Orchestrator] Erro na chamada LLM no passo ${passoAtual}: ${msg}`);
+    stepFailed = true;
   }
+
+  if (stepFailed) break;
+
+  if (Array.isArray(loopResponse?.toolCalls) && loopResponse!.toolCalls!.length > 0) {
+    ferramentasExecutadas = true;
+    console.log(
+      `[Orchestrator] 🚀 Passo ${passoAtual}: Executando ${loopResponse!.toolCalls!.length} ferramenta(s).`
+    );
+
+    const toolResults = await executeToolCalls(
+      loopResponse!.toolCalls!,
+      user.auth_user_id,
+      String(user.id),
+      ctx.sessionId,
+      currentMessages.slice(-3)
+    );
+
+    const toolMessages = buildToolCallMessages(
+      loopResponse!.content,
+      loopResponse!.toolCalls!,
+      toolResults
+    );
+    currentMessages.push(...toolMessages);
+    continue;
+  } else {
+    break;
+  }
+}
+
+// ── FASE 2: Síntese Cognitiva Final ──────────────────────────────────────────
+
+if (!ferramentasExecutadas && loopResponse) {
+  return appendResilienceNotice(
+    loopResponse.content || 'Entendido.',
+    requestedModel,
+    loopResponse.modelUsed || requestedModel
+  );
+}
+
+// Se loopResponse é null (passo 1 falhou completamente), retorna fallback imediato
+if (!loopResponse) {
+  console.error('[Orchestrator] Nenhuma resposta LLM obtida. Retornando fallback silencioso.');
+  return 'Não consegui processar sua mensagem agora. Tente novamente em instantes.';
+}
+
+try {
+  const fastModel = requestedModel.replace(/pro(-\w+)?/, 'fast$1');
+  const synthesisResponse = (await callOpenRouterWithPriority(
+    1,
+    'never',
+    `${requestSignature}_synth`,
+    currentMessages,
+    [],
+    fastModel,
+    0.7,
+    15000,
+    6000
+  )) as LLMResponse;
+
+  return appendResilienceNotice(
+    synthesisResponse.content || 'Ação concluída.',
+    requestedModel,
+    synthesisResponse.modelUsed || requestedModel
+  );
+} catch (error) {
+  const msg = error instanceof Error ? error.message : String(error);
+  console.error(`[Orchestrator] Falha na síntese final: ${msg}`);
+  // Nunca expõe detalhes técnicos — usa conteúdo do loop se disponível
+  return loopResponse.content || 'Ação realizada, mas houve um problema ao formatar a resposta.';
 }
