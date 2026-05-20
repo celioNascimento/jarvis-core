@@ -1,5 +1,5 @@
 // lib/chat/llm-gateway.ts
-// V11.6.2 — Fallback Triplo + Tipagem Estrita + Timeout Dinâmico Realista
+// V11.6.3 — Correção do ID do Modelo de Fallback (Sufixo -001)
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter, ToolDefinition, ToolChoice } from '@/lib/chat/openrouter';
@@ -42,7 +42,8 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-const FALLBACK_MODEL = 'google/gemini-2.0-flash';
+// AQUI ESTAVA O ERRO: Adicionado o sufixo -001 exigido pelo OpenRouter
+const FALLBACK_MODEL = 'google/gemini-2.0-flash-001';
 const CONCURRENCY_LIMIT = 3;
 
 let localBreaker = { open: false, expires: 0 };
@@ -133,8 +134,6 @@ class Gatekeeper {
     const callModel = async (modelToCall: string, forceStripTools: boolean = false): Promise<LLMResponse> => {
       const isPro = modelToCall !== FALLBACK_MODEL;
       
-      // Correção da Guilhotina: respeita o timeoutMs da task (25s) para o primário,
-      // e dá uma folga adicional de 10s caso precise acionar o fallback.
       const timeout = isPro ? task.params.timeoutMs : task.params.timeoutMs + 10000;
 
       const hasTools = !forceStripTools && Array.isArray(task.params.tools) && task.params.tools.length > 0;
