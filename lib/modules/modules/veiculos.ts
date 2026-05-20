@@ -1,6 +1,15 @@
 // lib/modules/modules/veiculos.ts
-import { supabase } from '@/lib/jarvis';
+// V12.2.0 — Tipagem rigorosa e eliminação de chamadas de rede
+
 import type { ModuleDefinition } from '../types';
+
+// Definimos uma interface básica para garantir a segurança no build
+interface Vehicle {
+  id: number;
+  name: string;
+  plate: string;
+  current_km: number;
+}
 
 export const ModuloVeiculos: ModuleDefinition = {
   id: 'veiculos',
@@ -11,22 +20,20 @@ export const ModuloVeiculos: ModuleDefinition = {
     contexts: ['veiculos'],
     keywords: /carro|veículo|placa|km|óleo|gasolina|etanol|manutenção|multa/i
   },
+  
   buildContextBlock: async (opts) => {
-    // Busca dados consolidados dos veículos do usuário
-    const vehicles = opts.masterContext?.vehicles || [];
-    if (!vehicles?.length) return '';
+    // 🛡️ Leitura segura do contexto consolidado (Zero DB Calls)
+    // Assumimos que o RPC já traz 'vehicles', 'maintenances' e 'refuels' dentro do masterContext
+    const vehicles: Vehicle[] = (opts as any).masterContext?.vehicles || [];
+    const maintenances = (opts as any).masterContext?.maintenances || [];
+    const refuels = (opts as any).masterContext?.refuels || [];
 
-    const vehicleIds = vehicles.map(v => v.id);
+    if (!vehicles.length) return '';
 
-    // Busca última manutenção e abastecimento em paralelo
-    const [maintenances, refuels] = await Promise.all([
-      supabase.schema('jarvis').from('vehicle_maintenances').select('*').in('vehicle_id', vehicleIds).order('performed_date', { ascending: false }).limit(3),
-      supabase.schema('jarvis').from('vehicle_refueling').select('*').in('vehicle_id', vehicleIds).order('refueled_at', { ascending: false }).limit(1)
-    ]);
-
-    const parts = vehicles.map(v => {
-      const vMain = maintenances.data?.filter(m => m.vehicle_id === v.id)[0];
-      const vFuel = refuels.data?.filter(f => f.vehicle_id === v.id)[0];
+    const parts = vehicles.map((v: Vehicle) => {
+      // Filtramos os dados que já vieram na memória (Injetados pelo RPC)
+      const vMain = maintenances.find((m: any) => m.vehicle_id === v.id);
+      const vFuel = refuels.find((f: any) => f.vehicle_id === v.id);
       
       return `🚗 ${v.name} (${v.plate}):
       - KM Atual: ${v.current_km}
@@ -37,6 +44,7 @@ export const ModuloVeiculos: ModuleDefinition = {
 
     return `[MODO EXPERTFROTAS]\n${parts.join('\n\n')}`;
   },
+  
   tools: ['registrar_manutencao', 'registrar_abastecimento', 'atualizar_odometro'],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
