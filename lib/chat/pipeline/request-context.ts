@@ -209,20 +209,23 @@ export async function buildRequestContext(
   // 5. Geo — via GeoStateManager (único caminho)
   //    updateGeoState decide internamente se chama Nominatim ou retorna cache.
   //    Se não há GPS nessa request, getGeoState retorna o último estado salvo.
+  
   let resolvedLocation: GeoState | null = null;
 
   if (rawLocation?.lat != null && rawLocation.lng != null) {
+    console.log('[GEO] chamando updateGeoState:', rawLocation.lat, rawLocation.lng);
     resolvedLocation = await updateGeoState(
       String(user.id),
       rawLocation.lat,
       rawLocation.lng
     );
+    console.log('[GEO] resultado:', resolvedLocation?.city, resolvedLocation?.label);
   } else {
-    // Sem GPS nessa request — usa o último estado conhecido do usuário
+    console.log('[GEO] sem GPS — usando cache');
     const { getGeoState } = await import('@/lib/geo-resolver');
     resolvedLocation = await getGeoState(String(user.id));
+    console.log('[GEO] cache:', resolvedLocation?.city, resolvedLocation?.label);
   }
-
   // 6. normalizedLocation para os módulos (mantém compatibilidade de tipo)
   const normalizedLocation = resolvedLocation
     ? normalizeLocationForModules(geoStateToUserLocation(resolvedLocation))
