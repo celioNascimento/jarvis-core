@@ -1,7 +1,16 @@
 // lib/modules/modules/projetos.ts
-// V12.1.0 — Eliminação de chamadas Supabase via Injeção de Contexto
+// V12.3.0 — Zero DB Calls, Tipagem rigorosa e Fallback de Hidratação
 
+import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
+
+interface Project {
+  id: number;
+  name: string;
+  tag: string;
+  status: string;
+  my_role?: string;
+}
 
 export const ModuloProjetos: ModuleDefinition = {
   id: 'projetos_lev',
@@ -16,37 +25,35 @@ export const ModuloProjetos: ModuleDefinition = {
 
   buildContextBlock: async (opts) => {
     try {
-      // ✅ 1. LEITURA VIA INJEÇÃO (Zero chamadas de rede)
-      // O masterContext já contém a lista de projetos consolidada pelo RPC
-      const projects = (opts as any).masterContext?.projects || [];
-      
-      const activeProjects = projects.filter((p: any) => 
-        ['em_desenvolvimento', 'em_pausa'].includes(p.status)
-      ).slice(0, 10);
+      // 1. Tenta a Injeção de Contexto (Zero DB Calls)
+      let projects: Project[] = (opts as any).masterContext?.projects;
 
-      if (!activeProjects.length) return '';
-
-      // ✅ 2. REMOÇÃO DO MAP COM SUPABASE
-      // Não consultamos mais o banco aqui. 
-      // Se você precisar dos tópicos, o RPC de consolidado deve trazê-los 
-      // dentro do objeto de cada projeto.
-      const topicBlocks = activeProjects.map((proj: any) => {
-        const roleLabel = proj.my_role !== 'owner' ? ` [Papel: ${proj.my_role}]` : '';
-        const header = `• ${proj.name ?? proj.tag} (${proj.tag})${roleLabel} [Status: ${proj.status}] — id: ${proj.id}`;
+      // 2. Fallback de Segurança (Se chamado isoladamente)
+      if (!projects) {
+        const { data } = await supabase
+          .schema('jarvis')
+          .from('projects')
+          .select('id, name, tag, status, my_role')
+          .eq('user_id', opts.userId)
+          .in('status', ['em_desenvolvimento', 'em_pausa'])
+          .limit(10);
         
-        // Se o RPC trouxer 'topics', usamos aqui. Se não, apenas listamos o projeto.
-        const topicList = proj.topics?.length
-          ? '\n  Tópicos Raiz: ' + proj.topics.map((t: any) => `${t.name ?? t.tag}`).join(', ')
-          : '';
+        projects = data || [];
+      }
 
-        return header + topicList;
+      if (!projects.length) return '';
+
+      // 3. Montagem Enxuta (Deixa os detalhes para as tools)
+      const topicBlocks = projects.map((proj: Project) => {
+        const roleLabel = proj.my_role && proj.my_role !== 'owner' ? ` [Papel: ${proj.my_role}]` : '';
+        return `• ${proj.name ?? proj.tag} (${proj.tag})${roleLabel} [Status: ${proj.status}] — id: ${proj.id}`;
       });
 
       return [
         '[PROJETOS ATIVOS]',
         topicBlocks.join('\n'),
         '',
-        'Comandos: listar_topicos(project_id) ou listar_entries(topic_id).',
+        'INSTRUÇÃO: Para ver os tópicos de um projeto, use listar_topicos(project_id). Para ver tarefas, use listar_entries(topic_id).',
       ].join('\n');
     } catch (e) {
       console.error('[ModuloProjetos] Erro:', e);
@@ -55,8 +62,14 @@ export const ModuloProjetos: ModuleDefinition = {
   },
 
   tools: [
-    'gerenciar_projeto', 'listar_projetos', 'gerenciar_topico',
-    'listar_topicos', 'gerenciar_entry', 'listar_entries', 'gerenciar_membros_projeto'
+    'gerenciar_projeto',
+    'listar_projetos',
+    'gerenciar_topico',
+    'listar_topicos',
+    'gerenciar_entry',
+    'listar_entries',
+    'gerenciar_membros_projeto'
   ],
+
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 },
 };

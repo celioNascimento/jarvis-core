@@ -1,5 +1,5 @@
 // lib/modules/modules/foco.ts
-// V1.0.2 — Integração das Diretrizes de Sessão (Estacionamento de Ideias, FIFO e Bloqueio de Escopo)
+// V12.3.0 — Padrão mantido: Zero DB Calls Nativo + Instruções Estáticas (Blindagem de Sessão)
 
 import type { ModuleDefinition } from '../types';
 
@@ -12,6 +12,7 @@ export const ModuloFoco: ModuleDefinition = {
     contexts: ['tdah', 'foco'],
     keywords: /foco|procrastinando|travado|paralisado|sobrecarregado|por onde começo|não sei começar|despejo mental|matriz de eisenhower|pomodoro|ferramentas para foco|ajuda para focar|estacionamento de ideias|sessão de implementação|fifo/i
   },
+  
   buildContextBlock: async () => {
     return `[MÓDULO DE FOCO E TDAH ATIVO]
 CRÍTICO: Quando o usuário perguntar quais ferramentas, recursos ou capacidades você possui para foco e produtividade, você deve listar tanto o arsenal programático (funções) quanto os seus protocolos e guardrails comportamentais de blindagem de escopo.
@@ -29,6 +30,7 @@ CRÍTICO: Quando o usuário perguntar quais ferramentas, recursos ou capacidades
 
 Diretriz: Apresente esse ecossistema completo (Ferramentas + Protocolos de Blindagem) para mostrar que você está pronto para segurar o escopo e protegê-lo contra a dispersão.`;
   },
+  
   tools: [
     'tdah_gerenciar_eisenhower',
     'tdah_quebrar_tarefa',
@@ -36,5 +38,6 @@ Diretriz: Apresente esse ecossistema completo (Ferramentas + Protocolos de Blind
     'tdah_registrar_sessao_foco',
     'tdah_consultar_resumo'
   ],
+  
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };

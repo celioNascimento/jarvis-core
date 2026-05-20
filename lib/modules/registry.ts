@@ -41,20 +41,23 @@ export async function loadActiveModules(
   // Mantemos o masterContext para evitar chamadas duplicadas aos módulos
   let masterContext = opts.masterContext;
   if (!masterContext) {
-    const { data } = await supabase.rpc('get_consolidated_context', { p_user_id: numericUserId });
+    const { data } = await supabase.rpc('get_consolidated_context', {
+      p_user_id: numericUserId,
+      p_contexts: opts.contexts || []
+    }); 
     masterContext = data || {};
   }
 
   // 2. Determinação de módulos ativos
   const cacheKey = `modules_enabled:${numericUserId}`;
   let enabledIds: string[] = masterContext.modules?.map((m: any) => m.module_id) || [];
-  
+
   if (enabledIds.length === 0) {
     const cached = await new Redis({
       url: process.env.UPSTASH_REDIS_REST_URL!,
       token: process.env.UPSTASH_REDIS_REST_TOKEN!,
     }).get<string[]>(cacheKey);
-    
+
     if (cached) {
       enabledIds = cached;
     } else {

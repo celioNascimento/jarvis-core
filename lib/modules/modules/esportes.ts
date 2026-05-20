@@ -1,5 +1,5 @@
 // lib/modules/modules/esportes.ts
-// V1.0.4 — Refinamento de UX de Conversação (Anti-Respostas Robóticas)
+// V12.3.0 — Padrão mantido: Zero DB Calls Nativo + UX Anti-Robô
 
 import type { ModuleDefinition } from '../types';
 

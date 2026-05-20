@@ -1,7 +1,7 @@
 // lib/modules/modules/relacionamentos.ts
-// V12 — Zero DB Calls
+// V12.3.0 — Padrão Zero-Waste consolidado
+
 import type { ModuleDefinition } from '../types';
-import { supabase } from '@/lib/jarvis';
 
 export const ModuloRelacionamentos: ModuleDefinition = {
   id: 'relacionamentos',
@@ -15,28 +15,17 @@ export const ModuloRelacionamentos: ModuleDefinition = {
   
   buildContextBlock: async (opts) => {
     try {
-      // ✅ Usa o array 'relationships' que já vem no get_consolidated_context
+      // ✅ Injeção via masterContext (Zero DB Calls)
       const rels = (opts as any).masterContext?.relationships;
       
-      if (rels && rels.length > 0) {
-        const linhas = ['### 🤝 RELACIONAMENTOS (Permissões Ativas)'];
-        linhas.push('Você possui conexões ativas. Se o usuário pedir para compartilhar algo, use a ferramenta alternar_permissao_contato se não estiver liberado.');
-        return linhas.join('\n');
-      }
+      if (!rels || rels.length === 0) return '';
 
-      // Fallback apenas se o contexto falhar por algum motivo bizarro
-      const { data, error } = await supabase
-        .from('relationships')
-        .select(`id, settings, user_id_a, user_id_b`)
-        .eq('status', 'active')
-        .or(`user_id_a.eq.${opts.userId},user_id_b.eq.${opts.userId}`);
-
-      if (error || !data?.length) return '';
-
-      const linhas = ['### 🤝 RELACIONAMENTOS (Permissões Ativas)'];
-      linhas.push('Você possui conexões ativas. Se o usuário pedir para compartilhar algo, use a ferramenta alternar_permissao_contato se não estiver liberado.');
-      return linhas.join('\n');
+      return [
+        '### 🤝 RELACIONAMENTOS (Permissões Ativas)',
+        'Você possui conexões ativas. Se o usuário pedir para compartilhar algo, use a ferramenta alternar_permissao_contato se não estiver liberado.'
+      ].join('\n');
     } catch (e) {
+      console.error('[ModuloRelacionamentos] Erro:', e);
       return '';
     }
   },
