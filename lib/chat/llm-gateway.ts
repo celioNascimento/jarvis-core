@@ -1,8 +1,8 @@
 // lib/chat/llm-gateway.ts
-// V11.5.0 — Fallback Triplo com Survival Mode + Tipagem Estrita
+// V11.6.0 — Fallback Triplo (Survival Mode) + Tipagem Estrita (Integração Limpa OpenRouter)
 
 import { Redis } from '@upstash/redis';
-import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
+import { callOpenRouterWithTools as rawCallOpenRouter, ToolDefinition, ToolChoice } from '@/lib/chat/openrouter';
 
 // ── Tipagens Estritas ────────────────────────────────────────────────────
 export interface ChatMessage {
@@ -12,17 +12,6 @@ export interface ChatMessage {
   tool_calls?: any[];
   tool_call_id?: string;
 }
-
-export interface ToolDefinition {
-  type: 'function';
-  function: {
-    name: string;
-    description?: string;
-    parameters: Record<string, any>;
-  };
-}
-
-export type ToolChoice = 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
 
 export interface LLMParams {
   messages: ChatMessage[];
@@ -155,7 +144,7 @@ class Gatekeeper {
 
       const res = await rawCallOpenRouter(
         task.params.messages,
-        hasTools ? task.params.tools : undefined,
+        hasTools ? task.params.tools : undefined, // ← Sem "as any", tipagem limpa!
         modelToCall,
         task.params.temperature,
         timeout,
