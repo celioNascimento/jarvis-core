@@ -1,5 +1,5 @@
 // lib/modules/registry.ts
-// V12.5.0 (Type-Safe DB Query + Módulo de Clima + Esportes + Complexity Routing)
+// V12.6.0 — Complexity Routing via routeModel
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -23,7 +23,6 @@ import { ModuloEsportes } from './modules/esportes';
 import { ModuloPersonalidade } from './modules/personalidade';
 import { ModuloDossie } from './modules/dossie';
 
-
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
@@ -44,29 +43,7 @@ const ALL_MODULES: ModuleDefinition[] = [
   ModuloEsportes,
   ModuloDossie,
   ModuloPersonalidade,
-
 ];
-
-// ── Nova Função de Avaliação de Complexidade ──
-function evaluateTaskComplexity(message: string, activeResults: any[]): boolean {
-  // 1. Carga Cognitiva: Palavras-chave que exigem raciocínio profundo, análise ou código
-  const complexIntentRegex = /analis[ea]|compar[ea]|resum[ea]|refator[ea]|explic[ea]|arquitetura|dossiê|código|debug/i;
-  if (complexIntentRegex.test(message)) return true;
-
-  // 2. Volume de Dados: Mensagens longas geralmente contêm logs, textos grandes ou instruções detalhadas
-  if (message.length > 400) return true;
-
-  // 3. Sobrecarga de Contexto: Se muitos módulos foram engatilhados juntos, o LLM precisa de mais atenção (attention span)
-  if (activeResults.length >= 3) return true;
-
-  // 4. Peso do Módulo: Algum módulo ativo é estritamente analítico?
-  const heavyModules = ['projetos', 'dossie', 'financas'];
-  const hasHeavyModule = activeResults.some(r => heavyModules.includes(r.id));
-  if (hasHeavyModule) return true;
-
-  // Se passou por tudo isso, é uma tarefa transacional simples (clima, lembrete, agenda)
-  return false;
-}
 
 export async function loadActiveModules(
   opts: ModuleConditionOpts & { masterContext?: any },
@@ -83,8 +60,6 @@ export async function loadActiveModules(
     enabledIds = await redis.get<string[]>(cacheKey);
 
     if (!enabledIds) {
-      // ── CORREÇÃO ERRO 400 ──
-      // Converte explicitamente para Base 10 Inteiro. Evita vazamento de UUIDs na query.
       const safeNumericId = parseInt(String(opts.userId), 10);
 
       const { data } = await supabase
@@ -126,7 +101,7 @@ export async function loadActiveModules(
           await recordModuleMetrics(mod.id, parseInt(String(opts.userId), 10), {
             latencyMs: Date.now() - start,
             tokens: Math.ceil(block.length / 4),
-            activated: block.length > 0
+            activated: block.length > 0,
           }).catch(e => console.error('[Metrics Error]', e));
         })()
       );
@@ -138,13 +113,10 @@ export async function loadActiveModules(
     }
   }));
 
-  // ── AVALIAÇÃO DINÂMICA DE MODELO ──
-  const isComplex = evaluateTaskComplexity(opts.message, results);
-  const finalModel = isComplex ? 'google/gemini-2.0-flash-001' : baseModel;
-
+  // ── Roteamento dinâmico por contexto e score emocional ──
   const { model: routedModel } = routeModel(
-    opts.contexts as any[],
-    opts.emotionalScore ?? 0,
+    opts.contexts,
+    opts.emotionalScore,
   );
 
   return {
