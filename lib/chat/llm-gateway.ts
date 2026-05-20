@@ -1,9 +1,53 @@
 // lib/chat/llm-gateway.ts
-// V11.3.1 — Resgate de Erro 400 + Proteção Estrita de Payload e Fallback
+// V11.5.0 — Fallback Triplo com Survival Mode + Tipagem Estrita
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
 
+// ── Tipagens Estritas ────────────────────────────────────────────────────
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  name?: string;
+  tool_calls?: any[];
+  tool_call_id?: string;
+}
+
+export interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, any>;
+  };
+}
+
+export type ToolChoice = 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
+
+export interface LLMParams {
+  messages: ChatMessage[];
+  tools?: ToolDefinition[];
+  model: string;
+  temperature: number;
+  timeoutMs: number;
+  maxTokens?: number;
+  toolChoice?: ToolChoice;
+}
+
+export interface GatewayTask {
+  id: string;
+  priority: 1 | 2 | 3 | 4;
+  params: LLMParams;
+  dedupPayload: string;
+}
+
+export interface LLMResponse {
+  content: string | null;
+  toolCalls: any[] | null;
+  modelUsed: string;
+}
+
+// ── Configurações e Estado Local ─────────────────────────────────────────
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
@@ -20,6 +64,7 @@ function edgeSafeHash(str: string): string {
   return Math.abs(h).toString(36);
 }
 
+// ── Classe Principal ─────────────────────────────────────────────────────
 class Gatekeeper {
   async isOverloaded(): Promise<boolean> {
     try {
@@ -30,7 +75,7 @@ class Gatekeeper {
     }
   }
 
-  async enqueue(task: any): Promise<any> {
+  async enqueue(task: GatewayTask): Promise<LLMResponse> {
     const dedupKey = `llm_dedup:${task.id}:${edgeSafeHash(task.dedupPayload || '')}`;
 
     const [cached, activeCount] = await redis.pipeline()
@@ -40,7 +85,7 @@ class Gatekeeper {
 
     if (cached) {
       await redis.decr('global_llm_active');
-      const hit = cached as any;
+      const hit = cached as LLMResponse;
       return {
         ...hit,
         toolCalls: hit.toolCalls ?? null,
@@ -75,7 +120,7 @@ class Gatekeeper {
     }
   }
 
-  private async executeWithFallback(task: any, dk: string): Promise<any> {
+  private async executeWithFallback(task: GatewayTask, dk: string): Promise<LLMResponse> {
     let activeModel = task.params.model;
 
     // ── Circuit Breaker: sincroniza estado local com Redis ──────────────────
@@ -95,16 +140,15 @@ class Gatekeeper {
       activeModel = FALLBACK_MODEL;
     }
 
-    // ── Helper interno para chamar o modelo ────────────────────────────────
-    const callModel = async (modelToCall: string): Promise<any> => {
+    // ── Helper interno para chamar o modelo (com opção de desativar tools) ──
+    const callModel = async (modelToCall: string, forceStripTools: boolean = false): Promise<LLMResponse> => {
       const isPro = modelToCall !== FALLBACK_MODEL;
       const timeout = isPro ? 10000 : 25000;
 
-      const hasTools = Array.isArray(task.params.tools) && task.params.tools.length > 0;
-
-      // Limpeza estrita para evitar Erro 400:
-      // Se não houver tools, ou se for o Fallback, NUNCA enviamos toolChoice customizado.
-      let safeToolChoice = task.params.toolChoice;
+      const hasTools = !forceStripTools && Array.isArray(task.params.tools) && task.params.tools.length > 0;
+      
+      // Limpeza estrita para evitar Erro 400
+      let safeToolChoice: ToolChoice | undefined = forceStripTools ? undefined : task.params.toolChoice;
       if (!hasTools || modelToCall === FALLBACK_MODEL) {
         safeToolChoice = undefined;
       }
@@ -123,7 +167,11 @@ class Gatekeeper {
         console.warn(`[Gateway] Resposta textual direta de ${modelToCall} (Ignorou tools).`);
       }
 
-      return { ...res, modelUsed: modelToCall };
+      return { 
+        content: res.content || null, 
+        toolCalls: res.toolCalls || null, 
+        modelUsed: modelToCall 
+      };
     };
 
     // ── Tentativa principal ─────────────────────────────────────────────────
@@ -142,36 +190,36 @@ class Gatekeeper {
       const isTimeout = errMsg.includes('timeout');
       const is400 = primaryError?.status === 400 || errMsg.includes('400');
 
-      // Se for 400 e JÁ ESTAMOS no fallback, não tem o que fazer (erro de payload)
-      if (activeModel === FALLBACK_MODEL && is400) {
-        console.error(`[Gateway] Erro 400 fatal no fallback model. Payload incompatível.`);
-        throw primaryError;
-      }
-
-      // Se não for recuperável E não for 400 do primário, lança o erro
+      // Se não for recuperável E não for 400, lança o erro real
       if (!is429 && !isTimeout && !is400) {
-        console.error(`[Gateway] Erro primário não recuperável: ${primaryError?.message ?? primaryError}`);
+        console.error(`[Gateway] Erro primário não recuperável:`, primaryError);
         throw primaryError;
       }
 
-      console.warn(`[Gateway] Falha em ${activeModel} (${is429 ? '429' : is400 ? '400' : 'timeout'}). Ativando fallback.`);
+      console.warn(`[Gateway] Falha em ${activeModel} (${is429 ? '429' : is400 ? '400' : 'timeout'}). Iniciando cadeia de resgate.`);
 
-      // Circuit Breaker SÓ abre para problemas de rede/sobrecarga (429 ou Timeout). 
-      // Erro 400 é falha de formatação e não afeta a saúde da API.
+      // Circuit breaker abre apenas para problemas de rede (429/Timeout)
       if (is429 || isTimeout) {
         await redis.set('llm_circuit_breaker', 'open', { ex: 60 }).catch(() => {});
         localBreaker = { open: true, expires: Date.now() + 30000 };
       }
 
-      if (activeModel === FALLBACK_MODEL) {
-        console.error('[Gateway] Fallback já estava em uso e falhou. Retornando resposta degradada.');
-        return {
-          content: 'Estou com dificuldades para processar agora. Tente em instantes.',
-          toolCalls: null,
-          modelUsed: FALLBACK_MODEL,
-        };
+      // ── MODO SOBREVIVÊNCIA: Se já era fallback e deu 400, o problema é nas tools
+      if (activeModel === FALLBACK_MODEL && is400) {
+        console.warn('[Gateway] Erro 400 detectado no Fallback! Rejeição de Schema provável. Removendo tools e forçando texto livre.');
+        try {
+          return await callModel(FALLBACK_MODEL, true);
+        } catch (survivalError) {
+          console.error('[Gateway] Modo de sobrevivência falhou:', survivalError);
+          return {
+            content: 'Tive um problema técnico complexo com minhas ferramentas agora. Pode me explicar de outra forma?',
+            toolCalls: null,
+            modelUsed: FALLBACK_MODEL,
+          };
+        }
       }
 
+      // ── TENTATIVA DE FALLBACK NORMAL (se erro veio de outro modelo) ────────
       try {
         const fallbackRes = await callModel(FALLBACK_MODEL);
         if (!fallbackRes.toolCalls?.length) {
@@ -180,31 +228,50 @@ class Gatekeeper {
         return fallbackRes;
 
       } catch (fallbackError: any) {
-        console.error(`[Gateway] Fallback falhou: ${fallbackError?.message ?? fallbackError}`);
+        const fbErrMsg = fallbackError?.message?.toLowerCase() || '';
+        const fbIs400 = fallbackError?.status === 400 || fbErrMsg.includes('400');
+
+        // Se o Fallback também falhar com 400, tentamos o Survival Mode
+        if (fbIs400) {
+          console.warn('[Gateway] Fallback secundário retornou 400. Rejeição de Schema provável. Removendo tools e forçando texto livre.');
+          try {
+            return await callModel(FALLBACK_MODEL, true);
+          } catch (survivalError2) {
+             console.error('[Gateway] Modo de sobrevivência 2 falhou:', survivalError2);
+             return {
+              content: 'Tive um problema técnico complexo com minhas ferramentas agora. Pode me explicar de outra forma?',
+              toolCalls: null,
+              modelUsed: FALLBACK_MODEL,
+            };
+          }
+        }
+
+        console.error(`[Gateway] Fallback falhou definitivamente (Rede/Timeout):`, fallbackError);
         return {
-          content: 'Estou com dificuldades para processar agora. Tente em instantes.',
+          content: 'Estou com muita dificuldade de conexão neste exato momento. Tente novamente em alguns segundos.',
           toolCalls: null,
           modelUsed: FALLBACK_MODEL,
         };
       }
     }
   }
-} // ← fecha class Gatekeeper
+}
 
 export const llmGateway = new Gatekeeper();
 
+// ── Wrapper Exportado ────────────────────────────────────────────────────
 export async function callOpenRouterWithPriority(
   priority: 1 | 2 | 3 | 4,
   dropPolicy: string,
   taskId: string,
-  messages: any[],
-  tools: any[],
+  messages: ChatMessage[],
+  tools: ToolDefinition[] | undefined,
   model: string,
   temperature: number,
   timeoutMs: number = 25000,
   maxTokens?: number,
-  toolChoice?: any
-): Promise<any> {
+  toolChoice?: ToolChoice
+): Promise<LLMResponse> {
   return llmGateway.enqueue({
     id: taskId,
     priority,
