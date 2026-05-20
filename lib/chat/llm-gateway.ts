@@ -76,12 +76,14 @@ class Gatekeeper {
   }
 
   private async executeWithFallback(task: any, dk: string): Promise<any> {
+    const originalModel = task.params.model; // ← restaura
+
     // ── Circuit Breaker: sincroniza estado local com Redis ──────────────────
     if (localBreaker.open && Date.now() > localBreaker.expires) {
       localBreaker.open = false;
     }
 
-    if (!localBreaker.open && task.params.model !== FALLBACK_MODEL) {
+    if (!localBreaker.open && originalModel !== FALLBACK_MODEL) { // ← usa originalModel
       const globalBreaker = await redis.get('llm_circuit_breaker').catch(() => null);
       if (globalBreaker === 'open') {
         localBreaker = { open: true, expires: Date.now() + 30000 };
@@ -89,7 +91,7 @@ class Gatekeeper {
       }
     }
 
-    if (localBreaker.open && task.params.model !== FALLBACK_MODEL) {
+    if (localBreaker.open && originalModel !== FALLBACK_MODEL) { // ← usa originalModel
       task.params.model = FALLBACK_MODEL;
     }
 
@@ -98,6 +100,11 @@ class Gatekeeper {
       const isPro = model !== FALLBACK_MODEL;
       const timeout = isPro ? 10000 : 25000;
 
+      // Se caiu no fallback, nunca manda tool_choice: required
+      const safeToolChoice = model === FALLBACK_MODEL
+        ? 'auto'
+        : task.params.toolChoice;
+
       const res = await rawCallOpenRouter(
         task.params.messages,
         task.params.tools,
@@ -105,7 +112,7 @@ class Gatekeeper {
         task.params.temperature,
         timeout,
         task.params.maxTokens,
-        task.params.toolChoice
+        safeToolChoice  // ← nunca manda 'required' para o fallback
       );
 
       if (task.params.tools?.length > 0 && !res.toolCalls?.length) {
