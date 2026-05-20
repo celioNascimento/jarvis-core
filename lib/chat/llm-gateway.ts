@@ -1,5 +1,5 @@
 // lib/chat/llm-gateway.ts
-// V11.6.0 — Fallback Triplo (Survival Mode) + Tipagem Estrita (Integração Limpa OpenRouter)
+// V11.6.2 — Fallback Triplo + Tipagem Estrita + Timeout Dinâmico Realista
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter, ToolDefinition, ToolChoice } from '@/lib/chat/openrouter';
@@ -132,7 +132,10 @@ class Gatekeeper {
     // ── Helper interno para chamar o modelo (com opção de desativar tools) ──
     const callModel = async (modelToCall: string, forceStripTools: boolean = false): Promise<LLMResponse> => {
       const isPro = modelToCall !== FALLBACK_MODEL;
-      const timeout = isPro ? 10000 : 25000;
+      
+      // Correção da Guilhotina: respeita o timeoutMs da task (25s) para o primário,
+      // e dá uma folga adicional de 10s caso precise acionar o fallback.
+      const timeout = isPro ? task.params.timeoutMs : task.params.timeoutMs + 10000;
 
       const hasTools = !forceStripTools && Array.isArray(task.params.tools) && task.params.tools.length > 0;
       
@@ -144,7 +147,7 @@ class Gatekeeper {
 
       const res = await rawCallOpenRouter(
         task.params.messages,
-        hasTools ? task.params.tools : undefined, // ← Sem "as any", tipagem limpa!
+        hasTools ? task.params.tools : undefined,
         modelToCall,
         task.params.temperature,
         timeout,
@@ -175,8 +178,10 @@ class Gatekeeper {
 
     } catch (primaryError: any) {
       const errMsg = primaryError?.message?.toLowerCase() || '';
+      const errName = primaryError?.name || '';
+      
       const is429 = primaryError?.status === 429 || errMsg.includes('429');
-      const isTimeout = errMsg.includes('timeout');
+      const isTimeout = errMsg.includes('timeout') || errMsg.includes('aborted') || errName === 'AbortError';
       const is400 = primaryError?.status === 400 || errMsg.includes('400');
 
       // Se não for recuperável E não for 400, lança o erro real
@@ -218,7 +223,9 @@ class Gatekeeper {
 
       } catch (fallbackError: any) {
         const fbErrMsg = fallbackError?.message?.toLowerCase() || '';
+        const fbErrName = fallbackError?.name || '';
         const fbIs400 = fallbackError?.status === 400 || fbErrMsg.includes('400');
+        const fbIsTimeout = fbErrMsg.includes('timeout') || fbErrMsg.includes('aborted') || fbErrName === 'AbortError';
 
         // Se o Fallback também falhar com 400, tentamos o Survival Mode
         if (fbIs400) {
@@ -235,7 +242,7 @@ class Gatekeeper {
           }
         }
 
-        console.error(`[Gateway] Fallback falhou definitivamente (Rede/Timeout):`, fallbackError);
+        console.error(`[Gateway] Fallback falhou definitivamente (${fbIsTimeout ? 'Timeout' : 'Rede'}):`, fallbackError?.message || fallbackError);
         return {
           content: 'Estou com muita dificuldade de conexão neste exato momento. Tente novamente em alguns segundos.',
           toolCalls: null,
