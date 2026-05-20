@@ -1,6 +1,7 @@
 // lib/modules/modules/rotinas.ts
+// V12.3.0 — Padrão Zero-Waste consolidado: Injeção de estado de check-in
+
 import type { ModuleDefinition } from '../types';
-import { coreGetRoutines, coreGetCheckins } from '@/lib/services/routines.service';
 
 export const ModuloRotinas: ModuleDefinition = {
   id: 'rotinas',
@@ -12,34 +13,25 @@ export const ModuloRotinas: ModuleDefinition = {
     keywords: /rotina|hábito|costume|todo dia|sempre faço|manhã|tarde|noite|ancora|âncora|checkin/i,
     condition: (opts) => {
       const msg = opts.message.toLowerCase();
-      const temHoje = msg.includes('hoje') || msg.includes('agora');
-      const temRotina = /rotina|hábito|checkin|âncora|ancora/.test(msg);
-      return temHoje && temRotina;
+      return (msg.includes('hoje') || msg.includes('agora')) && 
+             /rotina|hábito|checkin|âncora|ancora/.test(msg);
     }
   },
 
   buildContextBlock: async (opts) => {
     try {
-      const targetId = Number(opts.userId);
-      const todayStr = new Date().toISOString().split('T')[0];
-
-      // Busca rotinas e check-ins do dia via SSOT
-      const [routines, checkins] = await Promise.all([
-        coreGetRoutines(targetId),
-        coreGetCheckins(targetId, todayStr)
-      ]);
-
-      if (!routines || routines.length === 0) return '';
+      // ✅ Usa os dados já processados pelo God RPC (Zero DB Calls)
+      const routines = (opts as any).masterContext?.routines || [];
+      if (!routines.length) return '';
 
       const formatGroup = (title: string, period: string) => {
         const list = routines.filter((r: any) => r.period === period);
         if (!list.length) return '';
 
         const lines = list.map((r: any) => {
-          const checkin = checkins.find((c: any) => c.routine_id === r.id);
           let statusIcon = '⏳ (Pendente)';
-          if (checkin?.status === 'done') statusIcon = '✅ (Feito)';
-          if (checkin?.status === 'skipped') statusIcon = '⏭️ (Pulado)';
+          if (r.checkin?.status === 'done') statusIcon = '✅ (Feito)';
+          if (r.checkin?.status === 'skipped') statusIcon = '⏭️ (Pulado)';
 
           return `  - [${r.anchor}] -> ${r.action} ${statusIcon}`;
         });
@@ -54,9 +46,7 @@ export const ModuloRotinas: ModuleDefinition = {
         formatGroup('QUALQUER MOMENTO', 'anytime')
       ].filter(Boolean);
 
-      return `[MÓDULO DE ROTINAS ATIVO - STATUS DE HOJE]
-Suas rotinas e o status atual:
-${blocks.join('\n\n')}
+      return `[MÓDULO DE ROTINAS ATIVO - STATUS DE HOJE]\n${blocks.join('\n\n')}
 
 INSTRUÇÃO: Use estas rotinas para dar previsibilidade. Se o usuário parecer perdido, sugira seguir a próxima âncora pendente (⏳). Elogie se ele já concluiu as tarefas (✅).`;
 
@@ -66,12 +56,6 @@ INSTRUÇÃO: Use estas rotinas para dar previsibilidade. Se o usuário parecer p
     }
   },
 
-  // Ferramentas que este módulo habilita no cérebro do Jarvis
-  tools: [
-    'listar_rotinas',
-    'gerenciar_rotina',
-    'fazer_checkin_rotina'
-  ],
-
+  tools: ['listar_rotinas', 'gerenciar_rotina', 'fazer_checkin_rotina'],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };

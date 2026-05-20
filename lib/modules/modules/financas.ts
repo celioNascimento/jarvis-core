@@ -1,24 +1,30 @@
 // lib/modules/modules/financas.ts
+// V12.3.0 — Injeção de Contexto e Fallback de Hidratação
+
 import { buildFinanceBlock } from '@/lib/finances/db';
 import type { ModuleDefinition } from '../types';
 
 export const ModuloFinancas: ModuleDefinition = {
   id: 'financas',
   label: 'Gestão Financeira Inteligente',
-  preferredModel: 'flash', // O Flash 2.0 é excelente para extração de valores
-  plan: 'personal',        // Módulo restrito ao plano Personal ou superior
+  preferredModel: 'flash',
+  plan: 'personal',
   trigger: {
-    // Ativa quando a L4 detecta o contexto ou por palavras-chave
     contexts: ['financas'],
     keywords: /gastei|paguei|recebi|dinheiro|valor|saldo|extrato|pix|conta|cartão|fatura/i,
-    // Sempre carrega um resumo básico se o usuário perguntar "Como estou hoje?"
     condition: (opts) => opts.message.toLowerCase().includes('resumo') || opts.message.toLowerCase().includes('hoje')
   },
+  
   buildContextBlock: async (opts) => {
     try {
-      // Reutiliza a sua função buildFinanceBlock do db.ts
-      // Ela já entrega: Resumo do mês, Top gastos e alertas de orçamentos
-      const block = await buildFinanceBlock(Number(opts.userId), opts.authUserId);
+      // 1. Tenta a Injeção de Contexto (Zero DB Calls se o SQL já trouxer montado)
+      // Ideal se no futuro você colocar o resumo financeiro direto no get_consolidated_context
+      let block = (opts as any).masterContext?.finance_block;
+
+      // 2. Fallback de Segurança (Se chamado isoladamente ou não injetado)
+      if (!block) {
+        block = await buildFinanceBlock(Number(opts.userId), opts.authUserId);
+      }
       
       if (!block) return '';
 
@@ -31,7 +37,7 @@ INSTRUÇÃO: Use estes dados para responder de forma precisa. Se o usuário perg
       return '';
     }
   },
-  // Ferramentas autorizadas para este módulo
+  
   tools: [
     'registrar_transacao', 
     'consultar_financas', 

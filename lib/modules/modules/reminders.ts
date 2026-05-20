@@ -1,25 +1,28 @@
-import { supabase } from "@/lib/jarvis";
-import { getEffectiveUserId } from "../relationships";
-import { ModuleDefinition } from "../types";
+// lib/modules/modules/reminders.ts
+// V12.3.0 — Padrão consolidado: Zero DB Calls (Uso exclusivo de dados injetados)
 
-// lib/modules/reminders.module.ts
+import { ModuleDefinition } from '../types';
+
 export const ModuloReminders: ModuleDefinition = {
   id: 'reminders_push',
   label: 'Lembretes e Notificações',
   preferredModel: 'flash',
   plan: 'free',
+  
   trigger: {
-  always: false,
-  contexts: ['lembrete', 'notificacao'],
-  keywords: /lembrete|me lembra|avisar|daqui a pouco|notificar|me avisa|não esquecer/i,
-  condition: (opts) => {
-    const reminders = (opts as any).masterContext?.reminders || [];
-    const temKeyword = /lembrete|me lembra|avisar|notificar|me avisa/i.test(opts.message);
-    return reminders.length > 0 && temKeyword;
+    always: false,
+    contexts: ['lembrete', 'notificacao'],
+    keywords: /lembrete|me lembra|avisar|daqui a pouco|notificar|me avisa|não esquecer/i,
+    condition: (opts) => {
+      const reminders = (opts as any).masterContext?.reminders || [];
+      const temKeyword = /lembrete|me lembra|avisar|notificar|me avisa/i.test(opts.message);
+      return reminders.length > 0 && temKeyword;
+    },
   },
-},
+  
   buildContextBlock: async (opts) => {
     try {
+      // ✅ Injeção via masterContext (Zero DB Calls)
       const reminders = (opts as any).masterContext?.reminders || [];
       if (!reminders.length) return '';
 
@@ -34,6 +37,7 @@ export const ModuloReminders: ModuleDefinition = {
       return '';
     }
   },
+  
   tools: ['lembrete_criar', 'lembrete_consultar', 'lembrete_cancelar'],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 }
 };
