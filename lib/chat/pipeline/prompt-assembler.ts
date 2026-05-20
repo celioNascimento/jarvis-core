@@ -53,6 +53,7 @@ function buildSystemPrompt(parts: {
   gpsInstruction: string;
   alertaRadar: string | null;
   urgentes: string;
+  relatedTopics: string;
   learnedInsightsBlock: string;
   personalityBlock: string;
   l3Content: string;
@@ -61,7 +62,7 @@ function buildSystemPrompt(parts: {
 }): string {
   const {
     nickname, dataHoraSP, geoBlock, gpsInstruction,
-    alertaRadar, urgentes, learnedInsightsBlock, personalityBlock,
+    alertaRadar, urgentes, relatedTopics, learnedInsightsBlock, personalityBlock,
     l3Content, plan, guidelines,
   } = parts;
 
@@ -114,6 +115,7 @@ IMPORTANTE: A localização acima é real e atual. Use-a diretamente ao responde
 ${gpsInstruction}
 ${alertaRadar ? `Alerta: ${alertaRadar}` : ''}
 ${urgentes ? `Urgente: ${urgentes}` : ''}
+${relatedTopics ? `[TÓPICOS RELACIONADOS]\n${relatedTopics}` : ''}
 ${learnedInsightsBlock ? `Perfil\n${learnedInsightsBlock}` : ''}
 ${personalityBlock}
 
@@ -212,6 +214,11 @@ export async function buildChatPrompt(
     .filter(Boolean)
     .join('; ') || 'Progresso contínuo';
 
+  // Extração de tópicos relacionados do masterContext
+  const relatedTopics = (masterContext?.related_topics || [])
+    .map((t: any) => `- ${t.topic} (peso: ${Math.round((t.weight || 0) * 100)}%)`)
+    .join('\n');
+
   // ── Composição do system prompt ───────────────────────────────────────────
   const systemPrompt = buildSystemPrompt({
     nickname: user.nickname || 'usuário',
@@ -220,6 +227,7 @@ export async function buildChatPrompt(
     gpsInstruction,
     alertaRadar,
     urgentes,
+    relatedTopics,
     learnedInsightsBlock,
     personalityBlock,
     l3Content,
