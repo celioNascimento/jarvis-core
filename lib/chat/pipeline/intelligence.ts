@@ -1,6 +1,6 @@
 // lib/chat/pipeline/intelligence.ts
 // Fase 2 — Inteligência e Contexto
-// V2.1.1 — Reforço de Contexto Imediato + Cache Redis + Bypasses
+// V2.2.0 — localHistory do frontend como fonte primária de RAM
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -10,7 +10,7 @@ import { MemoryManager } from '@/lib/memory';
 import { llmGateway } from '@/lib/chat/llm-gateway';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import { detectAndLogCorrection } from '@/lib/tools/executors/learning';
-import type { ChatRequestContext } from './request-context';
+import type { ChatRequestContext, LocalMessage } from './request-context';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -18,9 +18,10 @@ const redis = new Redis({
 });
 
 const MAX_MSG_CHARS = 800;
-const MASTER_CONTEXT_TTL = 5 * 60; // 5 minutos
+const MASTER_CONTEXT_TTL = 5 * 60;
 
-// ─── Detecção de ruído (Mantido rigorosamente) ──────────────────────────────
+// ─── Detecção de ruído ────────────────────────────────────────────────────────
+
 const NOISE_REGEX = /^(ok|oi|olá|sim|não|nao|faz|claro|certo|blz|vlw|valeu|obrigad|show|ótimo|otimo|perfeito|legal|bom dia|boa tarde|boa noite|pode|vai|vamos|tá|ta|ok|s|n|👍|👎|😊|🤝)[!?.,:… ]*$/i;
 
 export function isNoiseMessage(message: string): boolean {
@@ -30,7 +31,8 @@ export function isNoiseMessage(message: string): boolean {
   return false;
 }
 
-// ─── Cache do MasterContext (Mantido rigorosamente) ───────────────────────────
+// ─── Cache do MasterContext ───────────────────────────────────────────────────
+
 function masterContextKey(userId: number, sessionId: string): string {
   return `master_ctx:${userId}:${sessionId}`;
 }
@@ -43,7 +45,7 @@ async function getMasterContext(userId: number, sessionId: string): Promise<any>
   } catch {}
 
   const { data } = await supabase.rpc('get_consolidated_context', {
-    p_user_id:  userId,
+    p_user_id:    userId,
     p_session_id: sessionId,
   });
 
@@ -59,6 +61,7 @@ export async function invalidateMasterContextCache(userId: number, sessionId: st
 }
 
 // ─── Tipos exportados ─────────────────────────────────────────────────────────
+
 export interface HistoryMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -75,14 +78,23 @@ export interface ChatIntelligence {
   isNoise: boolean;
 }
 
-// ─── buildRecentHistory (RECONSTRUÍDA COM ANCORAGEM DE CONTEXTO) ──────────────
-function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
+// ─── RAM: fonte primária = localHistory, fallback = banco ────────────────────
+
+function buildRecentHistoryFromLocal(localHistory: LocalMessage[]): HistoryMessage[] {
+  return localHistory
+    .slice(-30)
+    .map(msg => ({
+      role: msg.role,
+      content: msg.content.slice(0, MAX_MSG_CHARS),
+    }));
+}
+
+function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
   if (!Array.isArray(rawHistory)) return [];
 
-  const processedRows = [...rawHistory].reverse();
   const history: HistoryMessage[] = [];
 
-  for (const row of processedRows) {
+  for (const row of [...rawHistory].reverse()) {
     const uMsg = (row.content || '').trim();
     const aRep = (row.metadata?.ai_reply || '').trim();
 
@@ -97,31 +109,49 @@ function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
   return history.slice(-20);
 }
 
-// ─── Pipeline principal (Mantido com melhorias de tipagem) ─────────────────────
+function resolveRecentHistory(
+  localHistory: LocalMessage[],
+  bankHistory: any[]
+): HistoryMessage[] {
+  if (localHistory?.length > 0) {
+    return buildRecentHistoryFromLocal(localHistory);
+  }
+  return buildRecentHistoryFromBank(bankHistory);
+}
+
+// ─── Pipeline principal ───────────────────────────────────────────────────────
+
 export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<ChatIntelligence> {
-  const { message, user, sessionId } = ctx;
+  const { message, user, sessionId, localHistory } = ctx;
   const isNoise = isNoiseMessage(message);
 
   // 1. MasterContext (Cache-First)
   const masterContext = await getMasterContext(user.id, sessionId);
   const safeContext = masterContext || { history: [], config: {}, profile: {} };
 
-  // 2. Processamento paralelo com Bypass inteligente
+  // 2. Processamento paralelo
   const [queryEmbedding, contexts, isStressed] = await Promise.all([
     isNoise
       ? Promise.resolve(null)
       : getCachedEmbedding(message).catch(() => null),
-    
+
     classifyContextWithL4(message, user.id, user.auth_user_id, safeContext).catch(() => []),
-    
+
     llmGateway.isOverloaded().catch(() => false),
-    
-    // Detector de correções (Ex: "Não é o Miguel, é o Davi")
+
     detectAndLogCorrection(message, user.id, safeContext).catch(() => {}),
   ]);
 
-  // 3. Gestão de Memória (RAM + HD)
-  let memory: any = { hd: { memories: [] }, ram: { ramBlock: '' }, l3: { content: '' }, events: { block: '' }, relationship: { block: '' }, topics: { relatedTopicsBlock: '' } };
+  // 3. Memória (L3 + HD — RAM vem do localHistory agora)
+  let memory: any = {
+    hd:           { memories: [] },
+    ram:          { ramBlock: '' },
+    l3:           { content: '' },
+    events:       { block: '' },
+    relationship: { block: '' },
+    topics:       { relatedTopicsBlock: '' },
+  };
+
   try {
     const memoryData = await MemoryManager.read({
       userId:        user.id,
@@ -132,11 +162,11 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
       emotionalScore: 0,
       authorName:    user.nickname,
       assistantName: user.assistant_name,
-      queryEmbedding, // Se for null (noise), o MemoryManager pula a busca vetorial
+      queryEmbedding,
       masterContext: safeContext,
     });
     if (memoryData) memory = memoryData;
-  } catch (e) {
+  } catch {
     console.error('[Intelligence] Memory error bypass');
   }
 
@@ -149,12 +179,15 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   ).catch(() => ({
     score: 0,
     primaryEmotion: 'neutral',
-    trajectory: 'stable'
+    trajectory: 'stable',
   } as unknown as EmotionalScoreResult));
 
+  // 5. RAM: localHistory tem prioridade sobre o banco
+  const recentHistory = resolveRecentHistory(localHistory, safeContext.history);
+
   return {
-    masterContext:  safeContext,
-    recentHistory:  buildRecentHistory(safeContext.history),
+    masterContext: safeContext,
+    recentHistory,
     contexts,
     queryEmbedding,
     isStressed,
