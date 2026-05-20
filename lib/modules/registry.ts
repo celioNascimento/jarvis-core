@@ -141,6 +141,10 @@ export async function loadActiveModules(
   const isComplex = evaluateTaskComplexity(opts.message, results);
   const finalModel = isComplex ? 'google/gemini-2.5-pro' : baseModel;
 
+  console.log('[PROMPT] tamanho systemPrompt:', systemPrompt.length);
+console.log('[PROMPT] model:', finalModel);
+console.log('[PROMPT] tools count:', resolvedTools.length);
+
   return {
     contextBlocks: results.map(r => r.block).filter(Boolean),
     activeTools: [...new Set(results.flatMap(r => r.tools))],
