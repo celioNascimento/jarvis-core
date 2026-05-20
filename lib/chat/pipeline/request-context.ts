@@ -137,6 +137,7 @@ async function extractBody(req: NextRequest): Promise<{
       voiceSettings: parsedVoice,
       sessionId:     (body.get('sessionId') as string | null),
       rawLocation:   parseLocation(body.get('location')),
+      localHistory: body.localHistory || [],
     };
   }
 
