@@ -229,4 +229,5 @@ try {
   console.error(`[Orchestrator] Falha na síntese final: ${msg}`);
   // Nunca expõe detalhes técnicos — usa conteúdo do loop se disponível
   return loopResponse.content || 'Ação realizada, mas houve um problema ao formatar a resposta.';
+ }
 }
