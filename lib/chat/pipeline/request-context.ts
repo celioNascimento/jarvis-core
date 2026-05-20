@@ -236,7 +236,9 @@ export async function buildRequestContext(
   const dbVoice = user.preferred_voice || 'alloy';
   const inferredProvider = dbVoice.length > 10 ? 'elevenlabs' : 'openai';
   const finalVoiceSettings = voiceSettings || { provider: inferredProvider, voiceId: dbVoice };
-
+  
+  console.log('[DEBUG rawLocation]', rawLocation);
+  
   return {
     message,
     userEmail,
