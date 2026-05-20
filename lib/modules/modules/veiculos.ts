@@ -1,9 +1,9 @@
 // lib/modules/modules/veiculos.ts
-// V12.2.0 — Tipagem rigorosa e eliminação de chamadas de rede
+// V12.2.0 — Tipagem rigorosa, Zero DB Calls e Fallback de Hidratação
 
+import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
 
-// Definimos uma interface básica para garantir a segurança no build
 interface Vehicle {
   id: number;
   name: string;
@@ -22,27 +22,47 @@ export const ModuloVeiculos: ModuleDefinition = {
   },
   
   buildContextBlock: async (opts) => {
-    // 🛡️ Leitura segura do contexto consolidado (Zero DB Calls)
-    // Assumimos que o RPC já traz 'vehicles', 'maintenances' e 'refuels' dentro do masterContext
-    const vehicles: Vehicle[] = (opts as any).masterContext?.vehicles || [];
-    const maintenances = (opts as any).masterContext?.maintenances || [];
-    const refuels = (opts as any).masterContext?.refuels || [];
+    try {
+      // 1. Tenta a Injeção de Contexto (Caminho Feliz - Zero DB Calls)
+      let vehicles: Vehicle[] = (opts as any).masterContext?.vehicles;
+      let maintenances = (opts as any).masterContext?.maintenances;
+      let refuels = (opts as any).masterContext?.refuels;
 
-    if (!vehicles.length) return '';
-
-    const parts = vehicles.map((v: Vehicle) => {
-      // Filtramos os dados que já vieram na memória (Injetados pelo RPC)
-      const vMain = maintenances.find((m: any) => m.vehicle_id === v.id);
-      const vFuel = refuels.find((f: any) => f.vehicle_id === v.id);
+      // 2. Fallback de Segurança (Se chamado isoladamente)
+      if (!vehicles) {
+        const { data } = await supabase.schema('jarvis').from('vehicles').select('*').eq('user_id', opts.userId);
+        vehicles = data || [];
+      }
       
-      return `🚗 ${v.name} (${v.plate}):
-      - KM Atual: ${v.current_km}
-      - Última Manutenção: ${vMain ? `${vMain.title} em ${vMain.performed_date}` : 'Sem registros'}
-      - Próxima troca (prevista): ${vMain?.next_due_km || 'N/A'} km
-      - Último Abastecimento: ${vFuel ? `${vFuel.fuel_type} (${vFuel.liters}L) em ${new Date(vFuel.refueled_at).toLocaleDateString()}` : 'Sem registros'}`;
-    });
+      if (!vehicles.length) return '';
 
-    return `[MODO EXPERTFROTAS]\n${parts.join('\n\n')}`;
+      if (!maintenances || !refuels) {
+        const vehicleIds = vehicles.map(v => v.id);
+        const [mRes, fRes] = await Promise.all([
+          supabase.schema('jarvis').from('vehicle_maintenances').select('*').in('vehicle_id', vehicleIds).order('performed_date', { ascending: false }).limit(3),
+          supabase.schema('jarvis').from('vehicle_refueling').select('*').in('vehicle_id', vehicleIds).order('refueled_at', { ascending: false }).limit(1)
+        ]);
+        maintenances = mRes.data || [];
+        refuels = fRes.data || [];
+      }
+
+      // 3. Montagem do Bloco
+      const parts = vehicles.map((v: Vehicle) => {
+        const vMain = maintenances.find((m: any) => m.vehicle_id === v.id);
+        const vFuel = refuels.find((f: any) => f.vehicle_id === v.id);
+        
+        return `🚗 ${v.name} (${v.plate}):
+        - KM Atual: ${v.current_km}
+        - Última Manutenção: ${vMain ? `${vMain.title} em ${vMain.performed_date}` : 'Sem registros'}
+        - Próxima troca (prevista): ${vMain?.next_due_km || 'N/A'} km
+        - Último Abastecimento: ${vFuel ? `${vFuel.fuel_type} (${vFuel.liters}L) em ${new Date(vFuel.refueled_at).toLocaleDateString()}` : 'Sem registros'}`;
+      });
+
+      return `[MODO EXPERTFROTAS]\n${parts.join('\n\n')}`;
+    } catch (e) {
+      console.error('[ModuloVeiculos] Erro no build:', e);
+      return '';
+    }
   },
   
   tools: ['registrar_manutencao', 'registrar_abastecimento', 'atualizar_odometro'],
