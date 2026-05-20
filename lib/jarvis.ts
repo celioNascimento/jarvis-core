@@ -1,9 +1,9 @@
-  // lib/jarvis.ts
-// V12.0.0 — Thin Core Container & Barrel Exports
+// lib/jarvis.ts
+// V12.0.1 — Thin Core Container & Barrel Exports (Tipagem de ChatMessage alinhada)
 
 import { createClient } from '@supabase/supabase-js';
 import { Redis } from '@upstash/redis';
-import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; 
+import { callOpenRouterWithPriority, ChatMessage } from '@/lib/chat/llm-gateway'; // ← Importando a tipagem centralizada
 
 // ============================================================
 // 1. CONEXÃO CENTRAL COM O BANCO E CACHE (SCHEMA JARVIS)
@@ -22,7 +22,6 @@ export const redis = new Redis({
 // ============================================================
 // 2. MOTOR DE IA (Gateway de Prioridade OpenRouter)
 // ============================================================
-type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 export async function callOpenRouter(
   input: string | ChatMessage[],
@@ -31,7 +30,11 @@ export async function callOpenRouter(
   priority: 1 | 2 | 3 | 4 = 4 // Default para Background
 ): Promise<string> {
   const taskId = `jarvis_internal_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-  const messages = typeof input === 'string' ? [{ role: 'user', content: input }] : input;
+  
+  // ← Forçando a tipagem explícita para evitar inferência genérica do TypeScript
+  const messages: ChatMessage[] = typeof input === 'string' 
+    ? [{ role: 'user', content: input }] 
+    : input;
   
   const dropPolicy = (priority === 3 || priority === 4) ? 'if_full' : 'never';
 
@@ -40,7 +43,7 @@ export async function callOpenRouter(
     dropPolicy,
     taskId,
     messages,
-    [], // Sem tools
+    undefined, // ← Passando undefined em vez de [] para limpeza estrita de payload no Gateway
     model,
     temperature
   );
