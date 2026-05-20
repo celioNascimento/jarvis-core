@@ -1,5 +1,5 @@
 // lib/chat/llm-gateway.ts
-// V11.3.0 — fallback duplo protegido + maxTokens/toolChoice no fallback
+// V11.3.1 — Resgate de Erro 400 + Proteção Estrita de Payload e Fallback
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
@@ -76,14 +76,14 @@ class Gatekeeper {
   }
 
   private async executeWithFallback(task: any, dk: string): Promise<any> {
-    const originalModel = task.params.model; // ← restaura
+    let activeModel = task.params.model;
 
     // ── Circuit Breaker: sincroniza estado local com Redis ──────────────────
     if (localBreaker.open && Date.now() > localBreaker.expires) {
       localBreaker.open = false;
     }
 
-    if (!localBreaker.open && originalModel !== FALLBACK_MODEL) { // ← usa originalModel
+    if (!localBreaker.open && activeModel !== FALLBACK_MODEL) {
       const globalBreaker = await redis.get('llm_circuit_breaker').catch(() => null);
       if (globalBreaker === 'open') {
         localBreaker = { open: true, expires: Date.now() + 30000 };
@@ -91,44 +91,44 @@ class Gatekeeper {
       }
     }
 
-    if (localBreaker.open && originalModel !== FALLBACK_MODEL) { // ← usa originalModel
-      task.params.model = FALLBACK_MODEL;
+    if (localBreaker.open && activeModel !== FALLBACK_MODEL) {
+      activeModel = FALLBACK_MODEL;
     }
 
     // ── Helper interno para chamar o modelo ────────────────────────────────
-    const callModel = async (model: string): Promise<any> => {
-      const isPro = model !== FALLBACK_MODEL;
+    const callModel = async (modelToCall: string): Promise<any> => {
+      const isPro = modelToCall !== FALLBACK_MODEL;
       const timeout = isPro ? 10000 : 25000;
 
-      // Se caiu no fallback, nunca manda tool_choice: required
-      const safeToolChoice = model === FALLBACK_MODEL
-        ? 'auto'
-        : task.params.toolChoice;
+      const hasTools = Array.isArray(task.params.tools) && task.params.tools.length > 0;
+
+      // Limpeza estrita para evitar Erro 400:
+      // Se não houver tools, ou se for o Fallback, NUNCA enviamos toolChoice customizado.
+      let safeToolChoice = task.params.toolChoice;
+      if (!hasTools || modelToCall === FALLBACK_MODEL) {
+        safeToolChoice = undefined;
+      }
 
       const res = await rawCallOpenRouter(
         task.params.messages,
-        task.params.tools,
-        model,
+        hasTools ? task.params.tools : undefined,
+        modelToCall,
         task.params.temperature,
         timeout,
         task.params.maxTokens,
-        safeToolChoice  // ← nunca manda 'required' para o fallback
+        safeToolChoice
       );
 
-      if (task.params.tools?.length > 0 && !res.toolCalls?.length) {
-        console.warn(
-          `[Gateway] LLM retornou texto puro — tools: ${task.params.tools
-            .map((t: any) => t.function?.name)
-            .join(', ')}`
-        );
+      if (hasTools && (!res.toolCalls || res.toolCalls.length === 0)) {
+        console.warn(`[Gateway] Resposta textual direta de ${modelToCall} (Ignorou tools).`);
       }
 
-      return { ...res, modelUsed: model };
+      return { ...res, modelUsed: modelToCall };
     };
 
     // ── Tentativa principal ─────────────────────────────────────────────────
     try {
-      const res = await callModel(task.params.model);
+      const res = await callModel(activeModel);
 
       if (!res.toolCalls?.length) {
         await redis.set(dk, res, { ex: 20 }).catch(() => {});
@@ -137,22 +137,34 @@ class Gatekeeper {
       return res;
 
     } catch (primaryError: any) {
-      const is429 = primaryError?.status === 429 || primaryError?.message?.includes('429');
-      const isTimeout = primaryError?.message?.includes('timeout');
+      const errMsg = primaryError?.message?.toLowerCase() || '';
+      const is429 = primaryError?.status === 429 || errMsg.includes('429');
+      const isTimeout = errMsg.includes('timeout');
+      const is400 = primaryError?.status === 400 || errMsg.includes('400');
 
-      if (!is429 && !isTimeout) {
+      // Se for 400 e JÁ ESTAMOS no fallback, não tem o que fazer (erro de payload)
+      if (activeModel === FALLBACK_MODEL && is400) {
+        console.error(`[Gateway] Erro 400 fatal no fallback model. Payload incompatível.`);
+        throw primaryError;
+      }
+
+      // Se não for recuperável E não for 400 do primário, lança o erro
+      if (!is429 && !isTimeout && !is400) {
         console.error(`[Gateway] Erro primário não recuperável: ${primaryError?.message ?? primaryError}`);
         throw primaryError;
       }
 
-      // ── Abre circuit breaker e tenta fallback ───────────────────────────
-      console.warn(`[Gateway] ${is429 ? '429' : 'timeout'} em ${task.params.model}. Ativando fallback.`);
-      await redis.set('llm_circuit_breaker', 'open', { ex: 60 }).catch(() => {});
-      localBreaker = { open: true, expires: Date.now() + 30000 };
+      console.warn(`[Gateway] Falha em ${activeModel} (${is429 ? '429' : is400 ? '400' : 'timeout'}). Ativando fallback.`);
 
-      if (task.params.model === FALLBACK_MODEL) {
-        // Fallback já estava em uso — retorna degradado sem throw
-        console.error('[Gateway] Fallback também indisponível (429). Retornando resposta degradada.');
+      // Circuit Breaker SÓ abre para problemas de rede/sobrecarga (429 ou Timeout). 
+      // Erro 400 é falha de formatação e não afeta a saúde da API.
+      if (is429 || isTimeout) {
+        await redis.set('llm_circuit_breaker', 'open', { ex: 60 }).catch(() => {});
+        localBreaker = { open: true, expires: Date.now() + 30000 };
+      }
+
+      if (activeModel === FALLBACK_MODEL) {
+        console.error('[Gateway] Fallback já estava em uso e falhou. Retornando resposta degradada.');
         return {
           content: 'Estou com dificuldades para processar agora. Tente em instantes.',
           toolCalls: null,
@@ -168,7 +180,6 @@ class Gatekeeper {
         return fallbackRes;
 
       } catch (fallbackError: any) {
-        // Fallback também falhou — nunca relança
         console.error(`[Gateway] Fallback falhou: ${fallbackError?.message ?? fallbackError}`);
         return {
           content: 'Estou com dificuldades para processar agora. Tente em instantes.',
