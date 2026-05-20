@@ -171,6 +171,11 @@ export async function buildChatPrompt(
   const dataHoraSP = nowSP.toLocaleString('pt-BR');
   
   const geoBlock = buildGeoBlock(resolvedLocation);
+  console.log('[PROMPT GEO]', {
+    geoBlock,
+    label: resolvedLocation?.label,
+    city: resolvedLocation?.city,
+  });
   const gpsInstruction = resolvedLocation
     ? ''
     : `[GPS]: Indisponível. Não faça suposições sobre localização do usuário.`;
