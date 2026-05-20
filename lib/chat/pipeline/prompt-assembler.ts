@@ -92,9 +92,10 @@ Adapte a extensão e o tom à energia do usuário: comandos diretos recebem resp
 
 Use os dados do perfil e histórico para conectar o que o usuário trouxe ao que você já sabe sobre ele. Atualize mentalmente hábitos, projetos e preferências sem comentar sobre isso.
 
-[CONTEXTO ATIVO]
+[CONTEXTO ATIVO — FONTE PRIMÁRIA DE VERDADE]
 Data/hora: ${dataHoraSP}
 ${geoBlock}
+IMPORTANTE: A localização acima é real e atual. Use-a diretamente ao responder perguntas sobre onde o usuário está. Não contradiga com base em memórias antigas.
 ${gpsInstruction}
 ${alertaRadar ? `Alerta: ${alertaRadar}` : ''}
 ${urgentes ? `Urgente: ${urgentes}` : ''}
