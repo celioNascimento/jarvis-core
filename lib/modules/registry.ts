@@ -139,7 +139,7 @@ export async function loadActiveModules(
 
   // ── AVALIAÇÃO DINÂMICA DE MODELO ──
   const isComplex = evaluateTaskComplexity(opts.message, results);
-  const finalModel = isComplex ? 'google/gemini-2.5-pro' : baseModel;
+  const finalModel = isComplex ? 'google/gemini-2.0-flash-001' : baseModel;
 
   console.log('[MODEL]', { isComplex, finalModel, activeModules: results.map(r => r.id) });
   
