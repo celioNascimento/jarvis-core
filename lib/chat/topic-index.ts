@@ -20,9 +20,11 @@ export async function updateTopicIndex(userId: string, contexts: ContextType[], 
   await supabase.from('topic_index').upsert(upsertRows, { onConflict: 'user_id,topic' });
 }
 
-// ✅ Blindado: Não faz consulta, usa o masterContext injetado
+// Não faz consulta, usa o masterContext injetado
 export function getRelatedTopics(opts: any): string {
+  // Acessa o que você passou no objeto
   const related = opts.masterContext?.related_topics || [];
+  
   if (!related?.length) return '';
 
   return `\n[TÓPICOS RELACIONADOS]\n${related
