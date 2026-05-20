@@ -122,7 +122,10 @@ export async function runLLMOrchestrator(
   const { conversationMessages, tools, model: requestedModel } = prompt;
 
   const toolChoice = resolveToolChoice(message);
-  let currentMessages = [...conversationMessages] as ChatMessage[];
+  let currentMessages = [
+  { role: 'system' as const, content: prompt.systemPrompt },
+  ...conversationMessages,
+  ] as ChatMessage[];
   let passoAtual = 0;
   const MAX_STEPS = 2;
   let loopResponse: LLMResponse | null = null;
