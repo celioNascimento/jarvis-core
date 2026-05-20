@@ -6,6 +6,7 @@ import { Redis } from '@upstash/redis';
 import { waitUntil } from '@vercel/functions';
 import type { ModuleDefinition, ModuleConditionOpts } from './types';
 import { recordModuleMetrics } from './metrics';
+import { routeModel } from '@/lib/chat/context-classifier';
 
 import { ModuloFinancas } from './modules/financas';
 import { ModuloVeiculos } from './modules/veiculos';
