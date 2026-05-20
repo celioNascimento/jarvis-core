@@ -78,43 +78,23 @@ export interface ChatIntelligence {
 // ─── buildRecentHistory (RECONSTRUÍDA COM ANCORAGEM DE CONTEXTO) ──────────────
 function buildRecentHistory(rawHistory: any[]): HistoryMessage[] {
   if (!Array.isArray(rawHistory)) return [];
-  
-  // O consolidated_context traz o histórico. Precisamos garantir que
-  // a ordem seja cronológica para o LLM entender a linha do tempo.
-  const history: HistoryMessage[] = [];
-  let lastAddedRole: string | null = null;
 
-  // Processamos do mais antigo para o mais novo
   const processedRows = [...rawHistory].reverse();
-  const totalRows = processedRows.length;
+  const history: HistoryMessage[] = [];
 
-  processedRows.forEach((row, index) => {
+  for (const row of processedRows) {
     const uMsg = (row.content || '').trim();
     const aRep = (row.metadata?.ai_reply || '').trim();
 
-    // Regra de Ouro: As últimas 3 mensagens do usuário recebem um marcador de ancoragem
-    // Isso evita que o modelo ignore o fato de que o assunto mudou para "Davi" agora.
-    const isVeryRecent = (totalRows - index) <= 3;
-    const anchor = isVeryRecent ? "📍 [CONTEXTO ATUAL]: " : "";
-
-    if (uMsg.length > 2 && lastAddedRole !== 'user') {
-      history.push({ 
-        role: 'user', 
-        content: anchor + uMsg.slice(0, MAX_MSG_CHARS) 
-      });
-      lastAddedRole = 'user';
+    if (uMsg.length > 2) {
+      history.push({ role: 'user', content: uMsg.slice(0, MAX_MSG_CHARS) });
     }
-    
-    if (aRep.length > 2 && lastAddedRole !== 'assistant') {
-      history.push({ 
-        role: 'assistant', 
-        content: aRep.slice(0, MAX_MSG_CHARS) 
-      });
-      lastAddedRole = 'assistant';
+    if (aRep.length > 2) {
+      history.push({ role: 'assistant', content: aRep.slice(0, MAX_MSG_CHARS) });
     }
-  });
+  }
 
-  return history;
+  return history.slice(-20);
 }
 
 // ─── Pipeline principal (Mantido com melhorias de tipagem) ─────────────────────
