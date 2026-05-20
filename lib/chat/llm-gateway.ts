@@ -1,5 +1,5 @@
 // lib/chat/llm-gateway.ts
-// V11.2.0 — fix toolCalls preservation + log de diagnóstico
+// V11.3.0 — fallback duplo protegido + maxTokens/toolChoice no fallback
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter } from '@/lib/chat/openrouter';
@@ -40,8 +40,6 @@ class Gatekeeper {
 
     if (cached) {
       await redis.decr('global_llm_active');
-      // ── toolCalls pode ter sido serializado como null no Redis
-      //    Garante que o shape está correto ao retornar do cache
       const hit = cached as any;
       return {
         ...hit,
@@ -78,108 +76,107 @@ class Gatekeeper {
   }
 
   private async executeWithFallback(task: any, dk: string): Promise<any> {
-  const originalModel = task.params.model;
-
-  // ── Circuit Breaker: sincroniza estado local com Redis ──────────────────
-  if (localBreaker.open && Date.now() > localBreaker.expires) {
-    localBreaker.open = false;
-  }
-
-  if (!localBreaker.open && originalModel !== FALLBACK_MODEL) {
-    const globalBreaker = await redis.get('llm_circuit_breaker').catch(() => null);
-    if (globalBreaker === 'open') {
-      localBreaker = { open: true, expires: Date.now() + 30000 };
-      console.warn('[Gateway] Circuit breaker OPEN (Redis). Forçando fallback.');
-    }
-  }
-
-  if (localBreaker.open && originalModel !== FALLBACK_MODEL) {
-    task.params.model = FALLBACK_MODEL;
-  }
-
-  const callModel = async (model: string): Promise<any> => {
-    const isPro = model !== FALLBACK_MODEL;
-    const timeout = isPro ? 10000 : 25000;
-
-    const res = await rawCallOpenRouter(
-      task.params.messages,
-      task.params.tools,
-      model,
-      task.params.temperature,
-      timeout,
-      task.params.maxTokens,   // ← estava faltando no fallback
-      task.params.toolChoice   // ← estava faltando no fallback
-    );
-
-    if (task.params.tools?.length > 0 && !res.toolCalls?.length) {
-      console.warn(
-        `[Gateway] LLM retornou texto puro — tools: ${task.params.tools
-          .map((t: any) => t.function?.name)
-          .join(', ')}`
-      );
+    // ── Circuit Breaker: sincroniza estado local com Redis ──────────────────
+    if (localBreaker.open && Date.now() > localBreaker.expires) {
+      localBreaker.open = false;
     }
 
-    return { ...res, modelUsed: model };
-  };
-
-  // ── Tentativa principal ─────────────────────────────────────────────────
-  try {
-    const res = await callModel(task.params.model);
-
-    if (!res.toolCalls?.length) {
-      await redis.set(dk, res, { ex: 20 }).catch(() => {});
-    }
-
-    return res;
-
-  } catch (primaryError: any) {
-    const is429 = primaryError?.status === 429 || primaryError?.message?.includes('429');
-    const isTimeout = primaryError?.message?.includes('timeout');
-
-    if (!is429 && !isTimeout) {
-      // Erro não recuperável — loga só mensagem, nunca stack
-      console.error(`[Gateway] Erro primário não recuperável: ${primaryError?.message ?? primaryError}`);
-      throw primaryError;
-    }
-
-    // ── Abre circuit breaker e tenta fallback ───────────────────────────
-    console.warn(`[Gateway] ${is429 ? '429' : 'timeout'} no modelo ${task.params.model}. Ativando fallback.`);
-    await redis.set('llm_circuit_breaker', 'open', { ex: 60 }).catch(() => {});
-    localBreaker = { open: true, expires: Date.now() + 30000 };
-
-    if (task.params.model === FALLBACK_MODEL) {
-      // Fallback já estava em uso — retorna mensagem segura sem throw
-      console.error('[Gateway] Fallback também indisponível (429). Retornando resposta degradada.');
-      return {
-        content: 'Estou com dificuldades para processar agora. Tente em instantes.',
-        toolCalls: null,
-        modelUsed: FALLBACK_MODEL,
-      };
-    }
-
-    try {
-      const fallbackRes = await callModel(FALLBACK_MODEL);
-      if (!fallbackRes.toolCalls?.length) {
-        await redis.set(dk, fallbackRes, { ex: 20 }).catch(() => {});
+    if (!localBreaker.open && task.params.model !== FALLBACK_MODEL) {
+      const globalBreaker = await redis.get('llm_circuit_breaker').catch(() => null);
+      if (globalBreaker === 'open') {
+        localBreaker = { open: true, expires: Date.now() + 30000 };
+        console.warn('[Gateway] Circuit breaker OPEN (Redis). Forçando fallback.');
       }
-      return fallbackRes;
+    }
 
-    } catch (fallbackError: any) {
-      // Fallback também falhou — retorna degradado, NUNCA relança
-      console.error(`[Gateway] Fallback falhou: ${fallbackError?.message ?? fallbackError}`);
-      return {
-        content: 'Estou com dificuldades para processar agora. Tente em instantes.',
-        toolCalls: null,
-        modelUsed: FALLBACK_MODEL,
-      };
+    if (localBreaker.open && task.params.model !== FALLBACK_MODEL) {
+      task.params.model = FALLBACK_MODEL;
+    }
+
+    // ── Helper interno para chamar o modelo ────────────────────────────────
+    const callModel = async (model: string): Promise<any> => {
+      const isPro = model !== FALLBACK_MODEL;
+      const timeout = isPro ? 10000 : 25000;
+
+      const res = await rawCallOpenRouter(
+        task.params.messages,
+        task.params.tools,
+        model,
+        task.params.temperature,
+        timeout,
+        task.params.maxTokens,
+        task.params.toolChoice
+      );
+
+      if (task.params.tools?.length > 0 && !res.toolCalls?.length) {
+        console.warn(
+          `[Gateway] LLM retornou texto puro — tools: ${task.params.tools
+            .map((t: any) => t.function?.name)
+            .join(', ')}`
+        );
+      }
+
+      return { ...res, modelUsed: model };
+    };
+
+    // ── Tentativa principal ─────────────────────────────────────────────────
+    try {
+      const res = await callModel(task.params.model);
+
+      if (!res.toolCalls?.length) {
+        await redis.set(dk, res, { ex: 20 }).catch(() => {});
+      }
+
+      return res;
+
+    } catch (primaryError: any) {
+      const is429 = primaryError?.status === 429 || primaryError?.message?.includes('429');
+      const isTimeout = primaryError?.message?.includes('timeout');
+
+      if (!is429 && !isTimeout) {
+        console.error(`[Gateway] Erro primário não recuperável: ${primaryError?.message ?? primaryError}`);
+        throw primaryError;
+      }
+
+      // ── Abre circuit breaker e tenta fallback ───────────────────────────
+      console.warn(`[Gateway] ${is429 ? '429' : 'timeout'} em ${task.params.model}. Ativando fallback.`);
+      await redis.set('llm_circuit_breaker', 'open', { ex: 60 }).catch(() => {});
+      localBreaker = { open: true, expires: Date.now() + 30000 };
+
+      if (task.params.model === FALLBACK_MODEL) {
+        // Fallback já estava em uso — retorna degradado sem throw
+        console.error('[Gateway] Fallback também indisponível (429). Retornando resposta degradada.');
+        return {
+          content: 'Estou com dificuldades para processar agora. Tente em instantes.',
+          toolCalls: null,
+          modelUsed: FALLBACK_MODEL,
+        };
+      }
+
+      try {
+        const fallbackRes = await callModel(FALLBACK_MODEL);
+        if (!fallbackRes.toolCalls?.length) {
+          await redis.set(dk, fallbackRes, { ex: 20 }).catch(() => {});
+        }
+        return fallbackRes;
+
+      } catch (fallbackError: any) {
+        // Fallback também falhou — nunca relança
+        console.error(`[Gateway] Fallback falhou: ${fallbackError?.message ?? fallbackError}`);
+        return {
+          content: 'Estou com dificuldades para processar agora. Tente em instantes.',
+          toolCalls: null,
+          modelUsed: FALLBACK_MODEL,
+        };
+      }
     }
   }
-  }
+} // ← fecha class Gatekeeper
 
 export const llmGateway = new Gatekeeper();
 
 export async function callOpenRouterWithPriority(
-  priority: 1|2|3|4,
+  priority: 1 | 2 | 3 | 4,
   dropPolicy: string,
   taskId: string,
   messages: any[],
