@@ -139,6 +139,40 @@ async function checkIdempotency(numericUserId: string, name: string, callSignatu
   return true;
 }
 
+// ── Filtro de Pré-Avaliação ──────────────────────────────────────────────
+function preFlightFilter(toolCalls: ToolCall[]): ToolCall[] {
+  // 1. Remove duplicatas (ex: mesma ferramenta chamada com mesmos argumentos)
+  const unique = Array.from(new Set(toolCalls.map(tc => JSON.stringify(tc))))
+    .map(s => JSON.parse(s) as ToolCall);
+
+  // 2. Regra de Conflito: Se houver atualização e consulta do mesmo recurso, 
+  // priorizamos a atualização.
+  const hasUpdate = unique.some(tc => tc.function.name.includes('_atualizar'));
+  if (hasUpdate) {
+    return unique.filter(tc => !tc.function.name.includes('_consultar'));
+  }
+
+  return unique;
+}
+
+// ── Executor Refatorado ──────────────────────────────────────────────────
+async function executeToolCalls(
+  toolCalls: ToolCall[],
+  // ... resto dos args
+): Promise<ToolCallResult[]> {
+  
+  // O Filtro entra AQUI
+  const safeToolCalls = preFlightFilter(toolCalls);
+  
+  // Agora executamos apenas o que passou pelo filtro
+  const results: ToolCallResult[] = [];
+  for (const tc of safeToolCalls) {
+    // ... execução sequencial como discutimos ...
+  }
+  return results;
+}
+
+
 // ── Dispatcher principal ───────────────────────────────────────────────────────
 export async function executeTool(
   toolCall: any,
