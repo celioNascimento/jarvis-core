@@ -1,7 +1,7 @@
 // lib/modules/modules/projetos.ts
-import { supabase } from '@/lib/jarvis';
+// V12.1.0 — Eliminação de chamadas Supabase via Injeção de Contexto
+
 import type { ModuleDefinition } from '../types';
-import { coreListarProjetos } from '@/lib/services/projects.service';
 
 export const ModuloProjetos: ModuleDefinition = {
   id: 'projetos_lev',
@@ -16,36 +16,31 @@ export const ModuloProjetos: ModuleDefinition = {
 
   buildContextBlock: async (opts) => {
     try {
-      // Usa a SSOT para buscar todos os projetos que o usuário pode ver
-      const projects = await coreListarProjetos(Number(opts.userId));
+      // ✅ 1. LEITURA VIA INJEÇÃO (Zero chamadas de rede)
+      // O masterContext já contém a lista de projetos consolidada pelo RPC
+      const projects = (opts as any).masterContext?.projects || [];
       
-      // Filtra apenas projetos ativos/em pausa
       const activeProjects = projects.filter((p: any) => 
         ['em_desenvolvimento', 'em_pausa'].includes(p.status)
       ).slice(0, 10);
 
       if (!activeProjects.length) return '';
 
-      const topicBlocks = await Promise.all(
-        activeProjects.map(async (proj: any) => {
-          const { data: topics } = await supabase
-            .schema('jarvis')
-            .from('project_topics')
-            .select('id, tag, name')
-            .eq('project_id', proj.id)
-            .is('parent_id', null)
-            .order('order_index', { ascending: true })
-            .limit(8);
+      // ✅ 2. REMOÇÃO DO MAP COM SUPABASE
+      // Não consultamos mais o banco aqui. 
+      // Se você precisar dos tópicos, o RPC de consolidado deve trazê-los 
+      // dentro do objeto de cada projeto.
+      const topicBlocks = activeProjects.map((proj: any) => {
+        const roleLabel = proj.my_role !== 'owner' ? ` [Papel: ${proj.my_role}]` : '';
+        const header = `• ${proj.name ?? proj.tag} (${proj.tag})${roleLabel} [Status: ${proj.status}] — id: ${proj.id}`;
+        
+        // Se o RPC trouxer 'topics', usamos aqui. Se não, apenas listamos o projeto.
+        const topicList = proj.topics?.length
+          ? '\n  Tópicos Raiz: ' + proj.topics.map((t: any) => `${t.name ?? t.tag}`).join(', ')
+          : '';
 
-          const roleLabel = proj.my_role !== 'owner' ? ` [Papel: ${proj.my_role}]` : '';
-          const header = `• ${proj.name ?? proj.tag} (${proj.tag})${roleLabel} [Status: ${proj.status}] — id: ${proj.id}`;
-          const topicList = topics?.length
-            ? '\n  Tópicos Raiz: ' + topics.map(t => `${t.name ?? t.tag}`).join(', ')
-            : '';
-
-          return header + topicList;
-        })
-      );
+        return header + topicList;
+      });
 
       return [
         '[PROJETOS ATIVOS]',
@@ -60,14 +55,8 @@ export const ModuloProjetos: ModuleDefinition = {
   },
 
   tools: [
-    'gerenciar_projeto',
-    'listar_projetos',
-    'gerenciar_topico',
-    'listar_topicos',
-    'gerenciar_entry',
-    'listar_entries',
-    'gerenciar_membros_projeto'
+    'gerenciar_projeto', 'listar_projetos', 'gerenciar_topico',
+    'listar_topicos', 'gerenciar_entry', 'listar_entries', 'gerenciar_membros_projeto'
   ],
-
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 },
 };
