@@ -44,7 +44,7 @@ export async function loadActiveModules(
     const { data } = await supabase.rpc('get_consolidated_context', {
       p_user_id: numericUserId,
       p_contexts: opts.contexts || []
-    }); 
+    });
     masterContext = data || {};
   }
 
@@ -65,7 +65,7 @@ export async function loadActiveModules(
         .from('user_modules')
         .select('module_id')
         .eq('user_id', numericUserId)
-        .eq('is_active', true);
+        .eq('enabled', true);
       enabledIds = data?.map(r => r.module_id) || [];
     }
   }
