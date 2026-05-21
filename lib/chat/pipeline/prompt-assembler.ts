@@ -39,6 +39,23 @@ function shouldIncludeFamilyContext(message: string, history: string): boolean {
   return isHighAlertMonth || hasFamilySignal;
 }
 
+// Após a função filterL3Content
+
+function buildConversationSummary(
+  recentHistory: Array<{ role: string; content: string }>,
+  nickname: string,
+): string {
+  if (!recentHistory?.length) return '';
+
+  return recentHistory
+    .slice(-8) // últimos 4 turnos (user + assistant)
+    .map(m => {
+      const who = m.role === 'user' ? nickname : 'Lev';
+      return `${who}: ${m.content.slice(0, 200)}`;
+    })
+    .join('\n');
+}
+
 function filterL3Content(content: string, includeFamily: boolean): string {
   if (includeFamily) return content;
   return content
@@ -59,11 +76,12 @@ function buildSystemPrompt(parts: {
   l3Content: string;
   plan: string;
   guidelines: string;
+  conversationSummary: string;
 }): string {
   const {
     nickname, dataHoraSP, geoBlock, gpsInstruction,
     alertaRadar, urgentes, relatedTopics, learnedInsightsBlock, personalityBlock,
-    l3Content, plan, guidelines,
+    l3Content, plan, guidelines, conversationSummary,
   } = parts;
 
   return `
@@ -120,7 +138,13 @@ ${learnedInsightsBlock ? `Perfil\n${learnedInsightsBlock}` : ''}
 ${personalityBlock}
 
 [MEMÓRIA ATIVA]
+${conversationSummary ? `[CONVERSA ATUAL — LEIA ANTES DE RESPONDER]
+Os fatos abaixo foram ditos agora mesmo nessa conversa. Não pergunte o que já foi dito aqui.
+${conversationSummary}
+` : ''}
+[MEMÓRIA ATIVA]
 ${l3Content.slice(0, 3000).replace(/\n+/g, ' ').trim()}
+
 
 [CONTEXTO OPERACIONAL]
 Plano: ${plan}
@@ -187,7 +211,7 @@ export async function buildChatPrompt(
   // ── Contexto temporal e geográfico ───────────────────────────────────────
   const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
   const dataHoraSP = nowSP.toLocaleString('pt-BR');
-  
+
   const geoBlock = buildGeoBlock(resolvedLocation);
   console.log('[PROMPT GEO]', {
     geoBlock,
@@ -197,14 +221,14 @@ export async function buildChatPrompt(
   const gpsInstruction = resolvedLocation
     ? ''
     : `[GPS]: Indisponível. Não faça suposições sobre localização do usuário.`;
-  
+
   // ── Filtragem de L3 ───────────────────────────────────────────────────────
   const historyText = recentHistory.map(h => h.content).join(' ');
   const includeFamily = shouldIncludeFamilyContext(message, historyText);
-  
+
   const rawL3Text = memory.l3?.chunks?.map((c: any) => c.content).join('\n\n') || '';
   const l3Content = filterL3Content(rawL3Text, includeFamily);
-  
+
   // ── Dados do master context ───────────────────────────────────────────────
   const urgentes = (masterContext?.reminders || [])
     .map((u: any) => u.title)
@@ -222,6 +246,11 @@ export async function buildChatPrompt(
     .join('\n');
 
   // ── Composição do system prompt ───────────────────────────────────────────
+  const conversationSummary = buildConversationSummary(
+    intel.recentHistory,
+    user.nickname || 'usuário',
+  );
+
   const systemPrompt = buildSystemPrompt({
     nickname: user.nickname || 'usuário',
     dataHoraSP,
@@ -235,6 +264,7 @@ export async function buildChatPrompt(
     l3Content,
     plan: user.plan,
     guidelines,
+    conversationSummary, // ← novo
   });
 
   // ── Resolução de ferramentas ──────────────────────────────────────────────
