@@ -186,30 +186,49 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   }
 
   // 2. Execução Paralela Absoluta
-  console.log('[Pipeline] Iniciando execução paralela das tarefas');
+    console.log('[Pipeline] Iniciando execução paralela das tarefas com timeout de segurança');
 
-  const [queryEmbedding, isStressed, memoryBundleRes, masterContext] = await Promise.all([
-    isNoise ? Promise.resolve(null) : getCachedEmbedding(message).catch((e) => {
-      console.error('[Pipeline][Embedding] Falha na busca de embedding:', e);
-      return null;
-    }),
-    
-    llmGateway.isOverloaded().catch(() => false),
-    
-    // Tratamento tipado da Promise para evitar erros de build
-    (async () => {
-      try {
-        const res = await supabase.rpc('get_full_memory_bundle', { p_user_id: user.id });
-        return { data: res.data };
-      } catch (e) {
-        console.error('[Pipeline][MemoryBundle] Falha ao buscar bundle:', e);
-        return { data: null };
-      }
-    })(),
+  // Adicionamos um race condition para garantir que a pipeline nunca exceda 8s
+  const [queryEmbedding, isStressed, memoryBundleRes, masterContext] = await Promise.race([
+    Promise.all([
+      // 1. Embedding
+      isNoise ? Promise.resolve(null) : getCachedEmbedding(message).catch((e) => {
+        console.error('[Pipeline][Embedding] Falha na busca:', e);
+        return null;
+      }),
       
-    getMasterContext(user.id, sessionId, contextTags)
-  ]);
-
+      // 2. Gateway Status
+      llmGateway.isOverloaded().catch(() => false),
+      
+      // 3. Memory Bundle
+      (async () => {
+        try {
+          const res = await supabase.rpc('get_full_memory_bundle', { p_user_id: user.id });
+          return { data: res.data };
+        } catch (e) {
+          console.error('[Pipeline][MemoryBundle] Falha ao buscar bundle:', e);
+          return { data: null };
+        }
+      })(),
+      
+      // 4. MasterContext (O grande responsável pelo Lazy Loading)
+      getMasterContext(user.id, sessionId, contextTags)
+    ]),
+    
+    // Trava de segurança (Timeout de 8 segundos)
+    new Promise<any[]>((_, reject) => 
+      setTimeout(() => reject(new Error('TIMEOUT_SEGURANCA')), 8000)
+    )
+  ]).catch((err) => {
+    if (err.message === 'TIMEOUT_SEGURANCA') {
+      console.error('[Pipeline][Fatal] Timeout atingido (8s). Retornando contexto parcial para salvar a execução.');
+      // Retorno de segurança: Embedding nulo, isStressed false, bundle vazio, context vazio
+      return [null, false, { data: null }, { history: [], config: {}, profile: {} }];
+    }
+    // Se for outro erro, propaga
+    throw err;
+  });
+  
   // 3. Resolução de Memória e Contexto L4
   const memory = memoryBundleRes?.data || { 
     hd: { memories: [] }, 
