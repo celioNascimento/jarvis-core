@@ -2,19 +2,14 @@
 // Versão Integral: Padrão de Produção - Reconciliação, Auditoria e Performance Lazy-Loading
 
 import { supabase } from '@/lib/jarvis';
-import { Redis } from '@upstash/redis';
 import { classifyContextWithL4, type ContextType } from '@/lib/chat/context-classifier';
 import { computeEmotionalScore, type EmotionalScoreResult } from '@/lib/chat/emotional-router';
 import { llmGateway } from '@/lib/chat/llm-gateway';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import type { ChatRequestContext, LocalMessage } from './request-context';
+import { ContextCache, invalidateSessionHistory } from '@/lib/services/context-cache'
 
-// ─── Configurações e Constantes de Auditoria ───────────────────────────────
 
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL!,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-});
 
 const MAX_MSG_CHARS = 800;
 const MASTER_CONTEXT_TTL = 3 * 60; // 3 minutos
@@ -57,66 +52,101 @@ function masterContextKey(userId: number, sessionId: string): string {
 
 // ─── Cache & RPC Logic (Versão Completa com Lazy Loading) ──────────────────
 
-/**
- * Busca o MasterContext do banco com carregamento seletivo via tags
- */
 
-async function getMasterContext(userId: number, sessionId: string, contexts: string[] = []): Promise<any> {
-  const key = masterContextKey(userId, sessionId);
-  
-  try {
-    const cached = await redis.get<any>(key);
-    if (cached) return cached;
-  } catch (e) {
-    console.warn('[Cache] Falha Redis:', e);
+// Campos estáticos — buscados uma vez e cacheados por horas
+const STATIC_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations'] as const;
+
+// Campos dinâmicos — sempre buscados do banco ou com TTL curto
+const DYNAMIC_FIELDS = ['reminders'] as const;
+
+async function getMasterContext(
+  userId: number,
+  sessionId: string,
+  contexts: string[] = []
+): Promise<any> {
+  const cache = new ContextCache(userId);
+
+  // 1. Busca campos estáticos do Redis em paralelo (uma roundtrip via mget)
+  const cached = await cache.getMany([...STATIC_FIELDS]);
+
+  // 2. Identifica quais campos estáticos estão ausentes no cache
+  const missingStatic = STATIC_FIELDS.filter(f => !(f in cached));
+
+  // 3. Se todos os campos estáticos estão cacheados, busca apenas os dinâmicos
+  //    e o histórico diretamente do banco (sem rodar o RPC completo)
+  if (missingStatic.length === 0) {
+    console.log('[MasterContext] Cache hit total — buscando apenas history e reminders');
+
+    let historyData = null;
+    let remindersData = null;
+
+    try {
+      const res = await supabase.rpc('get_session_history', {
+        p_user_id: userId,
+        p_session_id: sessionId,
+      });
+      historyData = res.data;
+    } catch { }
+
+    try {
+      const res = await supabase
+        .schema('jarvis')
+        .from('reminders')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('status', 'pending')
+        .limit(10);
+      remindersData = res.data;
+    } catch { }
+
+    // Atualiza reminders no cache
+    if (remindersData) {
+      cache.set('reminders', remindersData).catch(() => { });
+    }
+
+    return {
+      ...cached,
+      history: historyData || [],
+      reminders: remindersData || cached.reminders || [],
+    };
   }
+
+  // 4. Cache miss parcial ou total — roda o RPC completo
+  console.log(`[MasterContext] Cache miss em: ${missingStatic.join(', ')} — rodando RPC`);
 
   const { data, error } = await supabase.rpc('get_consolidated_context', {
     p_user_id: userId,
     p_session_id: sessionId,
-    p_contexts: contexts 
+    p_contexts: contexts,
   });
 
   if (error) {
     console.error('[MasterContext] Erro fatal no RPC:', error);
-    return { history: [], config: {}, profile: {} };
+    return { history: [], ...cached };
   }
 
   const result = data || {};
 
-  // --- CRÍTICO: Sanitização para evitar estouro de limite do Redis ---
-  // Se o objeto 'config' tiver embeddings, removemos antes de salvar
-  if (result.config && typeof result.config === 'object') {
-    Object.keys(result.config).forEach(k => {
-      if (k.startsWith('embedding_')) {
-        delete result.config[k];
-      }
-    });
-  }
+  // 5. Popula o cache com os campos que vieram do RPC
+  //    Só salva os campos que estavam ausentes (não sobrescreve cache válido)
+  await Promise.all(
+    STATIC_FIELDS
+      .filter(f => missingStatic.includes(f as any) && result[f] != null)
+      .map(f => cache.set(f as any, result[f]))
+  );
 
-  // Só salva se o tamanho for razoável (apenas um check extra de segurança)
-  const stringified = JSON.stringify(result);
-  if (stringified.length < 5 * 1024 * 1024) { // 5MB limite seguro
-    redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(() => { });
-  } else {
-    console.warn('[Cache] Objeto muito grande, não salvo no Redis');
-  }
-  
   return result;
 }
 
-/**
- * Invalida o cache do MasterContext para forçar atualização
- */
-export async function invalidateMasterContextCache(userId: number, sessionId: string): Promise<void> {
-  try {
-    const key = masterContextKey(userId, sessionId);
-    await redis.del(key);
-    console.log(`[Cache][Invalidate] Cache removido com sucesso para session ${sessionId}`);
-  } catch (e) {
-    console.error('[Cache][Error] Falha ao invalidar cache no Redis:', e);
-  }
+// Substitui invalidateMasterContextCache — invalida só o histórico da sessão
+export async function invalidateMasterContextCache(
+  userId: number,
+  sessionId: string
+): Promise<void> {
+  await invalidateSessionHistory(userId, sessionId);
+  console.log(`[ContextCache] History invalidado para session ${sessionId}`);
 }
+
 
 // ─── Reconciliação de Histórico (Detalhamento Completo - SSOT) ───────────────
 
@@ -135,7 +165,7 @@ function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
     console.warn('[History][Reconcile] rawHistory não é um array válido, retornando vazio');
     return [];
   }
-  
+
   const history: HistoryMessage[] = [];
   for (const row of rawHistory) {
     const uMsg = (row.content || '').trim();
@@ -174,7 +204,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   // 1. Context Tagging - Otimização para Lazy Loading no SQL
   const contextTags: string[] = [];
   const m = message.toLowerCase();
-  
+
   if (m.includes('carro') || m.includes('frota') || m.includes('abastecimento') || m.includes('manuten')) {
     contextTags.push('veiculos');
   }
@@ -186,7 +216,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   }
 
   // 2. Execução Paralela Absoluta
-    console.log('[Pipeline] Iniciando execução paralela das tarefas com timeout de segurança');
+  console.log('[Pipeline] Iniciando execução paralela das tarefas com timeout de segurança');
 
   // Adicionamos um race condition para garantir que a pipeline nunca exceda 8s
   const [queryEmbedding, isStressed, memoryBundleRes, masterContext] = await Promise.race([
@@ -196,10 +226,10 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
         console.error('[Pipeline][Embedding] Falha na busca:', e);
         return null;
       }),
-      
+
       // 2. Gateway Status
       llmGateway.isOverloaded().catch(() => false),
-      
+
       // 3. Memory Bundle
       (async () => {
         try {
@@ -210,13 +240,13 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
           return { data: null };
         }
       })(),
-      
+
       // 4. MasterContext (O grande responsável pelo Lazy Loading)
       getMasterContext(user.id, sessionId, contextTags)
     ]),
-    
+
     // Trava de segurança (Timeout de 8 segundos)
-    new Promise<any[]>((_, reject) => 
+    new Promise<any[]>((_, reject) =>
       setTimeout(() => reject(new Error('TIMEOUT_SEGURANCA')), 8000)
     )
   ]).catch((err) => {
@@ -228,20 +258,20 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     // Se for outro erro, propaga
     throw err;
   });
-  
+
   // 3. Resolução de Memória e Contexto L4
-  const memory = memoryBundleRes?.data || { 
-    hd: { memories: [] }, 
+  const memory = memoryBundleRes?.data || {
+    hd: { memories: [] },
     ram: { ramBlock: '' },
     l3: { chunks: [] },
     events: [],
     topics: []
   };
-  
+
   const contexts = await classifyContextWithL4(
-    message, 
-    user.id, 
-    user.auth_user_id, 
+    message,
+    user.id,
+    user.auth_user_id,
     masterContext
   ).catch((e) => {
     console.error('[Pipeline][Classification] Erro na classificação L4:', e);
@@ -250,15 +280,15 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   // 4. Score Emocional (Analítico)
   const emotional = await computeEmotionalScore(
-    message, 
-    String(user.id), 
-    memory.hd?.memories || [], 
+    message,
+    String(user.id),
+    memory.hd?.memories || [],
     memory.ram?.ramBlock || ''
   ).catch((e) => {
     console.error('[Pipeline][Emotional] Erro na análise emocional:', e);
-    return { 
-      score: 0, trajectory: 'stable', primaryEmotion: 'neutral', triggers: [], 
-      memoryScore: 0, personScore: 0, moodAdjustment: 0, escalatingCount: 0 
+    return {
+      score: 0, trajectory: 'stable', primaryEmotion: 'neutral', triggers: [],
+      memoryScore: 0, personScore: 0, moodAdjustment: 0, escalatingCount: 0
     };
   });
 
