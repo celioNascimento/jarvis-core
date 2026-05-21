@@ -4,11 +4,12 @@
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
 import { buildDynamicContext } from '@/lib/chat/context-builder';
-import { fetchLearnedInsights } from '../pipeline/fetch-learned-insights';
 import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
-import { getPersonalitySettings, buildPersonalityBlock } from '@/lib/services/personality.service';
+import { buildPersonalityBlock } from '@/lib/services/personality.service';
+import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '../../Utils/ai-helpers';
+
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -161,14 +162,13 @@ export async function buildChatPrompt(
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, memory, masterContext, recentHistory } = intel;
 
+  // ── Helpers do masterContext (zero queries ao banco) ──────────────────────
+  const learnedInsightsBlock = buildLearnedInsightsBlock(masterContext?.insights || []);
+  const personalitySettings = buildPersonalityFromContext(masterContext?.settings);
+  const personalityBlock = buildPersonalityBlock(personalitySettings);
+
   // ── Cargas paralelas ──────────────────────────────────────────────────────
-  const [
-    personalitySettings,
-    moduleResult,
-    dynamicResult,
-    learnedInsightsBlock,
-  ] = await Promise.all([
-    getPersonalitySettings(user.id),
+  const [moduleResult, dynamicResult] = await Promise.all([
     loadActiveModules(
       {
         userId: String(user.id),
@@ -191,13 +191,11 @@ export async function buildChatPrompt(
       emotionalScore: emotional.score,
       masterContext,
     }),
-    fetchLearnedInsights(String(user.id)),
   ]);
 
-  const personalityBlock = buildPersonalityBlock(personalitySettings);
   const finalModel = moduleResult.resolvedModel || DEFAULT_MODEL;
 
-  // ── Radar de proximidade (depende de coordenadas) ─────────────────────────
+  // ── Radar de proximidade ──────────────────────────────────────────────────
   let alertaRadar: string | null = null;
   if (resolvedLocation?.lat && resolvedLocation?.lng) {
     const radar = await verificarProximidade(
@@ -229,7 +227,7 @@ export async function buildChatPrompt(
   const rawL3Text = memory.l3?.chunks?.map((c: any) => c.content).join('\n\n') || '';
   const l3Content = filterL3Content(rawL3Text, includeFamily);
 
-  // ── Dados do master context ───────────────────────────────────────────────
+  // ── Dados do masterContext ────────────────────────────────────────────────
   const urgentes = (masterContext?.reminders || [])
     .map((u: any) => u.title)
     .filter(Boolean)
@@ -240,7 +238,6 @@ export async function buildChatPrompt(
     .filter(Boolean)
     .join('; ') || 'Progresso contínuo';
 
-  // Extração de tópicos relacionados do masterContext
   const relatedTopics = (masterContext?.related_topics || [])
     .map((t: any) => `- ${t.topic} (peso: ${Math.round((t.weight || 0) * 100)}%)`)
     .join('\n');
@@ -264,7 +261,7 @@ export async function buildChatPrompt(
     l3Content,
     plan: user.plan,
     guidelines,
-    conversationSummary, // ← novo
+    conversationSummary,
   });
 
   // ── Resolução de ferramentas ──────────────────────────────────────────────
@@ -278,10 +275,6 @@ export async function buildChatPrompt(
     (t: any) => t.function?.name && allToolKeys.has(t.function.name),
   );
 
-  // ── Retorno ───────────────────────────────────────────────────────────────
-  // conversationMessages NÃO inclui o system prompt — ele já é retornado
-  // como campo separado e deve ser passado via parâmetro `system` da API,
-  // não como primeira mensagem do array.
   return {
     systemPrompt,
     tools: resolvedTools,

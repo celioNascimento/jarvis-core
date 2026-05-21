@@ -4,6 +4,9 @@
  * Chama a IA garantindo o formato JSON.
  * Mantido como callAI para não quebrar os imports do extractor.ts
  */
+
+import type { PersonalitySettings } from '@/lib/services/personality.service';
+
 export async function callAI(prompt: string, maxTokens = 300): Promise<string> {
   const apiKey = process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -79,4 +82,63 @@ export function safeParseJSON(raw: string): any | null {
       return null;
     }
   }
+}
+
+const PERSONALITY_DEFAULTS: PersonalitySettings = {
+  humor: 50,
+  franqueza: 80,
+  formalidade: 20,
+  modo_escuta: 70,
+};
+
+/**
+ * Constrói o bloco de learned_insights a partir do masterContext.
+ * Substitui fetchLearnedInsights() — zero queries ao banco.
+ */
+export function buildLearnedInsightsBlock(insights: any[]): string {
+  if (!insights?.length) return '';
+
+  const confirmed = insights.filter(i =>
+    i.source_type === 'user_confirmed' || i.source_type === 'user_corrected'
+  );
+  const inferred = insights.filter(i => i.source_type === 'inferred');
+
+  const lines: string[] = [];
+
+  if (confirmed.length) {
+    lines.push('📌 Preferências confirmadas:');
+    confirmed.forEach(i => lines.push(`- ${i.insight_text}`));
+  }
+  if (inferred.length) {
+    lines.push('🔍 Padrões observados:');
+    inferred.forEach(i =>
+      lines.push(`- ${i.insight_text} (confiança: ${(i.confidence_score * 100).toFixed(0)}%)`)
+    );
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Reconstrói PersonalitySettings a partir do masterContext.settings.
+ * Substitui getPersonalitySettings() — zero queries ao banco.
+ * Aceita tanto objeto key:value quanto array de rows {key, value}.
+ */
+export function buildPersonalityFromContext(settings: any): PersonalitySettings {
+  if (!settings) return PERSONALITY_DEFAULTS;
+
+  if (Array.isArray(settings)) {
+    const result = { ...PERSONALITY_DEFAULTS };
+    for (const row of settings) {
+      if (row.key in result) (result as any)[row.key] = row.value;
+    }
+    return result;
+  }
+
+  return {
+    humor:       settings.humor       ?? PERSONALITY_DEFAULTS.humor,
+    franqueza:   settings.franqueza   ?? PERSONALITY_DEFAULTS.franqueza,
+    formalidade: settings.formalidade ?? PERSONALITY_DEFAULTS.formalidade,
+    modo_escuta: settings.modo_escuta ?? PERSONALITY_DEFAULTS.modo_escuta,
+  };
 }
