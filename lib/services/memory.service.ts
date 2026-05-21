@@ -152,3 +152,78 @@ export async function reinforceMemory(memoryId: string): Promise<void> {
     console.error("[Memory] Erro reinforceMemory:", e);
   }
 }
+
+export async function updateL3(userId: string): Promise<void> {
+  try {
+    const today = new Intl.DateTimeFormat('en-CA', { 
+      timeZone: 'America/Sao_Paulo' 
+    }).format(new Date());
+
+    // 1. Busca dados em paralelo para performance e rigor
+    const [profRes, kidsRes, projRes, evRes, userRes] = await Promise.all([
+      supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle(),
+      supabase.from('children').select('name, birth_date, life_phase, gender').eq('parent_id', userId),
+      supabase.from('projects').select('name, description, status').eq('user_id', userId).limit(10),
+      supabase.from('events').select('title, start_at, emotional_weight')
+        .gte('start_at', today)
+        .order('start_at', { ascending: true })
+        .limit(15),
+      supabase.from('users').select('current_context').eq('id', userId).single(),
+    ]);
+
+    const p = profRes.data;
+    const kids = kidsRes.data || [];
+    const proj = projRes.data || [];
+    const evs = evRes.data || [];
+    let ctx = userRes.data?.current_context || '';
+
+    const patches: Record<string, string> = {};
+
+    // 2. Mapeamento de Perfil (Rigidez na estrutura)
+    if (p?.full_name) patches['Nome'] = p.preferred_name ? `${p.full_name} (prefere: ${p.preferred_name})` : p.full_name;
+    if (p?.gender) patches['Gênero'] = p.gender;
+    if (p?.birth_date) patches['Nascimento'] = p.birth_date;
+    if (p?.city) patches['Mora em'] = `${p.city}${p.state ? `, ${p.state}` : ''}`;
+    if (p?.current_job) patches['Cargo'] = `${p.current_job}${p.company ? ` @ ${p.company}` : ''}`;
+    
+    if (kids.length > 0) {
+      patches['Filhos'] = kids.map(k => {
+        const age = k.birth_date ? new Date().getFullYear() - new Date(k.birth_date).getFullYear() : null;
+        return `${k.name}${age !== null ? ` (${age} anos)` : ''}`;
+      }).join(', ');
+    }
+
+    // 3. Aplicação rigorosa dos patches no contexto
+    for (const [key, val] of Object.entries(patches)) {
+      const rx = new RegExp(`- ${key}: (.*)`, 'i');
+      if (rx.test(ctx)) {
+        ctx = ctx.replace(rx, `- ${key}: ${val}`);
+      } else {
+        ctx = `${ctx}\n- ${key}: ${val}`;
+      }
+    }
+
+    // 4. Seção de Projetos
+    if (proj.length > 0) {
+      const block = proj.map(r => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
+      const section = `## PROJETOS\n${block}`;
+      ctx = ctx.replace(/## PROJETOS[\s\S]*?(?=\n##|$)/i, '').trim() + `\n\n${section}`;
+    }
+
+    // 5. Seção de Datas Importantes
+    const highEvs = evs.filter(e => (e.emotional_weight || 0) >= 0.7);
+    if (highEvs.length > 0) {
+      const block = highEvs.map(e => `- ${e.title}: ${e.start_at}`).join('\n');
+      const section = `## DATAS IMPORTANTES\n${block}`;
+      ctx = ctx.replace(/## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i, '').trim() + `\n\n${section}`;
+    }
+
+    // 6. Persistência final
+    await supabase.from('users').update({ current_context: ctx.trim() }).eq('id', userId);
+    console.log(`[MemoryService/updateL3] Contexto L3 consolidado para user ${userId}`);
+
+  } catch (e) {
+    console.error('[MemoryService/updateL3] Erro crítico na varredura:', e);
+    throw e; // Mantendo o rigor: se falhou, o orquestrador precisa saber
+  }
+}
