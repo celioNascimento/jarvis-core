@@ -94,7 +94,7 @@ function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
 
   const history: HistoryMessage[] = [];
 
-  for (const row of [...rawHistory].reverse()) {
+  for (const row of rawHistory) {
     const uMsg = (row.content || '').trim();
     const aRep = (row.metadata?.ai_reply || '').trim();
 
