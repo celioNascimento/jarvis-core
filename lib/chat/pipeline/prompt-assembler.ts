@@ -201,8 +201,10 @@ export async function buildChatPrompt(
   // ── Filtragem de L3 ───────────────────────────────────────────────────────
   const historyText = recentHistory.map(h => h.content).join(' ');
   const includeFamily = shouldIncludeFamilyContext(message, historyText);
-  const l3Content = filterL3Content(memory.l3.content, includeFamily);
-
+  
+  const rawL3Text = memory.l3?.chunks?.map((c: any) => c.content).join('\n\n') || '';
+  const l3Content = filterL3Content(rawL3Text, includeFamily);
+  
   // ── Dados do master context ───────────────────────────────────────────────
   const urgentes = (masterContext?.reminders || [])
     .map((u: any) => u.title)

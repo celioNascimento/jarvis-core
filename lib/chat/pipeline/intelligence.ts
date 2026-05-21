@@ -171,10 +171,10 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   });
 
   // 4. Consolidação da memória (Uso do Bundle)
-  let memory: any = memoryBundle || {
+ let memory: any = memoryBundle || {
     hd: { memories: [] },
     ram: { ramBlock: '' },
-    l3: { content: '' },
+    l3: { chunks: [] }, // <--- Garantia de estrutura para evitar undefined
     events: [],
     topics: []
   };
