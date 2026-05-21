@@ -1,5 +1,5 @@
 // lib/modules/registry.ts
-// V12.7.1 — Rigorous Context Injection & Registry Full Scan
+// V12.8.0 — Remove RPC redundante, corrige extração de modules do masterContext
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -8,7 +8,6 @@ import type { ModuleDefinition, ModuleConditionOpts } from './types';
 import { recordModuleMetrics } from './metrics';
 import { routeModel } from '@/lib/chat/context-classifier';
 
-// [Imports de todos os módulos mantidos exatamente como no original...]
 import { ModuloFinancas } from './modules/financas';
 import { ModuloVeiculos } from './modules/veiculos';
 import { ModuloFoco } from './modules/foco';
@@ -30,6 +29,32 @@ const ALL_MODULES = [
   ModuloCompras, ModuloClima, ModuloEsportes, ModuloDossie, ModuloPersonalidade,
 ];
 
+// ── Extrai enabledIds de forma resiliente ────────────────────────────────────
+//
+// O RPC retorna modules como: [{ module_id: 'financas', ... }, ...]
+// O cache Redis pode retornar o mesmo formato ou uma string serializada.
+// Esta função normaliza os dois casos.
+
+function extractEnabledIds(modules: any): string[] {
+  if (!modules) return [];
+
+  // Já é array de objetos com module_id (formato do RPC)
+  if (Array.isArray(modules) && modules.length > 0 && typeof modules[0] === 'object') {
+    const ids = modules.map((m: any) => m.module_id).filter(Boolean);
+    console.log('[Registry] modules extraídos do masterContext:', ids);
+    return ids;
+  }
+
+  // Array de strings (formato legado)
+  if (Array.isArray(modules) && modules.length > 0 && typeof modules[0] === 'string') {
+    console.log('[Registry] modules já em formato string[]:', modules);
+    return modules;
+  }
+
+  console.warn('[Registry] modules em formato inesperado:', typeof modules, modules);
+  return [];
+}
+
 export async function loadActiveModules(
   opts: ModuleConditionOpts & { masterContext?: any },
   userPlan: string,
@@ -37,45 +62,60 @@ export async function loadActiveModules(
 ) {
   const numericUserId = parseInt(String(opts.userId), 10);
 
-  // 1. Hidratação consolidada (God RPC)
-  // Mantemos o masterContext para evitar chamadas duplicadas aos módulos
-  let masterContext = opts.masterContext;
-  if (!masterContext) {
-    const { data } = await supabase.rpc('get_consolidated_context', {
-      p_user_id: numericUserId,
-      p_contexts: opts.contexts || []
-    });
-    masterContext = data || {};
-  }
+  // 1. masterContext SEMPRE vem da intelligence pipeline — não fazer novo RPC aqui.
+  //    O registry não tem visibilidade do cache granular, então chamar get_consolidated_context
+  //    aqui geraria uma segunda chamada desnecessária a cada turno.
+  const masterContext = opts.masterContext || {};
 
-  // 2. Determinação de módulos ativos
-  const cacheKey = `modules_enabled:${numericUserId}`;
-  let enabledIds: string[] = masterContext.modules?.map((m: any) => m.module_id) || [];
+  // 2. Extrai enabledIds do masterContext de forma resiliente
+  let enabledIds = extractEnabledIds(masterContext.modules);
 
   console.log('[Registry] enabledIds do masterContext:', enabledIds.length);
 
+  // 3. Fallback apenas se masterContext.modules realmente não existir
+  //    (primeira requisição antes do cache aquecer, ou campo ausente no RPC)
   if (enabledIds.length === 0) {
-    console.warn('[Registry] masterContext.modules vazio — caindo no fallback');
-    const cached = await new Redis({
+    console.warn('[Registry] masterContext.modules vazio — caindo no fallback Redis');
+
+    const cacheKey = `modules_enabled:${numericUserId}`;
+    const redis = new Redis({
       url: process.env.UPSTASH_REDIS_REST_URL!,
       token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-    }).get<string[]>(cacheKey);
+    });
 
-    if (cached) {
-      enabledIds = cached;
-    } else {
-      const { data } = await supabase
-        .from('user_modules')
-        .select('module_id')
-        .eq('user_id', numericUserId)
-        .eq('enabled', true);
-      enabledIds = data?.map(r => r.module_id) || [];
+    try {
+      const cached = await redis.get<string[]>(cacheKey);
+      if (cached && Array.isArray(cached) && cached.length > 0) {
+        enabledIds = cached;
+        console.log('[Registry] enabledIds do Redis fallback:', enabledIds.length);
+      }
+    } catch (e) {
+      console.warn('[Registry] Redis fallback falhou:', e);
+    }
+
+    // 4. Último recurso: banco direto (só acontece se Redis também falhar)
+    if (enabledIds.length === 0) {
+      console.warn('[Registry] Redis vazio — buscando user_modules diretamente no banco');
+      try {
+        const { data } = await supabase
+          .from('user_modules')
+          .select('module_id')
+          .eq('user_id', numericUserId)
+          .eq('enabled', true);
+        enabledIds = data?.map(r => r.module_id) || [];
+
+        // Aquece o cache Redis para próximas requisições
+        if (enabledIds.length > 0) {
+          redis.set(cacheKey, enabledIds, { ex: 3600 }).catch(() => {});
+        }
+      } catch (e) {
+        console.error('[Registry] Falha fatal ao buscar user_modules:', e);
+      }
     }
   }
 
-  // 3. Execução Controlada de Módulos (Full Scan)
+  // 5. Execução Controlada de Módulos (Full Scan)
   const results = await Promise.all(ALL_MODULES.map(async mod => {
-    // Validação de permissão e ativação
     const planOrder = ['free', 'personal', 'family', 'family_plus', 'ultra'];
     const modPlanIdx = planOrder.indexOf(mod.plan);
     const userPlanIdx = planOrder.indexOf(userPlan);
@@ -93,10 +133,8 @@ export async function loadActiveModules(
 
     const start = Date.now();
     try {
-      // 🛡️ INJEÇÃO CRÍTICA: Passamos o masterContext para o módulo
       const block = await mod.buildContextBlock({ ...opts, masterContext });
 
-      // Registro de métricas não bloqueante
       waitUntil(
         recordModuleMetrics(mod.id, numericUserId, {
           latencyMs: Date.now() - start,
