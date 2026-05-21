@@ -2,6 +2,7 @@
 // V1.0.0 — Fonte Única da Verdade para Relacionamentos e Permissões
 
 import { supabase } from '@/lib/jarvis';
+import { invalidateContextField } from './context-cache';
 
 // ─── HELPER: RESOLVER ID DO CONTATO ───────────────────────────────────────────
 export async function coreResolverIdContato(identificador: string): Promise<number | null> {
@@ -37,8 +38,9 @@ export async function coreAlternarPermissaoModulo(userId: number, contatoId: num
   }
 
   const currentSettings = rel.settings || {};
-  
+
   if (currentSettings[modulo] === habilitar) {
+    await invalidateContextField(userId, 'persons');
     return { alterado: false, relId: rel.id };
   }
 
@@ -54,5 +56,6 @@ export async function coreAlternarPermissaoModulo(userId: number, contatoId: num
 
   if (updateError) throw new Error(`Falha ao atualizar permissões: ${updateError.message}`);
 
+  await invalidateContextField(userId, 'persons');
   return { alterado: true, relId: rel.id };
 }

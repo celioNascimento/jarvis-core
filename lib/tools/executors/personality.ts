@@ -2,6 +2,7 @@
 // V1.0.0 — Ajuste de personalidade do Lev
 
 import { supabase } from '@/lib/jarvis';
+import { invalidateContextField } from '@/lib/services/context-cache';
 
 const VALID_KEYS = ['humor', 'franqueza', 'formalidade', 'modo_escuta'];
 
@@ -26,6 +27,8 @@ export async function executeAjustarPersonalidade(
     .eq('key', p.key);
 
   if (error) return `Erro ao ajustar personalidade: ${error.message}`;
+
+  await invalidateContextField(Number(numericUserId), 'settings');
 
   return `ok`;
 }

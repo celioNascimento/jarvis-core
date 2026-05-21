@@ -2,6 +2,8 @@ import { Redis } from '@upstash/redis';
 import { supabase } from '@/lib/jarvis';
 import { haversineMetros, coordLabel } from './geo-math';
 import { callNominatim } from './geo-nominatim';
+import { ContextCache } from '../services/context-cache';
+
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -64,7 +66,24 @@ export async function saveWeatherCache(userId: string, lat: number, lng: number,
 }
 
 export async function verificarProximidade(userId: string, lat: number, lng: number): Promise<any> {
-  const { data: lugares } = await supabase.from('favorite_places').select('id, name, lat, lng, radius_meters').eq('user_id', userId);
+  // Tenta cache antes de ir ao banco
+  const numericUserId = parseInt(userId, 10);
+  const cache = new ContextCache(numericUserId);
+
+  let lugares = await cache.get<any[]>('favorite_places');
+
+  if (!lugares) {
+    const { data } = await supabase
+      .from('favorite_places')
+      .select('id, name, lat, lng, radius_meters')
+      .eq('user_id', userId);
+
+    lugares = data ?? [];
+    if (lugares.length > 0) {
+      cache.set('favorite_places', lugares).catch(() => {});
+    }
+  }
+
   if (!lugares?.length) return { temAlerta: false, mensagem: '' };
 
   const geoState = await getGeoState(userId);
@@ -75,7 +94,13 @@ export async function verificarProximidade(userId: string, lat: number, lng: num
     if (distM > (lugar.radius_meters ?? 200)) continue;
     if (Date.now() - (cooldowns[lugar.id] ?? 0) < ALERT_COOLDOWN_MS) continue;
 
-    const { data: itens } = await supabase.from('shopping_items').select('item').eq('place_id', lugar.id).eq('done', false).eq('archived', false);
+    const { data: itens } = await supabase
+      .from('shopping_items')
+      .select('item')
+      .eq('place_id', lugar.id)
+      .eq('done', false)
+      .eq('archived', false);
+
     if (!itens?.length) continue;
 
     const novosCooldowns = { ...cooldowns, [lugar.id]: Date.now() };
@@ -87,9 +112,10 @@ export async function verificarProximidade(userId: string, lat: number, lng: num
     return {
       temAlerta: true,
       mensagem: `Você está perto de ${lugar.name}. Itens: ${listaItens.join(', ')}.`,
-      placeId: lugar.id, placeName: lugar.name, itens: listaItens
+      placeId: lugar.id, placeName: lugar.name, itens: listaItens,
     };
   }
+
   return { temAlerta: false, mensagem: '' };
 }
 

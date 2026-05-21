@@ -3,6 +3,7 @@
 
 import { supabase } from '@/lib/jarvis';
 import { scheduleReminderOnQStash, cancelReminderOnQStash, frequencyToCron } from '@/lib/qstash';
+import { invalidateContextField } from './context-cache';
 
 export interface ReminderPayload {
   title: string;
@@ -208,7 +209,7 @@ export async function coreCriarLembrete(
       .update({ qstash_message_id: qstashId })
       .eq('id', reminder.id);
   }
-
+   await invalidateContextField(userId, 'reminders');
   return { id: reminder.id, title: payload.title, scheduled_time };
 }
 
@@ -258,7 +259,7 @@ export async function coreAtualizarLembrete(
         .eq('id', updated.id);
     }
   }
-
+   await invalidateContextField(userId, 'reminders');
   return updated;
 }
 
@@ -282,6 +283,7 @@ export async function coreCancelarLembrete(userId: number, query: string): Promi
     .update({ status: 'cancelled' })
     .eq('id', reminder.id);
 
+  await invalidateContextField(userId, 'reminders');
   return reminder.title;
 }
 
@@ -298,4 +300,6 @@ export async function coreDeletarLembrete(userId: number, id: string): Promise<v
 
   if (reminder.qstash_message_id) await cancelReminderOnQStash(reminder.qstash_message_id);
   await supabase.from('reminders').delete().eq('id', id);
-}
+  await invalidateContextField(userId, 'reminders');
+
+};

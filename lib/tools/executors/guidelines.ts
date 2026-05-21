@@ -2,6 +2,7 @@
 // Domínio: Diretrizes Dinâmicas (System Prompts)
 
 import { supabase } from '@/lib/jarvis';
+import { invalidateContextField } from '@/lib/services/context-cache';
 
 export async function executeGerenciarGuideline(p: any, authUserId: string, numericUserId: string): Promise<string> {
   const { acao, id, content, scope, active } = p;
@@ -22,6 +23,8 @@ export async function executeGerenciarGuideline(p: any, authUserId: string, nume
       .select('id')
       .single();
 
+      await invalidateContextField(numUserId, 'guidelines');
+      
     if (error) return `[ERRO] Falha ao adicionar diretriz: ${error.message}`;
     return `Guideline adicionada com sucesso! ID numérico: ${data.id}`;
   }
@@ -57,6 +60,8 @@ export async function executeGerenciarGuideline(p: any, authUserId: string, nume
       .eq('id', id)
       .eq('user_id', numUserId);
 
+      await invalidateContextField(numUserId, 'guidelines');
+
     if (error) return `[ERRO] Falha ao editar diretriz: ${error.message}`;
     return `Guideline ${id} atualizada com sucesso.`;
   }
@@ -68,6 +73,8 @@ export async function executeGerenciarGuideline(p: any, authUserId: string, nume
       .delete()
       .eq('id', id)
       .eq('user_id', numUserId);
+
+      await invalidateContextField(numUserId, 'guidelines');
 
     if (error) return `[ERRO] Falha ao remover diretriz: ${error.message}`;
     return `Guideline ${id} deletada definitivamente do sistema.`;
