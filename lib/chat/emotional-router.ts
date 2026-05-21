@@ -1,4 +1,4 @@
-// lib/chat/emotional-router.ts
+// lib/chat/  .ts
 import { getCachedPersons } from './persons-cache';
 import { getRecentMoodAdjustment } from './diary';
 
@@ -6,7 +6,8 @@ const EMOTIONAL_MARKERS = /sinto|triste|ansioso|medo|preocup|cansado|sozinho|sau
 
 export interface EmotionalScoreResult {
   score: number;
-  trajectory: 'stable' | 'escalating';
+  trajectory: string;
+  primaryEmotion: string;   
   triggers: string[];
   memoryScore: number;
   personScore: number;
@@ -103,6 +104,7 @@ export async function computeEmotionalScore(
   return {
     score: finalScore,
     trajectory,
+    primaryEmotion: finalScore > 0.6 ? 'alerta' : 'neutral', // Adicione esta linha
     triggers,
     memoryScore,
     personScore,

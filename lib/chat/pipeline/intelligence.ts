@@ -42,22 +42,22 @@ async function getMasterContext(userId: number, sessionId: string): Promise<any>
   try {
     const cached = await redis.get<any>(key);
     if (cached) return cached;
-  } catch {}
+  } catch { }
 
   const { data } = await supabase.rpc('get_consolidated_context', {
-    p_user_id:    userId,
+    p_user_id: userId,
     p_session_id: sessionId,
   });
 
   const result = data || { history: [], config: {}, profile: {} };
-  redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(() => {});
+  redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(() => { });
   return result;
 }
 
 export async function invalidateMasterContextCache(userId: number, sessionId: string): Promise<void> {
   try {
     await redis.del(masterContextKey(userId, sessionId));
-  } catch {}
+  } catch { }
 }
 
 // ─── Tipos exportados ─────────────────────────────────────────────────────────
@@ -125,68 +125,88 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   const { message, user, sessionId, localHistory } = ctx;
   const isNoise = isNoiseMessage(message);
 
-  // 1. MasterContext (Cache-First)
-  const masterContext = await getMasterContext(user.id, sessionId);
-  const safeContext = masterContext || { history: [], config: {}, profile: {} };
+  // 1. Definição de tarefas paralelas com tipagem e tratamento de erro individualizado
+  // Utilizamos blocos async para garantir que cada Promise seja tratada como nativa
 
-  // 2. Processamento paralelo
-  const [queryEmbedding, contexts, isStressed] = await Promise.all([
-    isNoise
-      ? Promise.resolve(null)
-      : getCachedEmbedding(message).catch(() => null),
+  const embeddingPromise = isNoise
+    ? Promise.resolve(null)
+    : getCachedEmbedding(message).catch((e) => { console.error('[Pipeline] Embedding fail:', e); return null; });
 
-    classifyContextWithL4(message, user.id, user.auth_user_id, safeContext).catch(() => []),
+  const overloadPromise = llmGateway.isOverloaded().catch(() => false);
 
-    llmGateway.isOverloaded().catch(() => false),
+  const memoryBundlePromise = (async () => {
+    try {
+      const { data, error } = await supabase.rpc('get_full_memory_bundle', { p_user_id: user.id });
+      if (error) throw error;
+      return data;
+    } catch (e) {
+      console.error('[Pipeline] Memory bundle fail:', e);
+      return null;
+    }
+  })();
 
-    detectAndLogCorrection(message, user.id, safeContext).catch(() => {}),
+  const masterContextPromise = getMasterContext(user.id, sessionId)
+    .catch((e) => {
+      console.error('[Pipeline] MasterContext fail:', e);
+      return { history: [], config: {}, profile: {} };
+    });
+
+  // 2. Execução paralela (sem bloqueios)
+  const [queryEmbedding, isStressed, memoryBundle, masterContext] = await Promise.all([
+    embeddingPromise,
+    overloadPromise,
+    memoryBundlePromise,
+    masterContextPromise,
   ]);
 
-  // 3. Memória (L3 + HD — RAM vem do localHistory agora)
-  let memory: any = {
-    hd:           { memories: [] },
-    ram:          { ramBlock: '' },
-    l3:           { content: '' },
-    events:       { block: '' },
-    relationship: { block: '' },
-    topics:       { relatedTopicsBlock: '' },
+  // 3. Classificação dependente do contexto recuperado
+  const contexts = await classifyContextWithL4(
+    message,
+    user.id,
+    user.auth_user_id,
+    masterContext
+  ).catch((e) => {
+    console.error('[Pipeline] Classification fail:', e);
+    return [];
+  });
+
+  // 4. Consolidação da memória (Uso do Bundle)
+  let memory: any = memoryBundle || {
+    hd: { memories: [] },
+    ram: { ramBlock: '' },
+    l3: { content: '' },
+    events: [],
+    topics: []
   };
 
-  try {
-    const memoryData = await MemoryManager.read({
-      userId:        user.id,
-      authUserId:    user.auth_user_id,
-      sessionId,
-      message,
-      contexts,
-      emotionalScore: 0,
-      authorName:    user.nickname,
-      assistantName: user.assistant_name,
-      queryEmbedding,
-      masterContext: safeContext,
-    });
-    if (memoryData) memory = memoryData;
-  } catch {
-    console.error('[Intelligence] Memory error bypass');
-  }
+  // 5. Score Emocional (Consumindo a memória já recuperada no bundle)
+  // No seu runIntelligencePipeline:
 
-  // 4. Score Emocional
+ // 4. Score Emocional
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
     memory?.hd?.memories || [],
     memory?.ram?.ramBlock || ''
-  ).catch(() => ({
-    score: 0,
-    primaryEmotion: 'neutral',
-    trajectory: 'stable',
-  } as unknown as EmotionalScoreResult));
+  ).catch((e): EmotionalScoreResult => {
+    console.error('[Pipeline] Emotional score fail:', e);
+    return {
+      score: 0,
+      trajectory: 'stable',
+      primaryEmotion: 'neutral', // Adicionado para satisfazer a interface
+      triggers: [],
+      memoryScore: 0,
+      personScore: 0,
+      moodAdjustment: 0,
+      escalatingCount: 0
+    };
+  });
 
-  // 5. RAM: localHistory tem prioridade sobre o banco
-  const recentHistory = resolveRecentHistory(localHistory, safeContext.history);
+  // 6. Resolução da RAM (Prioridade ao LocalHistory conforme sua especificação)
+  const recentHistory = resolveRecentHistory(localHistory, masterContext.history);
 
   return {
-    masterContext: safeContext,
+    masterContext,
     recentHistory,
     contexts,
     queryEmbedding,
