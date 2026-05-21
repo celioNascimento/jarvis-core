@@ -1,5 +1,5 @@
 // lib/chat/pipeline/intelligence.ts
-// Versão Integral: Padrão de Produção (Rigor, Segurança, Performance & Auditoria)
+// Versão Integral: Padrão de Produção - Reconciliação, Auditoria e Performance Lazy-Loading
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -19,7 +19,7 @@ const redis = new Redis({
 const MAX_MSG_CHARS = 800;
 const MASTER_CONTEXT_TTL = 3 * 60; // 3 minutos
 
-// Padrão rigoroso de ruído (Mantido para garantir consistência em logs)
+// Padrão de ruído para economia de processamento (Noise Detection)
 const NOISE_REGEX = /^(ok|oi|olá|sim|não|nao|faz|claro|certo|blz|vlw|valeu|obrigad|show|ótimo|otimo|perfeito|legal|bom dia|boa tarde|boa noite|pode|vai|vamos|tá|ta|ok|s|n|👍|👎|😊|🤝)[!?.,:… ]*$/i;
 
 // ─── Interfaces Críticas ───────────────────────────────────────────────────
@@ -42,6 +42,9 @@ export interface ChatIntelligence {
 
 // ─── Helpers de Diagnóstico e Auditoria ────────────────────────────────────
 
+/**
+ * Verifica se a mensagem é apenas ruído, evitando chamadas desnecessárias de API
+ */
 export function isNoiseMessage(message: string): boolean {
   const trimmed = message.trim();
   if (trimmed.length < 15) return true;
@@ -52,8 +55,11 @@ function masterContextKey(userId: number, sessionId: string): string {
   return `master_ctx:${userId}:${sessionId}`;
 }
 
-// ─── Cache & RPC Logic (Versão Completa com Logs) ──────────────────────────
+// ─── Cache & RPC Logic (Versão Completa com Lazy Loading) ──────────────────
 
+/**
+ * Busca o MasterContext do banco com carregamento seletivo via tags
+ */
 export async function getMasterContext(userId: number, sessionId: string, contexts: string[] = []): Promise<any> {
   const key = masterContextKey(userId, sessionId);
   
@@ -61,14 +67,14 @@ export async function getMasterContext(userId: number, sessionId: string, contex
   try {
     const cached = await redis.get<any>(key);
     if (cached) {
-      console.log(`[Cache][Hit] MasterContext recuperado para user ${userId} (Tags: ${contexts.join(',')})`);
+      console.log(`[Cache][Hit] MasterContext recuperado para user ${userId} | Contextos Ativos: [${contexts.join(',')}]`);
       return cached;
     }
   } catch (e) {
     console.error('[Cache][Error] Falha ao acessar Redis:', e);
   }
 
-  // Falha de Cache - Fetch via RPC com Lazy Loading aplicado
+  // Falha de Cache - Fetch via RPC com Lazy Loading aplicado (p_contexts)
   console.log(`[MasterContext][Fetch] Iniciando RPC para user ${userId} | Contextos: [${contexts.join(', ')}]`);
   
   const { data, error } = await supabase.rpc('get_consolidated_context', {
@@ -79,7 +85,6 @@ export async function getMasterContext(userId: number, sessionId: string, contex
 
   if (error) {
     console.error('[MasterContext][Fatal] Erro fatal no RPC get_consolidated_context:', error);
-    // Fallback de segurança para não quebrar a pipeline
     return { history: [], config: {}, profile: {} };
   }
 
@@ -93,6 +98,9 @@ export async function getMasterContext(userId: number, sessionId: string, contex
   return result;
 }
 
+/**
+ * Invalida o cache do MasterContext para forçar atualização
+ */
 export async function invalidateMasterContextCache(userId: number, sessionId: string): Promise<void> {
   try {
     const key = masterContextKey(userId, sessionId);
@@ -171,6 +179,8 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   }
 
   // 2. Execução Paralela Absoluta
+  console.log('[Pipeline] Iniciando execução paralela das tarefas');
+
   const [queryEmbedding, isStressed, memoryBundleRes, masterContext] = await Promise.all([
     isNoise ? Promise.resolve(null) : getCachedEmbedding(message).catch((e) => {
       console.error('[Pipeline][Embedding] Falha na busca de embedding:', e);
@@ -179,12 +189,16 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     
     llmGateway.isOverloaded().catch(() => false),
     
-    supabase.rpc('get_full_memory_bundle', { p_user_id: user.id })
-      .then(res => ({ data: res.data }))
-      .catch((e) => {
+    // Tratamento tipado da Promise para evitar erros de build
+    (async () => {
+      try {
+        const res = await supabase.rpc('get_full_memory_bundle', { p_user_id: user.id });
+        return { data: res.data };
+      } catch (e) {
         console.error('[Pipeline][MemoryBundle] Falha ao buscar bundle:', e);
         return { data: null };
-      }),
+      }
+    })(),
       
     getMasterContext(user.id, sessionId, contextTags)
   ]);
