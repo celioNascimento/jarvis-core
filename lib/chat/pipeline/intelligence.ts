@@ -1,5 +1,5 @@
 // lib/chat/pipeline/intelligence.ts
-// V3.0.0 — Paralelismo Absoluto, Zero-Waste & Rate-Limit Mitigation
+// V3.0.1 — Correção de Tipagem (Postgrest Builder vs Native Promise)
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -15,7 +15,7 @@ const redis = new Redis({
 });
 
 const MAX_MSG_CHARS = 800;
-const MASTER_CONTEXT_TTL = 5 * 60; // 5 minutos de cache
+const MASTER_CONTEXT_TTL = 5 * 60;
 
 // ─── Detecção de Ruído ────────────────────────────────────────────────────────
 
@@ -54,7 +54,6 @@ async function getMasterContext(userId: number, sessionId: string): Promise<any>
 
   const result = data || { history: [], config: {}, profile: {} };
   
-  // Salva no cache sem bloquear a execução principal
   redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(() => { });
   return result;
 }
@@ -63,6 +62,19 @@ export async function invalidateMasterContextCache(userId: number, sessionId: st
   try {
     await redis.del(masterContextKey(userId, sessionId));
   } catch { }
+}
+
+// ─── Wrapper para o Memory Bundle (Anti-Type Error) ───────────────────────────
+// Resolve o problema do PostgrestFilterBuilder não ter .catch() nativo
+async function fetchMemoryBundle(userId: number) {
+  try {
+    const { data, error } = await supabase.rpc('get_full_memory_bundle', { p_user_id: userId });
+    if (error) throw error;
+    return { data };
+  } catch (e) {
+    console.error('[Pipeline] Memory bundle fail:', e);
+    return { data: null };
+  }
 }
 
 // ─── Tipos Exportados ─────────────────────────────────────────────────────────
@@ -129,11 +141,10 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   const { message, user, sessionId, localHistory } = ctx;
   const isNoise = isNoiseMessage(message);
 
-  // 1. Execução Paralela Absoluta (Max Performance)
-  // Agrupamos TODAS as operações de I/O em um único Promise.all blindado contra falhas
+  // 1. Execução Paralela Absoluta com Promises Nativas
   const [queryEmbedding, isStressed, memoryBundleRes, masterContext] = await Promise.all([
     
-    // A) Embedding: Evita gasto de API se for só ruído
+    // A) Embedding
     isNoise 
       ? Promise.resolve(null) 
       : getCachedEmbedding(message).catch((e) => { 
@@ -144,14 +155,10 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     // B) Gateway Rate-Limit Check
     llmGateway.isOverloaded().catch(() => false),
     
-    // C) HD Memory Bundle RPC
-    supabase.rpc('get_full_memory_bundle', { p_user_id: user.id })
-      .catch((e) => { 
-        console.error('[Pipeline] Memory bundle fail:', e); 
-        return { data: null }; 
-      }),
+    // C) HD Memory Bundle RPC (Agora protegido pelo Wrapper nativo)
+    fetchMemoryBundle(user.id),
       
-    // D) MasterContext (God RPC + Cache)
+    // D) MasterContext
     getMasterContext(user.id, sessionId)
       .catch((e) => {
         console.error('[Pipeline] MasterContext fail:', e);
@@ -159,7 +166,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
       })
   ]);
 
-  // 2. Garante a estrutura da memória mesmo se o RPC falhar
+  // 2. Garante a estrutura da memória
   const memory = memoryBundleRes?.data || {
     hd: { memories: [] },
     ram: { ramBlock: '' },
@@ -168,7 +175,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     topics: []
   };
 
-  // 3. Classificação de Contexto (Depende do MasterContext)
+  // 3. Classificação de Contexto
   const contexts = await classifyContextWithL4(
     message,
     user.id,
@@ -199,7 +206,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     };
   });
 
-  // 5. Resolução do Histórico (SSOT: Prioridade Banco -> Fallback Local)
+  // 5. Resolução do Histórico
   const recentHistory = resolveRecentHistory(localHistory, masterContext.history);
 
   return {
