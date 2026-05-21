@@ -4,8 +4,9 @@
 import { supabase, generateEmbedding } from '@/lib/jarvis';
 import { extractDiary, extractGoal } from '@/lib/diary';
 import { extractAndSummarize } from '@/lib/extractor';
-import { upsertEvent, extractRecomendacao } from '@/lib/extractor-jobs';
+import {  extractRecomendacao } from '@/lib/extractor-jobs';
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
+import { upsertEvent } from '../Utils/db-helpers';
 
 interface UnifiedExtractResult {
   diary: { texto: string; categoria: 'reflexao' | 'acontecimento' | 'gratidao' | 'qualquer' } | null;

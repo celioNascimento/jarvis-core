@@ -1,7 +1,7 @@
 // app/api/cron/memory-index/route.ts
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { callAI } from '@/lib/extractor-jobs';
+import { callAI } from '.././../../../lib/Utils/ai-helpers';
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
