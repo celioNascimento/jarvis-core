@@ -113,12 +113,12 @@ function resolveRecentHistory(
   localHistory: LocalMessage[],
   bankHistory: any[]
 ): HistoryMessage[] {
-  // Banco é fonte de verdade. localHistory só como emergência.
   if (Array.isArray(bankHistory) && bankHistory.length > 0) {
     return buildRecentHistoryFromBank(bankHistory);
   }
+  // Fallback silencioso — app reiniciou ou banco falhou
   if (localHistory?.length > 0) {
-    console.warn('[HISTORY] Fallback para localHistory — banco vazio ou falhou');
+    console.warn('[HISTORY] Fallback para localHistory');
     return buildRecentHistoryFromLocal(localHistory);
   }
   return [];
