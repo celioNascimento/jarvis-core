@@ -1,5 +1,6 @@
 // lib/chat/pipeline/intelligence.ts
-// Versão Integral - Com Lazy Loading (Tags) e Reconciliação de Histórico
+// Versão Definitiva (Complete & Full-Verbose)
+// Inclui Reconciliação de Histórico, Pipeline de Memória, Log de Segurança e Lazy Loading
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -17,7 +18,7 @@ const redis = new Redis({
 const MAX_MSG_CHARS = 800;
 const MASTER_CONTEXT_TTL = 3 * 60; // 3 minutos
 
-// ─── Interfaces Principais ──────────────────────────────────────────────────
+// ─── Interfaces ─────────────────────────────────────────────────────────────
 
 export interface HistoryMessage {
   role: 'user' | 'assistant';
@@ -35,7 +36,7 @@ export interface ChatIntelligence {
   isNoise: boolean;
 }
 
-// ─── Detectores de Ruído ────────────────────────────────────────────────────
+// ─── Utils & Detectores ─────────────────────────────────────────────────────
 
 const NOISE_REGEX = /^(ok|oi|olá|sim|não|nao|faz|claro|certo|blz|vlw|valeu|obrigad|show|ótimo|otimo|perfeito|legal|bom dia|boa tarde|boa noite|pode|vai|vamos|tá|ta|ok|s|n|👍|👎|😊|🤝)[!?.,:… ]*$/i;
 
@@ -45,7 +46,7 @@ export function isNoiseMessage(message: string): boolean {
   return NOISE_REGEX.test(trimmed);
 }
 
-// ─── Cache & RPC Logic ──────────────────────────────────────────────────────
+// ─── Cache do MasterContext ─────────────────────────────────────────────────
 
 function masterContextKey(userId: number, sessionId: string): string {
   return `master_ctx:${userId}:${sessionId}`;
@@ -56,11 +57,15 @@ async function getMasterContext(userId: number, sessionId: string, contexts: str
   
   try {
     const cached = await redis.get<any>(key);
-    if (cached) return cached;
+    if (cached) {
+      console.log(`[Cache] Hit para user ${userId}`);
+      return cached;
+    }
   } catch (e) {
-    console.warn('[Cache] Falha Redis:', e);
+    console.error('[Cache] Erro de conexão Redis:', e);
   }
 
+  console.log(`[MasterContext] Fetching DB (Tags: ${contexts.join(', ')})`);
   const { data, error } = await supabase.rpc('get_consolidated_context', {
     p_user_id: userId,
     p_session_id: sessionId,
@@ -73,19 +78,14 @@ async function getMasterContext(userId: number, sessionId: string, contexts: str
   }
 
   const result = data || {};
-  redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(() => { });
+  redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(e => console.error('[Cache] Erro ao salvar:', e));
   return result;
 }
 
-export async function invalidateMasterContextCache(userId: number, sessionId: string): Promise<void> {
-  try {
-    await redis.del(masterContextKey(userId, sessionId));
-  } catch { }
-}
-
-// ─── Reconciliação de Histórico (SSOT) ──────────────────────────────────────
+// ─── Reconciliação de Histórico (Detalhamento Completo) ──────────────────────
 
 function buildRecentHistoryFromLocal(localHistory: LocalMessage[]): HistoryMessage[] {
+  console.log('[History] Processando via localHistory');
   return localHistory
     .slice(-30)
     .map(msg => ({
@@ -96,9 +96,10 @@ function buildRecentHistoryFromLocal(localHistory: LocalMessage[]): HistoryMessa
 
 function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
   if (!Array.isArray(rawHistory)) return [];
-
+  
   const history: HistoryMessage[] = [];
   for (const row of rawHistory) {
+    // Validação rígida para evitar conteúdo corrompido
     const uMsg = (row.content || '').trim();
     const aRep = (row.metadata?.ai_reply || '').trim();
 
@@ -113,22 +114,25 @@ function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
 }
 
 function resolveRecentHistory(localHistory: LocalMessage[], bankHistory: any[]): HistoryMessage[] {
+  // SSOT: Prioridade para o banco
   if (Array.isArray(bankHistory) && bankHistory.length > 0) {
     return buildRecentHistoryFromBank(bankHistory);
   }
+  // Fallback seguro
   if (localHistory?.length > 0) {
+    console.warn('[HISTORY] Fallback para localHistory ativado');
     return buildRecentHistoryFromLocal(localHistory);
   }
   return [];
 }
 
-// ─── Pipeline Principal (A Orquestração) ────────────────────────────────────
+// ─── Pipeline Principal ─────────────────────────────────────────────────────
 
 export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<ChatIntelligence> {
   const { message, user, sessionId, localHistory } = ctx;
   const isNoise = isNoiseMessage(message);
 
-  // 1. Context Tagging (Otimização para Lazy Loading no SQL)
+  // 1. Context Tagging - Otimização de Lazy Loading
   const contextTags: string[] = [];
   const m = message.toLowerCase();
   
@@ -143,37 +147,63 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   }
 
   // 2. Execução Paralela Absoluta
+  console.log('[Pipeline] Iniciando execução paralela');
+  
   const [queryEmbedding, isStressed, memoryBundleRes, masterContext] = await Promise.all([
-    isNoise ? Promise.resolve(null) : getCachedEmbedding(message).catch(() => null),
+    isNoise ? Promise.resolve(null) : getCachedEmbedding(message).catch((e) => {
+      console.error('[Pipeline] Embedding Error:', e);
+      return null;
+    }),
     
     llmGateway.isOverloaded().catch(() => false),
     
     supabase.rpc('get_full_memory_bundle', { p_user_id: user.id })
       .then(res => ({ data: res.data }))
-      .catch(() => ({ data: null })),
+      .catch((e) => {
+        console.error('[Pipeline] Memory Bundle Error:', e);
+        return { data: null };
+      }),
       
     getMasterContext(user.id, sessionId, contextTags)
   ]);
 
   // 3. Resolução de Memória & Contexto
-  const memory = memoryBundleRes?.data || { hd: { memories: [] }, ram: { ramBlock: '' } };
-  
-  const contexts = await classifyContextWithL4(message, user.id, user.auth_user_id, masterContext)
-    .catch(() => []);
+  const memory = memoryBundleRes?.data || { 
+    hd: { memories: [] }, 
+    ram: { ramBlock: '' },
+    l3: { chunks: [] },
+    events: [],
+    topics: []
+  };
 
-  // 4. Emotional Score
+  const contexts = await classifyContextWithL4(
+    message, 
+    user.id, 
+    user.auth_user_id, 
+    masterContext
+  ).catch((e) => {
+    console.error('[Pipeline] Classificação de contexto falhou:', e);
+    return [];
+  });
+
+  // 4. Score Emocional
   const emotional = await computeEmotionalScore(
     message, 
     String(user.id), 
     memory.hd?.memories || [], 
     memory.ram?.ramBlock || ''
-  ).catch(() => ({ 
-    score: 0, trajectory: 'stable', primaryEmotion: 'neutral', triggers: [], 
-    memoryScore: 0, personScore: 0, moodAdjustment: 0, escalatingCount: 0 
-  }));
+  ).catch((e) => {
+    console.error('[Pipeline] Emotional score falhou:', e);
+    return { 
+      score: 0, trajectory: 'stable', primaryEmotion: 'neutral', triggers: [], 
+      memoryScore: 0, personScore: 0, moodAdjustment: 0, escalatingCount: 0 
+    };
+  });
 
   // 5. Histórico final
   const recentHistory = resolveRecentHistory(localHistory, masterContext.history || []);
+
+  console.log(`[Pipeline] Concluído para user ${user.id}. IsNoise: ${isNoise}`);
 
   return {
     masterContext,
