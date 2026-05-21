@@ -1,5 +1,5 @@
 // lib/chat/pipeline/intelligence.ts
-// V3.0.1 — Correção de Tipagem (Postgrest Builder vs Native Promise)
+// Versão Integral - Com Lazy Loading (Tags) e Reconciliação de Histórico
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -15,69 +15,9 @@ const redis = new Redis({
 });
 
 const MAX_MSG_CHARS = 800;
-const MASTER_CONTEXT_TTL = 5 * 60;
+const MASTER_CONTEXT_TTL = 3 * 60; // 3 minutos
 
-// ─── Detecção de Ruído ────────────────────────────────────────────────────────
-
-const NOISE_REGEX = /^(ok|oi|olá|sim|não|nao|faz|claro|certo|blz|vlw|valeu|obrigad|show|ótimo|otimo|perfeito|legal|bom dia|boa tarde|boa noite|pode|vai|vamos|tá|ta|ok|s|n|👍|👎|😊|🤝)[!?.,:… ]*$/i;
-
-export function isNoiseMessage(message: string): boolean {
-  const trimmed = message.trim();
-  if (trimmed.length < 15) return true;
-  if (NOISE_REGEX.test(trimmed)) return true;
-  return false;
-}
-
-// ─── Cache do MasterContext (God RPC) ─────────────────────────────────────────
-
-function masterContextKey(userId: number, sessionId: string): string {
-  return `master_ctx:${userId}:${sessionId}`;
-}
-
-async function getMasterContext(userId: number, sessionId: string): Promise<any> {
-  const key = masterContextKey(userId, sessionId);
-  try {
-    const cached = await redis.get<any>(key);
-    if (cached) return cached;
-  } catch (e) {
-    console.warn('[Cache] Falha ao ler Redis, caindo para DB:', e);
-  }
-
-  const { data, error } = await supabase.rpc('get_consolidated_context', {
-    p_user_id: userId,
-    p_session_id: sessionId,
-  });
-
-  if (error) {
-    console.error('[MasterContext] Erro fatal no RPC:', error);
-  }
-
-  const result = data || { history: [], config: {}, profile: {} };
-  
-  redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(() => { });
-  return result;
-}
-
-export async function invalidateMasterContextCache(userId: number, sessionId: string): Promise<void> {
-  try {
-    await redis.del(masterContextKey(userId, sessionId));
-  } catch { }
-}
-
-// ─── Wrapper para o Memory Bundle (Anti-Type Error) ───────────────────────────
-// Resolve o problema do PostgrestFilterBuilder não ter .catch() nativo
-async function fetchMemoryBundle(userId: number) {
-  try {
-    const { data, error } = await supabase.rpc('get_full_memory_bundle', { p_user_id: userId });
-    if (error) throw error;
-    return { data };
-  } catch (e) {
-    console.error('[Pipeline] Memory bundle fail:', e);
-    return { data: null };
-  }
-}
-
-// ─── Tipos Exportados ─────────────────────────────────────────────────────────
+// ─── Interfaces Principais ──────────────────────────────────────────────────
 
 export interface HistoryMessage {
   role: 'user' | 'assistant';
@@ -95,7 +35,55 @@ export interface ChatIntelligence {
   isNoise: boolean;
 }
 
-// ─── RAM: Resolução de Histórico ──────────────────────────────────────────────
+// ─── Detectores de Ruído ────────────────────────────────────────────────────
+
+const NOISE_REGEX = /^(ok|oi|olá|sim|não|nao|faz|claro|certo|blz|vlw|valeu|obrigad|show|ótimo|otimo|perfeito|legal|bom dia|boa tarde|boa noite|pode|vai|vamos|tá|ta|ok|s|n|👍|👎|😊|🤝)[!?.,:… ]*$/i;
+
+export function isNoiseMessage(message: string): boolean {
+  const trimmed = message.trim();
+  if (trimmed.length < 15) return true;
+  return NOISE_REGEX.test(trimmed);
+}
+
+// ─── Cache & RPC Logic ──────────────────────────────────────────────────────
+
+function masterContextKey(userId: number, sessionId: string): string {
+  return `master_ctx:${userId}:${sessionId}`;
+}
+
+async function getMasterContext(userId: number, sessionId: string, contexts: string[] = []): Promise<any> {
+  const key = masterContextKey(userId, sessionId);
+  
+  try {
+    const cached = await redis.get<any>(key);
+    if (cached) return cached;
+  } catch (e) {
+    console.warn('[Cache] Falha Redis:', e);
+  }
+
+  const { data, error } = await supabase.rpc('get_consolidated_context', {
+    p_user_id: userId,
+    p_session_id: sessionId,
+    p_contexts: contexts 
+  });
+
+  if (error) {
+    console.error('[MasterContext] Erro fatal no RPC:', error);
+    return { history: [], config: {}, profile: {} };
+  }
+
+  const result = data || {};
+  redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(() => { });
+  return result;
+}
+
+export async function invalidateMasterContextCache(userId: number, sessionId: string): Promise<void> {
+  try {
+    await redis.del(masterContextKey(userId, sessionId));
+  } catch { }
+}
+
+// ─── Reconciliação de Histórico (SSOT) ──────────────────────────────────────
 
 function buildRecentHistoryFromLocal(localHistory: LocalMessage[]): HistoryMessage[] {
   return localHistory
@@ -129,85 +117,63 @@ function resolveRecentHistory(localHistory: LocalMessage[], bankHistory: any[]):
     return buildRecentHistoryFromBank(bankHistory);
   }
   if (localHistory?.length > 0) {
-    console.warn('[HISTORY] Fallback para localHistory');
     return buildRecentHistoryFromLocal(localHistory);
   }
   return [];
 }
 
-// ─── Pipeline Principal de Inteligência ───────────────────────────────────────
+// ─── Pipeline Principal (A Orquestração) ────────────────────────────────────
 
 export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<ChatIntelligence> {
   const { message, user, sessionId, localHistory } = ctx;
   const isNoise = isNoiseMessage(message);
 
-  // 1. Execução Paralela Absoluta com Promises Nativas
+  // 1. Context Tagging (Otimização para Lazy Loading no SQL)
+  const contextTags: string[] = [];
+  const m = message.toLowerCase();
+  
+  if (m.includes('carro') || m.includes('frota') || m.includes('abastecimento') || m.includes('manuten')) {
+    contextTags.push('veiculos');
+  }
+  if (m.includes('projeto') || m.includes('tarefa') || m.includes('desenvolvimento')) {
+    contextTags.push('projeto');
+  }
+  if (m.includes('dinheiro') || m.includes('gasto') || m.includes('pagamento') || m.includes('orç')) {
+    contextTags.push('financas');
+  }
+
+  // 2. Execução Paralela Absoluta
   const [queryEmbedding, isStressed, memoryBundleRes, masterContext] = await Promise.all([
+    isNoise ? Promise.resolve(null) : getCachedEmbedding(message).catch(() => null),
     
-    // A) Embedding
-    isNoise 
-      ? Promise.resolve(null) 
-      : getCachedEmbedding(message).catch((e) => { 
-          console.error('[Pipeline] Embedding fail:', e); 
-          return null; 
-        }),
-    
-    // B) Gateway Rate-Limit Check
     llmGateway.isOverloaded().catch(() => false),
     
-    // C) HD Memory Bundle RPC (Agora protegido pelo Wrapper nativo)
-    fetchMemoryBundle(user.id),
+    supabase.rpc('get_full_memory_bundle', { p_user_id: user.id })
+      .then(res => ({ data: res.data }))
+      .catch(() => ({ data: null })),
       
-    // D) MasterContext
-    getMasterContext(user.id, sessionId)
-      .catch((e) => {
-        console.error('[Pipeline] MasterContext fail:', e);
-        return { history: [], config: {}, profile: {} };
-      })
+    getMasterContext(user.id, sessionId, contextTags)
   ]);
 
-  // 2. Garante a estrutura da memória
-  const memory = memoryBundleRes?.data || {
-    hd: { memories: [] },
-    ram: { ramBlock: '' },
-    l3: { chunks: [] },
-    events: [],
-    topics: []
-  };
+  // 3. Resolução de Memória & Contexto
+  const memory = memoryBundleRes?.data || { hd: { memories: [] }, ram: { ramBlock: '' } };
+  
+  const contexts = await classifyContextWithL4(message, user.id, user.auth_user_id, masterContext)
+    .catch(() => []);
 
-  // 3. Classificação de Contexto
-  const contexts = await classifyContextWithL4(
-    message,
-    user.id,
-    user.auth_user_id,
-    masterContext
-  ).catch((e) => {
-    console.error('[Pipeline] Classification fail:', e);
-    return [];
-  });
-
-  // 4. Cálculo de Score Emocional
+  // 4. Emotional Score
   const emotional = await computeEmotionalScore(
-    message,
-    String(user.id),
-    memory.hd?.memories || [],
+    message, 
+    String(user.id), 
+    memory.hd?.memories || [], 
     memory.ram?.ramBlock || ''
-  ).catch((e): EmotionalScoreResult => {
-    console.error('[Pipeline] Emotional score fail:', e);
-    return {
-      score: 0,
-      trajectory: 'stable',
-      primaryEmotion: 'neutral',
-      triggers: [],
-      memoryScore: 0,
-      personScore: 0,
-      moodAdjustment: 0,
-      escalatingCount: 0
-    };
-  });
+  ).catch(() => ({ 
+    score: 0, trajectory: 'stable', primaryEmotion: 'neutral', triggers: [], 
+    memoryScore: 0, personScore: 0, moodAdjustment: 0, escalatingCount: 0 
+  }));
 
-  // 5. Resolução do Histórico
-  const recentHistory = resolveRecentHistory(localHistory, masterContext.history);
+  // 5. Histórico final
+  const recentHistory = resolveRecentHistory(localHistory, masterContext.history || []);
 
   return {
     masterContext,
@@ -217,6 +183,6 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     isStressed,
     memory,
     emotional,
-    isNoise,
+    isNoise
   };
 }
