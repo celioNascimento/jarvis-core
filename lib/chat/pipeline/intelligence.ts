@@ -60,23 +60,17 @@ function masterContextKey(userId: number, sessionId: string): string {
 /**
  * Busca o MasterContext do banco com carregamento seletivo via tags
  */
-export async function getMasterContext(userId: number, sessionId: string, contexts: string[] = []): Promise<any> {
+
+async function getMasterContext(userId: number, sessionId: string, contexts: string[] = []): Promise<any> {
   const key = masterContextKey(userId, sessionId);
   
-  // Tentativa de recuperação via Cache
   try {
     const cached = await redis.get<any>(key);
-    if (cached) {
-      console.log(`[Cache][Hit] MasterContext recuperado para user ${userId} | Contextos Ativos: [${contexts.join(',')}]`);
-      return cached;
-    }
+    if (cached) return cached;
   } catch (e) {
-    console.error('[Cache][Error] Falha ao acessar Redis:', e);
+    console.warn('[Cache] Falha Redis:', e);
   }
 
-  // Falha de Cache - Fetch via RPC com Lazy Loading aplicado (p_contexts)
-  console.log(`[MasterContext][Fetch] Iniciando RPC para user ${userId} | Contextos: [${contexts.join(', ')}]`);
-  
   const { data, error } = await supabase.rpc('get_consolidated_context', {
     p_user_id: userId,
     p_session_id: sessionId,
@@ -84,16 +78,29 @@ export async function getMasterContext(userId: number, sessionId: string, contex
   });
 
   if (error) {
-    console.error('[MasterContext][Fatal] Erro fatal no RPC get_consolidated_context:', error);
+    console.error('[MasterContext] Erro fatal no RPC:', error);
     return { history: [], config: {}, profile: {} };
   }
 
   const result = data || {};
-  
-  // Persistência no cache
-  redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(e => 
-    console.error('[Cache][Error] Falha ao salvar MasterContext no Redis:', e)
-  );
+
+  // --- CRÍTICO: Sanitização para evitar estouro de limite do Redis ---
+  // Se o objeto 'config' tiver embeddings, removemos antes de salvar
+  if (result.config && typeof result.config === 'object') {
+    Object.keys(result.config).forEach(k => {
+      if (k.startsWith('embedding_')) {
+        delete result.config[k];
+      }
+    });
+  }
+
+  // Só salva se o tamanho for razoável (apenas um check extra de segurança)
+  const stringified = JSON.stringify(result);
+  if (stringified.length < 5 * 1024 * 1024) { // 5MB limite seguro
+    redis.set(key, result, { ex: MASTER_CONTEXT_TTL }).catch(() => { });
+  } else {
+    console.warn('[Cache] Objeto muito grande, não salvo no Redis');
+  }
   
   return result;
 }
