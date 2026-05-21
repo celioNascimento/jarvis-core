@@ -52,7 +52,10 @@ export async function loadActiveModules(
   const cacheKey = `modules_enabled:${numericUserId}`;
   let enabledIds: string[] = masterContext.modules?.map((m: any) => m.module_id) || [];
 
+  console.log('[Registry] enabledIds do masterContext:', enabledIds.length);
+
   if (enabledIds.length === 0) {
+    console.warn('[Registry] masterContext.modules vazio — caindo no fallback');
     const cached = await new Redis({
       url: process.env.UPSTASH_REDIS_REST_URL!,
       token: process.env.UPSTASH_REDIS_REST_TOKEN!,
