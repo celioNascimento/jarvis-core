@@ -17,6 +17,7 @@ import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './prompt-assembler';
 import { extractReminder, hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
 import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
+import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -95,22 +96,26 @@ export async function finalizeResponse(
       console.debug('[Feedback] Falha silenciosa:', e);
     }
 
-    try {
-      await supabase.from('brain').insert({        user_id: ctx.user.id,
-        session_id: ctx.sessionId,
-        content: ctx.message,
-        category: ctx.message.length < 15 ? 'noise' : 'info',
-        metadata: {
-          role: 'user',
-          ai_reply: reply,
-          contexts: intel.contexts,
-          model: prompt.model,
-        },
-      });
-    } catch (e: any) {
-      console.error('[ResponseFinalizer] Brain save error:', e.message);
-    }
+try {
+  await supabase.from('brain').insert({
+    user_id: ctx.user.id,
+    session_id: ctx.sessionId,
+    content: ctx.message,
+    category: ctx.message.length < 15 ? 'noise' : 'info',
+    metadata: {
+      role: 'user',
+      ai_reply: reply,
+      contexts: intel.contexts,
+      model: prompt.model,
+    },
+  });
 
+  // Invalida o cache para o próximo turno ler o histórico atualizado
+  await invalidateMasterContextCache(ctx.user.id, ctx.sessionId);
+
+} catch (e: any) {
+  console.error('[ResponseFinalizer] Brain save error:', e.message);
+}
     try {
       await extractAndSummarize(
         String(ctx.user.id),
