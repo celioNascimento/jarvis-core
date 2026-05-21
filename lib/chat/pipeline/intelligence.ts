@@ -7,12 +7,9 @@ import { computeEmotionalScore, type EmotionalScoreResult } from '@/lib/chat/emo
 import { llmGateway } from '@/lib/chat/llm-gateway';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import type { ChatRequestContext, LocalMessage } from './request-context';
-import { ContextCache, invalidateSessionHistory } from '@/lib/services/context-cache'
-
-
+import { ContextCache, invalidateSessionHistory } from '@/lib/services/context-cache';
 
 const MAX_MSG_CHARS = 800;
-const MASTER_CONTEXT_TTL = 3 * 60; // 3 minutos
 
 // Padrão de ruído para economia de processamento (Noise Detection)
 const NOISE_REGEX = /^(ok|oi|olá|sim|não|nao|faz|claro|certo|blz|vlw|valeu|obrigad|show|ótimo|otimo|perfeito|legal|bom dia|boa tarde|boa noite|pode|vai|vamos|tá|ta|ok|s|n|👍|👎|😊|🤝)[!?.,:… ]*$/i;
@@ -35,29 +32,17 @@ export interface ChatIntelligence {
   isNoise: boolean;
 }
 
-// ─── Helpers de Diagnóstico e Auditoria ────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
-/**
- * Verifica se a mensagem é apenas ruído, evitando chamadas desnecessárias de API
- */
 export function isNoiseMessage(message: string): boolean {
   const trimmed = message.trim();
   if (trimmed.length < 15) return true;
   return NOISE_REGEX.test(trimmed);
 }
 
-function masterContextKey(userId: number, sessionId: string): string {
-  return `master_ctx:${userId}:${sessionId}`;
-}
+// ─── Cache & RPC Logic ──────────────────────────────────────────────────────
 
-// ─── Cache & RPC Logic (Versão Completa com Lazy Loading) ──────────────────
-
-
-// Campos estáticos — buscados uma vez e cacheados por horas
 const STATIC_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations'] as const;
-
-// Campos dinâmicos — sempre buscados do banco ou com TTL curto
-const DYNAMIC_FIELDS = ['reminders'] as const;
 
 async function getMasterContext(
   userId: number,
@@ -72,36 +57,36 @@ async function getMasterContext(
   // 2. Identifica quais campos estáticos estão ausentes no cache
   const missingStatic = STATIC_FIELDS.filter(f => !(f in cached));
 
-  // 3. Se todos os campos estáticos estão cacheados, busca apenas os dinâmicos
-  //    e o histórico diretamente do banco (sem rodar o RPC completo)
+  console.log('[MasterContext] Cache status:', {
+    hit: STATIC_FIELDS.filter(f => f in cached),
+    miss: missingStatic,
+    // Loga a estrutura de modules para diagnóstico
+    modulesType: cached.modules ? `array[${Array.isArray(cached.modules) ? cached.modules.length : 'não-array'}]` : 'ausente',
+  });
+
+  // 3. Cache hit total — busca só histórico e reminders
   if (missingStatic.length === 0) {
     console.log('[MasterContext] Cache hit total — buscando apenas history e reminders');
 
-    let historyData = null;
-    let remindersData = null;
-
-    try {
-      const res = await supabase.rpc('get_session_history', {
+    const [historyRes, remindersRes] = await Promise.allSettled([
+      supabase.rpc('get_session_history', {
         p_user_id: userId,
         p_session_id: sessionId,
-      });
-      historyData = res.data;
-    } catch { }
-
-    try {
-      const res = await supabase
+      }),
+      supabase
         .schema('jarvis')
         .from('reminders')
         .select('*')
         .eq('user_id', userId)
         .eq('status', 'pending')
-        .limit(10);
-      remindersData = res.data;
-    } catch { }
+        .limit(10),
+    ]);
 
-    // Atualiza reminders no cache
+    const historyData = historyRes.status === 'fulfilled' ? historyRes.value.data : null;
+    const remindersData = remindersRes.status === 'fulfilled' ? remindersRes.value.data : null;
+
     if (remindersData) {
-      cache.set('reminders', remindersData).catch(() => { });
+      cache.set('reminders', remindersData).catch(() => {});
     }
 
     return {
@@ -127,18 +112,30 @@ async function getMasterContext(
 
   const result = data || {};
 
-  // 5. Popula o cache com os campos que vieram do RPC
-  //    Só salva os campos que estavam ausentes (não sobrescreve cache válido)
+  // 5. Loga a estrutura retornada pelo RPC para diagnóstico
+  console.log('[MasterContext] RPC retornou:', {
+    fields: Object.keys(result),
+    modulesCount: Array.isArray(result.modules) ? result.modules.length : 'não-array',
+    modulesSample: Array.isArray(result.modules) ? result.modules.slice(0, 2) : result.modules,
+  });
+
+  // 6. Popula o cache — só os campos ausentes, garantindo que modules não seja nulo
   await Promise.all(
     STATIC_FIELDS
       .filter(f => missingStatic.includes(f as any) && result[f] != null)
-      .map(f => cache.set(f as any, result[f]))
+      .map(f => {
+        // modules precisa ser um array — valida antes de cachear
+        if (f === 'modules' && !Array.isArray(result[f])) {
+          console.warn('[MasterContext] modules do RPC não é array, ignorando cache:', result[f]);
+          return Promise.resolve();
+        }
+        return cache.set(f as any, result[f]);
+      })
   );
 
   return result;
 }
 
-// Substitui invalidateMasterContextCache — invalida só o histórico da sessão
 export async function invalidateMasterContextCache(
   userId: number,
   sessionId: string
@@ -147,8 +144,7 @@ export async function invalidateMasterContextCache(
   console.log(`[ContextCache] History invalidado para session ${sessionId}`);
 }
 
-
-// ─── Reconciliação de Histórico (Detalhamento Completo - SSOT) ───────────────
+// ─── Reconciliação de Histórico ──────────────────────────────────────────────
 
 function buildRecentHistoryFromLocal(localHistory: LocalMessage[]): HistoryMessage[] {
   console.log('[History][Reconcile] Construindo histórico via localHistory (fallback)');
@@ -182,18 +178,16 @@ function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
 }
 
 function resolveRecentHistory(localHistory: LocalMessage[], bankHistory: any[]): HistoryMessage[] {
-  // SSOT: Prioridade para o banco
   if (Array.isArray(bankHistory) && bankHistory.length > 0) {
     return buildRecentHistoryFromBank(bankHistory);
   }
-  // Fallback para histórico local
   if (localHistory?.length > 0) {
     return buildRecentHistoryFromLocal(localHistory);
   }
   return [];
 }
 
-// ─── Pipeline Principal (A Orquestração) ────────────────────────────────────
+// ─── Pipeline Principal ──────────────────────────────────────────────────────
 
 export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<ChatIntelligence> {
   const { message, user, sessionId, localHistory } = ctx;
@@ -201,7 +195,6 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   console.log(`[Pipeline] Orquestração iniciada: ${message.slice(0, 50)}...`);
 
-  // 1. Context Tagging - Otimização para Lazy Loading no SQL
   const contextTags: string[] = [];
   const m = message.toLowerCase();
 
@@ -215,22 +208,15 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     contextTags.push('financas');
   }
 
-  // 2. Execução Paralela Absoluta
   console.log('[Pipeline] Iniciando execução paralela das tarefas com timeout de segurança');
 
-  // Adicionamos um race condition para garantir que a pipeline nunca exceda 8s
   const [queryEmbedding, isStressed, memoryBundleRes, masterContext] = await Promise.race([
     Promise.all([
-      // 1. Embedding
       isNoise ? Promise.resolve(null) : getCachedEmbedding(message).catch((e) => {
         console.error('[Pipeline][Embedding] Falha na busca:', e);
         return null;
       }),
-
-      // 2. Gateway Status
       llmGateway.isOverloaded().catch(() => false),
-
-      // 3. Memory Bundle
       (async () => {
         try {
           const res = await supabase.rpc('get_full_memory_bundle', { p_user_id: user.id });
@@ -240,32 +226,25 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
           return { data: null };
         }
       })(),
-
-      // 4. MasterContext (O grande responsável pelo Lazy Loading)
-      getMasterContext(user.id, sessionId, contextTags)
+      getMasterContext(user.id, sessionId, contextTags),
     ]),
-
-    // Trava de segurança (Timeout de 8 segundos)
     new Promise<any[]>((_, reject) =>
       setTimeout(() => reject(new Error('TIMEOUT_SEGURANCA')), 8000)
-    )
+    ),
   ]).catch((err) => {
     if (err.message === 'TIMEOUT_SEGURANCA') {
       console.error('[Pipeline][Fatal] Timeout atingido (8s). Retornando contexto parcial para salvar a execução.');
-      // Retorno de segurança: Embedding nulo, isStressed false, bundle vazio, context vazio
       return [null, false, { data: null }, { history: [], config: {}, profile: {} }];
     }
-    // Se for outro erro, propaga
     throw err;
   });
 
-  // 3. Resolução de Memória e Contexto L4
   const memory = memoryBundleRes?.data || {
     hd: { memories: [] },
     ram: { ramBlock: '' },
     l3: { chunks: [] },
     events: [],
-    topics: []
+    topics: [],
   };
 
   const contexts = await classifyContextWithL4(
@@ -278,7 +257,6 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     return [];
   });
 
-  // 4. Score Emocional (Analítico)
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
@@ -288,11 +266,10 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     console.error('[Pipeline][Emotional] Erro na análise emocional:', e);
     return {
       score: 0, trajectory: 'stable', primaryEmotion: 'neutral', triggers: [],
-      memoryScore: 0, personScore: 0, moodAdjustment: 0, escalatingCount: 0
+      memoryScore: 0, personScore: 0, moodAdjustment: 0, escalatingCount: 0,
     };
   });
 
-  // 5. Histórico final (Reconciliação SSOT)
   const recentHistory = resolveRecentHistory(localHistory, masterContext.history || []);
 
   console.log('[Pipeline] Orquestração finalizada com sucesso');
@@ -305,6 +282,6 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     isStressed,
     memory,
     emotional,
-    isNoise
+    isNoise,
   };
 }
