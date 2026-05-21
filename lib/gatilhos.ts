@@ -7,7 +7,7 @@ import {
   import {
     createGoogleEvent, updateGoogleEvent, deleteGoogleEvent,
   } from '@/lib/google';
-  import { upsertEvent } from '@/lib/extractor-jobs';
+  import { upsertEvent } from '../lib/Utils/db-helpers';
   import { updateGoalProgress } from '@/lib/diary';
   import { supabase } from '@/lib/jarvis';
   
