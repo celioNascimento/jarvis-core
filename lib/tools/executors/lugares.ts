@@ -5,6 +5,7 @@
 // Compras foram movidas para executors/compras.ts
 
 import { supabase } from '@/lib/jarvis';
+import { invalidateContextField } from '@/lib/services/context-cache';
 
 // ─── Helper exportado — usado também em compras.ts ───────────────────────────
 
@@ -29,7 +30,7 @@ export async function executeSalvarLugar(
     categoria: string;
   },
   authUserId: string,
-  _numericUserId: string
+  numericUserId: string  // ← remover o underscore
 ): Promise<string> {
   try {
     const { error } = await supabase
@@ -46,9 +47,12 @@ export async function executeSalvarLugar(
         { onConflict: 'user_id,name' }
       );
 
-    return error
-      ? `Erro ao salvar lugar: ${error.message}`
-      : `Lugar "${p.nome}" salvo nos seus favoritos.`;
+    if (error) return `Erro ao salvar lugar: ${error.message}`;
+
+    // APÓS confirmar sem erro, com campo e userId corretos
+    await invalidateContextField(parseInt(numericUserId, 10), 'favorite_places');
+
+    return `Lugar "${p.nome}" salvo nos seus favoritos.`;
   } catch (err: any) {
     return `Erro: ${err.message}`;
   }
