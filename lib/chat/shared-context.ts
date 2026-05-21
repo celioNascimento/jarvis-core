@@ -1,5 +1,5 @@
 // lib/chat/shared-context.ts
-// Busca dados compartilhados de relacionamentos e monta bloco para o prompt.
+// V13.0.0 — Injeção de Contexto Total (Zero DB Calls) e Graceful Fallback
 //
 // Prioridade de relacionamentos: spouse > partner > parent/child > sibling > friend
 // Recursos por contexto detectado:
@@ -11,14 +11,11 @@
 //   emocao     → memories_shared
 //   localizacao→ location
 //
-// Birthday:
-//   - Sempre verificado para TODOS os relacionamentos ativos
-//   - Janela de antecedência varia por tipo:
-//       spouse/partner → 60 dias
-//       parent/child   → 30 dias
-//       sibling/friend → 14 dias
-//   - Fonte primária: get_shared_data RPC (usuário no sistema)
-//   - Fonte secundária: relationships.contact_birthday (contato externo)
+// Aniversários (Birthday):
+//   - Verificados para TODOS os relacionamentos ativos
+//   - Fonte primária: masterContext.shared_resources (RAM)
+//   - Fallback 1: get_shared_data RPC (usuário no sistema)
+//   - Fallback 2: relationships.contact_birthday (contato externo)
 
 import { supabase } from '@/lib/jarvis';
 import type { ContextType } from '@/lib/chat/context-classifier';
@@ -89,23 +86,23 @@ export async function buildSharedContextBlock(
   numericViewerId: string,    // jarvis.users.id (bigint como string)
   detectedContexts: ContextType[],
   authorName: string,
+  masterContext?: any         // 🛡️ INJEÇÃO DE CONTEXTO (God RPC)
 ): Promise<SharedContextResult> {
 
   try {
-    // 1. Busca relacionamentos ativos do usuário
-    const relationships = await getActiveRelationships(numericViewerId);
+    // 1. Busca relacionamentos ativos (Prioriza RAM)
+    const relationships = await getActiveRelationships(numericViewerId, masterContext);
     if (relationships.length === 0) {
       return { block: '', hasData: false };
     }
 
-    // 2. Bloco de aniversários — verificado para TODOS os relacionamentos,
-    //    independente de contexto detectado
-    const birthdayLines = await buildBirthdayBlock(numericViewerId, relationships);
+    // 2. Bloco de aniversários (Verificado para TODOS os relacionamentos)
+    const birthdayLines = await buildBirthdayBlock(numericViewerId, relationships, masterContext);
 
     // 3. Decide quais recursos buscar com base nos contextos
     const resourcesToFetch = resolveResources(detectedContexts);
 
-    // 4. Para cada relacionamento (em ordem de prioridade), busca recursos permitidos
+    // 4. Para cada relacionamento (ordem de prioridade), busca recursos permitidos
     const contextBlocks: string[] = [];
 
     for (const rel of relationships) {
@@ -115,7 +112,8 @@ export async function buildSharedContextBlock(
       const relBlocks: string[] = [];
 
       for (const resource of relResources) {
-        const data = await fetchSharedResource(numericViewerId, rel.partnerId, resource);
+        // Passamos a injeção adiante
+        const data = await fetchSharedResource(numericViewerId, rel.partnerId, resource, masterContext);
         if (data) relBlocks.push(data);
       }
 
@@ -139,43 +137,55 @@ export async function buildSharedContextBlock(
     return { block: parts.join('\n\n'), hasData: true };
 
   } catch (e) {
-    console.error('[SharedContext] Erro:', e);
+    console.error('[SharedContext] Erro fatal no bloco principal:', e);
     return { block: '', hasData: false };
   }
 }
 
-// ── Helpers internos ──────────────────────────────────────────
+// ── Helpers internos com Fallbacks de Segurança ─────────────────
 
-async function getActiveRelationships(numericUserId: string): Promise<SharedRelationship[]> {
-  const { data, error } = await supabase
-    .from('relationships')
-    .select('id, user_id_a, user_id_b, relationship_type, contact_name, contact_birthday, is_external')
-    .eq('status', 'active')
-    .or(`user_id_a.eq.${numericUserId},user_id_b.eq.${numericUserId}`);
+async function getActiveRelationships(numericUserId: string, masterContext?: any): Promise<SharedRelationship[]> {
+  // 1. Prioridade: Leitura em memória (Zero DB Call)
+  let data = masterContext?.relationships;
 
-  if (error || !data) return [];
+  // 2. Fallback: Consulta direta ao banco se chamado isoladamente
+  if (!data) {
+    const { data: dbData, error } = await supabase
+      .from('relationships')
+      .select('id, user_id_a, user_id_b, relationship_type, contact_name, contact_birthday, is_external')
+      .eq('status', 'active')
+      .or(`user_id_a.eq.${numericUserId},user_id_b.eq.${numericUserId}`);
+      
+    if (error) {
+      console.warn('[SharedContext] Erro de Fallback DB (getActiveRelationships):', error.message);
+      return [];
+    }
+    data = dbData;
+  }
 
+  if (!data || data.length === 0) return [];
+
+  // Mapeia os dados abstraindo se vieram do banco ou da memória
   return data
-    .map((r): SharedRelationship => {
-      const isA = r.user_id_a === numericUserId;
-      const partnerId = isA ? r.user_id_b : r.user_id_a;
+    .map((r: any): SharedRelationship => {
+      const isA = r.user_id_a === parseInt(numericUserId, 10) || r.user_id_a === numericUserId;
+      const partnerId = isA ? String(r.user_id_b) : String(r.user_id_a);
       const type = r.relationship_type ?? 'other';
       return {
-        relationshipId: r.id,
+        relationshipId: String(r.id),
         partnerId,
         partnerName: r.contact_name || 'Contato',
         relationshipType: type,
         priority: RELATIONSHIP_PRIORITY[type] ?? 6,
-        contactBirthday: r.contact_birthday ?? null,   // fallback para externos
+        contactBirthday: r.contact_birthday ?? null,
         isExternal: r.is_external ?? false,
       };
     })
-    .sort((a, b) => a.priority - b.priority);
+    .sort((a: SharedRelationship, b: SharedRelationship) => a.priority - b.priority);
 }
 
 function resolveResources(contexts: ContextType[]): Set<string> {
   const resources = new Set<string>();
-  // birthday é tratado separadamente em buildBirthdayBlock — não entra aqui
   for (const ctx of contexts) {
     const mapped = CONTEXT_RESOURCE_MAP[ctx as string];
     if (mapped) mapped.forEach(r => resources.add(r));
@@ -183,11 +193,10 @@ function resolveResources(contexts: ContextType[]): Set<string> {
   return resources;
 }
 
-// Verifica aniversários para todos os relacionamentos ativos.
-// Usa RPC para usuários no sistema; contact_birthday como fallback para externos.
 async function buildBirthdayBlock(
   viewerId: string,
   relationships: SharedRelationship[],
+  masterContext?: any
 ): Promise<string[]> {
   const lines: string[] = [];
   const today = new Date();
@@ -199,21 +208,33 @@ async function buildBirthdayBlock(
     let label = '';
 
     if (!rel.isExternal) {
-      // Tenta via RPC (usuário no sistema)
-      try {
-        const { data } = await supabase.rpc('get_shared_data', {
-          p_viewer_id: viewerId,
-          p_owner_id:  rel.partnerId,
-          p_resource:  'birthday',
-        });
-        if (data?.ok && data.data?.birth_date && !data.data?.hidden) {
-          birthDate = new Date(data.data.birth_date);
-          label = data.data.full_name || rel.partnerName;
+      const memKey = `${rel.partnerId}_birthday`;
+
+      // 1. Tentativa via Memória Injetada
+      if (masterContext?.shared_resources?.[memKey]) {
+        const memData = masterContext.shared_resources[memKey];
+        if (memData.ok && memData.data?.birth_date && !memData.data?.hidden) {
+          birthDate = new Date(memData.data.birth_date);
+          label = memData.data.full_name || rel.partnerName;
         }
-      } catch { /* fallthrough para contact_birthday */ }
+      } 
+      // 2. Fallback via RPC
+      else {
+        try {
+          const { data } = await supabase.rpc('get_shared_data', {
+            p_viewer_id: viewerId,
+            p_owner_id:  rel.partnerId,
+            p_resource:  'birthday',
+          });
+          if (data?.ok && data.data?.birth_date && !data.data?.hidden) {
+            birthDate = new Date(data.data.birth_date);
+            label = data.data.full_name || rel.partnerName;
+          }
+        } catch { /* Ignora e segue pro fallback final */ }
+      }
     }
 
-    // Fallback: contact_birthday gravado direto em relationships
+    // 3. Fallback Final: Data gravada localmente na tabela de relacionamentos
     if (!birthDate && rel.contactBirthday) {
       birthDate = new Date(rel.contactBirthday);
       label = rel.partnerName;
@@ -221,7 +242,7 @@ async function buildBirthdayBlock(
 
     if (!birthDate) continue;
 
-    // Calcula próximo aniversário
+    // Cálculo do próximo aniversário
     const next = new Date(today.getFullYear(), birthDate.getMonth(), birthDate.getDate());
     if (next < today) next.setFullYear(today.getFullYear() + 1);
     const daysUntil = Math.ceil((next.getTime() - today.getTime()) / 86400000);
@@ -241,13 +262,11 @@ async function buildBirthdayBlock(
     }
   }
 
-  // Ordena: hoje primeiro, depois por proximidade
   return lines;
 }
 
 function filterResourcesByRelationship(resources: Set<string>, relType: string): string[] {
   const isSpouseOrPartner = relType === 'spouse' || relType === 'partner';
-
   return Array.from(resources).filter(r => {
     if (SPOUSE_ONLY_RESOURCES.has(r) && !isSpouseOrPartner) return false;
     return true;
@@ -258,8 +277,19 @@ async function fetchSharedResource(
   viewerId: string,
   ownerId: string,
   resource: string,
+  masterContext?: any
 ): Promise<string | null> {
   try {
+    const memKey = `${ownerId}_${resource}`;
+
+    // 1. Tenta extração em O(1) da memória pré-carregada
+    if (masterContext?.shared_resources?.[memKey]) {
+      const data = masterContext.shared_resources[memKey];
+      if (!data.ok) return null;
+      return formatResource(resource, data);
+    }
+
+    // 2. Se a memória não possui o recurso, invoca o Fallback RPC
     const { data, error } = await supabase.rpc('get_shared_data', {
       p_viewer_id: viewerId,
       p_owner_id:  ownerId,
@@ -267,7 +297,7 @@ async function fetchSharedResource(
     });
 
     if (error) {
-      console.warn(`[SharedContext] RPC erro (${resource}):`, error.message);
+      console.warn(`[SharedContext] Fallback DB erro (${resource}):`, error.message);
       return null;
     }
 
@@ -275,14 +305,15 @@ async function fetchSharedResource(
 
     return formatResource(resource, data);
   } catch (e) {
-    console.error(`[SharedContext] fetchSharedResource (${resource}):`, e);
+    console.error(`[SharedContext] fetchSharedResource erro crítico (${resource}):`, e);
     return null;
   }
 }
 
+// ── Formatadores (Apresentação Visual) ───────────────────────
+
 function formatResource(resource: string, data: any): string | null {
   switch (resource) {
-
     case 'calendar': {
       const items = data.data as any[];
       if (!items?.length) return null;
