@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v5.7 — Deduplicação de system prompt + consolidação de contexto operacional
+// v5.8 — Remoção de dependência legada (memory) e adoção do current_context (Regra 3)
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -9,7 +9,6 @@ import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import { buildPersonalityBlock } from '@/lib/services/personality.service';
 import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '../../Utils/ai-helpers';
-
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -40,8 +39,6 @@ function shouldIncludeFamilyContext(message: string, history: string): boolean {
   return isHighAlertMonth || hasFamilySignal;
 }
 
-// Após a função filterL3Content
-
 function buildConversationSummary(
   recentHistory: Array<{ role: string; content: string }>,
   nickname: string,
@@ -58,6 +55,7 @@ function buildConversationSummary(
 }
 
 function filterL3Content(content: string, includeFamily: boolean): string {
+  if (!content) return '';
   if (includeFamily) return content;
   return content
     .replace(/##\s*(datas?|aniversário|família|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
@@ -160,7 +158,9 @@ export async function buildChatPrompt(
   intel: ChatIntelligence,
 ): Promise<ChatPrompt> {
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
-  const { contexts, emotional, memory, masterContext, recentHistory } = intel;
+  
+  // CORREÇÃO: 'memory' removido da desestruturação pois foi descontinuado
+  const { contexts, emotional, masterContext, recentHistory } = intel;
 
   // ── Helpers do masterContext (zero queries ao banco) ──────────────────────
   const learnedInsightsBlock = buildLearnedInsightsBlock(masterContext?.insights || []);
@@ -220,11 +220,12 @@ export async function buildChatPrompt(
     ? ''
     : `[GPS]: Indisponível. Não faça suposições sobre localização do usuário.`;
 
-  // ── Filtragem de L3 ───────────────────────────────────────────────────────
+  // ── Filtragem de L3 (Dossiê) ──────────────────────────────────────────────
   const historyText = recentHistory.map(h => h.content).join(' ');
   const includeFamily = shouldIncludeFamilyContext(message, historyText);
 
-  const rawL3Text = memory.l3?.chunks?.map((c: any) => c.content).join('\n\n') || '';
+  // CORREÇÃO: Lendo L3 do masterContext (current_context) em vez da memória legada
+  const rawL3Text = masterContext?.user?.current_context || '';
   const l3Content = filterL3Content(rawL3Text, includeFamily);
 
   // ── Dados do masterContext ────────────────────────────────────────────────

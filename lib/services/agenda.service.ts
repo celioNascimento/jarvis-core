@@ -4,7 +4,7 @@
 import { supabase } from '@/lib/jarvis';
 import { createGoogleEvent, getGoogleContext } from '@/lib/google';
 import { getMicrosoftCalendarContext } from '@/lib/microsoft';
-import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
+import { invalidateContextField } from '@/lib/services/context-cache';
 import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
 
 export interface EventPayload {
@@ -136,7 +136,8 @@ export async function coreCriarEvento(userId: number, payload: EventPayload) {
     }).select().single();
 
   if (error) throw new Error(`Falha no banco: ${error.message}`);
-  if (payload.sessionId) await invalidateMasterContextCache(userId, payload.sessionId).catch(() => {});
+  if (payload.sessionId) await invalidateContextField(userId, 'events').catch(() => {});
+
 
   return { evento, avisoGoogle, startDate };
 }
@@ -181,9 +182,11 @@ export async function coreDeletarEventoPorBusca(userId: number, busca: string, s
     .delete().eq('user_id', userId).ilike('title', `%${busca}%`).select('title');
 
   if (error) throw new Error(`Falha ao deletar: ${error.message}`);
-  if (sessionId) await invalidateMasterContextCache(userId, sessionId).catch(() => {});
+  if (sessionId) await invalidateContextField(userId, 'events').catch(() => {});
   
   return data || [];
+
+
 }
 
 // ─── 6. DELETAR (USADO PELO APP WEB - POR ID) ─────────────────────────────────

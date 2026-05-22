@@ -1,9 +1,7 @@
 // lib/modules/modules/agenda.ts
-// V12.3.0 — Zero DB Calls e Fallback de Hidratação para Agenda
+// V13.0.0 — STRICT REGRA 3: Função Pura, Zero DB Calls
 
-import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
-import { getEffectiveUserId } from '../relationships/identity';
 
 export const ModuloAgenda: ModuleDefinition = {
   id: 'agenda_lev',
@@ -14,33 +12,33 @@ export const ModuloAgenda: ModuleDefinition = {
     contexts: ['agenda', 'evento'],
     keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos|compromisso|reunião|horário|cancelar|adiar/i,
     condition: (opts) => {
-      // Verifica se há eventos injetados no masterContext
+      // Verifica se há eventos injetados no masterContext (já carregados pelo RPC principal)
       const events = (opts as any).masterContext?.events || [];
       return events.length > 0;
     },
   },
   
+  // REGRA 3: Sem async, sem await, sem fetch, sem supabase. 
+  // Apenas formata o que já está na memória RAM.
   buildContextBlock: async (opts) => {
     try {
-      // 1. Tenta a Injeção de Contexto (Se o SQL já trouxer a string pronta)
-      let calendarData = (opts as any).masterContext?.calendar_block;
+      const events = (opts as any).masterContext?.events || [];
+      
+      if (!events.length) return '';
 
-      // 2. Fallback de Segurança (Se chamado isoladamente ou não injetado)
-      if (!calendarData) {
-        const targetId = await getEffectiveUserId(opts.userId, opts.userId);
-        const { data, error } = await supabase.rpc('get_calendar_context_for_jarvis', {
-          p_user_id: Number(targetId),
-          p_days: 7,
+      // Formata os eventos injetados de forma limpa para o LLM
+      const linhas = events.map((e: any) => {
+        // Ajusta para o fuso do Brasil na hora de exibir pro LLM
+        const data = new Date(e.start_at).toLocaleString('pt-BR', { 
+          timeZone: 'America/Sao_Paulo',
+          day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
         });
-        
-        if (error || !data) return '';
-        calendarData = data;
-      }
+        return `- ${e.title} (${data}) [Cat: ${e.category || 'personal'}]`;
+      });
 
-      if (!calendarData) return '';
-
-      return `[AGENDA INTERNA LEV - PRÓXIMOS DIAS]\n${calendarData}`;
-    } catch {
+      return `[AGENDA INTERNA LEV - PRÓXIMOS EVENTOS]\n${linhas.join('\n')}`;
+    } catch (e) {
+      console.error('[ModuloAgenda] Erro ao construir bloco:', e);
       return '';
     }
   },
