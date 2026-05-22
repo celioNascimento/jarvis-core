@@ -55,71 +55,31 @@ function extractEnabledIds(modules: any): string[] {
   return [];
 }
 
-export async function loadActiveModules(
+  export async function loadActiveModules(
   opts: ModuleConditionOpts & { masterContext?: any },
   userPlan: string,
   baseModel: string,
 ) {
   const numericUserId = parseInt(String(opts.userId), 10);
-
-  // 1. masterContext SEMPRE vem da intelligence pipeline — não fazer novo RPC aqui.
-  //    O registry não tem visibilidade do cache granular, então chamar get_consolidated_context
-  //    aqui geraria uma segunda chamada desnecessária a cada turno.
   const masterContext = opts.masterContext || {};
 
-  // 2. Extrai enabledIds do masterContext de forma resiliente
+  // 1. Extrai apenas do que o RPC trouxe. Se não veio, não existe.
   let enabledIds = extractEnabledIds(masterContext.modules);
 
-  console.log('[Registry] enabledIds do masterContext:', enabledIds.length);
-
-  // 3. Fallback apenas se masterContext.modules realmente não existir
-  //    (primeira requisição antes do cache aquecer, ou campo ausente no RPC)
+  // 2. LOG DE SEGURANÇA: Se o contexto veio vazio, registramos, mas não buscamos no banco.
   if (enabledIds.length === 0) {
-    console.warn('[Registry] masterContext.modules vazio — caindo no fallback Redis');
-
-    const cacheKey = `modules_enabled:${numericUserId}`;
-    const redis = new Redis({
-      url: process.env.UPSTASH_REDIS_REST_URL!,
-      token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-    });
-
-    try {
-      const cached = await redis.get<string[]>(cacheKey);
-      if (cached && Array.isArray(cached) && cached.length > 0) {
-        enabledIds = cached;
-        console.log('[Registry] enabledIds do Redis fallback:', enabledIds.length);
-      }
-    } catch (e) {
-      console.warn('[Registry] Redis fallback falhou:', e);
-    }
-
-    // 4. Último recurso: banco direto (só acontece se Redis também falhar)
-    if (enabledIds.length === 0) {
-      console.warn('[Registry] Redis vazio — buscando user_modules diretamente no banco');
-      try {
-        const { data } = await supabase
-          .from('user_modules')
-          .select('module_id')
-          .eq('user_id', numericUserId)
-          .eq('enabled', true);
-        enabledIds = data?.map(r => r.module_id) || [];
-
-        // Aquece o cache Redis para próximas requisições
-        if (enabledIds.length > 0) {
-          redis.set(cacheKey, enabledIds, { ex: 3600 }).catch(() => {});
-        }
-      } catch (e) {
-        console.error('[Registry] Falha fatal ao buscar user_modules:', e);
-      }
-    }
+    console.warn(`[Registry] masterContext.modules vazio para user ${numericUserId}. Nenhum módulo carregado.`);
+  } else {
+    console.log('[Registry] enabledIds carregados do masterContext:', enabledIds.length);
   }
 
-  // 5. Execução Controlada de Módulos (Full Scan)
+  // 3. Execução Controlada de Módulos (Full Scan)
   const results = await Promise.all(ALL_MODULES.map(async mod => {
     const planOrder = ['free', 'personal', 'family', 'family_plus', 'ultra'];
     const modPlanIdx = planOrder.indexOf(mod.plan);
     const userPlanIdx = planOrder.indexOf(userPlan);
 
+    // Se o usuário não tem plano ou não habilitou o módulo no masterContext, ignora
     if (userPlanIdx < modPlanIdx || !enabledIds.includes(mod.id)) return null;
 
     const { trigger } = mod;
@@ -134,7 +94,8 @@ export async function loadActiveModules(
     const start = Date.now();
     try {
       const block = await mod.buildContextBlock({ ...opts, masterContext });
-
+      
+      // Metrics em background (waitUntil não bloqueia o fluxo principal)
       waitUntil(
         recordModuleMetrics(mod.id, numericUserId, {
           latencyMs: Date.now() - start,
@@ -151,7 +112,6 @@ export async function loadActiveModules(
   }));
 
   const validResults = results.filter(Boolean) as { block: string, tools: string[] }[];
-
   const { model: routedModel } = routeModel(opts.contexts, opts.emotionalScore);
 
   return {
@@ -159,4 +119,4 @@ export async function loadActiveModules(
     activeTools: [...new Set(validResults.flatMap(r => r.tools))],
     resolvedModel: routedModel,
   };
-}
+    }
