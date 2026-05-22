@@ -23,16 +23,22 @@ export interface DetectedGap {
   urgencia?: string;
 }
 
+export interface ExtractionModule {
+  id: string;
+  match: (ctx: string[]) => boolean;
+  run: (...args: any[]) => Promise<void>;
+}
+
 // ── REGISTRO DE MÓDULOS ──────────────────────────────────────
-const EXTRACTION_MODULES = [
-  { id: 'familia', match: (ctx: string[]) => ctx.includes('familia'), run: (uid: string, msg: string, gaps: DetectedGap[]) => extractFamilia(uid, msg, gaps) },
-  { id: 'projeto', match: (ctx: string[]) => ctx.includes('projeto'), run: (uid: string, msg: string) => extractProjeto(uid, msg) },
-  { id: 'evento',  match: (ctx: string[]) => ctx.includes('evento'),  run: (uid: string, msg: string) => extractEvento(uid, msg) },
-  { id: 'agenda',  match: (ctx: string[]) => ctx.includes('agenda'),  run: (uid: string, msg: string) => extractAgenda(uid, msg) },
-  { id: 'rotina',  match: (ctx: string[]) => ctx.includes('rotina'),  run: (uid: string, msg: string) => extractRotina(uid, msg) },
-  { id: 'preferencia', match: (ctx: string[]) => ctx.includes('preferencia'), run: (uid: string, msg: string) => extractPreferencia(uid, msg) },
-  { id: 'recomendacao', match: (ctx: string[]) => ctx.includes('recomendacao'), run: (uid: string, msg: string, reply: string) => extractRecomendacao(uid, msg, reply) },
-  { id: 'compras', match: (ctx: string[]) => ctx.includes('compras'), run: (uid: string, msg: string, reply: string) => extractShopping(uid, msg, reply) },
+const EXTRACTION_MODULES: ExtractionModule[] = [
+  { id: 'familia', match: (ctx) => ctx.includes('familia'), run: (uid, msg, gaps: DetectedGap[]) => extractFamilia(uid, msg, gaps) },
+  { id: 'projeto', match: (ctx) => ctx.includes('projeto'), run: (uid, msg) => extractProjeto(uid, msg) },
+  { id: 'evento',  match: (ctx) => ctx.includes('evento'),  run: (uid, msg) => extractEvento(uid, msg) },
+  { id: 'agenda',  match: (ctx) => ctx.includes('agenda'),  run: (uid, msg) => extractAgenda(uid, msg) },
+  { id: 'rotina',  match: (ctx) => ctx.includes('rotina'),  run: (uid, msg) => extractRotina(uid, msg) },
+  { id: 'preferencia', match: (ctx) => ctx.includes('preferencia'), run: (uid, msg) => extractPreferencia(uid, msg) },
+  { id: 'recomendacao', match: (ctx) => ctx.includes('recomendacao'), run: (uid, msg, reply) => extractRecomendacao(uid, msg, reply) },
+  { id: 'compras', match: (ctx) => ctx.includes('compras'), run: (uid, msg, reply) => extractShopping(uid, msg, reply) },
 ];
 
 // ── ORQUESTRADOR PRINCIPAL (Tipagem Estrita) ───────────────────
@@ -44,26 +50,23 @@ export async function extractAndSummarize(
   aiReply: string
 ): Promise<string> {
   try {
-    // 1. Classificação via Gateway (Regra 4)
     const classification = await classify(userId, userMessage);
     if (!classification?.has_new_facts) return '';
 
-    // 2. Execução dos Módulos
     const tasks: Promise<void>[] = [];
     for (const mod of EXTRACTION_MODULES) {
       if (mod.match(classification.contexts)) {
-        // Ajuste conforme a assinatura de cada job
+        // [RIGOR]: Tratamento explícito para evitar o erro de tipos
         if (mod.id === 'familia') {
-          tasks.push(mod.run(userId, userMessage, [])); 
+          tasks.push(mod.run(userId, userMessage, [] as DetectedGap[])); 
         } else if (mod.id === 'recomendacao' || mod.id === 'compras') {
-          tasks.push((mod as any).run(userId, userMessage, aiReply));
+          tasks.push(mod.run(userId, userMessage, aiReply));
         } else {
-          tasks.push((mod as any).run(userId, userMessage));
+          tasks.push(mod.run(userId, userMessage));
         }
       }
     }
 
-    // Fire & Forget com tratamento de erro
     Promise.allSettled(tasks).then(() => updateL3(userId).catch(console.error));
     
     return summarizeContexts(classification.contexts);
@@ -72,7 +75,6 @@ export async function extractAndSummarize(
     return '';
   }
 }
-
 // ── CLASSIFICADOR (Gateway Integration) ─────────────────────────
 
 async function classify(userId: string, userMessage: string) {
