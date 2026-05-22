@@ -31,6 +31,7 @@ const FIELD_TTL: Record<ContextField, number> = {
   history:      60, // 1m  — invalidação explícita após cada turno
   shopping: 300,
   events:      60,
+  diary:        300,
 };
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -45,7 +46,8 @@ export type ContextField =
   | 'history'
   | 'favorite_places'
   | 'shopping'
-  | 'events';
+  | 'events'
+  | 'diary';
 
 // ── Helpers de chave ──────────────────────────────────────────────────────────
 
