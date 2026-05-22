@@ -32,6 +32,7 @@ const FIELD_TTL: Record<ContextField, number> = {
   shopping:   86400, // É invalidado explicitamente na compra
   events:     86400, // É invalidado explicitamente ao agendar
   diary:      86400, // É invalidado explicitamente ao escrever
+  goals:      86400,
 };
 
 
@@ -48,7 +49,8 @@ export type ContextField =
   | 'favorite_places'
   | 'shopping'
   | 'events'
-  | 'diary';
+  | 'diary'
+  | 'goals';
 
 // ── Helpers de chave ──────────────────────────────────────────────────────────
 
