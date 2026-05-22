@@ -3,6 +3,7 @@
 
 import { supabase } from '@/lib/jarvis';
 import { ShoppingItem } from '../types/shopping';
+import { invalidateContextField } from '@/lib/services/context-cache';
 
 // ─── 1. LISTAR COM MULTIPLAYER (APP E CHAT) ──────────────────────────────────
 export async function coreListarCompras(userId: number) {
@@ -55,6 +56,7 @@ export async function coreCriarCompra(
     .single();
 
   if (error) throw new Error(`Falha ao criar item: ${error.message}`);
+  await invalidateContextField(userId, 'shopping');
   return data;
 }
 
@@ -92,6 +94,7 @@ export async function coreAtualizarStatusCompra(userId: number, itemId: string, 
     .eq('id', itemId);
 
   if (error) throw new Error(`Falha ao atualizar status: ${error.message}`);
+  await invalidateContextField(userId, 'shopping');
 }
 
 // ─── 4. DELETAR ITEM ──────────────────────────────────────────────────────────
@@ -104,4 +107,5 @@ export async function coreDeletarCompra(userId: number, itemId: string) {
     .eq('id', itemId);
 
   if (error) throw new Error(`Falha ao deletar item: ${error.message}`);
+  await invalidateContextField(userId, 'shopping');
 }
