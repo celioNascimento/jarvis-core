@@ -2,7 +2,7 @@
 // Motor de diário pessoal e metas — Lev Platform
 
 import { createClient } from '@supabase/supabase-js';
-import { callAI } from './Utils/ai-helpers';
+import { callAI } from '.
 const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
