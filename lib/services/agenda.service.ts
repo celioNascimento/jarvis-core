@@ -4,7 +4,7 @@
 import { supabase } from '@/lib/jarvis';
 import { createGoogleEvent, getGoogleContext } from '@/lib/google';
 import { getMicrosoftCalendarContext } from '@/lib/microsoft';
-import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
+import { invalidateContextField } from '@/lib/services/context-cache';
 import { scheduleReminderOnQStash, cancelReminderOnQStash } from '@/lib/qstash';
 
 export interface EventPayload {
