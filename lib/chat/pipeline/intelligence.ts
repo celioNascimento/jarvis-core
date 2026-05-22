@@ -221,28 +221,23 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   console.log(`[Pipeline] Orquestração iniciada: ${message.slice(0, 50)}...`);
 
+  // Identificação de tags de contexto (Fluxo Downstream)
   const contextTags: string[] = [];
   const m = message.toLowerCase();
+  if (m.includes('carro') || m.includes('frota') || m.includes('abastecimento') || m.includes('manuten')) contextTags.push('veiculos');
+  if (m.includes('projeto') || m.includes('tarefa') || m.includes('desenvolvimento')) contextTags.push('projeto');
+  if (m.includes('dinheiro') || m.includes('gasto') || m.includes('pagamento') || m.includes('orç')) contextTags.push('financas');
 
-  if (m.includes('carro') || m.includes('frota') || m.includes('abastecimento') || m.includes('manuten')) {
-    contextTags.push('veiculos');
-  }
-  if (m.includes('projeto') || m.includes('tarefa') || m.includes('desenvolvimento')) {
-    contextTags.push('projeto');
-  }
-  if (m.includes('dinheiro') || m.includes('gasto') || m.includes('pagamento') || m.includes('orç')) {
-    contextTags.push('financas');
-  }
+  // Filtro inteligente: Embedding apenas se necessário (Regra de Eficiência)
+  const shouldEmbed = !isNoise && m.length > 20;
 
-  console.log('[Pipeline] Iniciando execução paralela das tarefas com timeout de segurança');
+  console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'}`);
 
-  // CORREÇÃO: Remoção do get_full_memory_bundle que travava o banco de dados.
   const [queryEmbedding, isStressed, masterContext] = await Promise.race([
     Promise.all([
-      isNoise ? Promise.resolve(null) : getCachedEmbedding(message).catch((e) => {
-        console.error('[Pipeline][Embedding] Falha na busca:', e);
-        return null;
-      }),
+      shouldEmbed 
+        ? getCachedEmbedding(message).catch((e) => { console.error('[Pipeline][Embedding] Falha:', e); return null; })
+        : Promise.resolve(null),
       llmGateway.isOverloaded().catch(() => false),
       getMasterContext(user.id, sessionId, contextTags),
     ]),
@@ -251,36 +246,26 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     ),
   ]).catch((err) => {
     if (err.message === 'TIMEOUT_SEGURANCA') {
-      console.error('[Pipeline][Fatal] Timeout atingido (8s). Retornando contexto parcial para salvar a execução.');
+      console.error('[Pipeline][Fatal] Timeout (8s). Retornando contexto parcial.');
       return [null, false, { history: [], config: {}, profile: {} }];
     }
     throw err;
   });
 
-  const contexts = await classifyContextWithL4(
-    message,
-    user.id,
-    user.auth_user_id,
-    masterContext
-  ).catch((e) => {
-    console.error('[Pipeline][Classification] Erro na classificação L4:', e);
-    return [];
-  });
+  // Classificação L4 (sempre segura via masterContext)
+  const contexts = await classifyContextWithL4(message, user.id, user.auth_user_id, masterContext)
+    .catch((e) => { console.error('[Pipeline][Classification] Erro:', e); return []; });
 
-  // O motor emocional agora lê os dados que já vêm no masterContext 
-  // (history e user) em vez de buscar da tabela memory que foi descontinuada.
+  // Análise Emocional (Regra de Dados Downstream)
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
     masterContext?.history || [],
     masterContext?.user?.current_context || ''
-  ).catch((e) => {
-    console.error('[Pipeline][Emotional] Erro na análise emocional:', e);
-    return {
-      score: 0, trajectory: 'stable', primaryEmotion: 'neutral', triggers: [],
-      memoryScore: 0, personScore: 0, moodAdjustment: 0, escalatingCount: 0,
-    };
-  });
+  ).catch(() => ({
+    score: 0, trajectory: 'stable', primaryEmotion: 'neutral', triggers: [],
+    memoryScore: 0, personScore: 0, moodAdjustment: 0, escalatingCount: 0,
+  }));
 
   const recentHistory = resolveRecentHistory(localHistory, masterContext?.history || []);
 
@@ -296,3 +281,4 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     isNoise,
   };
 }
+
