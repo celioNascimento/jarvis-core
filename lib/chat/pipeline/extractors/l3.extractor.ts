@@ -1,8 +1,6 @@
 // lib/chat/pipeline/extractors/l3.extractor.ts
-// V3.0 — Rigor Técnico: Dirty Check implementado. 
-// Otimização de I/O: Só persiste no banco se houver derivação real do estado.
-
-import { supabase } from '@/lib/jarvis';
+// V4.0 — Contrato de Rigor: Zero I/O parasita.
+// Os dados necessários chegam via masterContext, garantindo latência zero.
 
 export async function updateL3(userId: string, masterContext: any): Promise<void> {
   try {
@@ -11,20 +9,17 @@ export async function updateL3(userId: string, masterContext: any): Promise<void
       return;
     }
 
-    // 1. LEITURA ATÔMICA E PARALELA
-    // Buscamos apenas o contexto atual (para Dirty Check) e dados de perfil (que não estão no God RPC)
-    const [userRes, profRes, kidsRes] = await Promise.all([
-      supabase.from('users').select('current_context').eq('id', userId).single(),
-      supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle(),
-      supabase.from('children').select('name, birth_date').eq('parent_id', userId),
-    ]);
+    // 1. DADOS DE ENTRADA (Extraídos diretamente do masterContext)
+    // O masterContext DEVE conter as chaves: user, profile, children, projects, events
+    const originalCtx = masterContext.user?.current_context || '';
+    const p = masterContext.profile;
+    const kids = masterContext.children || [];
+    const proj = masterContext.projects || [];
+    const evs = masterContext.events || [];
 
-    const originalCtx = userRes.data?.current_context || '';
     let ctx = originalCtx;
 
     // 2. CONSTRUÇÃO DO PATCH (Dados Pessoais)
-    const p = profRes.data;
-    const kids = kidsRes.data || [];
     const patches: Record<string, string> = {};
 
     if (p?.full_name) {
@@ -35,7 +30,6 @@ export async function updateL3(userId: string, masterContext: any): Promise<void
     if (p?.current_job) patches['Cargo'] = `${p.current_job}${p.company ? ` @ ${p.company}` : ''}`;
     if (kids.length > 0) patches['Filhos'] = kids.map((k: any) => `${k.name}`).join(', ');
 
-    // Aplicação de Patches
     for (const [key, val] of Object.entries(patches)) {
       const rx = new RegExp(`- ${key}: (.*)`, 'i');
       if (rx.test(ctx)) {
@@ -45,8 +39,7 @@ export async function updateL3(userId: string, masterContext: any): Promise<void
       }
     }
 
-    // 3. BLOCO DE PROJETOS (MasterContext Source)
-    const proj = masterContext.projects || [];
+    // 3. BLOCO DE PROJETOS
     const projBlock = proj.map((r: any) => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
     const projSection = `## PROJETOS\n${projBlock}`;
     
@@ -56,10 +49,8 @@ export async function updateL3(userId: string, masterContext: any): Promise<void
       ctx = `${ctx.trim()}\n\n${projSection}`;
     }
 
-    // 4. BLOCO DE DATAS IMPORTANTES (MasterContext Source)
-    const evs = masterContext.events || [];
+    // 4. BLOCO DE DATAS IMPORTANTES
     const highEvs = evs.filter((e: any) => (e.emotional_weight || 0) >= 0.7);
-    
     if (highEvs.length > 0) {
       const dateBlock = highEvs.map((e: any) => `- ${e.title}: ${e.start_at || e.event_date}`).join('\n');
       const dateSection = `## DATAS IMPORTANTES\n${dateBlock}`;
@@ -71,19 +62,17 @@ export async function updateL3(userId: string, masterContext: any): Promise<void
       }
     }
 
-    // 5. DIRTY CHECK (O segredo da latência zero)
+    // 5. DIRTY CHECK & COMMIT
     if (ctx.trim() === originalCtx.trim()) {
-      console.log('[L3.Extractor] Nenhuma alteração detectada. Skip commit.');
-      return;
+      return; // Skip commit
     }
 
-    // 6. COMMIT
-    await supabase
-      .from('users')
-      .update({ current_context: ctx.trim() })
-      .eq('id', userId);
+    // Importante: Mantemos apenas esta única escrita necessária
+    await import('@/lib/jarvis').then(({ supabase }) => 
+      supabase.from('users').update({ current_context: ctx.trim() }).eq('id', userId)
+    );
       
-    console.log('[L3.Extractor] Dossiê persistido com sucesso.');
+    console.log('[L3.Extractor] Dossiê persistido.');
 
   } catch (e) {
     console.error('[L3.Extractor] Erro crítico:', e);
