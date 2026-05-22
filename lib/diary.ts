@@ -1,23 +1,9 @@
-// lib/diary.ts — V12.1.FULL (Restauração Integral e Blindada)
+// lib/diary.ts — V12.1.FULL (Consolidado e Sem Conflitos)
 import { supabase } from '@/lib/jarvis';
 import { llmGateway } from '@/lib/chat/llm-gateway';
 import { invalidateContextField } from '@/lib/services/context-cache';
 
-<<<<<<< HEAD
-import { createClient } from '@supabase/supabase-js';
-import { callAI } from '.
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
-
-// ============================================================
-// EXTRATOR: DIÁRIO — detecta e persiste entrada do dia
-// ============================================================
-=======
 // ── EXTRATOR: DIÁRIO ──────────────────────────────────────────────
->>>>>>> 828e898b761112a1d0ec2ac8dffea4129f9bf41c
 export async function extractDiary(
   userId: string,
   userMessage: string,
@@ -49,10 +35,6 @@ REGRAS: eh_diario é true para relatos, humor, gratidão, intenção ou reflexã
 
     const today = new Date().toISOString().slice(0, 10);
     
-    // CORREÇÃO: Removida a query de leitura que causava I/O paralelo.
-    // O sistema de persistência agora assume o estado através do objeto de payload
-    // ou depende da escrita atômica do Supabase.
-    
     const payload: any = { 
       user_id: userId, 
       date: today, 
@@ -66,7 +48,6 @@ REGRAS: eh_diario é true para relatos, humor, gratidão, intenção ou reflexã
       gratitude: Array.isArray(data.gratitude) ? data.gratitude : []
     };
 
-    // Escrita direta: O RPC get_consolidated_context trará o dado fresco no próximo turno.
     const { error } = await supabase.from('diary').insert(payload);
 
     if (!error) await invalidateContextField(Number(userId), 'diary').catch(console.error);
@@ -98,7 +79,6 @@ export async function extractGoal(userId: string, userMessage: string): Promise<
     for (const meta of data.metas) {
       if (!meta.title) continue;
 
-      // Mantemos a query de verificação pois é uma lógica de Upsert necessária
       const { data: existing } = await supabase.from('goals')
         .select('id, progress, steps').eq('user_id', userId).eq('status', 'active')
         .ilike('title', `%${meta.title.slice(0, 20)}%`).maybeSingle();
