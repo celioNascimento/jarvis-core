@@ -172,10 +172,7 @@ export async function upsertEvent(userId: string, ev: EventPayload): Promise<voi
 
   // REGRA 2: Invalida o cache
   if (!error) {
-      // REGRA 2: Invalida o cache
-  if (!error) {
     await invalidateContextField(Number(userId), 'events').catch(console.error);
   }
-    
   }
 }
