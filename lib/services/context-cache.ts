@@ -30,6 +30,7 @@ const FIELD_TTL: Record<ContextField, number> = {
   reminders:    60, // 1m  — muda a cada lembrete criado/disparado
   history:      60, // 1m  — invalidação explícita após cada turno
   shopping: 300,
+  events:      60,
 };
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -43,7 +44,8 @@ export type ContextField =
   | 'reminders'
   | 'history'
   | 'favorite_places'
-  | 'shopping';
+  | 'shopping'
+  | 'events';
 
 // ── Helpers de chave ──────────────────────────────────────────────────────────
 
