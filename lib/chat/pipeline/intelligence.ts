@@ -1,5 +1,5 @@
 // lib/chat/pipeline/intelligence.ts
-// Versão Integral: Padrão de Produção - Reconciliação, Auditoria e Performance Lazy-Loading
+// V15.0 - Remoção de RPC Zumbi e Correção do Loop de Shopping (Regra 3)
 
 import { supabase } from '@/lib/jarvis';
 import { classifyContextWithL4, type ContextType } from '@/lib/chat/context-classifier';
@@ -27,7 +27,6 @@ export interface ChatIntelligence {
   contexts: ContextType[];
   queryEmbedding: number[] | null;
   isStressed: boolean;
-  memory: any;
   emotional: EmotionalScoreResult;
   isNoise: boolean;
 }
@@ -113,13 +112,19 @@ async function getMasterContext(
 
   const result = data || {};
 
+  // CORREÇÃO: Unificando o shopping antes de salvar (Resolve o Loop do Cache)
+  result.shopping = {
+    items: result.shopping_items || [],
+    shares: result.shopping_shares || []
+  };
+
   console.log('[MasterContext] RPC retornou:', {
     fields: Object.keys(result),
     modulesCount: Array.isArray(result.modules) ? result.modules.length : 'não-array',
     modulesSample: Array.isArray(result.modules) ? result.modules.slice(0, 2) : result.modules,
   });
 
-  // 5. Popula o cache — itera sobre missingStatic diretamente (sem .includes)
+  // 5. Popula o cache
   const savePromises: Promise<void>[] = [];
 
   for (const f of missingStatic) {
@@ -135,7 +140,6 @@ async function getMasterContext(
       continue;
     }
 
-    // Para persons — salva versão slim para não estourar o Redis
     if (f === 'persons' && Array.isArray(value)) {
       const slim = value.map((p: any) => ({
         id: p.id,
@@ -149,7 +153,7 @@ async function getMasterContext(
       continue;
     }
 
-    console.log(`[MasterContext] Salvando '${f}' — ${JSON.stringify(value).length} chars`);
+    console.log(`[MasterContext] Salvando '${f}'`);
     savePromises.push(cache.set(f, value));
   }
 
@@ -232,22 +236,14 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   console.log('[Pipeline] Iniciando execução paralela das tarefas com timeout de segurança');
 
-  const [queryEmbedding, isStressed, memoryBundleRes, masterContext] = await Promise.race([
+  // CORREÇÃO: Remoção do get_full_memory_bundle que travava o banco de dados.
+  const [queryEmbedding, isStressed, masterContext] = await Promise.race([
     Promise.all([
       isNoise ? Promise.resolve(null) : getCachedEmbedding(message).catch((e) => {
         console.error('[Pipeline][Embedding] Falha na busca:', e);
         return null;
       }),
       llmGateway.isOverloaded().catch(() => false),
-      (async () => {
-        try {
-          const res = await supabase.rpc('get_full_memory_bundle', { p_user_id: user.id });
-          return { data: res.data };
-        } catch (e) {
-          console.error('[Pipeline][MemoryBundle] Falha ao buscar bundle:', e);
-          return { data: null };
-        }
-      })(),
       getMasterContext(user.id, sessionId, contextTags),
     ]),
     new Promise<any[]>((_, reject) =>
@@ -256,18 +252,10 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   ]).catch((err) => {
     if (err.message === 'TIMEOUT_SEGURANCA') {
       console.error('[Pipeline][Fatal] Timeout atingido (8s). Retornando contexto parcial para salvar a execução.');
-      return [null, false, { data: null }, { history: [], config: {}, profile: {} }];
+      return [null, false, { history: [], config: {}, profile: {} }];
     }
     throw err;
   });
-
-  const memory = memoryBundleRes?.data || {
-    hd: { memories: [] },
-    ram: { ramBlock: '' },
-    l3: { chunks: [] },
-    events: [],
-    topics: [],
-  };
 
   const contexts = await classifyContextWithL4(
     message,
@@ -279,11 +267,13 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     return [];
   });
 
+  // O motor emocional agora lê os dados que já vêm no masterContext 
+  // (history e user) em vez de buscar da tabela memory que foi descontinuada.
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
-    memory.hd?.memories || [],
-    memory.ram?.ramBlock || ''
+    masterContext?.history || [],
+    masterContext?.user?.current_context || ''
   ).catch((e) => {
     console.error('[Pipeline][Emotional] Erro na análise emocional:', e);
     return {
@@ -292,7 +282,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     };
   });
 
-  const recentHistory = resolveRecentHistory(localHistory, masterContext.history || []);
+  const recentHistory = resolveRecentHistory(localHistory, masterContext?.history || []);
 
   console.log('[Pipeline] Orquestração finalizada com sucesso');
 
@@ -302,7 +292,6 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     contexts,
     queryEmbedding,
     isStressed,
-    memory,
     emotional,
     isNoise,
   };
