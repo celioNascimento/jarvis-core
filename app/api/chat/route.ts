@@ -34,10 +34,10 @@ export async function POST(req: NextRequest) {
     // Usamos o intel.masterContext que já está populado na Fase 2.
     // O catch evita que um erro na gravação derrube a resposta do usuário.
     waitUntil(
-      updateL3(ctx.userId, intel.masterContext).catch((err) => 
-        console.error('[Pipeline] Falha no background task L3:', err)
-      )
-    );
+      updateL3(String(ctx.user.id), intel.masterContext).catch((err) => 
+      console.error('[Pipeline] Falha no background task L3:', err)
+  )
+ );
 
     // 3. Finaliza a resposta sem esperar o banco de dados terminar
     return finalizeResponse(ctx, intel, prompt, reply, req); 
