@@ -42,7 +42,7 @@ export function isNoiseMessage(message: string): boolean {
 
 // ─── Cache & RPC Logic ──────────────────────────────────────────────────────
 
-const STATIC_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations'] as const;
+const STATIC_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations', 'shopping'] as const;
 
 async function getMasterContext(
   userId: number,
