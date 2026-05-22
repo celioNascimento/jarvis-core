@@ -92,7 +92,7 @@ export async function upsertAlias(
 
   // Invalida o contexto de 'persons' pois os aliases mapeiam para eles
   if (!error) {
-    await invalidateContextField(userId, 'persons').catch(console.error);
+    invalidateContextField(Number(userId), 'persons').catch(console.error);
   }
 }
 
@@ -136,9 +136,10 @@ export async function upsertPerson(
     }
 
     // REGRA 2: Invalida o cache
-    await invalidateContextField(userId, 'persons').catch(console.error);
+    await invalidateContextField(Number(userId), 'persons').catch(console.error);
     
     return personId ?? null;
+    
   } catch (e) { 
     console.error('[upsertPerson] Erro:', e); 
     return null; 
@@ -171,6 +172,10 @@ export async function upsertEvent(userId: string, ev: EventPayload): Promise<voi
 
   // REGRA 2: Invalida o cache
   if (!error) {
-    await invalidateContextField(userId, 'events').catch(console.error);
+      // REGRA 2: Invalida o cache
+  if (!error) {
+    await invalidateContextField(Number(userId), 'events').catch(console.error);
+  }
+    
   }
 }
