@@ -31,7 +31,7 @@ export interface MemoryReadOptions {
   userId: number; authUserId: string; sessionId: string; queryEmbedding: number[] | null;
   contexts: string[]; message: string; emotionalScore: number; authorName: string;
   assistantName?: string; layers?: Partial<Record<MemoryLayer, boolean>>;
-  masterContext?: any; 
+  masterContext?: any;
 }
 
 export interface MemoryWritePayload {
@@ -63,7 +63,7 @@ async function readRAM(options: MemoryReadOptions): Promise<RAMResult> {
     { role: 'assistant' as const, content: trimAssistantReply(h.metadata?.ai_reply || '') },
   ]);
 
-  const ramBlock = [...history].reverse().map((h: any) => 
+  const ramBlock = [...history].reverse().map((h: any) =>
     `${authorName}: ${h.content}\n${assistantName || 'Lev'}: ${trimAssistantReply(h.metadata?.ai_reply || '')}`
   ).join('\n\n');
 
@@ -75,10 +75,10 @@ async function readL3(userId: number, queryEmbedding: number[] | null, dossier?:
   const { data: results } = await supabase.rpc('match_l3_chunks', {
     query_embedding: queryEmbedding, p_user_id: userId, match_threshold: 0.3, match_count: 3
   });
-  return { 
-    content: results?.length ? results.map((r: any) => r.content).join('\n\n') : (dossier || ''), 
-    themes: results?.map((r: any) => r.theme) || [], 
-    isFallback: !results?.length 
+  return {
+    content: results?.length ? results.map((r: any) => r.content).join('\n\n') : (dossier || ''),
+    themes: results?.map((r: any) => r.theme) || [],
+    isFallback: !results?.length
   };
 }
 
@@ -87,8 +87,8 @@ async function readHD(userId: number, queryEmbedding: number[] | null): Promise<
   const { data: search } = await supabase.rpc('match_memories', {
     query_embedding: queryEmbedding, match_threshold: 0.22, match_count: 8
   });
-  const memories: MemoryItem[] = (search || []).map((r: any) => ({ 
-    id: r.id, summary: r.summary, similarity: r.similarity, emotional_weight: r.emotional_weight || 0.5 
+  const memories: MemoryItem[] = (search || []).map((r: any) => ({
+    id: r.id, summary: r.summary, similarity: r.similarity, emotional_weight: r.emotional_weight || 0.5
   }));
   return { memories, block: memories.map(m => m.summary).join('\n---\n'), memoryIds: memories.map(m => m.id) };
 }
@@ -104,13 +104,23 @@ async function readEvents(userId: number, injectedEvents?: any[]): Promise<Event
   return { upcoming, important: [], block };
 }
 
-async function readTopics(userId: number, contexts: string[], message: string): Promise<TopicsResult> {
+// ─── Lógica Corrigida em lib/memory/index.ts ──────────────────────────────
+
+async function readTopics(contexts: string[], masterContext: any): Promise<TopicsResult> {
   const safeContext = contexts.length > 0 ? contexts[0] : 'casual';
-  const [topicBlock, recommendationsBlock, relatedTopicsBlock] = await Promise.all([
-    buildTopicBlock(String(userId), message).catch(() => ''),
-    buildRecommendationsBlock(String(userId), message).catch(() => ''),
-    getRelatedTopics({ masterContext: safeContext })
-  ]);
+
+  // Funções Puras (Síncronas) - Retornam string diretamente, sem Promise
+  const topicBlock = buildTopicBlock(masterContext);
+  const recommendationsBlock = buildRecommendationsBlock(masterContext);
+
+  let relatedTopicsBlock = '';
+  try {
+    // Chamada síncrona, sem await e sem .catch()
+    relatedTopicsBlock = getRelatedTopics({ masterContext: safeContext });
+  } catch (e) {
+    relatedTopicsBlock = '';
+  }
+
   return { topicBlock, recommendationsBlock, relatedTopicsBlock };
 }
 
@@ -128,7 +138,7 @@ export async function read(options: MemoryReadOptions): Promise<MemoryReadResult
   const [l3, events, topics, relationship, ashes] = await Promise.all([
     readL3(userId, queryEmbedding, masterContext?.dossier_summary),
     readEvents(userId, masterContext?.events),
-    readTopics(userId, contexts, message),
+    readTopics(contexts, masterContext), // Passando masterContext
     Promise.resolve<RelationshipResult>({ hasData: false, block: '', sharedMemories: [], sharedEvents: [], hiddenItems: [] }),
     Promise.resolve<AshesResult>({ block: '', periods: [] })
   ]);
@@ -155,7 +165,7 @@ export async function write(payload: MemoryWritePayload): Promise<void> {
       case 'l3_patch':
         if (!payload.dossie) return;
         await supabase.from('users').update({ current_context: payload.dossie }).eq('id', Number(payload.userId));
-        indexL3Chunks(Number(payload.userId), payload.dossie).catch(() => {});
+        indexL3Chunks(Number(payload.userId), payload.dossie).catch(() => { });
         break;
     }
   } catch (e) { console.error('[MemoryManager/write] Erro:', e); }
