@@ -20,47 +20,33 @@ const redis = new Redis({
 
 // ── TTLs por campo (segundos) ─────────────────────────────────────────────────
 
-const FIELD_TTL: Record<ContextField, number> = {
-  settings:   86400, // 24 horas
-  modules:    86400,
-  guidelines: 86400,
-  persons:    86400,
-  locations:  86400,
-  favorite_places: 86400,
-  reminders:  86400,
-  history:    86400, // É invalidado explicitamente a cada chat
-  shopping:   86400, // É invalidado explicitamente na compra
-  events:     86400, // É invalidado explicitamente ao agendar
-  diary:      86400, // É invalidado explicitamente ao escrever
-  goals:      86400, // É invalidado explicitamente ao atualizar ou extrair
-  recommendations: 86400, // É invalidado explicitamente ao atualizar contexto ou extrair recomendações
-  profile:    86400, // É invalidado explicitamente ao atualizar perfil;
-  projects:   86400, // É invalidado explicitamente ao atualizar projetos;
-  dossier_summary: 86400,
-
-};
-
-
-// ── Tipos ─────────────────────────────────────────────────────────────────────
-
-export type ContextField =
-  | 'settings'
-  | 'modules'
-  | 'guidelines'
-  | 'persons'
-  | 'locations'
-  | 'reminders'
+export type ContextField = 
+  | 'settings' 
+  | 'modules' 
+  | 'guidelines' 
+  | 'persons' 
+  | 'locations' 
+  | 'shopping' 
+  | 'reminders' 
   | 'history'
-  | 'favorite_places'
-  | 'shopping'
-  | 'events'
-  | 'diary'
-  | 'goals'
-  |'recommendations'
-  |'profile'
-  |'projects'
-  |'dossier_summary;
-  
+  | 'profile'
+  | 'projects'
+  | 'dossier_summary'; // <--- ADICIONE ESTA LINHA
+
+// 2. Agora, verifique se o objeto TTL_CONFIG está usando exatamente este tipo:
+const TTL_CONFIG: Record<ContextField, number> = {
+  settings: 86400,
+  modules: 86400,
+  guidelines: 86400,
+  persons: 86400,
+  locations: 86400,
+  shopping: 3600,
+  reminders: 3600,
+  history: 3600,
+  profile: 86400,
+  projects: 86400,
+  dossier_summary: 86400, // <--- AGORA O COMPILADOR VAI ACEITAR
+};
 
 // ── Helpers de chave ──────────────────────────────────────────────────────────
 
