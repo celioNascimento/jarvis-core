@@ -1,23 +1,21 @@
-// ============================================================
-// lib/extractor.ts — Orquestrador Modular (Registry Pattern)
-// ============================================================
-
-import { createClient } from '@supabase/supabase-js';
+// lib/extractor.ts — V13.2 (Contrato: Tipagem Estrita e Gateway)
+import { supabase } from '@/lib/jarvis';
+import { llmGateway } from '@/lib/chat/llm-gateway';
 import { 
   extractProjeto, extractEvento, extractAgenda, 
   extractRotina, extractPreferencia, extractRecomendacao, 
   extractFamilia, extractShopping
 } from '@/lib/extractor-jobs';
-import { callAI } from './Utils/ai-helpers';
 import { updateL3 } from './services/memory.service';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
+// ── Tipos Estritos ───────────────────────────────────────────
+export interface ExtractionOptions {
+  userId: string;
+  userName: string;
+  userMessage: string;
+  aiReply: string;
+}
 
-// ── Tipos ────────────────────────────────────────────────────
 export interface DetectedGap {
   field: string;
   context: string;
@@ -25,49 +23,47 @@ export interface DetectedGap {
   urgencia?: string;
 }
 
+export interface ExtractionModule {
+  id: string;
+  match: (ctx: string[]) => boolean;
+  run: (...args: any[]) => Promise<void>;
+}
+
 // ── REGISTRO DE MÓDULOS ──────────────────────────────────────
-const EXTRACTION_MODULES = [
-  { 
-    id: 'familia', 
-    match: (ctx: string[], msg: string) => ctx.includes('familia'), 
-    run: (uid: string, msg: string, reply: string, gaps: DetectedGap[]) => extractFamilia(uid, msg, gaps) 
-  },
-  { id: 'projeto', match: (ctx: string[], msg: string) => ctx.includes('projeto'), run: (uid: string, msg: string) => extractProjeto(uid, msg) },
-  { id: 'evento',  match: (ctx: string[], msg: string) => ctx.includes('evento'),  run: (uid: string, msg: string) => extractEvento(uid, msg) },
-  { id: 'agenda',  match: (ctx: string[], msg: string) => ctx.includes('agenda'),  run: (uid: string, msg: string) => extractAgenda(uid, msg) },
-  { id: 'rotina',  match: (ctx: string[], msg: string) => ctx.includes('rotina'),  run: (uid: string, msg: string) => extractRotina(uid, msg) },
-  { id: 'preferencia', match: (ctx: string[], msg: string) => ctx.includes('preferencia'), run: (uid: string, msg: string) => extractPreferencia(uid, msg) },
-  { id: 'recomendacao', match: (ctx: string[], msg: string) => ctx.includes('recomendacao'), run: (uid: string, msg: string, reply: string) => extractRecomendacao(uid, msg, reply) },
-  { id: 'compras', match: (ctx: string[], msg: string) => ctx.includes('compras'), run: (uid: string, msg: string, reply: string) => extractShopping(uid, msg, reply) },
+const EXTRACTION_MODULES: ExtractionModule[] = [
+  { id: 'familia', match: (ctx) => ctx.includes('familia'), run: (uid, msg, gaps: DetectedGap[]) => extractFamilia(uid, msg, gaps) },
+  { id: 'projeto', match: (ctx) => ctx.includes('projeto'), run: (uid, msg) => extractProjeto(uid, msg) },
+  { id: 'evento',  match: (ctx) => ctx.includes('evento'),  run: (uid, msg) => extractEvento(uid, msg) },
+  { id: 'agenda',  match: (ctx) => ctx.includes('agenda'),  run: (uid, msg) => extractAgenda(uid, msg) },
+  { id: 'rotina',  match: (ctx) => ctx.includes('rotina'),  run: (uid, msg) => extractRotina(uid, msg) },
+  { id: 'preferencia', match: (ctx) => ctx.includes('preferencia'), run: (uid, msg) => extractPreferencia(uid, msg) },
+  { id: 'recomendacao', match: (ctx) => ctx.includes('recomendacao'), run: (uid, msg, reply) => extractRecomendacao(uid, msg, reply) },
+  { id: 'compras', match: (ctx) => ctx.includes('compras'), run: (uid, msg, reply) => extractShopping(uid, msg, reply) },
 ];
 
-// ── ORQUESTRADOR PRINCIPAL ───────────────────────────────────
+// ── ORQUESTRADOR PRINCIPAL (Tipagem Estrita) ───────────────────
 
 export async function extractAndSummarize(
-  maybeUuid: string,
+  userId: string,
   userName: string,
   userMessage: string,
-  aiReply: string = ''
+  aiReply: string
 ): Promise<string> {
-  // 1. Resolve ID Numérico
-  let userId = maybeUuid;
-  if (maybeUuid.includes('-')) {
-    const { data } = await supabase.from('users').select('id').eq('auth_user_id', maybeUuid).maybeSingle();
-    if (!data) return '';
-    userId = String(data.id);
-  }
-
   try {
-    // 2. Classificação
-    const classification = await classify(userMessage);
-    if (!classification.has_new_facts) return '';
+    const classification = await classify(userId, userMessage);
+    if (!classification?.has_new_facts) return '';
 
-    // 3. Execução dos Módulos (Fire & Forget)
     const tasks: Promise<void>[] = [];
     for (const mod of EXTRACTION_MODULES) {
-      if (mod.match(classification.contexts, userMessage)) {
-        // Passamos '[]' para gaps caso não queira integrar com a lógica legada agora
-        tasks.push(mod.run(userId, userMessage, aiReply, [])); 
+      if (mod.match(classification.contexts)) {
+        // [RIGOR]: Tratamento explícito para evitar o erro de tipos
+        if (mod.id === 'familia') {
+          tasks.push(mod.run(userId, userMessage, [] as DetectedGap[])); 
+        } else if (mod.id === 'recomendacao' || mod.id === 'compras') {
+          tasks.push(mod.run(userId, userMessage, aiReply));
+        } else {
+          tasks.push(mod.run(userId, userMessage));
+        }
       }
     }
 
@@ -79,14 +75,27 @@ export async function extractAndSummarize(
     return '';
   }
 }
+// ── CLASSIFICADOR (Gateway Integration) ─────────────────────────
 
-// ── CLASSIFICADOR ────────────────────────────────────────────
-
-async function classify(userMessage: string) {
-  const prompt = `Analise a mensagem e retorne JSON: {"has_new_facts": boolean, "contexts": string[]}. Contextos: familia, projeto, evento, agenda, rotina, preferencia, recomendacao, compras. Mensagem: "${userMessage}"`;
+async function classify(userId: string, userMessage: string) {
+  const prompt = `Analise a mensagem e retorne JSON: {"has_new_facts": boolean, "contexts": string[]}. 
+Contextos: familia, projeto, evento, agenda, rotina, preferencia, recomendacao, compras. 
+Mensagem: "${userMessage}"`;
+  
   try {
-    const raw = await callAI(prompt, 200);
-    return JSON.parse(raw.replace(/```json|```/g, ''));
+    const raw = await llmGateway.enqueue({
+        id: `classify-${userId}-${Date.now()}`,
+        priority: 4,
+        params: {
+            messages: [{ role: 'user', content: prompt }],
+            model: 'google/gemini-2.0-flash-001',
+            temperature: 0.1,
+            timeoutMs: 10000
+        },
+        dedupPayload: userMessage
+    });
+    
+    return JSON.parse(raw.content?.replace(/```json|```/g, '') || '{}');
   } catch {
     return { has_new_facts: false, contexts: [] };
   }

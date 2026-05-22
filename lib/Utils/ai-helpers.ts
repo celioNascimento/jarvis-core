@@ -1,52 +1,38 @@
 // lib/utils/ai-helpers.ts
 
-/**
- * Chama a IA garantindo o formato JSON.
- * Mantido como callAI para não quebrar os imports do extractor.ts
- */
-
 import type { PersonalitySettings } from '@/lib/services/personality.service';
+import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 
+/**
+ * Chama a IA garantindo o formato de texto, porém AGORA 
+ * passando pelo Gateway (Regra 4) para controle de I/O e concorrência.
+ * Mantido como callAI para não quebrar os imports do extractor.
+ */
 export async function callAI(prompt: string, maxTokens = 300): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    console.error('[callAI] Nenhuma API key encontrada (OPENAI_API_KEY ou OPENROUTER_API_KEY)');
-    throw new Error('API key ausente');
-  }
+  // Envia a requisição para o Gateway como Tarefa de Fundo (Prioridade 3)
+  // Assim, essas extrações não travam a fila do usuário principal (Prioridade 1)
+  const res = await callOpenRouterWithPriority(
+    3, 
+    'queue', 
+    `callAI_${Date.now()}`, 
+    [{ role: 'user', content: prompt }], 
+    undefined, 
+    'google/gemini-2.0-flash-001', // O modelo leve de extração
+    0.1, 
+    20000, 
+    maxTokens
+  );
 
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'google/gemini-2.0-flash-001',
-      max_tokens: maxTokens,
-      temperature: 0.1,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error('[callAI] HTTP erro:', res.status, err.slice(0, 200));
-    throw new Error(`callAI HTTP ${res.status}`);
-  }
-
-  const data = await res.json();
-  const text = (data.choices?.[0]?.message?.content || '');
-  
-  if (!text) {
-    console.error('[callAI] Resposta vazia:', JSON.stringify(data).slice(0, 200));
+  if (!res.content) {
+    console.error('[callAI] Gateway retornou conteúdo vazio para a extração.');
     throw new Error('callAI resposta vazia');
   }
-  
-  return text;
+
+  return res.content;
 }
 
 /**
- * Aliás para manter compatibilidade com o extractor-jobs.ts novo
+ * Aliás para manter compatibilidade com o extractor-jobs.ts
  */
 export async function callAIExtractor(prompt: string, maxTokens = 300): Promise<string> {
   return callAI(prompt, maxTokens);
@@ -56,7 +42,6 @@ export async function callAIExtractor(prompt: string, maxTokens = 300): Promise<
  * Tenta fazer o parse seguro de um JSON, corrigindo erros comuns do LLM
  */
 export function safeParseJSON(raw: string): any | null {
-  // O uso de [`]{3} impede que editores e markdown quebrem a string
   const clean = raw.replace(/[`]{3}json|[`]{3}/gi, '').trim();
   
   try {
@@ -93,7 +78,7 @@ const PERSONALITY_DEFAULTS: PersonalitySettings = {
 
 /**
  * Constrói o bloco de learned_insights a partir do masterContext.
- * Substitui fetchLearnedInsights() — zero queries ao banco.
+ * Zero queries ao banco (Regra 3).
  */
 export function buildLearnedInsightsBlock(insights: any[]): string {
   if (!insights?.length) return '';
@@ -121,8 +106,7 @@ export function buildLearnedInsightsBlock(insights: any[]): string {
 
 /**
  * Reconstrói PersonalitySettings a partir do masterContext.settings.
- * Substitui getPersonalitySettings() — zero queries ao banco.
- * Aceita tanto objeto key:value quanto array de rows {key, value}.
+ * Zero queries ao banco (Regra 3).
  */
 export function buildPersonalityFromContext(settings: any): PersonalitySettings {
   if (!settings) return PERSONALITY_DEFAULTS;

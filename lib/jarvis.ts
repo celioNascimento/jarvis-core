@@ -14,6 +14,16 @@ export const supabase = createClient(
   { db: { schema: 'jarvis' } }
 );
 
+// ── Diagnóstico temporário — remover após identificar as queries ──────────────
+if (process.env.NODE_ENV !== 'production') {
+  const _from = supabase.from.bind(supabase);
+  (supabase as any).from = (table: string) => {
+    const stack = new Error().stack?.split('\n')[2]?.trim() ?? '';
+    console.log(`[DB] .from('${table}') → ${stack}`);
+    return _from(table);
+  };
+}
+
 export const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,

@@ -212,11 +212,12 @@ export async function runUnifiedExtractor(
     );
   }
 
-  // ── Fato sobre o usuário ──────────────────────────────────────────────────
+    // ── Fato sobre o usuário ──────────────────────────────────────────────────
   // Alta relevância → salva no HD para recuperação futura
   if (data.summary) {
     tasks.push(
-      extractAndSummarize(userId, authorName, message)
+      // [CORREÇÃO]: Adicionamos o quarto parâmetro 'reply' para satisfazer a assinatura estrita
+      extractAndSummarize(userId, authorName, message, reply)
         .catch(e => console.error('[UnifiedExtractor] summary:', e)),
     );
 
@@ -227,6 +228,7 @@ export async function runUnifiedExtractor(
       );
     }
   }
+  
 
   // ── Evento ────────────────────────────────────────────────────────────────
   if (data.event) {
