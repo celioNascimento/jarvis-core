@@ -1,6 +1,6 @@
-// lib/extractor.ts — V13.1 (Contrato: Gateway + Context Injection)
+// lib/extractor.ts — V13.2 (Contrato: Tipagem Estrita e Gateway)
 import { supabase } from '@/lib/jarvis';
-import { llmGateway } from '@/lib/chat/llm-gateway'; // [CONTRATO: REGRA 4]
+import { llmGateway } from '@/lib/chat/llm-gateway';
 import { 
   extractProjeto, extractEvento, extractAgenda, 
   extractRotina, extractPreferencia, extractRecomendacao, 
@@ -8,7 +8,14 @@ import {
 } from '@/lib/extractor-jobs';
 import { updateL3 } from './services/memory.service';
 
-// ── Tipos ────────────────────────────────────────────────────
+// ── Tipos Estritos ───────────────────────────────────────────
+export interface ExtractionOptions {
+  userId: string;
+  userName: string;
+  userMessage: string;
+  aiReply: string;
+}
+
 export interface DetectedGap {
   field: string;
   context: string;
@@ -16,7 +23,7 @@ export interface DetectedGap {
   urgencia?: string;
 }
 
-// ── REGISTRO DE MÓDULOS (Mantido) ──────────────────────────────
+// ── REGISTRO DE MÓDULOS ──────────────────────────────────────
 const EXTRACTION_MODULES = [
   { id: 'familia', match: (ctx: string[]) => ctx.includes('familia'), run: (uid: string, msg: string, gaps: DetectedGap[]) => extractFamilia(uid, msg, gaps) },
   { id: 'projeto', match: (ctx: string[]) => ctx.includes('projeto'), run: (uid: string, msg: string) => extractProjeto(uid, msg) },
@@ -28,12 +35,13 @@ const EXTRACTION_MODULES = [
   { id: 'compras', match: (ctx: string[]) => ctx.includes('compras'), run: (uid: string, msg: string, reply: string) => extractShopping(uid, msg, reply) },
 ];
 
-// ── ORQUESTRADOR PRINCIPAL (Refatorado) ───────────────────────
+// ── ORQUESTRADOR PRINCIPAL (Tipagem Estrita) ───────────────────
 
 export async function extractAndSummarize(
-  userId: string, // Assumimos que já recebemos o ID resolvido (Otimização)
+  userId: string,
+  userName: string,
   userMessage: string,
-  aiReply: string = ''
+  aiReply: string
 ): Promise<string> {
   try {
     // 1. Classificação via Gateway (Regra 4)
@@ -43,8 +51,15 @@ export async function extractAndSummarize(
     // 2. Execução dos Módulos
     const tasks: Promise<void>[] = [];
     for (const mod of EXTRACTION_MODULES) {
-      if (mod.match(classification.contexts, userMessage)) {
-        tasks.push(mod.run(userId, userMessage, aiReply, [])); 
+      if (mod.match(classification.contexts)) {
+        // Ajuste conforme a assinatura de cada job
+        if (mod.id === 'familia') {
+          tasks.push(mod.run(userId, userMessage, [])); 
+        } else if (mod.id === 'recomendacao' || mod.id === 'compras') {
+          tasks.push((mod as any).run(userId, userMessage, aiReply));
+        } else {
+          tasks.push((mod as any).run(userId, userMessage));
+        }
       }
     }
 
@@ -53,14 +68,17 @@ export async function extractAndSummarize(
     
     return summarizeContexts(classification.contexts);
   } catch (e) {
-    console.error('[Extrator] Erro:', e);
+    console.error('[Extrator/Orquestrador] Erro:', e);
     return '';
   }
 }
 
 // ── CLASSIFICADOR (Gateway Integration) ─────────────────────────
+
 async function classify(userId: string, userMessage: string) {
-  const prompt = `Analise a mensagem e retorne JSON: {"has_new_facts": boolean, "contexts": string[]}. Contextos: familia, projeto, evento, agenda, rotina, preferencia, recomendacao, compras. Mensagem: "${userMessage}"`;
+  const prompt = `Analise a mensagem e retorne JSON: {"has_new_facts": boolean, "contexts": string[]}. 
+Contextos: familia, projeto, evento, agenda, rotina, preferencia, recomendacao, compras. 
+Mensagem: "${userMessage}"`;
   
   try {
     const raw = await llmGateway.enqueue({
