@@ -42,8 +42,8 @@ REGRAS:
   try {
     // Regra 4: Delegação de chamadas LLM ao Gateway via ai-helpers
     const raw = await callAIExtractor(prompt, 300);
-    const data = JSON.parse(raw.replace(/```json|
-```/g, '').trim());
+    const data = JSON.parse(raw.replace(/[]{3}json|[]{3}/gi, '').trim());
+    
 
     if (!data.eh_diario) return false;
     if (!data.content && !data.mood && !data.intention && !data.reflection) return false;
@@ -136,7 +136,8 @@ REGRAS:
 
   try {
     const raw = await callAIExtractor(prompt, 400);
-    const data = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    const data = JSON.parse(raw.replace(/[]{3}json|[]{3}/gi, '').trim());
+    
 
     if (!data.eh_meta || !data.metas?.length) return false;
 
