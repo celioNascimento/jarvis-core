@@ -1,6 +1,17 @@
 // lib/chat/pipeline/extractors/family.extractor.ts
+// V1.1 — Tipagem Estrita Resolvida
+
 import { callAI, safeParseJSON } from '../../../Utils/ai-helpers';
 import { familyService } from '@/lib/services/family.service';
+
+// ── TIPAGEM ESTRITA DO RETORNO DA IA ─────────────────────────────────
+interface ExtractedFamilyData {
+    esposa?: { nome?: string; aniversario?: string } | null;
+    marido?: { nome?: string; aniversario?: string } | null;
+    filhos?: Array<{ nome?: string; nascimento?: string }> | null;
+    pai?: any; // Mantido any para compatibilidade com upsertParent se ele aceitar string/obj
+    mae?: any;
+}
 
 export async function processFamilyData(userId: string, userMessage: string, gaps: any[]): Promise<void> {
     // 1. APENAS EXTRAÇÃO DE DADOS (IA)
@@ -9,7 +20,10 @@ export async function processFamilyData(userId: string, userMessage: string, gap
     {"esposa": {"nome": null, "aniversario": null}, "filhos": [{"nome": null, "nascimento": null}], "pai": null, "mae": null}`;
 
     const rawData = await callAI(prompt, 400);
-    const data = safeParseJSON(rawData);
+    
+    // O cast garante ao TypeScript que o objeto lido possui as propriedades corretas
+    const data = safeParseJSON(rawData) as ExtractedFamilyData | null;
+    
     if (!data) return;
 
     // 2. BUSCA O PERFIL ATUAL (Para que o serviço saiba o que atualizar)
