@@ -3,7 +3,7 @@
 // V12.1 — Refatorado para o Contrato de 4 Regras + Prevenção de Erros de Parse
 
 import { supabase } from '@/lib/jarvis';
-import { callAIExtractor } from './utils/ai-helpers'; // Ajuste 'utils' se sua pasta for com U maiúsculo
+import { callAIExtractor } from './Utils/ai-helpers'; // Ajuste 'utils' se sua pasta for com U maiúsculo
 import { invalidateContextField } from '@/lib/services/context-cache';
 
 // ============================================================
