@@ -97,17 +97,24 @@ export async function upsertAlias(
 }
 
 export async function upsertPerson(
-  userId: string, name: string, type: string, options?: PersonOptions
+  userId: string, 
+  name: string, 
+  type: string, 
+  options?: PersonOptions,
+  masterContext?: any // Adicionado para evitar I/O
 ): Promise<string | null> {
   try {
     const baseWeight = INITIAL_WEIGHTS[type] ?? 0.1;
-    const { data: existing } = await supabase.from('persons')
-      .select('id, emotional_weight, nickname')
-      .eq('user_id', userId).eq('name', name).eq('type', type).maybeSingle();
+    
+    // 1. TENTA BUSCAR NO CONTEXTO (Zero I/O)
+    const existing = masterContext?.persons?.find(
+      (p: any) => p.name.toLowerCase() === name.toLowerCase() && p.type === type
+    );
 
     let personId: string;
 
     if (existing) {
+      // 2. ATUALIZAÇÃO DIRETA (Escrita atômica)
       const delta = options?.weightDelta ?? 0.02;
       const newWeight = Math.min(1.0, existing.emotional_weight + delta);
       await supabase.from('persons').update({
@@ -118,7 +125,8 @@ export async function upsertPerson(
       }).eq('id', existing.id);
       personId = existing.id;
     } else {
-      const { data: created } = await supabase.from('persons').insert({
+      // 3. INSERÇÃO (Caminho padrão)
+      const { data: created, error: insertError } = await supabase.from('persons').insert({
         user_id: userId, 
         name, 
         type, 
@@ -126,16 +134,19 @@ export async function upsertPerson(
         nickname: options?.nickname ?? null, 
         last_mentioned: new Date().toISOString(),
       }).select('id').single();
+      
+      if (insertError) throw insertError;
       personId = created?.id;
     }
 
+    // [Manutenção dos detalhes originais do seu código]
     if (options?.noteText && personId) {
       await supabase.from('person_notes').upsert({
         user_id: userId, person_name: name, person_type: type, person_id: personId, note: options.noteText, noted_at: new Date().toISOString().slice(0, 10),
       }, { onConflict: 'user_id,person_name,note,noted_at', ignoreDuplicates: true });
     }
 
-    // REGRA 2: Invalida o cache
+    // REGRA 2: Invalidação de Cache (Mantida intacta)
     await invalidateContextField(Number(userId), 'persons').catch(console.error);
     
     return personId ?? null;
@@ -145,6 +156,7 @@ export async function upsertPerson(
     return null; 
   }
 }
+
 
 export async function upsertEvent(userId: string, ev: EventPayload): Promise<void> {
   const norm = (s: string) => s.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
