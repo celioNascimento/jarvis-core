@@ -42,7 +42,7 @@ export type ContextField =
   | 'locations'
   | 'reminders'
   | 'history'
-  | 'favorite_places';
+  | 'favorite_places'
   | 'shopping';
 
 // ── Helpers de chave ──────────────────────────────────────────────────────────
