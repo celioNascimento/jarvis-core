@@ -36,6 +36,7 @@ const FIELD_TTL: Record<ContextField, number> = {
   recommendations: 86400, // É invalidado explicitamente ao atualizar contexto ou extrair recomendações
   profile:    86400, // É invalidado explicitamente ao atualizar perfil;
   projects:   86400, // É invalidado explicitamente ao atualizar projetos;
+  dossier_summary,
 
 };
 
@@ -57,7 +58,9 @@ export type ContextField =
   | 'goals'
   |'recommendations'
   |'profile'
-  |'projects';
+  |'projects'
+  |'dossier_summary;
+  
 
 // ── Helpers de chave ──────────────────────────────────────────────────────────
 
