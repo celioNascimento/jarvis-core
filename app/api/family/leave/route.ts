@@ -1,19 +1,10 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
 import { getUserFromToken } from '@/lib/auth';
-
-// ============================================================
-// /api/family/leave
-// POST → sai da família atual
-// NOTA: getUserFromToken() já retorna o id BIGINT de jarvis.users
-// ============================================================
-
-function extractToken(req: Request): string | undefined {
-  return req.headers.get('authorization')?.replace('Bearer ', '') ?? undefined;
-}
+import { invalidateContextField } from '@/lib/services/context-cache'; // [IMPORTANTE]
 
 export async function POST(req: Request) {
-  const token = extractToken(req);
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
   const userId = await getUserFromToken(token);
   if (!userId) {
     return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
@@ -27,42 +18,34 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (userError) throw userError;
-    if (!user) {
-      return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 });
+    if (!user || !user.family_id) {
+      return NextResponse.json({ error: 'Usuário não encontrado ou sem família' }, { status: 404 });
     }
 
-    if (!user.family_id) {
-      return NextResponse.json({ error: 'Você não pertence a nenhuma família' }, { status: 400 });
-    }
+    const familyId = user.family_id;
 
+    // Verifica se é owner antes de prosseguir
     const { data: family } = await supabase
       .from('families')
-      .select('id, owner_id')
-      .eq('id', user.family_id)
+      .select('owner_id')
+      .eq('id', familyId)
       .single();
 
-    if (!family) {
-      // Família sumiu — limpa o vínculo mesmo assim
-      await supabase.from('users').update({ family_id: null }).eq('id', userId);
-      return NextResponse.json({ ok: true });
+    if (family) {
+      const { count: memberCount } = await supabase
+        .from('users')
+        .select('id', { count: 'exact', head: true })
+        .eq('family_id', familyId);
+
+      if (family.owner_id === userId && (memberCount ?? 0) > 1) {
+        return NextResponse.json(
+          { error: 'Transfira a propriedade antes de sair.' },
+          { status: 403 }
+        );
+      }
     }
 
-    // Conta outros membros (além do próprio usuário)
-    const { count: memberCount } = await supabase
-      .from('users')
-      .select('id', { count: 'exact', head: true })
-      .eq('family_id', family.id);
-
-    const isOwner      = family.owner_id === userId;
-    const otherMembers = (memberCount ?? 0) - 1;
-
-    if (isOwner && otherMembers > 0) {
-      return NextResponse.json(
-        { error: 'Você é o dono da família. Transfira a propriedade ou remova os outros membros antes de sair.' },
-        { status: 403 }
-      );
-    }
-
+    // Executa a saída
     const { error: updateError } = await supabase
       .from('users')
       .update({ family_id: null })
@@ -70,9 +53,18 @@ export async function POST(req: Request) {
 
     if (updateError) throw updateError;
 
-    // Último membro saindo — deleta a família
-    if (otherMembers === 0) {
-      await supabase.from('families').delete().eq('id', family.id);
+    // [RIGOR] REGRA 2: Invalidação de Cache
+    // Invalida 'settings' ou 'familia' (dependendo de onde você guarda esse dado no RPC)
+    await invalidateContextField(Number(userId), 'settings').catch(console.error);
+
+    // Se era o último, deleta
+    const { count: remaining } = await supabase
+      .from('users')
+      .select('id', { count: 'exact', head: true })
+      .eq('family_id', familyId);
+
+    if (remaining === 0) {
+      await supabase.from('families').delete().eq('id', familyId);
     }
 
     return NextResponse.json({ ok: true });
