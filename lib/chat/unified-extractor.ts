@@ -195,9 +195,6 @@ export async function runUnifiedExtractor(
   }
 
   // ── Recomendação ──────────────────────────────────────────────────────────
-  // Salva em duas camadas:
-  //   1. tabela `recommendations` — para o buildRecommendationsBlock
-  //   2. memória HD — para recuperação semântica em conversas futuras
   if (data.recommendation) {
     const hdSummary = `Lev indicou para ${authorName}: ${data.recommendation.titulo} (${data.recommendation.tipo}) — ${data.recommendation.descricao}`;
 
@@ -212,11 +209,10 @@ export async function runUnifiedExtractor(
     );
   }
 
-    // ── Fato sobre o usuário ──────────────────────────────────────────────────
-  // Alta relevância → salva no HD para recuperação futura
+  // ── Fato sobre o usuário ──────────────────────────────────────────────────
   if (data.summary) {
     tasks.push(
-      // [CORREÇÃO]: Adicionamos o quarto parâmetro 'reply' para satisfazer a assinatura estrita
+      // [CORREÇÃO AQUI]: Agora passando os 4 argumentos exigidos pelo contrato
       extractAndSummarize(userId, authorName, message, reply)
         .catch(e => console.error('[UnifiedExtractor] summary:', e)),
     );
@@ -228,7 +224,6 @@ export async function runUnifiedExtractor(
       );
     }
   }
-  
 
   // ── Evento ────────────────────────────────────────────────────────────────
   if (data.event) {
@@ -246,7 +241,6 @@ export async function runUnifiedExtractor(
             is_recurring: false,
             notes: data.event!.notas || null,
           });
-          console.log(`[UnifiedExtractor] Evento salvo: "${data.event!.titulo}" → ${eventDate}`);
         } catch (e) {
           console.error('[UnifiedExtractor] event:', e);
         }
@@ -256,8 +250,5 @@ export async function runUnifiedExtractor(
 
   if (tasks.length > 0) {
     await Promise.all(tasks);
-    console.log(`[UnifiedExtractor] Extraído: diary=${!!data.diary} goal=${!!data.goal} rec=${!!data.recommendation} summary=${!!data.summary} event=${!!data.event}`);
-  } else {
-    console.log('[UnifiedExtractor] Nenhum dado extraível nesta mensagem.');
   }
 }
