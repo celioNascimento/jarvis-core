@@ -1,9 +1,9 @@
 // lib/diary.ts
 // Motor de diário pessoal e metas — Lev Platform
-// V12 — Refatorado para o Contrato de 4 Regras
+// V12.1 — Refatorado para o Contrato de 4 Regras + Prevenção de Erros de Parse
 
 import { supabase } from '@/lib/jarvis';
-import { callAIExtractor } from './Utils/ai-helpers';
+import { callAIExtractor } from './utils/ai-helpers'; // Ajuste 'utils' se sua pasta for com U maiúsculo
 import { invalidateContextField } from '@/lib/services/context-cache';
 
 // ============================================================
@@ -42,8 +42,9 @@ REGRAS:
   try {
     // Regra 4: Delegação de chamadas LLM ao Gateway via ai-helpers
     const raw = await callAIExtractor(prompt, 300);
-    const data = JSON.parse(raw.replace(/[]{3}json|[]{3}/gi, '').trim());
     
+    // Regex blindada: impede quebras de linha que causem erros de Unterminated literal
+    const data = JSON.parse(raw.replace(/[`]{3}json|[`]{3}/gi, '').trim());
 
     if (!data.eh_diario) return false;
     if (!data.content && !data.mood && !data.intention && !data.reflection) return false;
@@ -65,9 +66,13 @@ REGRAS:
       updated_at: new Date().toISOString(),
     };
 
-    if (data.content) payload.content = existing?.content
-      ? ${existing.content}\n${data.content}
-      : data.content;
+    // CORREÇÃO: Crases de template string perfeitamente alinhadas
+    if (data.content) {
+      payload.content = existing?.content
+        ? `${existing.content}\n${data.content}`
+        : data.content;
+    }
+    
     if (data.mood)        payload.mood       = data.mood;
     if (data.energy)      payload.energy     = data.energy;
     if (data.intention)   payload.intention  = data.intention;
@@ -90,7 +95,7 @@ REGRAS:
       await invalidateContextField(Number(userId), 'diary').catch(console.error);
     }
 
-    console.log([diary] Entrada salva — user ${userId} | ${period} | mood: ${data.mood});
+    console.log(`[diary] Entrada salva — user ${userId} | ${period} | mood: ${data.mood}`);
     return true;
   } catch (e) {
     console.error('[diary] Erro:', e);
@@ -105,7 +110,7 @@ export async function extractGoal(
   userId: string,
   userMessage: string
 ): Promise<boolean> {
-  const prompt = Analise a mensagem e extraia metas pessoais se houver.
+  const prompt = `Analise a mensagem e extraia metas pessoais se houver.
 
 Mensagem: "${userMessage}"
 
@@ -132,12 +137,13 @@ REGRAS:
 - steps: array de etapas [{label: "texto", done: false}] se mencionadas
 - project_tag: slug do projeto relacionado se mencionado (ex: "pqf"), null se não
 - progress: 0-100 se o usuário indicar progresso atual, null se não
-- Retorne metas: [] se nenhuma meta clara;
+- Retorne metas: [] se nenhuma meta clara`;
 
   try {
     const raw = await callAIExtractor(prompt, 400);
-    const data = JSON.parse(raw.replace(/[]{3}json|[]{3}/gi, '').trim());
     
+    // Regex blindada: impede erros de parse
+    const data = JSON.parse(raw.replace(/[`]{3}json|[`]{3}/gi, '').trim());
 
     if (!data.eh_meta || !data.metas?.length) return false;
 
@@ -186,7 +192,7 @@ REGRAS:
     }
 
     if (hasUpdates) {
-       // Supondo que você terá um campo 'goals' no cache no futuro.
+       // Se futuramente você rastrear metas no Master Context, invalide aqui.
        // await invalidateContextField(Number(userId), 'goals').catch(console.error);
     }
     
@@ -274,9 +280,7 @@ export function buildDiaryGoalsBlock(masterContext: any): string {
       }
     }
 
-    // Nota: Como 'goals' não está no get_consolidated_context original, 
-    // ou você adiciona ele lá (se for vital para todas as sessões), 
-    // ou remove do system prompt padrão. Vou manter o parse caso você adicione.
+    // Parse de Metas Ativas (Se injetado futuramente)
     const goals = masterContext?.goals || [];
     if (goals.length > 0) {
       const lines = goals.map((g: any) => {
