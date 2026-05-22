@@ -1,10 +1,10 @@
 // lib/chat/tools-executor.ts
-// Dispatcher V11.0.0 — Modularizado e Refatorado para Processamento em Lote
+// Dispatcher V11.1.0 — Modularizado, Tipado e Livre de I/O de Leitura Bloqueante
 
 import { supabase } from '@/lib/jarvis';
 import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
 
-// ── Imports de Executores (Mantidos conforme original) ────────────────────────
+// ── Imports de Executores ───────────────────────────────────────────────────
 import * as Memory from '@/lib/tools/executors/memory';
 import * as Agenda from '@/lib/tools/executors/agenda';
 import * as Reminders from '@/lib/tools/executors/reminders';
@@ -34,7 +34,9 @@ export type ToolCall = {
 };
 
 export type ToolCallResult = { tc: ToolCall; result: string };
-type ToolHandler = (p: any, authUserId: string, numericUserIdStr: string, sessionId: string) => Promise<string>;
+
+// Tipagem estrita evitando o 'any' solto
+type ToolHandler = (p: Record<string, unknown>, authUserId: string, numericUserIdStr: string, sessionId: string) => Promise<string>;
 
 const WRITE_TOOLS = new Set([
   'agenda_salvar_evento', 'agenda_deletar_evento', 'email_excluir', 'lembrete_criar', 'lembrete_cancelar', 
@@ -65,12 +67,12 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   },
   ...{
     'email_listar_recentes': async (p) => {
-      if (p.provedor === 'google') return await Google.executeGoogleListarEmails(p);
-      if (p.provedor === 'outlook') return await Microsoft.executeMicrosoftListarEmails(p);
-      const [g, m] = await Promise.all([Google.executeGoogleListarEmails(p), Microsoft.executeMicrosoftListarEmails(p)]);
+      if (p.provedor === 'google') return await Google.executeGoogleListarEmails(p as any);
+      if (p.provedor === 'outlook') return await Microsoft.executeMicrosoftListarEmails(p as any);
+      const [g, m] = await Promise.all([Google.executeGoogleListarEmails(p as any), Microsoft.executeMicrosoftListarEmails(p as any)]);
       return `${g}\n\n${m}`;
     },
-    'email_excluir': async (p) => (p.provedor === 'google' ? await Google.executeGoogleExcluirEmail(p) : "N/A"),
+    'email_excluir': async (p) => (p.provedor === 'google' ? await Google.executeGoogleExcluirEmail(p as any) : "N/A"),
   },
   ...{
     'veiculo_registrar_abastecimento': (p, a, n) => Veiculos.executeRegistrarAbastecimento(p, a, n),
@@ -114,7 +116,7 @@ const TOOL_ROUTER: Record<string, ToolHandler> = {
   ...{
     'esportes_consultar_placar_ao_vivo': (p) => Esportes.executeConsultarPlacarAoVivo(p),
     'esportes_consultar_tabela': (p) => Esportes.executeConsultarTabela(p),
-    'web_pesquisar': (p) => searchWeb(p.query),
+    'web_pesquisar': (p) => searchWeb(p.query as string),
     'clima_consultar_atual': (p, a, n) => Clima.executeConsultarClimaAtual(p, a, n),
     'contato_alternar_permissao': (p, a, n) => Relationships.executeAlternarPermissao(p, a, n),
   },
@@ -139,7 +141,7 @@ async function checkIdempotency(numericUserId: string, name: string, sig: string
   try {
     const { error } = await supabase.from('idempotency_keys').insert({ key });
     return !error;
-  } catch { return true; }
+  } catch { return true; } // Silencia erros no DB para não travar a execução
 }
 
 export async function executeTool(
@@ -150,11 +152,21 @@ export async function executeTool(
   sessionId?: string,
 ): Promise<string> {
   const { name, arguments: rawArgs } = toolCall.function;
-  let p: any;
-  try { p = JSON.parse(rawArgs); } catch { return `Erro: argumentos inválidos.`; }
+  
+  let p: Record<string, unknown>;
+  try { 
+    p = JSON.parse(rawArgs); 
+  } catch { 
+    return `Erro: argumentos inválidos.`; 
+  }
 
-  if (!(await checkIdempotency(numericUserIdStr, name, (toolCall.id || rawArgs).substring(0, 50)))) {
-    return '[SISTEMA] Comando já processado.';
+  const isWriteAction = WRITE_TOOLS.has(name);
+
+  // [CORREÇÃO: RIGOR DE I/O] Só checamos idempotência se for uma ferramenta de ESCRITA
+  if (isWriteAction) {
+    if (!(await checkIdempotency(numericUserIdStr, name, (toolCall.id || rawArgs).substring(0, 50)))) {
+      return '[SISTEMA] Comando já processado.';
+    }
   }
 
   const handler = TOOL_ROUTER[name];
@@ -162,11 +174,20 @@ export async function executeTool(
 
   const result = await handler(p, authUserId, numericUserIdStr, sessionId || 'default');
 
-  if (WRITE_TOOLS.has(name) && sessionId) {
+  // Invalidação de cache baseada na escrita
+  if (isWriteAction && sessionId) {
     invalidateMasterContextCache(Number(numericUserIdStr), sessionId).catch(() => {});
   }
 
-  logToolExecution({ userId: Number(numericUserIdStr), toolName: name, ['arguments']: p, output: result, contextSnapshot }).catch(() => {});
+  // Log assíncrono (Fire & Forget)
+  logToolExecution({ 
+    userId: Number(numericUserIdStr), 
+    toolName: name, 
+    ['arguments']: p, 
+    output: result, 
+    contextSnapshot 
+  }).catch(() => {});
+
   return result;
 }
 
@@ -179,6 +200,7 @@ export async function executeBatchTools(
 ): Promise<ToolCallResult[]> {
   const filtered = preFlightFilter(toolCalls);
   const results: ToolCallResult[] = [];
+  
   for (const tc of filtered) {
     const output = await executeTool(tc, authUserId, numericUserIdStr, contextSnapshot, sessionId);
     results.push({ tc, result: output });

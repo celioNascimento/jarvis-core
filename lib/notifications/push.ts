@@ -1,30 +1,39 @@
-// lib/notifications/push.ts — V3.0.0 (RIGOR TOTAL: Anti-Ghost + High Priority)
+// lib/notifications/push.ts — V3.1.0 (RIGOR TOTAL: Anti-I/O + Token Injection)
 import { supabase } from '@/lib/jarvis';
 
-export async function sendPushNotification(userId: number, title: string, body?: string): Promise<boolean> {
-  // 1. HIDRATAÇÃO: Busca o token (garantindo o nome da coluna correto)
-  const { data: user, error } = await supabase
-    .from('users')
-    .select('push_token') 
-    .eq('id', userId)
-    .single();
+export async function sendPushNotification(
+  userId: number, 
+  title: string, 
+  body?: string,
+  injectedToken?: string // [CONTRATO: Permite injeção via masterContext para evitar I/O]
+): Promise<boolean> {
+  
+  let token = injectedToken;
 
-  if (error || !user?.push_token) {
-    console.error(`[Push] Usuário ${userId} sem token ou erro no banco:`, error?.message);
-    return false;
+  // 1. HIDRATAÇÃO CONDICIONAL (Só bate no banco se for CronJob/QStash sem contexto)
+  if (!token) {
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('push_token') 
+      .eq('id', userId)
+      .single();
+
+    if (error || !user?.push_token) {
+      console.warn(`[Push] Usuário ${userId} sem token ou erro no banco:`, error?.message);
+      return false;
+    }
+    token = user.push_token;
   }
 
-  // 2. CONSTRUÇÃO DO PAYLOAD (Padrão Híbrido para Resiliência)
-  // Duplicamos as informações em 'notification' e 'data' para garantir que,
-  // se o sistema falhar, o App ainda consiga ler os dados.
+  // 2. CONSTRUÇÃO DO PAYLOAD
   const message = {
-    to: user.push_token,
-    priority: 'high', // Prioridade no nível raiz para a API Legada
+    to: token,
+    priority: 'high',
     notification: {
       title: title || '🔔 Lembrete Jarvis',
       body: body || title || 'Você tem uma nova mensagem.',
       sound: 'default',
-      tag: 'jarvis_reminder', // Agrupa notificações para não poluir a tela
+      tag: 'jarvis_reminder',
     },
     data: {
       type: 'reminder',
@@ -32,11 +41,10 @@ export async function sendPushNotification(userId: number, title: string, body?:
       body: body || title,
       click_action: 'FLUTTER_NOTIFICATION_CLICK',
     },
-    // Configurações específicas para Android "gritar"
     android: {
       priority: 'high',
       notification: {
-        channel_id: 'reminders', // ⚠️ DEVE existir no seu código mobile
+        channel_id: 'reminders',
         sound: 'default',
         default_sound: true,
         default_vibrate_timings: true,
@@ -45,7 +53,13 @@ export async function sendPushNotification(userId: number, title: string, body?:
   };
 
   try {
-    // 3. ENVIO COM TIMEOUT
+    // ⚠️ ALERTA CRÍTICO DE INFRAESTRUTURA:
+    // Este endpoint legacy (fcm/send) foi desligado pelo Google. 
+    // Para funcionar em 2026, você deve usar a API HTTP v1:
+    // URL: https://fcm.googleapis.com/v1/projects/SEU_PROJETO/messages:send
+    // Auth: Bearer <OAuth2_Token> (Não mais Server Key)
+    // Se você usa React Native/Expo, considere migrar para a API do Expo Push.
+    
     const response = await fetch('https://fcm.googleapis.com/fcm/send', {
       method: 'POST',
       headers: {
