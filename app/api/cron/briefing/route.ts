@@ -1,4 +1,6 @@
 // app/api/cron/briefing/route.ts
+// V4.0.0 — Rigor Arquitetural: Single Source of Truth (MasterContext)
+
 import { NextResponse } from 'next/server';
 import { supabase, callOpenRouter, sendTelegram } from '@/lib/jarvis';
 import { getGoogleContext } from '@/lib/google';
@@ -18,48 +20,37 @@ export async function GET(req: Request) {
       return new Response('Unauthorized', { status: 401 });
     }
 
-    const userId = process.env.MY_TELEGRAM_ID!;
+    const userIdStr = process.env.MY_TELEGRAM_ID!;
+    const userIdNum = Number(userIdStr);
 
+    // 1. HIDRATAÇÃO CENTRALIZADA: Uma única ida ao banco para buscar TUDO.
     const [
       weatherData,
       googleAgenda,
       outlookAgenda,
-      eventsResult,
-      profileResult,
-      recommendationsRaw,
+      { data: masterContext, error: contextError }
     ] = await Promise.all([
-      fetch(`https://wttr.in/Londrina?format=%C+%t`, {
-        signal: AbortSignal.timeout(3000),
-      })
+      fetch(`https://wttr.in/Londrina?format=%C+%t`, { signal: AbortSignal.timeout(3000) })
         .then(r => r.text())
         .catch(() => 'Clima indisponível'),
-
       getGoogleContext().catch(() => null),
       getMicrosoftCalendarContext().catch(() => null),
-
-      supabase
-        .from('events')
-        .select('title, event_date, priority, emotional_weight, notes')
-        .eq('user_id', userId)
-        .gte('event_date', new Date().toISOString().slice(0, 10))
-        .lte('event_date', new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10))
-        .order('event_date', { ascending: true })
-        .limit(5)
-        .then(r => r.data || []),
-
-      supabase
-        .from('users')
-        .select('current_context, nickname, assistant_name')
-        .eq('id', userId)
-        .single()
-        .then(r => r.data),
-
-      buildRecommendationsBlock(userId, 'almoço jantar café lugar hoje').catch(() => ''),
+      
+      // O mesmo RPC que alimenta o Intelligence do Chat
+      supabase.rpc('get_consolidated_context', { p_user_id: userIdNum })
     ]);
 
-    const assistantName = profileResult?.assistant_name || 'Lev';
-    const authorName    = profileResult?.nickname || 'Celio';
-    const l3Context     = profileResult?.current_context || '';
+    if (contextError || !masterContext) {
+      throw new Error(`Falha ao carregar MasterContext: ${contextError?.message}`);
+    }
+
+    // 2. EXTRAÇÃO E FUNÇÕES PURAS
+    const assistantName = masterContext.profile?.assistant_name || 'Lev';
+    const authorName    = masterContext.profile?.nickname || 'Celio';
+    const l3Context     = masterContext.profile?.current_context || '';
+
+    // A função pura age sobre o masterContext
+    const recommendationsRaw = buildRecommendationsBlock(masterContext);
 
     const today = new Date().toLocaleDateString('pt-BR', {
       weekday: 'long', day: 'numeric', month: 'long',
@@ -71,25 +62,28 @@ export async function GET(req: Request) {
       outlookAgenda && !outlookAgenda.includes('Erro') ? `Outlook:\n${outlookAgenda}` : null,
     ].filter(Boolean).join('\n\n') || 'Agenda limpa.';
 
-    const eventsBlock = (eventsResult as any[]).length > 0
-      ? (eventsResult as any[]).map((e: any) => {
+    // O masterContext já deve trazer os eventos filtrados/organizados
+    const events = masterContext.events || [];
+    const eventsBlock = events.length > 0
+      ? events.map((e: any) => {
           const daysUntil = Math.round(
-            (new Date(e.event_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+            (new Date(e.start_at || e.event_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
           );
-          const when = daysUntil === 0 ? 'HOJE'
+          const when = daysUntil <= 0 ? 'HOJE'
                      : daysUntil === 1 ? 'amanhã'
                      : `em ${daysUntil} dias`;
           return `${e.title} — ${when}${e.notes ? ` (${e.notes})` : ''}`;
-        }).join('\n')
-      : 'Nada no radar nos próximos 30 dias.';
+        }).slice(0, 5).join('\n')
+      : 'Nada no radar nos próximos dias.';
 
+    // 3. MONTAGEM DO PROMPT
     const briefingPrompt = `Você é ${assistantName}, assistente pessoal de ${authorName}.
 É ${today}. Gere o briefing matinal.
 
 [AGENDA DE HOJE]
 ${agendaBlock}
 
-[RADAR — PRÓXIMOS 30 DIAS]
+[RADAR — PRÓXIMOS DIAS]
 ${eventsBlock}
 
 [CLIMA — LONDRINA]
@@ -128,7 +122,7 @@ REGRAS:
       ),
     ]) as string;
 
-    await sendTelegram(userId, aiReply);
+    await sendTelegram(userIdStr, aiReply);
 
     return NextResponse.json({ ok: true });
 
