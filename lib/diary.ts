@@ -1,13 +1,10 @@
 // lib/diary.ts
 // Motor de diário pessoal e metas — Lev Platform
+// V12 — Refatorado para o Contrato de 4 Regras
 
-import { createClient } from '@supabase/supabase-js';
-import { callAI } from './Utils/ai-helpers';
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
+import { supabase } from '@/lib/jarvis';
+import { callAIExtractor } from './Utils/ai-helpers';
+import { invalidateContextField } from '@/lib/services/context-cache';
 
 // ============================================================
 // EXTRATOR: DIÁRIO — detecta e persiste entrada do dia
@@ -43,8 +40,10 @@ REGRAS:
 - eh_diario: false se for pergunta, tarefa, agenda ou assunto técnico`;
 
   try {
-    const raw = await callAI(prompt, 300);
-    const data = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    // Regra 4: Delegação de chamadas LLM ao Gateway via ai-helpers
+    const raw = await callAIExtractor(prompt, 300);
+    const data = JSON.parse(raw.replace(/```json|
+```/g, '').trim());
 
     if (!data.eh_diario) return false;
     if (!data.content && !data.mood && !data.intention && !data.reflection) return false;
@@ -67,7 +66,7 @@ REGRAS:
     };
 
     if (data.content) payload.content = existing?.content
-      ? `${existing.content}\n${data.content}`
+      ? ${existing.content}\n${data.content}
       : data.content;
     if (data.mood)        payload.mood       = data.mood;
     if (data.energy)      payload.energy     = data.energy;
@@ -79,13 +78,19 @@ REGRAS:
       payload.gratitude = [...new Set([...existing_g, ...data.gratitude])].slice(0, 3);
     }
 
+    let error;
     if (existing?.id) {
-      await supabase.from('diary').update(payload).eq('id', existing.id);
+      ({ error } = await supabase.from('diary').update(payload).eq('id', existing.id));
     } else {
-      await supabase.from('diary').insert(payload);
+      ({ error } = await supabase.from('diary').insert(payload));
     }
 
-    console.log(`[diary] Entrada salva — user ${userId} | ${period} | mood: ${data.mood}`);
+    // Regra 2: Invalidação de Cache no final de toda escrita
+    if (!error) {
+      await invalidateContextField(Number(userId), 'diary').catch(console.error);
+    }
+
+    console.log([diary] Entrada salva — user ${userId} | ${period} | mood: ${data.mood});
     return true;
   } catch (e) {
     console.error('[diary] Erro:', e);
@@ -100,7 +105,7 @@ export async function extractGoal(
   userId: string,
   userMessage: string
 ): Promise<boolean> {
-  const prompt = `Analise a mensagem e extraia metas pessoais se houver.
+  const prompt = Analise a mensagem e extraia metas pessoais se houver.
 
 Mensagem: "${userMessage}"
 
@@ -127,13 +132,15 @@ REGRAS:
 - steps: array de etapas [{label: "texto", done: false}] se mencionadas
 - project_tag: slug do projeto relacionado se mencionado (ex: "pqf"), null se não
 - progress: 0-100 se o usuário indicar progresso atual, null se não
-- Retorne metas: [] se nenhuma meta clara`;
+- Retorne metas: [] se nenhuma meta clara;
 
   try {
-    const raw = await callAI(prompt, 400);
+    const raw = await callAIExtractor(prompt, 400);
     const data = JSON.parse(raw.replace(/```json|```/g, '').trim());
 
     if (!data.eh_meta || !data.metas?.length) return false;
+
+    let hasUpdates = false;
 
     for (const meta of data.metas) {
       if (!meta.title) continue;
@@ -157,6 +164,7 @@ REGRAS:
         if (Object.keys(patch).length > 1) {
           await supabase.from('goals').update(patch).eq('id', existing.id);
           console.log(`[goals] Atualizada: ${meta.title}`);
+          hasUpdates = true;
         }
         continue;
       }
@@ -173,7 +181,14 @@ REGRAS:
         status:        'active',
       });
       console.log(`[goals] Nova meta: ${meta.title}`);
+      hasUpdates = true;
     }
+
+    if (hasUpdates) {
+       // Supondo que você terá um campo 'goals' no cache no futuro.
+       // await invalidateContextField(Number(userId), 'goals').catch(console.error);
+    }
+    
     return true;
   } catch (e) {
     console.error('[goals] Erro:', e);
@@ -229,47 +244,39 @@ export async function updateGoalProgress(
 
 // ============================================================
 // BUILDER: bloco de diário + metas para o system prompt
+// REGRA 3: LÊ APENAS DO CONTEXTO MESTRE. ZERO QUERIES.
 // ============================================================
-export async function buildDiaryGoalsBlock(userId: string): Promise<string> {
+export function buildDiaryGoalsBlock(masterContext: any): string {
   try {
-    const today = new Date().toISOString().slice(0, 10);
-
-    const [diaryResult, goalsResult] = await Promise.all([
-      supabase
-        .from('diary')
-        .select('period, mood, energy, intention, reflection, content, gratitude')
-        .eq('user_id', userId)
-        .eq('date', today)
-        .order('period'),
-
-      supabase
-        .from('goals')
-        .select('title, description, due_date, progress, steps, reminder_days')
-        .eq('user_id', userId)
-        .eq('status', 'active')
-        .order('due_date', { ascending: true })
-        .limit(5),
-    ]);
-
     const parts: string[] = [];
 
-    const entries = diaryResult.data || [];
+    // O masterContext.diary já traz as últimas entradas (resolvido pelo RPC)
+    const entries = masterContext?.diary || [];
     if (entries.length > 0) {
-      const lines = entries.map((e: any) => {
-        const bits: string[] = [];
-        if (e.period !== 'anytime') bits.push(`[${e.period === 'morning' ? 'manhã' : 'noite'}]`);
-        if (e.mood)       bits.push(`humor: ${e.mood}/5`);
-        if (e.energy)     bits.push(`energia: ${e.energy}/5`);
-        if (e.intention)  bits.push(`intenção: ${e.intention}`);
-        if (e.reflection) bits.push(`reflexão: ${e.reflection}`);
-        if (e.content)    bits.push(e.content);
-        if (e.gratitude?.length) bits.push(`grato por: ${e.gratitude.join(', ')}`);
-        return bits.join(' | ');
-      });
-      parts.push(`[DIÁRIO DE HOJE]\n${lines.join('\n')}`);
+      // Pega apenas a entrada de hoje se existir
+      const today = new Date().toISOString().slice(0, 10);
+      const todaysEntries = entries.filter((e: any) => e.date === today);
+      
+      if (todaysEntries.length > 0) {
+          const lines = todaysEntries.map((e: any) => {
+            const bits: string[] = [];
+            if (e.period && e.period !== 'anytime') bits.push(`[${e.period === 'morning' ? 'manhã' : 'noite'}]`);
+            if (e.mood)       bits.push(`humor: ${e.mood}/5`);
+            if (e.energy)     bits.push(`energia: ${e.energy}/5`);
+            if (e.intention)  bits.push(`intenção: ${e.intention}`);
+            if (e.reflection) bits.push(`reflexão: ${e.reflection}`);
+            if (e.content)    bits.push(e.content);
+            if (e.gratitude?.length) bits.push(`grato por: ${e.gratitude.join(', ')}`);
+            return bits.join(' | ');
+          });
+          parts.push(`[DIÁRIO DE HOJE]\n${lines.join('\n')}`);
+      }
     }
 
-    const goals = goalsResult.data || [];
+    // Nota: Como 'goals' não está no get_consolidated_context original, 
+    // ou você adiciona ele lá (se for vital para todas as sessões), 
+    // ou remove do system prompt padrão. Vou manter o parse caso você adicione.
+    const goals = masterContext?.goals || [];
     if (goals.length > 0) {
       const lines = goals.map((g: any) => {
         const prazo = g.due_date
@@ -300,6 +307,7 @@ export async function checkGoalReminders(
   userId: string,
   assistantName: string
 ): Promise<string | null> {
+  // Esse pode bater no banco, pois roda em CronJob, não no fluxo do chat
   try {
     const { data: goals } = await supabase
       .from('goals')
@@ -332,4 +340,4 @@ export async function checkGoalReminders(
     console.error('[checkGoalReminders] Erro:', e);
     return null;
   }
-} 
+}
