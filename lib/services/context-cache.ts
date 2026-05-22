@@ -21,15 +21,20 @@ const redis = new Redis({
 // ── TTLs por campo (segundos) ─────────────────────────────────────────────────
 
 const FIELD_TTL: Record<ContextField, number> = {
-  settings:   3600, // 1h  — muda só quando usuário ajusta personalidade
-  modules:    3600, // 1h  — muda raramente
-  guidelines: 3600, // 1h  — muda raramente
-  persons:    1800, // 30m — muda raramente
-  locations:  1800, // 30m — muda raramente
-  favorite_places: 1800, // 30m — muda raramente  
-  reminders:    60, // 1m  — muda a cada lembrete criado/disparado
-  history:      60, // 1m  — invalidação explícita após cada turno
+  settings:   86400, // 24 horas
+  modules:    86400,
+  guidelines: 86400,
+  persons:    86400,
+  locations:  86400,
+  favorite_places: 86400,
+  reminders:  86400,
+  history:    86400, // É invalidado explicitamente a cada chat
+  shopping:   86400, // É invalidado explicitamente na compra
+  events:     86400, // É invalidado explicitamente ao agendar
+  diary:      86400, // É invalidado explicitamente ao escrever
+  goals:      86400,
 };
+
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -41,7 +46,11 @@ export type ContextField =
   | 'locations'
   | 'reminders'
   | 'history'
-  | 'favorite_places';
+  | 'favorite_places'
+  | 'shopping'
+  | 'events'
+  | 'diary'
+  | 'goals';
 
 // ── Helpers de chave ──────────────────────────────────────────────────────────
 
