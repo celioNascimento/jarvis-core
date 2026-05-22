@@ -174,5 +174,4 @@ export async function upsertEvent(userId: string, ev: EventPayload): Promise<voi
   if (!error) {
     await invalidateContextField(Number(userId), 'events').catch(console.error);
   }
-  }
 }
