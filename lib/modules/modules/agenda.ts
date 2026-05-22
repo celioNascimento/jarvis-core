@@ -20,7 +20,7 @@ export const ModuloAgenda: ModuleDefinition = {
   
   // REGRA 3: Sem async, sem await, sem fetch, sem supabase. 
   // Apenas formata o que já está na memória RAM.
-  buildContextBlock: (opts) => {
+  buildContextBlock: async (opts) => {
     try {
       const events = (opts as any).masterContext?.events || [];
       
