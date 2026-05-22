@@ -102,19 +102,22 @@ export async function compactMemory(userId: string, authorName: string): Promise
 
     const prompt = `Você é o Gerente de Memória do Lev. Mantenha o Dossiê do usuário ${authorName} atualizado.\n[DOSSIÊ ATUAL]:\n${oldContext}\n\n[NOVAS INTERAÇÕES]:\n${brainText}\nTAREFA: Integre as novas informações ao Dossiê. Retorne apenas o texto puro.`;
 
+
     const newContext = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.3);
     if (!memoriaEhValida(newContext)) return;
 
-    const { data: embeddingData } = await (await import('@/lib/jarvis')).generateEmbedding(newContext); // Import dinâmico para evitar circular dependência
+    // A função generateEmbedding retorna o array diretamente, não um objeto { data: ... }
+    const embedding = await (await import('@/lib/jarvis')).generateEmbedding(newContext);
     
-    if (embeddingData) {
+    if (embedding) {
       await supabase.from('users').update({ current_context: newContext }).eq('id', userId);
+      
       // Invalidação obrigatória (Regra 2)
       await invalidateContextField(Number(userId), 'dossier_summary').catch(console.error);
       
       await supabase.from('memories').insert([{
         summary: newContext,
-        embedding: embeddingData,
+        embedding: embedding, // embedding aqui é o array number[]
         user_id: userId,
         relevance_score: 1.0,
         access_count: 0,
