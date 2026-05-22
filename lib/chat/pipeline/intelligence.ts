@@ -60,8 +60,9 @@ async function getMasterContext(
   console.log('[MasterContext] Cache status:', {
     hit: STATIC_FIELDS.filter(f => f in cached),
     miss: missingStatic,
-    // Loga a estrutura de modules para diagnóstico
-    modulesType: cached.modules ? `array[${Array.isArray(cached.modules) ? cached.modules.length : 'não-array'}]` : 'ausente',
+    modulesType: cached.modules
+      ? `array[${Array.isArray(cached.modules) ? cached.modules.length : 'não-array'}]`
+      : 'ausente',
   });
 
   // 3. Cache hit total — busca só histórico e reminders
@@ -112,26 +113,47 @@ async function getMasterContext(
 
   const result = data || {};
 
-  // 5. Loga a estrutura retornada pelo RPC para diagnóstico
   console.log('[MasterContext] RPC retornou:', {
     fields: Object.keys(result),
     modulesCount: Array.isArray(result.modules) ? result.modules.length : 'não-array',
     modulesSample: Array.isArray(result.modules) ? result.modules.slice(0, 2) : result.modules,
   });
 
-  // 6. Popula o cache — só os campos ausentes, garantindo que modules não seja nulo
-  await Promise.all(
-    STATIC_FIELDS
-      .filter(f => missingStatic.includes(f as any) && result[f] != null)
-      .map(f => {
-        // modules precisa ser um array — valida antes de cachear
-        if (f === 'modules' && !Array.isArray(result[f])) {
-          console.warn('[MasterContext] modules do RPC não é array, ignorando cache:', result[f]);
-          return Promise.resolve();
-        }
-        return cache.set(f as any, result[f]);
-      })
-  );
+  // 5. Popula o cache — itera sobre missingStatic diretamente (sem .includes)
+  const savePromises: Promise<void>[] = [];
+
+  for (const f of missingStatic) {
+    const value = result[f];
+
+    if (value == null) {
+      console.warn(`[MasterContext] Campo '${f}' veio nulo do RPC — não cacheado`);
+      continue;
+    }
+
+    if (f === 'modules' && !Array.isArray(value)) {
+      console.warn('[MasterContext] modules não é array — não cacheado:', value);
+      continue;
+    }
+
+    // Para persons — salva versão slim para não estourar o Redis
+    if (f === 'persons' && Array.isArray(value)) {
+      const slim = value.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        type: p.type,
+        nickname: p.nickname,
+        emotional_weight: p.emotional_weight,
+      }));
+      console.log(`[MasterContext] Salvando persons slim — ${slim.length} registros`);
+      savePromises.push(cache.set(f, slim));
+      continue;
+    }
+
+    console.log(`[MasterContext] Salvando '${f}' — ${JSON.stringify(value).length} chars`);
+    savePromises.push(cache.set(f, value));
+  }
+
+  await Promise.all(savePromises);
 
   return result;
 }
