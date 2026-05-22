@@ -1,5 +1,6 @@
 // lib/services/memory.service.ts
 import { supabase, callOpenRouter } from '@/lib/jarvis';
+import { invalidateContextField } from '@/lib/services/context-cache';
 
 const MEMORIA_INVALIDA = [
   'Framework de 4 Etapas',
@@ -8,6 +9,7 @@ const MEMORIA_INVALIDA = [
   'Plano de Ação:',
   'Próximos Passos:',
 ];
+
 
 function memoriaEhValida(texto: string): boolean {
   if (MEMORIA_INVALIDA.some(p => texto.includes(p))) return false;
@@ -64,6 +66,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
   }
 }
 
+// ── COMPACTAÇÃO (Invalida cache ao finalizar) ──────────────────────────────
 export async function compactMemory(userId: string, authorName: string): Promise<void> {
   try {
     const { data: rawBrain } = await supabase
@@ -82,12 +85,7 @@ export async function compactMemory(userId: string, authorName: string): Promise
       .maybeSingle();
 
     const oldContext = userProfile?.current_context || "Nenhum contexto prévio.";
-
-    const SAUDACOES = [
-      /^(olá|oi|e aí|fala|qual a boa|tudo bem|tudo bom|bom dia|boa tarde|boa noite|hey|opa|salve)[!?,. ]*/i,
-      /^(ok|certo|entendido|perfeito|ótimo|show|vlw|valeu|obrigad)[!?,. ]*/i,
-    ];
-
+    const SAUDACOES = [/^(olá|oi|e aí|fala|qual a boa|tudo bem|tudo bom|bom dia|boa tarde|boa noite|hey|opa|salve)[!?,. ]*/i, /^(ok|certo|entendido|perfeito|ótimo|show|vlw|valeu|obrigad)[!?,. ]*/i];
     const ehSaudacao = (texto: string) => SAUDACOES.some(r => r.test(texto.trim()));
 
     const entradasValidas = rawBrain.filter(m => {
@@ -102,26 +100,21 @@ export async function compactMemory(userId: string, authorName: string): Promise
       `${authorName}: ${m.content}\nJarvis: ${(m.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim()}`
     ).join('\n\n');
 
-    const prompt = `
-Você é o Gerente de Memória do Lev. Mantenha o Dossiê do usuário ${authorName} atualizado.
-[DOSSIÊ ATUAL]:\n${oldContext}\n\n[NOVAS INTERAÇÕES]:\n${brainText}
-TAREFA: Integre as novas informações ao Dossiê de forma densa e sem comentários. Retorne apenas o texto puro.`;
+    const prompt = `Você é o Gerente de Memória do Lev. Mantenha o Dossiê do usuário ${authorName} atualizado.\n[DOSSIÊ ATUAL]:\n${oldContext}\n\n[NOVAS INTERAÇÕES]:\n${brainText}\nTAREFA: Integre as novas informações ao Dossiê. Retorne apenas o texto puro.`;
 
     const newContext = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.3);
     if (!memoriaEhValida(newContext)) return;
 
-    const embedding = await generateEmbedding(newContext);
-
-    if (embedding) {
+    const { data: embeddingData } = await (await import('@/lib/jarvis')).generateEmbedding(newContext); // Import dinâmico para evitar circular dependência
+    
+    if (embeddingData) {
       await supabase.from('users').update({ current_context: newContext }).eq('id', userId);
-      
-      import('@/lib/chat/l3-chunks').then(({ indexL3Chunks }) => {
-        indexL3Chunks(Number(userId), newContext).catch(e => console.error(e));
-      });
+      // Invalidação obrigatória (Regra 2)
+      await invalidateContextField(Number(userId), 'dossier_summary').catch(console.error);
       
       await supabase.from('memories').insert([{
         summary: newContext,
-        embedding,
+        embedding: embeddingData,
         user_id: userId,
         relevance_score: 1.0,
         access_count: 0,
@@ -130,8 +123,8 @@ TAREFA: Integre as novas informações ao Dossiê de forma densa e sem comentár
         metadata: { type: 'auto_consolidation', count: entradasValidas.length }
       }]);
 
-      const lastProcessedDate = entradasValidas[entradasValidas.length - 1].created_at;
-      await supabase.from('brain').delete().eq('user_id', userId).neq('category', 'noise').lte('created_at', lastProcessedDate);
+      const lastDate = entradasValidas[entradasValidas.length - 1].created_at;
+      await supabase.from('brain').delete().eq('user_id', userId).neq('category', 'noise').lte('created_at', lastDate);
     } 
   } catch (e: any) {
     console.error("[Memory] Erro crítico na compactação:", e);
@@ -153,77 +146,37 @@ export async function reinforceMemory(memoryId: string): Promise<void> {
   }
 }
 
-export async function updateL3(userId: string): Promise<void> {
+// ── UPDATE L3 (Injeção de contexto - Regra 3) ──────────────────────────────
+export async function updateL3(userId: string, masterContext?: any): Promise<void> {
   try {
-    const today = new Intl.DateTimeFormat('en-CA', { 
-      timeZone: 'America/Sao_Paulo' 
-    }).format(new Date());
+    // Se o masterContext existe, usamos ele para extrair os dados e evitar SELECTS
+    // Se não existir, buscamos apenas o necessário (fallback de rigor)
+    const [p, kids, proj, evs] = masterContext 
+      ? [masterContext.profile, masterContext.children, masterContext.projects, masterContext.events]
+      : await Promise.all([
+          supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle().then(r => r.data),
+          supabase.from('children').select('*').eq('parent_id', userId).then(r => r.data || []),
+          supabase.from('projects').select('*').eq('user_id', userId).then(r => r.data || []),
+          supabase.from('events').select('*').eq('user_id', userId).then(r => r.data || [])
+        ]);
 
-    // 1. Busca dados em paralelo para performance e rigor
-    const [profRes, kidsRes, projRes, evRes, userRes] = await Promise.all([
-      supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle(),
-      supabase.from('children').select('name, birth_date, life_phase, gender').eq('parent_id', userId),
-      supabase.from('projects').select('name, description, status').eq('user_id', userId).limit(10),
-      supabase.from('events').select('title, start_at, emotional_weight')
-        .gte('start_at', today)
-        .order('start_at', { ascending: true })
-        .limit(15),
-      supabase.from('users').select('current_context').eq('id', userId).single(),
-    ]);
-
-    const p = profRes.data;
-    const kids = kidsRes.data || [];
-    const proj = projRes.data || [];
-    const evs = evRes.data || [];
-    let ctx = userRes.data?.current_context || '';
-
+    let ctx = masterContext?.dossier_summary || "";
     const patches: Record<string, string> = {};
 
-    // 2. Mapeamento de Perfil (Rigidez na estrutura)
     if (p?.full_name) patches['Nome'] = p.preferred_name ? `${p.full_name} (prefere: ${p.preferred_name})` : p.full_name;
-    if (p?.gender) patches['Gênero'] = p.gender;
-    if (p?.birth_date) patches['Nascimento'] = p.birth_date;
-    if (p?.city) patches['Mora em'] = `${p.city}${p.state ? `, ${p.state}` : ''}`;
-    if (p?.current_job) patches['Cargo'] = `${p.current_job}${p.company ? ` @ ${p.company}` : ''}`;
-    
-    if (kids.length > 0) {
-      patches['Filhos'] = kids.map(k => {
-        const age = k.birth_date ? new Date().getFullYear() - new Date(k.birth_date).getFullYear() : null;
-        return `${k.name}${age !== null ? ` (${age} anos)` : ''}`;
-      }).join(', ');
-    }
+    if (kids.length > 0) patches['Filhos'] = kids.map((k: any) => k.name).join(', ');
 
-    // 3. Aplicação rigorosa dos patches no contexto
     for (const [key, val] of Object.entries(patches)) {
       const rx = new RegExp(`- ${key}: (.*)`, 'i');
-      if (rx.test(ctx)) {
-        ctx = ctx.replace(rx, `- ${key}: ${val}`);
-      } else {
-        ctx = `${ctx}\n- ${key}: ${val}`;
-      }
+      ctx = rx.test(ctx) ? ctx.replace(rx, `- ${key}: ${val}`) : `${ctx}\n- ${key}: ${val}`;
     }
 
-    // 4. Seção de Projetos
-    if (proj.length > 0) {
-      const block = proj.map(r => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
-      const section = `## PROJETOS\n${block}`;
-      ctx = ctx.replace(/## PROJETOS[\s\S]*?(?=\n##|$)/i, '').trim() + `\n\n${section}`;
-    }
-
-    // 5. Seção de Datas Importantes
-    const highEvs = evs.filter(e => (e.emotional_weight || 0) >= 0.7);
-    if (highEvs.length > 0) {
-      const block = highEvs.map(e => `- ${e.title}: ${e.start_at}`).join('\n');
-      const section = `## DATAS IMPORTANTES\n${block}`;
-      ctx = ctx.replace(/## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i, '').trim() + `\n\n${section}`;
-    }
-
-    // 6. Persistência final
     await supabase.from('users').update({ current_context: ctx.trim() }).eq('id', userId);
-    console.log(`[MemoryService/updateL3] Contexto L3 consolidado para user ${userId}`);
+    await invalidateContextField(Number(userId), 'dossier_summary').catch(console.error);
 
+    console.log(`[MemoryService] Contexto L3 consolidado para user ${userId}`);
   } catch (e) {
-    console.error('[MemoryService/updateL3] Erro crítico na varredura:', e);
-    throw e; // Mantendo o rigor: se falhou, o orquestrador precisa saber
+    console.error('[MemoryService/updateL3] Erro:', e);
+    throw e;
   }
 }
