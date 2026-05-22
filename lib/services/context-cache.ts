@@ -35,7 +35,8 @@ export type ContextField =
   | 'events'
   | 'diary'
   | 'goals'
-  | 'recommendations';
+  | 'recommendations'
+  | 'favorite_places';
 
 // 2. Agora, verifique se o objeto TTL_CONFIG está usando exatamente este tipo:
 const TTL_CONFIG: Record<ContextField, number> = {
@@ -54,6 +55,7 @@ const TTL_CONFIG: Record<ContextField, number> = {
   diary: 86400,
   goals: 84600,
   recommendations: 84600,
+  favorite_places: 84600,
 };
 
 // ── Helpers de chave ──────────────────────────────────────────────────────────
