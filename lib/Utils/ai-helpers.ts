@@ -1,23 +1,37 @@
-// lib/utils/ai-helpers.ts
+// lib/utils/ai-helpers.ts — V14.1 (Rigor de Contrato: Tipagem Estrita e Gateway)
 
 import type { PersonalitySettings } from '@/lib/services/personality.service';
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 
+// ── TIPAGENS ESTRITAS ────────────────────────────────────────
+
+export interface InsightItem {
+  source_type: 'user_confirmed' | 'user_corrected' | 'inferred' | string;
+  insight_text: string;
+  confidence_score: number;
+}
+
+export interface SettingRow {
+  key: keyof PersonalitySettings;
+  value: number;
+}
+
+export type SettingsMap = Partial<PersonalitySettings>;
+
+// ── LLM GATEWAY WRAPPERS (Regra 4) ───────────────────────────
+
 /**
- * Chama a IA garantindo o formato de texto, porém AGORA 
- * passando pelo Gateway (Regra 4) para controle de I/O e concorrência.
- * Mantido como callAI para não quebrar os imports do extractor.
+ * Chama a IA garantindo o formato de texto, passando pelo Gateway 
+ * para controle de I/O e concorrência em Tarefas de Fundo (Prioridade 3).
  */
 export async function callAI(prompt: string, maxTokens = 300): Promise<string> {
-  // Envia a requisição para o Gateway como Tarefa de Fundo (Prioridade 3)
-  // Assim, essas extrações não travam a fila do usuário principal (Prioridade 1)
   const res = await callOpenRouterWithPriority(
     3, 
     'queue', 
     `callAI_${Date.now()}`, 
     [{ role: 'user', content: prompt }], 
     undefined, 
-    'google/gemini-2.0-flash-001', // O modelo leve de extração
+    'google/gemini-2.0-flash-001',
     0.1, 
     20000, 
     maxTokens
@@ -32,16 +46,19 @@ export async function callAI(prompt: string, maxTokens = 300): Promise<string> {
 }
 
 /**
- * Aliás para manter compatibilidade com o extractor-jobs.ts
+ * Aliás para manter compatibilidade com módulos legados.
  */
 export async function callAIExtractor(prompt: string, maxTokens = 300): Promise<string> {
   return callAI(prompt, maxTokens);
 }
 
+// ── PARSERS SEGUROS ──────────────────────────────────────────
+
 /**
- * Tenta fazer o parse seguro de um JSON, corrigindo erros comuns do LLM
+ * Tenta fazer o parse seguro de um JSON, corrigindo erros comuns do LLM.
+ * Retorna unknown para forçar o chamador a fazer o cast/validação (Rigor TypeScript).
  */
-export function safeParseJSON(raw: string): any | null {
+export function safeParseJSON(raw: string): unknown | null {
   const clean = raw.replace(/[`]{3}json|[`]{3}/gi, '').trim();
   
   try {
@@ -69,6 +86,8 @@ export function safeParseJSON(raw: string): any | null {
   }
 }
 
+// ── CONSTRUTORES PUROS (Regra 3: Zero I/O) ───────────────────
+
 const PERSONALITY_DEFAULTS: PersonalitySettings = {
   humor: 50,
   franqueza: 80,
@@ -78,10 +97,9 @@ const PERSONALITY_DEFAULTS: PersonalitySettings = {
 
 /**
  * Constrói o bloco de learned_insights a partir do masterContext.
- * Zero queries ao banco (Regra 3).
  */
-export function buildLearnedInsightsBlock(insights: any[]): string {
-  if (!insights?.length) return '';
+export function buildLearnedInsightsBlock(insights: InsightItem[] | undefined | null): string {
+  if (!insights || insights.length === 0) return '';
 
   const confirmed = insights.filter(i =>
     i.source_type === 'user_confirmed' || i.source_type === 'user_corrected'
@@ -106,19 +124,21 @@ export function buildLearnedInsightsBlock(insights: any[]): string {
 
 /**
  * Reconstrói PersonalitySettings a partir do masterContext.settings.
- * Zero queries ao banco (Regra 3).
  */
-export function buildPersonalityFromContext(settings: any): PersonalitySettings {
+export function buildPersonalityFromContext(settings: SettingRow[] | SettingsMap | undefined | null): PersonalitySettings {
   if (!settings) return PERSONALITY_DEFAULTS;
 
   if (Array.isArray(settings)) {
     const result = { ...PERSONALITY_DEFAULTS };
     for (const row of settings) {
-      if (row.key in result) (result as any)[row.key] = row.value;
+      if (row.key in result) {
+        result[row.key] = row.value;
+      }
     }
     return result;
   }
 
+  // Se for um objeto SettingsMap
   return {
     humor:       settings.humor       ?? PERSONALITY_DEFAULTS.humor,
     franqueza:   settings.franqueza   ?? PERSONALITY_DEFAULTS.franqueza,
