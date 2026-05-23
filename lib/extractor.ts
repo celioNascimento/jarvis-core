@@ -6,7 +6,6 @@ import {
   extractRotina, extractPreferencia, extractRecomendacao, 
   extractFamilia, extractShopping
 } from '@/lib/extractor-jobs';
-import { updateL3 } from './services/memory.service';
 
 // ── Tipos Estritos ───────────────────────────────────────────
 export interface ExtractionOptions {
@@ -31,17 +30,17 @@ export interface ExtractionModule {
 
 // ── REGISTRO DE MÓDULOS ──────────────────────────────────────
 const EXTRACTION_MODULES: ExtractionModule[] = [
-  { id: 'familia', match: (ctx) => ctx.includes('familia'), run: (uid, msg, gaps: DetectedGap[]) => extractFamilia(uid, msg, gaps) },
-  { id: 'projeto', match: (ctx) => ctx.includes('projeto'), run: (uid, msg) => extractProjeto(uid, msg) },
-  { id: 'evento',  match: (ctx) => ctx.includes('evento'),  run: (uid, msg) => extractEvento(uid, msg) },
-  { id: 'agenda',  match: (ctx) => ctx.includes('agenda'),  run: (uid, msg) => extractAgenda(uid, msg) },
-  { id: 'rotina',  match: (ctx) => ctx.includes('rotina'),  run: (uid, msg) => extractRotina(uid, msg) },
-  { id: 'preferencia', match: (ctx) => ctx.includes('preferencia'), run: (uid, msg) => extractPreferencia(uid, msg) },
+  { id: 'familia',      match: (ctx) => ctx.includes('familia'),      run: (uid, msg, gaps: DetectedGap[]) => extractFamilia(uid, msg, gaps) },
+  { id: 'projeto',      match: (ctx) => ctx.includes('projeto'),      run: (uid, msg) => extractProjeto(uid, msg) },
+  { id: 'evento',       match: (ctx) => ctx.includes('evento'),       run: (uid, msg) => extractEvento(uid, msg) },
+  { id: 'agenda',       match: (ctx) => ctx.includes('agenda'),       run: (uid, msg) => extractAgenda(uid, msg) },
+  { id: 'rotina',       match: (ctx) => ctx.includes('rotina'),       run: (uid, msg) => extractRotina(uid, msg) },
+  { id: 'preferencia',  match: (ctx) => ctx.includes('preferencia'),  run: (uid, msg) => extractPreferencia(uid, msg) },
   { id: 'recomendacao', match: (ctx) => ctx.includes('recomendacao'), run: (uid, msg, reply) => extractRecomendacao(uid, msg, reply) },
-  { id: 'compras', match: (ctx) => ctx.includes('compras'), run: (uid, msg, reply) => extractShopping(uid, msg, reply) },
+  { id: 'compras',      match: (ctx) => ctx.includes('compras'),      run: (uid, msg, reply) => extractShopping(uid, msg, reply) },
 ];
 
-// ── ORQUESTRADOR PRINCIPAL (Tipagem Estrita) ───────────────────
+// ── ORQUESTRADOR PRINCIPAL ────────────────────────────────────
 
 export async function extractAndSummarize(
   userId: string,
@@ -56,9 +55,8 @@ export async function extractAndSummarize(
     const tasks: Promise<void>[] = [];
     for (const mod of EXTRACTION_MODULES) {
       if (mod.match(classification.contexts)) {
-        // [RIGOR]: Tratamento explícito para evitar o erro de tipos
         if (mod.id === 'familia') {
-          tasks.push(mod.run(userId, userMessage, [] as DetectedGap[])); 
+          tasks.push(mod.run(userId, userMessage, [] as DetectedGap[]));
         } else if (mod.id === 'recomendacao' || mod.id === 'compras') {
           tasks.push(mod.run(userId, userMessage, aiReply));
         } else {
@@ -67,34 +65,36 @@ export async function extractAndSummarize(
       }
     }
 
-    Promise.allSettled(tasks).then(() => updateL3(userId).catch(console.error));
-    
+    // updateL3 é chamado no pipeline principal via l3.extractor com masterContext completo
+    Promise.allSettled(tasks).catch(console.error);
+
     return summarizeContexts(classification.contexts);
   } catch (e) {
     console.error('[Extrator/Orquestrador] Erro:', e);
     return '';
   }
 }
-// ── CLASSIFICADOR (Gateway Integration) ─────────────────────────
+
+// ── CLASSIFICADOR ─────────────────────────────────────────────
 
 async function classify(userId: string, userMessage: string) {
   const prompt = `Analise a mensagem e retorne JSON: {"has_new_facts": boolean, "contexts": string[]}. 
 Contextos: familia, projeto, evento, agenda, rotina, preferencia, recomendacao, compras. 
 Mensagem: "${userMessage}"`;
-  
+
   try {
     const raw = await llmGateway.enqueue({
-        id: `classify-${userId}-${Date.now()}`,
-        priority: 4,
-        params: {
-            messages: [{ role: 'user', content: prompt }],
-            model: 'google/gemini-2.0-flash-001',
-            temperature: 0.1,
-            timeoutMs: 10000
-        },
-        dedupPayload: userMessage
+      id: `classify-${userId}-${Date.now()}`,
+      priority: 4,
+      params: {
+        messages: [{ role: 'user', content: prompt }],
+        model: 'google/gemini-2.0-flash-001',
+        temperature: 0.1,
+        timeoutMs: 10000,
+      },
+      dedupPayload: userMessage,
     });
-    
+
     return JSON.parse(raw.content?.replace(/```json|```/g, '') || '{}');
   } catch {
     return { has_new_facts: false, contexts: [] };
