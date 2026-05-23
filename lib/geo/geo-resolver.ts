@@ -45,7 +45,7 @@ export async function updateGeoState(userId: string, lat: number, lng: number): 
     resolvedAt: Date.now(), alertCooldowns: cached?.alertCooldowns ?? {},
   };
 
-  await redis.set(geoKey(userId), newState, { ex: GEO_TTL_SECONDS }).catch(() => {});
+  await redis.set(geoKey(userId), newState, { ex: GEO_TTL_SECONDS }).catch(() => { });
   return newState;
 }
 
@@ -62,57 +62,92 @@ export async function shouldSkipWeather(userId: string, lat: number, lng: number
 
 export async function saveWeatherCache(userId: string, lat: number, lng: number, locationLabel: string, weather: any): Promise<void> {
   const payload: WeatherCache = { lat, lng, locationLabel, weather, cachedAt: Date.now() };
-  await redis.set(weatherKey(userId), payload, { ex: WEATHER_TTL_SECONDS }).catch(() => {});
+  await redis.set(weatherKey(userId), payload, { ex: WEATHER_TTL_SECONDS }).catch(() => { });
 }
 
-export async function verificarProximidade(userId: string, lat: number, lng: number): Promise<any> {
-  // Tenta cache antes de ir ao banco
-  const numericUserId = parseInt(userId, 10);
-  const cache = new ContextCache(numericUserId);
+// Em lib/geo-resolver.ts
 
-  let lugares = await cache.get<any[]>('favorite_places');
+export async function verificarProximidade(
+  userId: string,
+  lat: number,
+  lng: number,
+  masterContext?: any
+): Promise<any> {
+  // 1. [RIGOR] Filtro de Deslocamento: 
+  // Evita cálculos pesados se o usuário está praticamente no mesmo lugar
+  const geoState = await getGeoState(userId);
+  if (geoState?.lat && geoState?.lng) {
+    const distDesdeUltimaChecagem = haversineMetros(lat, lng, geoState.lat, geoState.lng);
+    // Se andou menos de 100m, ignoramos (não tem como ter chegado em lugar novo)
+    if (distDesdeUltimaChecagem < 100) {
+      return { temAlerta: false, mensagem: '' };
+    }
+  }
+
+  // 2. Busca lugares favoritos priorizando o masterContext
+  let lugares = masterContext?.favorite_places;
 
   if (!lugares) {
-    const { data } = await supabase
-      .from('favorite_places')
-      .select('id, name, lat, lng, radius_meters')
-      .eq('user_id', userId);
+    const numericUserId = parseInt(userId, 10);
+    const cache = new ContextCache(numericUserId);
+    lugares = await cache.get<any[]>('favorite_places');
 
-    lugares = data ?? [];
-    if (lugares.length > 0) {
-      cache.set('favorite_places', lugares).catch(() => {});
+    if (!lugares) {
+      const { data } = await supabase
+        .from('favorite_places')
+        .select('id, name, lat, lng, radius_meters')
+        .eq('user_id', userId);
+      lugares = data ?? [];
+      if (lugares.length > 0) {
+        cache.set('favorite_places', lugares).catch(() => { });
+      }
     }
   }
 
   if (!lugares?.length) return { temAlerta: false, mensagem: '' };
 
-  const geoState = await getGeoState(userId);
   const cooldowns = geoState?.alertCooldowns ?? {};
 
   for (const lugar of lugares) {
     const distM = haversineMetros(lat, lng, lugar.lat, lugar.lng);
     if (distM > (lugar.radius_meters ?? 200)) continue;
+
+    // Ignora se já alertamos nas últimas 2 horas
     if (Date.now() - (cooldowns[lugar.id] ?? 0) < ALERT_COOLDOWN_MS) continue;
 
-    const { data: itens } = await supabase
-      .from('shopping_items')
-      .select('item')
-      .eq('place_id', lugar.id)
-      .eq('done', false)
-      .eq('archived', false);
+    // 3. Busca os itens de compra priorizando o masterContext ('shopping')
+    let itens = [];
+    if (masterContext?.shopping) {
+      itens = masterContext.shopping.filter(
+        (i: any) => i.place_id === lugar.id && !i.done && !i.archived
+      );
+    } else {
+      const { data } = await supabase
+        .from('shopping_items')
+        .select('item')
+        .eq('place_id', lugar.id)
+        .eq('done', false)
+        .eq('archived', false);
+      itens = data || [];
+    }
 
     if (!itens?.length) continue;
 
+    // Atualiza o cooldown para não spammar o usuário
     const novosCooldowns = { ...cooldowns, [lugar.id]: Date.now() };
     if (geoState) {
-      await redis.set(geoKey(userId), { ...geoState, alertCooldowns: novosCooldowns }, { ex: GEO_TTL_SECONDS }).catch(() => {});
+      await redis.set(geoKey(userId), { ...geoState, alertCooldowns: novosCooldowns }, { ex: GEO_TTL_SECONDS }).catch(() => { });
     }
 
-    const listaItens = itens.map(i => i.item);
+    // Garante que pegamos a string do item dependendo de onde o dado veio (Supabase ou masterContext)
+    const listaItens = itens.map((i: any) => i.item || i.title || i).filter(Boolean);
+
     return {
       temAlerta: true,
       mensagem: `Você está perto de ${lugar.name}. Itens: ${listaItens.join(', ')}.`,
-      placeId: lugar.id, placeName: lugar.name, itens: listaItens,
+      placeId: lugar.id,
+      placeName: lugar.name,
+      itens: listaItens,
     };
   }
 

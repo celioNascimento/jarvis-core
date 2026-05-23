@@ -158,8 +158,8 @@ export async function buildChatPrompt(
 
   // ── Helpers do masterContext (zero queries ao banco) ──────────────────────
   const learnedInsightsBlock = buildLearnedInsightsBlock(masterContext?.insights || []);
-  const personalitySettings  = buildPersonalityFromContext(masterContext?.settings);
-  const personalityBlock     = buildPersonalityBlock(personalitySettings);
+  const personalitySettings = buildPersonalityFromContext(masterContext?.settings);
+  const personalityBlock = buildPersonalityBlock(personalitySettings);
 
   // ── Cargas paralelas ──────────────────────────────────────────────────────
   const [moduleResult, dynamicResult] = await Promise.all([
@@ -191,11 +191,18 @@ export async function buildChatPrompt(
 
   // ── Radar de proximidade ──────────────────────────────────────────────────
   let alertaRadar: string | null = null;
-  if (resolvedLocation?.lat && resolvedLocation?.lng) {
+
+  // Se o masterContext já injetou um alerta de radar no nível do banco, usamos ele (ideal)
+  if (masterContext?.radar_alert) {
+    alertaRadar = `[ALERTA RADAR]: ${masterContext.radar_alert}`;
+  }
+  // Caso contrário, fazemos a checagem em memória passando o masterContext
+  else if (resolvedLocation?.lat && resolvedLocation?.lng) {
     const radar = await verificarProximidade(
       String(user.id),
       Number(resolvedLocation.lat),
       Number(resolvedLocation.lng),
+      masterContext // [RIGOR] Passando o contexto para evitar ida ao Supabase
     );
     if (radar.temAlerta) alertaRadar = `[ALERTA RADAR]: ${radar.mensagem}`;
   }
@@ -223,8 +230,8 @@ export async function buildChatPrompt(
     || masterContext?.user?.current_context
     || '';
 
-  const l3Filtered  = filterL3Content(rawL3Text, includeFamily);
-  const l3Content   = l3Filtered.length > 4000
+  const l3Filtered = filterL3Content(rawL3Text, includeFamily);
+  const l3Content = l3Filtered.length > 4000
     ? l3Filtered.slice(0, 4000) + '... (resumo completo disponível em memória HD)'
     : l3Filtered;
 
@@ -250,7 +257,7 @@ export async function buildChatPrompt(
   );
 
   const systemPrompt = buildSystemPrompt({
-    nickname:            user.nickname || 'usuário',
+    nickname: user.nickname || 'usuário',
     dataHoraSP,
     geoBlock,
     gpsInstruction,
@@ -260,7 +267,7 @@ export async function buildChatPrompt(
     learnedInsightsBlock,
     personalityBlock,
     l3Content,
-    plan:                user.plan,
+    plan: user.plan,
     guidelines,
     conversationSummary,
   });
@@ -278,8 +285,8 @@ export async function buildChatPrompt(
 
   return {
     systemPrompt,
-    tools:                resolvedTools,
-    model:                finalModel,
+    tools: resolvedTools,
+    model: finalModel,
     conversationMessages: [
       ...recentHistory,
       { role: 'user', content: message },
