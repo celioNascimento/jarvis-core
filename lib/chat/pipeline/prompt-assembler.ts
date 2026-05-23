@@ -268,6 +268,7 @@ export async function buildChatPrompt(
     plan: user.plan,
     guidelines,
     conversationSummary,
+    l3Content: l3Truncated,
   });
 
   // ── Resolução de ferramentas ──────────────────────────────────────────────
