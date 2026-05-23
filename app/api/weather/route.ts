@@ -78,21 +78,12 @@ export async function GET(req: NextRequest) {
       lat = gpsCoords.lat;
       lon = gpsCoords.lon;
     } else {
-      // Tenta última localização salva no banco (config table)
-      const { data: locData } = await supabase
-        .from('config')
-        .select('value')
-        .eq('key', `last_location_${numericUserId}`)
-        .limit(1)
-        .maybeSingle();
-
-      if (locData?.value) {
-        try {
-          const parsed = JSON.parse(locData.value);
-          const saved = parseCoords(String(parsed.latitude), String(parsed.longitude));
-          if (saved) { lat = saved.lat; lon = saved.lon; }
-        } catch { /* usa fallback */ }
-      }
+  const { getGeoState } = await import('@/lib/geo-resolver');
+  const geoState = await getGeoState(numericUserId);
+  if (geoState?.lat && geoState?.lng) {
+    lat = geoState.lat;
+    lon = geoState.lng;
+  }
     }
 
     // ── Cache check — evita Nominatim + open-meteo se nada mudou ──────────────
