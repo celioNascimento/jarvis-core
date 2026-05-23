@@ -1,4 +1,7 @@
 // lib/chat/persons-cache.ts
+// Cache migrado para Redis via ContextCache — Map em serverless não persiste
+
+import { ContextCache } from '@/lib/services/context-cache';
 import { supabase } from '@/lib/jarvis';
 
 interface Person {
@@ -7,17 +10,11 @@ interface Person {
   type?: string;
 }
 
-// Cache em memória – em ambiente serverless, cada instância tem seu próprio cache.
-// Para tráfego baixo/médio é aceitável; se necessário, migrar para Redis.
-const cache = new Map<string, { data: Person[]; ttl: number }>();
-const TTL_MS = 5 * 60 * 1000; // 5 minutos
-
 export async function getCachedPersons(userId: string): Promise<Person[]> {
-  const key = `persons:${userId}`;
-  const cached = cache.get(key);
-  if (cached && cached.ttl > Date.now()) {
-    return cached.data;
-  }
+  const cache = new ContextCache(Number(userId));
+
+  const cached = await cache.get<Person[]>('persons');
+  if (cached) return cached;
 
   try {
     const { data, error } = await supabase
@@ -28,7 +25,7 @@ export async function getCachedPersons(userId: string): Promise<Person[]> {
     if (error) throw error;
 
     const persons: Person[] = data || [];
-    cache.set(key, { data: persons, ttl: Date.now() + TTL_MS });
+    await cache.set('persons', persons);
     return persons;
   } catch (err) {
     console.warn('[PersonsCache] Falha ao buscar persons:', err);
@@ -36,7 +33,7 @@ export async function getCachedPersons(userId: string): Promise<Person[]> {
   }
 }
 
-export function invalidatePersonsCache(userId: string) {
-  const key = `persons:${userId}`;
-  cache.delete(key);
+export async function invalidatePersonsCache(userId: string): Promise<void> {
+  const cache = new ContextCache(Number(userId));
+  await cache.invalidate('persons');
 }
