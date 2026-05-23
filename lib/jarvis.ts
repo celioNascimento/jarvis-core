@@ -65,7 +65,8 @@ export async function callOpenRouter(
 // 3. BARREL EXPORTS: COMPATIBILIDADE REVERSA ABSOLUTA
 // ============================================================
 export { getPartnerContextForChat } from './services/partner.service';
-export { generateEmbedding, compactMemory, reinforceMemory } from './services/memory.service';
+export { generateEmbedding } from './memory';
+export { compactMemory, reinforceMemory } from './services/memory.service';
 export { getProactiveEvents, checkSystemInterrupts } from './services/interrupts.service';
 export { getOrCreateSession } from './services/session.service';
 export { getPendingQuestion, setPendingQuestion, clearPendingQuestion } from './services/questions.service';
