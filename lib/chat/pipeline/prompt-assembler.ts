@@ -1,18 +1,3 @@
-    ...ALWAYS_ON_TOOLS,
-    ...(moduleResult.activeTools || []),
-    ...(dynamicResult.activeTools || []),
-  ]);
-
-  const resolvedTools = ALL_TOOLS.filter(
-    (t: any) => t.function?.name && allToolKeys.has(t.function.name),
-  );
-
-  return {
-    systemPrompt,
-    tools: resolvedTools,
-    model: finalModel,
-    conversationMessages: [
-      ...recentHisto
 // lib/chat/pipeline/prompt-assembler.ts
 // v5.9 — Correção de propriedade duplicada l3Content + limpeza de imports
 
