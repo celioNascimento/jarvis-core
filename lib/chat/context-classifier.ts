@@ -160,7 +160,7 @@ export async function classifyContextWithL4(
       // Fallback seguro usando type NUMBER (Evita 400 Bad Request)
       try {
         const { data: dbTopics } = await supabase
-          .schema('public')
+          .schema('jarvis')
           .from('topic_index')
           .select('topic, weight')
           .eq('user_id', userId)
@@ -283,20 +283,14 @@ export function planContextualBlocks(
 
 export async function detectTopicShiftWithL4(
   userId: number,
-  newContexts: ContextType[]
+  newContexts: ContextType[],
+  masterContext?: any  // ← recebe masterContext injetado
 ): Promise<boolean> {
   try {
-    const { data } = await supabase
-      .schema('public')
-      .from('topic_index')
-      .select('topic, last_used_at')
-      .eq('user_id', userId)
-      .order('last_used_at', { ascending: false })
-      .limit(3);
+    const topics = masterContext?.related_topics || [];
+    if (!topics.length) return false;
 
-    if (!data || data.length === 0) return false;
-
-    const recentTopics = data.map((t) => t.topic as ContextType);
+    const recentTopics = topics.map((t: any) => t.topic as ContextType);
     const overlap = newContexts.filter((c) => recentTopics.includes(c));
     return overlap.length === 0;
   } catch {

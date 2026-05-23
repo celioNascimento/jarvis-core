@@ -49,7 +49,6 @@ const WRITE_TOOLS = new Set([
 ]);
 
 // ── Roteador Modular ────────────────────────────────────────────────────────
-// ── Roteador Modular ────────────────────────────────────────────────────────
 const TOOL_ROUTER: Record<string, ToolHandler> = {
   ...{
     'memoria_buscar_longa': (p, a, n) => Memory.executeBuscarMemoriaLonga(p as any, a, n),

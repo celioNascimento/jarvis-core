@@ -86,7 +86,7 @@ async function getMasterContext(
     const remindersData = remindersRes.status === 'fulfilled' ? remindersRes.value.data : null;
 
     if (remindersData) {
-      cache.set('reminders', remindersData).catch(() => {});
+      cache.set('reminders', remindersData).catch(() => { });
     }
 
     return {
@@ -229,13 +229,13 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   if (m.includes('dinheiro') || m.includes('gasto') || m.includes('pagamento') || m.includes('orç')) contextTags.push('financas');
 
   // Filtro inteligente: Embedding apenas se necessário (Regra de Eficiência)
-  const shouldEmbed = !isNoise && m.length > 20;
+  const shouldEmbed = false;
 
   console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'}`);
 
   const [queryEmbedding, isStressed, masterContext] = await Promise.race([
     Promise.all([
-      shouldEmbed 
+      shouldEmbed
         ? getCachedEmbedding(message).catch((e) => { console.error('[Pipeline][Embedding] Falha:', e); return null; })
         : Promise.resolve(null),
       llmGateway.isOverloaded().catch(() => false),

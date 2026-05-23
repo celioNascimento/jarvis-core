@@ -1,6 +1,12 @@
 // lib/services/memory.service.ts
+// V2.0.0 — Responsabilidade única: compactação e reforço de memória HD
+// generateEmbedding migrado para lib/memory/generate-embedding.ts
+
 import { supabase, callOpenRouter } from '@/lib/jarvis';
 import { invalidateContextField } from '@/lib/services/context-cache';
+import { generateEmbedding } from '@/lib/memory';
+
+// ── Filtro de qualidade ───────────────────────────────────────────────────────
 
 const MEMORIA_INVALIDA = [
   'Framework de 4 Etapas',
@@ -9,7 +15,6 @@ const MEMORIA_INVALIDA = [
   'Plano de Ação:',
   'Próximos Passos:',
 ];
-
 
 function memoriaEhValida(texto: string): boolean {
   if (MEMORIA_INVALIDA.some(p => texto.includes(p))) return false;
@@ -20,53 +25,8 @@ function memoriaEhValida(texto: string): boolean {
   return true;
 }
 
-export async function generateEmbedding(text: string): Promise<number[] | null> {
-  try {
-    console.log('[Embedding] Gerando para:', text.substring(0, 60) + (text.length > 60 ? '...' : ''));
+// ── COMPACTAÇÃO ───────────────────────────────────────────────────────────────
 
-    if (!process.env.OPENAI_API_KEY) {
-      console.error('[Embedding] OPENAI_API_KEY NÃO DEFINIDA!');
-      return null;
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-
-    const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
-        "X-Title": process.env.NEXT_PUBLIC_APP_NAME || 'Jarvis AI',
-      },
-      body: JSON.stringify({
-        model: "openai/text-embedding-3-small",
-        input: text,
-        dimensions: 1536,
-      })
-    });
-
-    clearTimeout(timeout);
-
-    if (!res.ok) {
-      const errorText = await res.text();
-      console.error('[Embedding] Erro HTTP:', res.status, errorText);
-      return null;
-    }
-
-    const json = await res.json();
-    if (!json.data?.[0]?.embedding) return null;
-
-    return json.data[0].embedding;
-  } catch (e: any) {
-    console.error("[Embedding] Exceção:", e?.message || e);
-    return null;
-  }
-}
-
-// ── COMPACTAÇÃO (Invalida cache ao finalizar) ──────────────────────────────
 export async function compactMemory(userId: string, authorName: string): Promise<void> {
   try {
     const { data: rawBrain } = await supabase
@@ -84,8 +44,12 @@ export async function compactMemory(userId: string, authorName: string): Promise
       .eq('id', userId)
       .maybeSingle();
 
-    const oldContext = userProfile?.current_context || "Nenhum contexto prévio.";
-    const SAUDACOES = [/^(olá|oi|e aí|fala|qual a boa|tudo bem|tudo bom|bom dia|boa tarde|boa noite|hey|opa|salve)[!?,. ]*/i, /^(ok|certo|entendido|perfeito|ótimo|show|vlw|valeu|obrigad)[!?,. ]*/i];
+    const oldContext = userProfile?.current_context || 'Nenhum contexto prévio.';
+
+    const SAUDACOES = [
+      /^(olá|oi|e aí|fala|qual a boa|tudo bem|tudo bom|bom dia|boa tarde|boa noite|hey|opa|salve)[!?,. ]*/i,
+      /^(ok|certo|entendido|perfeito|ótimo|show|vlw|valeu|obrigad)[!?,. ]*/i,
+    ];
     const ehSaudacao = (texto: string) => SAUDACOES.some(r => r.test(texto.trim()));
 
     const entradasValidas = rawBrain.filter(m => {
@@ -96,86 +60,126 @@ export async function compactMemory(userId: string, authorName: string): Promise
 
     if (entradasValidas.length < 5) return;
 
-    const brainText = entradasValidas.map(m =>
-      `${authorName}: ${m.content}\nJarvis: ${(m.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim()}`
-    ).join('\n\n');
+    const brainText = entradasValidas
+      .map(m =>
+        `${authorName}: ${m.content}\nJarvis: ${(m.metadata?.ai_reply || '').replace(/\[.*?\]/g, '').trim()}`
+      )
+      .join('\n\n');
 
     const prompt = `Você é o Gerente de Memória do Lev. Mantenha o Dossiê do usuário ${authorName} atualizado.\n[DOSSIÊ ATUAL]:\n${oldContext}\n\n[NOVAS INTERAÇÕES]:\n${brainText}\nTAREFA: Integre as novas informações ao Dossiê. Retorne apenas o texto puro.`;
 
-
-    const newContext = await callOpenRouter(prompt, "google/gemini-2.0-flash-001", 0.3);
+    const newContext = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.3);
     if (!memoriaEhValida(newContext)) return;
 
-    // A função generateEmbedding retorna o array diretamente, não um objeto { data: ... }
-    const embedding = await (await import('@/lib/jarvis')).generateEmbedding(newContext);
-    
-    if (embedding) {
-      await supabase.from('users').update({ current_context: newContext }).eq('id', userId);
-      
-      // Invalidação obrigatória (Regra 2)
-      await invalidateContextField(Number(userId), 'dossier_summary').catch(console.error);
-      
-      await supabase.from('memories').insert([{
-        summary: newContext,
-        embedding: embedding, // embedding aqui é o array number[]
-        user_id: userId,
-        relevance_score: 1.0,
-        access_count: 0,
-        decay_lambda: 0.005,
-        emotional_weight: 0.5,
-        metadata: { type: 'auto_consolidation', count: entradasValidas.length }
-      }]);
+    // Gera embedding do novo dossiê via módulo centralizado
+    const embedding = await generateEmbedding(newContext);
+    if (!embedding) return;
 
-      const lastDate = entradasValidas[entradasValidas.length - 1].created_at;
-      await supabase.from('brain').delete().eq('user_id', userId).neq('category', 'noise').lte('created_at', lastDate);
-    } 
+    // Salva dossiê atualizado
+    await supabase
+      .from('users')
+      .update({ current_context: newContext })
+      .eq('id', userId);
+
+    // Invalida persons — campo mais próximo que inclui dados de perfil
+    await invalidateContextField(Number(userId), 'persons').catch(console.error);
+
+    // Salva memória no HD
+    await supabase.from('memories').insert([{
+      summary:          newContext,
+      embedding:        embedding,
+      user_id:          userId,
+      relevance_score:  1.0,
+      access_count:     0,
+      decay_lambda:     0.005,
+      emotional_weight: 0.5,
+      metadata: {
+        type:  'auto_consolidation',
+        count: entradasValidas.length,
+      },
+    }]);
+
+    // Arquiva entradas já consolidadas
+    const lastDate = entradasValidas[entradasValidas.length - 1].created_at;
+    await supabase
+      .from('brain')
+      .delete()
+      .eq('user_id', userId)
+      .neq('category', 'noise')
+      .lte('created_at', lastDate);
+
   } catch (e: any) {
-    console.error("[Memory] Erro crítico na compactação:", e);
+    console.error('[Memory] Erro crítico na compactação:', e);
   }
 }
+
+// ── REFORÇO DE MEMÓRIA ────────────────────────────────────────────────────────
 
 export async function reinforceMemory(memoryId: string): Promise<void> {
   try {
-    const { data } = await supabase.from('memories').select('access_count, relevance_score').eq('id', memoryId).maybeSingle();
+    const { data } = await supabase
+      .from('memories')
+      .select('access_count, relevance_score')
+      .eq('id', memoryId)
+      .maybeSingle();
+
     if (!data) return;
 
-    await supabase.from('memories').update({
-      access_count: (data.access_count || 0) + 1,
-      relevance_score: Math.min((data.relevance_score || 0) + 0.05, 1.0),
-      updated_at: new Date().toISOString()
-    }).eq('id', memoryId);
+    await supabase
+      .from('memories')
+      .update({
+        access_count:    (data.access_count || 0) + 1,
+        relevance_score: Math.min((data.relevance_score || 0) + 0.05, 1.0),
+        updated_at:      new Date().toISOString(),
+      })
+      .eq('id', memoryId);
   } catch (e) {
-    console.error("[Memory] Erro reinforceMemory:", e);
+    console.error('[Memory] Erro reinforceMemory:', e);
   }
 }
 
-// ── UPDATE L3 (Injeção de contexto - Regra 3) ──────────────────────────────
+// ── UPDATE L3 ─────────────────────────────────────────────────────────────────
+
 export async function updateL3(userId: string, masterContext?: any): Promise<void> {
   try {
-    // Se o masterContext existe, usamos ele para extrair os dados e evitar SELECTS
-    // Se não existir, buscamos apenas o necessário (fallback de rigor)
-    const [p, kids, proj, evs] = masterContext 
-      ? [masterContext.profile, masterContext.children, masterContext.projects, masterContext.events]
+    // Prioridade: masterContext injetado → sem queries
+    // Fallback: busca mínima no banco
+    const [p, kids] = masterContext
+      ? [masterContext.profile, masterContext.children || []]
       : await Promise.all([
-          supabase.from('user_profiles').select('*').eq('user_id', userId).maybeSingle().then(r => r.data),
-          supabase.from('children').select('*').eq('parent_id', userId).then(r => r.data || []),
-          supabase.from('projects').select('*').eq('user_id', userId).then(r => r.data || []),
-          supabase.from('events').select('*').eq('user_id', userId).then(r => r.data || [])
+          supabase.from('user_profiles').select('full_name, preferred_name').eq('user_id', userId).maybeSingle().then(r => r.data),
+          supabase.from('children').select('name').eq('parent_id', userId).then(r => r.data || []),
         ]);
 
-    let ctx = masterContext?.dossier_summary || "";
+    let ctx = masterContext?.dossier_summary
+      || masterContext?.user?.current_context
+      || '';
+
     const patches: Record<string, string> = {};
 
-    if (p?.full_name) patches['Nome'] = p.preferred_name ? `${p.full_name} (prefere: ${p.preferred_name})` : p.full_name;
-    if (kids.length > 0) patches['Filhos'] = kids.map((k: any) => k.name).join(', ');
+    if (p?.full_name) {
+      patches['Nome'] = p.preferred_name
+        ? `${p.full_name} (prefere: ${p.preferred_name})`
+        : p.full_name;
+    }
+    if (kids?.length > 0) {
+      patches['Filhos'] = kids.map((k: any) => k.name).join(', ');
+    }
 
     for (const [key, val] of Object.entries(patches)) {
       const rx = new RegExp(`- ${key}: (.*)`, 'i');
-      ctx = rx.test(ctx) ? ctx.replace(rx, `- ${key}: ${val}`) : `${ctx}\n- ${key}: ${val}`;
+      ctx = rx.test(ctx)
+        ? ctx.replace(rx, `- ${key}: ${val}`)
+        : `${ctx}\n- ${key}: ${val}`;
     }
 
-    await supabase.from('users').update({ current_context: ctx.trim() }).eq('id', userId);
-    await invalidateContextField(Number(userId), 'dossier_summary').catch(console.error);
+    await supabase
+      .from('users')
+      .update({ current_context: ctx.trim() })
+      .eq('id', userId);
+
+    // current_context vem em masterContext.user — recarregado no próximo RPC
+    // Não precisa invalidar campo separado
 
     console.log(`[MemoryService] Contexto L3 consolidado para user ${userId}`);
   } catch (e) {
