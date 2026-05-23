@@ -86,15 +86,15 @@ export async function compactMemory(userId: string, authorName: string): Promise
 
     // Salva memória no HD
     await supabase.from('memories').insert([{
-      summary:          newContext,
-      embedding:        embedding,
-      user_id:          userId,
-      relevance_score:  1.0,
-      access_count:     0,
-      decay_lambda:     0.005,
+      summary: newContext,
+      embedding: embedding,
+      user_id: userId,
+      relevance_score: 1.0,
+      access_count: 0,
+      decay_lambda: 0.005,
       emotional_weight: 0.5,
       metadata: {
-        type:  'auto_consolidation',
+        type: 'auto_consolidation',
         count: entradasValidas.length,
       },
     }]);
@@ -128,9 +128,9 @@ export async function reinforceMemory(memoryId: string): Promise<void> {
     await supabase
       .from('memories')
       .update({
-        access_count:    (data.access_count || 0) + 1,
+        access_count: (data.access_count || 0) + 1,
         relevance_score: Math.min((data.relevance_score || 0) + 0.05, 1.0),
-        updated_at:      new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       })
       .eq('id', memoryId);
   } catch (e) {
@@ -140,50 +140,69 @@ export async function reinforceMemory(memoryId: string): Promise<void> {
 
 // ── UPDATE L3 ─────────────────────────────────────────────────────────────────
 
-export async function updateL3(userId: string, masterContext?: any): Promise<void> {
+export async function updateL3(userId: string, masterContext: any): Promise<void> {
   try {
-    // Prioridade: masterContext injetado → sem queries
-    // Fallback: busca mínima no banco
-    const [p, kids] = masterContext
-      ? [masterContext.profile, masterContext.children || []]
-      : await Promise.all([
-          supabase.from('user_profiles').select('full_name, preferred_name').eq('user_id', userId).maybeSingle().then(r => r.data),
-          supabase.from('children').select('name').eq('parent_id', userId).then(r => r.data || []),
-        ]);
+    if (!masterContext) {
+      console.warn('[L3.Extractor] masterContext ausente. Abortando.');
+      return;
+    }
 
-    let ctx = masterContext?.dossier_summary
-      || masterContext?.user?.current_context
-      || '';
+    const originalCtx = masterContext.user?.current_context || '';
+    const p = masterContext.profile;
+    const kids = masterContext.children || [];
+    const proj = masterContext.projects || [];
+    const evs = masterContext.events || [];
 
+    let ctx = originalCtx;
+
+    // Patches de dados pessoais
     const patches: Record<string, string> = {};
-
-    if (p?.full_name) {
-      patches['Nome'] = p.preferred_name
-        ? `${p.full_name} (prefere: ${p.preferred_name})`
-        : p.full_name;
-    }
-    if (kids?.length > 0) {
-      patches['Filhos'] = kids.map((k: any) => k.name).join(', ');
-    }
+    if (p?.full_name) patches['Nome'] = p.preferred_name ? `${p.full_name} (prefere: ${p.preferred_name})` : p.full_name;
+    if (p?.city) patches['Mora em'] = `${p.city}${p.state ? `, ${p.state}` : ''}`;
+    if (p?.spouse_name) patches['Cônjuge'] = `${p.spouse_name}${p.spouse_birthday ? ` (aniv: ${p.spouse_birthday})` : ''}`;
+    if (p?.current_job) patches['Cargo'] = `${p.current_job}${p.company ? ` @ ${p.company}` : ''}`;
+    if (kids.length > 0) patches['Filhos'] = kids.map((k: any) => k.name).join(', ');
 
     for (const [key, val] of Object.entries(patches)) {
       const rx = new RegExp(`- ${key}: (.*)`, 'i');
       ctx = rx.test(ctx)
         ? ctx.replace(rx, `- ${key}: ${val}`)
-        : `${ctx}\n- ${key}: ${val}`;
+        : `${ctx.trim()}\n- ${key}: ${val}`;
     }
+
+    // Bloco de projetos
+    if (proj.length > 0) {
+      const projBlock = proj.map((r: any) => `- ${r.name}${r.status ? ` [${r.status}]` : ''}: ${r.description || ''}`).join('\n');
+      const projSection = `## PROJETOS\n${projBlock}`;
+      ctx = /## PROJETOS/i.test(ctx)
+        ? ctx.replace(/## PROJETOS[\s\S]*?(?=\n##|$)/i, projSection)
+        : `${ctx.trim()}\n\n${projSection}`;
+    }
+
+    // Bloco de datas importantes
+    const highEvs = evs.filter((e: any) => (e.emotional_weight || 0) >= 0.7);
+    if (highEvs.length > 0) {
+      const dateBlock = highEvs.map((e: any) => `- ${e.title}: ${e.start_at || e.event_date}`).join('\n');
+      const dateSection = `## DATAS IMPORTANTES\n${dateBlock}`;
+      ctx = /## DATAS IMPORTANTES/i.test(ctx)
+        ? ctx.replace(/## DATAS IMPORTANTES[\s\S]*?(?=\n##|$)/i, dateSection)
+        : `${ctx.trim()}\n\n${dateSection}`;
+    }
+
+    // Dirty check
+    if (ctx.trim() === originalCtx.trim()) return;
 
     await supabase
       .from('users')
       .update({ current_context: ctx.trim() })
       .eq('id', userId);
 
-    // current_context vem em masterContext.user — recarregado no próximo RPC
-    // Não precisa invalidar campo separado
+    console.log('[L3.Extractor] Dossiê persistido.');
 
-    console.log(`[MemoryService] Contexto L3 consolidado para user ${userId}`);
   } catch (e) {
-    console.error('[MemoryService/updateL3] Erro:', e);
-    throw e;
+    console.error('[L3.Extractor] Erro crítico:', e);
   }
 }
+
+
+
