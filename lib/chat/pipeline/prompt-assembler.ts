@@ -224,6 +224,11 @@ export async function buildChatPrompt(
   const historyText = recentHistory.map(h => h.content).join(' ');
   const includeFamily = shouldIncludeFamilyContext(message, historyText);
 
+  // Truncagem preventiva para evitar alucinação por excesso de contexto
+  const l3Truncated = l3Content.length > 4000 
+    ? l3Content.slice(0, 4000) + "... (resumo completo disponível em memória HD)"
+    : l3Content;
+  
   // CORREÇÃO: Lendo L3 do masterContext (current_context) em vez da memória legada
   const rawL3Text = masterContext?.user?.current_context || '';
   const l3Content = filterL3Content(rawL3Text, includeFamily);
