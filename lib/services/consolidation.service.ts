@@ -2,7 +2,7 @@
 // V1.0.0 — Consolidação Diária de Memória via Claude
 
 import { supabase } from '@/lib/jarvis';
-import { MemoryManager } from '@/lib/memory';
+import { updateL3 } from '@/lib/services/memory.service';
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 const MAX_BRAIN_CHARS = 12000;
@@ -97,11 +97,10 @@ async function processJob(jobId: string, userId: number): Promise<void> {
     const newDossie = await consolidateWithClaude(dossie, brain, userId);
 
     if (newDossie) {
-      await MemoryManager.write({
-        type: 'l3_patch',
-        userId,
-        dossie: newDossie,
-      });
+      await supabase
+        .from('users')
+        .update({ current_context: newDossie })
+        .eq('id', userId);
     }
 
     await supabase
