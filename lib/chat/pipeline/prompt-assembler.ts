@@ -8,7 +8,7 @@ import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import { buildPersonalityBlock } from '@/lib/services/personality.service';
-import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/utils/ai-helpers';
+import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/Utils/ai-helpers';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
