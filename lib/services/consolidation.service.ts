@@ -2,7 +2,7 @@
 // V1.0.0 — Consolidação Diária de Memória via Claude
 
 import { supabase } from '@/lib/jarvis';
-import { updateL3 } from '@/lib/services/memory.service';
+
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 const MAX_BRAIN_CHARS = 12000;
