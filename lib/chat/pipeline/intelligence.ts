@@ -41,7 +41,7 @@ export function isNoiseMessage(message: string): boolean {
 
 // ─── Cache & RPC Logic ──────────────────────────────────────────────────────
 
-const STATIC_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations', 'shopping'] as const;
+const CACHED_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations', 'shopping', 'reminders'] as const;
 
 async function getMasterContext(
   userId: number,
@@ -50,116 +50,87 @@ async function getMasterContext(
 ): Promise<any> {
   const cache = new ContextCache(userId);
 
-  // 1. Busca campos estáticos do Redis em paralelo (uma roundtrip via mget)
-  const cached = await cache.getMany([...STATIC_FIELDS]);
+  // 1. Busca TUDO do Redis em uma única chamada de milissegundos
+  const cached = await cache.getMany([...CACHED_FIELDS]);
+  const cachedHistory = await cache.getHistory(sessionId);
 
-  // 2. Identifica quais campos estáticos estão ausentes no cache
-  const missingStatic = STATIC_FIELDS.filter(f => !(f in cached));
+  // Verifica o que está faltando no cache
+  const missingFields = CACHED_FIELDS.filter(f => !(f in cached));
+  const needsHistory = !cachedHistory || cachedHistory.length === 0;
 
   console.log('[MasterContext] Cache status:', {
-    hit: STATIC_FIELDS.filter(f => f in cached),
-    miss: missingStatic,
-    modulesType: cached.modules
-      ? `array[${Array.isArray(cached.modules) ? cached.modules.length : 'não-array'}]`
-      : 'ausente',
+    hit: CACHED_FIELDS.filter(f => f in cached),
+    miss: missingFields,
+    historyHit: !needsHistory
   });
 
-  // 3. Cache hit total — busca só histórico e reminders
-  if (missingStatic.length === 0) {
-    console.log('[MasterContext] Cache hit total — buscando apenas history e reminders');
-
-    const [historyRes, remindersRes] = await Promise.allSettled([
-      supabase.rpc('get_session_history', {
-        p_user_id: userId,
-        p_session_id: sessionId,
-      }),
-      supabase
-        .schema('jarvis')
-        .from('reminders')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('status', 'pending')
-        .limit(10),
-    ]);
-
-    const historyData = historyRes.status === 'fulfilled' ? historyRes.value.data : null;
-    const remindersData = remindersRes.status === 'fulfilled' ? remindersRes.value.data : null;
-
-    if (remindersData) {
-      cache.set('reminders', remindersData).catch(() => { });
-    }
-
+  // 2. Cache Hit Total: NÃO vai ao banco de dados!
+  if (missingFields.length === 0 && !needsHistory) {
+    console.log('[MasterContext] Cache hit total — Zero queries ao Supabase.');
     return {
       ...cached,
-      history: historyData || [],
-      reminders: remindersData || cached.reminders || [],
+      history: cachedHistory
     };
   }
 
-  // 4. Cache miss parcial ou total — roda o RPC completo
-  console.log(`[MasterContext] Cache miss em: ${missingStatic.join(', ')} — rodando RPC`);
+  // 3. Cache Miss (Parcial ou Total): Vai ao banco buscar APENAS o que falta
+  // Para manter a integridade (Regra 1), chamamos o consolidado
+  console.log(`[MasterContext] Cache miss — rodando RPC consolidado e histórico`);
 
-  const { data, error } = await supabase.rpc('get_consolidated_context', {
-    p_user_id: userId,
-    p_session_id: sessionId,
-    p_contexts: contexts,
-  });
+  const [rpcRes, historyRes] = await Promise.allSettled([
+    supabase.rpc('get_consolidated_context', {
+      p_user_id: userId,
+      p_session_id: sessionId,
+      p_contexts: contexts,
+    }),
+    needsHistory ? supabase.rpc('get_session_history', {
+      p_user_id: userId,
+      p_session_id: sessionId,
+    }) : Promise.resolve({ data: cachedHistory })
+  ]);
 
-  if (error) {
-    console.error('[MasterContext] Erro fatal no RPC:', error);
-    return { history: [], ...cached };
-  }
+  const result = rpcRes.status === 'fulfilled' && rpcRes.value.data ? rpcRes.value.data : {};
+  const historyData = historyRes.status === 'fulfilled' && historyRes.value?.data ? historyRes.value.data : cachedHistory || [];
 
-  const result = data || {};
-
-  // CORREÇÃO: Unificando o shopping antes de salvar (Resolve o Loop do Cache)
+  // CORREÇÃO: Unificando o shopping antes de salvar
   result.shopping = {
     items: result.shopping_items || [],
     shares: result.shopping_shares || []
   };
 
-  console.log('[MasterContext] RPC retornou:', {
-    fields: Object.keys(result),
-    modulesCount: Array.isArray(result.modules) ? result.modules.length : 'não-array',
-    modulesSample: Array.isArray(result.modules) ? result.modules.slice(0, 2) : result.modules,
-  });
-
-  // 5. Popula o cache
+  // 4. Popula o cache com o que buscou
   const savePromises: Promise<void>[] = [];
 
-  for (const f of missingStatic) {
+  // Salva o histórico se buscou novo
+  if (needsHistory) {
+    savePromises.push(cache.setHistory(sessionId, historyData));
+  }
+
+  // Salva os campos ausentes
+  for (const f of missingFields) {
     const value = result[f];
-
-    if (value == null) {
-      console.warn(`[MasterContext] Campo '${f}' veio nulo do RPC — não cacheado`);
-      continue;
-    }
-
-    if (f === 'modules' && !Array.isArray(value)) {
-      console.warn('[MasterContext] modules não é array — não cacheado:', value);
-      continue;
-    }
+    if (value == null) continue;
 
     if (f === 'persons' && Array.isArray(value)) {
       const slim = value.map((p: any) => ({
-        id: p.id,
-        name: p.name,
-        type: p.type,
-        nickname: p.nickname,
-        emotional_weight: p.emotional_weight,
+        id: p.id, name: p.name, type: p.type, nickname: p.nickname, emotional_weight: p.emotional_weight,
       }));
-      console.log(`[MasterContext] Salvando persons slim — ${slim.length} registros`);
       savePromises.push(cache.set(f, slim));
       continue;
     }
 
-    console.log(`[MasterContext] Salvando '${f}'`);
+    // Reminders agora também vai para o cache
     savePromises.push(cache.set(f, value));
   }
 
-  await Promise.all(savePromises);
+  // Despacha as promessas de cache em background
+  Promise.all(savePromises).catch(e => console.error('[MasterContext] Erro salvando cache:', e));
 
-  return result;
+  return {
+    ...cached,
+    ...result,
+    history: historyData
+  };
 }
 
 export async function invalidateMasterContextCache(
