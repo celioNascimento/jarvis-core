@@ -7,8 +7,9 @@
 // Temas reconhecidos: perfil, familia, rotina, projetos, saude, financas,
 //                     preferencias, fe, objetivos, datas
 
-import { supabase, generateEmbedding } from '@/lib/jarvis';
+import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
+import { generateEmbedding } from '@/lib/memory';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -183,33 +184,45 @@ export async function indexL3Chunks(
     .delete()
     .eq('user_id', userId);
 
-  const indexed: string[] = [];
+  // Gera todos os embeddings em paralelo
+  const withEmbeddings = await Promise.all(
+    chunks.map(async chunk => ({
+      chunk,
+      embedding: await generateEmbedding(chunk.content),
+    }))
+  );
 
-  for (const chunk of chunks) {
-    const embedding = await generateEmbedding(chunk.content);
-    if (!embedding) {
-      console.warn(`[L3Chunks] Embedding falhou para tema: ${chunk.theme}`);
-      continue;
-    }
+  // Filtra os que falharam
+  const valid = withEmbeddings.filter(({ embedding }) => {
+    if (!embedding) return false;
+    return true;
+  });
 
-    const { error } = await supabase.from('l3_chunks').insert({
-      user_id:   userId,
-      theme:     chunk.theme,
-      content:   chunk.content,
-      embedding,
-      updated_at: new Date().toISOString(),
-    });
+  const failed = chunks.length - valid.length;
+  if (failed > 0) {
+    console.warn(`[L3Chunks] ${failed} embedding(s) falharam e foram ignorados`);
+  }
 
-    if (error) {
-      console.error(`[L3Chunks] Erro ao inserir tema ${chunk.theme}:`, error.message);
-    } else {
-      indexed.push(chunk.theme);
-    }
+  // Batch insert — 1 query no lugar de N
+  const rows = valid.map(({ chunk, embedding }) => ({
+    user_id: userId,
+    theme: chunk.theme,
+    content: chunk.content,
+    embedding,
+    updated_at: new Date().toISOString(),
+  }));
+
+  const { error } = await supabase.from('l3_chunks').insert(rows);
+
+  if (error) {
+    console.error('[L3Chunks] Erro no batch insert:', error.message);
+    return { indexed: 0, themes: [] };
   }
 
   // Invalida cache Redis
-  await redis.del(`l3_chunks_${userId}`).catch(() => {});
+  await redis.del(`l3_chunks_${userId}`).catch(() => { });
 
+  const indexed = valid.map(({ chunk }) => chunk.theme);
   console.log(`[L3Chunks] Indexados: ${indexed.join(', ')}`);
   return { indexed: indexed.length, themes: indexed };
 }
@@ -230,9 +243,9 @@ export async function getRelevantL3Chunks(
     // Tenta busca semântica
     const { data: results, error } = await supabase.rpc('match_l3_chunks', {
       query_embedding: queryEmbedding,
-      p_user_id:       userId,
+      p_user_id: userId,
       match_threshold: threshold,
-      match_count:     maxChunks,
+      match_count: maxChunks,
     });
 
     if (error) {
@@ -244,8 +257,8 @@ export async function getRelevantL3Chunks(
       // Fallback: retorna os 2 chunks mais próximos sem threshold
       const { data: topResults } = await supabase.rpc('match_l3_chunks_top', {
         query_embedding: queryEmbedding,
-        p_user_id:       userId,
-        match_count:     2,
+        p_user_id: userId,
+        match_count: 2,
       });
 
       if (!topResults?.length) return await getFallbackL3(userId);
