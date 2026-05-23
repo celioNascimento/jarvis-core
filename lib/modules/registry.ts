@@ -5,7 +5,7 @@ import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
 import { waitUntil } from '@vercel/functions';
 import type { ModuleDefinition, ModuleConditionOpts } from './types';
-import { recordModuleMetrics } from './metrics';
+import { recordModuleMetricsBatch } from './metrics';
 import { routeModel } from '@/lib/chat/context-classifier';
 
 import { ModuloFinancas } from './modules/financas';
@@ -55,7 +55,7 @@ function extractEnabledIds(modules: any): string[] {
   return [];
 }
 
-  export async function loadActiveModules(
+export async function loadActiveModules(
   opts: ModuleConditionOpts & { masterContext?: any },
   userPlan: string,
   baseModel: string,
@@ -76,42 +76,45 @@ function extractEnabledIds(modules: any): string[] {
   // 3. Execução Controlada de Módulos (Full Scan)
   const results = await Promise.all(ALL_MODULES.map(async mod => {
     const planOrder = ['free', 'personal', 'family', 'family_plus', 'ultra'];
-    const modPlanIdx = planOrder.indexOf(mod.plan);
-    const userPlanIdx = planOrder.indexOf(userPlan);
-
-    // Se o usuário não tem plano ou não habilitou o módulo no masterContext, ignora
-    if (userPlanIdx < modPlanIdx || !enabledIds.includes(mod.id)) return null;
+    if (
+      planOrder.indexOf(userPlan) < planOrder.indexOf(mod.plan) ||
+      !enabledIds.includes(mod.id)
+    ) return null;
 
     const { trigger } = mod;
     let activated = trigger.always || false;
-
     if (trigger.contexts?.some(c => opts.contexts.includes(c))) activated = true;
     else if (trigger.keywords?.test(opts.message)) activated = true;
     else if (trigger.condition && await trigger.condition({ ...opts, masterContext })) activated = true;
-
     if (!activated) return null;
 
     const start = Date.now();
     try {
       const block = await mod.buildContextBlock({ ...opts, masterContext });
-      
-      // Metrics em background (waitUntil não bloqueia o fluxo principal)
-      waitUntil(
-        recordModuleMetrics(mod.id, numericUserId, {
+      return {
+        block,
+        tools: mod.tools || [],
+        metric: {
+          moduleId: mod.id,
           latencyMs: Date.now() - start,
           tokens: Math.ceil((block?.length || 0) / 4),
           activated: (block?.length || 0) > 0,
-        }).catch(e => console.error('[Metrics Error]', e))
-      );
-
-      return { block, tools: mod.tools || [] };
+        },
+      };
     } catch (e) {
       console.error(`[ModuleRegistry] Erro fatal em ${mod.id}:`, e);
       return null;
     }
   }));
 
-  const validResults = results.filter(Boolean) as { block: string, tools: string[] }[];
+  const validResults = results.filter(Boolean) as { block: string; tools: string[]; metric: any }[];
+
+  // 1 insert no lugar de N
+  waitUntil(
+    recordModuleMetricsBatch(numericUserId, validResults.map(r => r.metric))
+      .catch(e => console.error('[Metrics Batch Error]', e))
+  );
+
   const { model: routedModel } = routeModel(opts.contexts, opts.emotionalScore);
 
   return {
@@ -119,4 +122,4 @@ function extractEnabledIds(modules: any): string[] {
     activeTools: [...new Set(validResults.flatMap(r => r.tools))],
     resolvedModel: routedModel,
   };
-    }
+}
