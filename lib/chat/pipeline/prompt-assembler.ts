@@ -1,5 +1,20 @@
+    ...ALWAYS_ON_TOOLS,
+    ...(moduleResult.activeTools || []),
+    ...(dynamicResult.activeTools || []),
+  ]);
+
+  const resolvedTools = ALL_TOOLS.filter(
+    (t: any) => t.function?.name && allToolKeys.has(t.function.name),
+  );
+
+  return {
+    systemPrompt,
+    tools: resolvedTools,
+    model: finalModel,
+    conversationMessages: [
+      ...recentHisto
 // lib/chat/pipeline/prompt-assembler.ts
-// v5.8 — Remoção de dependência legada (memory) e adoção do current_context (Regra 3)
+// v5.9 — Correção de propriedade duplicada l3Content + limpeza de imports
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -8,13 +23,11 @@ import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import { buildPersonalityBlock } from '@/lib/services/personality.service';
-import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '../../Utils/ai-helpers';
+import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/utils/ai-helpers';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
-
-// Nome canônico da tool de pesquisa — altere aqui se renomear no defs/index.ts
 const ALWAYS_ON_TOOLS = ['web_pesquisar'] as const;
 
 const FAMILY_DATE_SIGNALS = [
@@ -44,9 +57,8 @@ function buildConversationSummary(
   nickname: string,
 ): string {
   if (!recentHistory?.length) return '';
-
   return recentHistory
-    .slice(-8) // últimos 4 turnos (user + assistant)
+    .slice(-8)
     .map(m => {
       const who = m.role === 'user' ? nickname : 'Lev';
       return `${who}: ${m.content.slice(0, 200)}`;
@@ -79,8 +91,8 @@ function buildSystemPrompt(parts: {
 }): string {
   const {
     nickname, dataHoraSP, geoBlock, gpsInstruction,
-    alertaRadar, urgentes, relatedTopics, learnedInsightsBlock, personalityBlock,
-    l3Content, plan, guidelines, conversationSummary,
+    alertaRadar, urgentes, relatedTopics, learnedInsightsBlock,
+    personalityBlock, l3Content, plan, guidelines, conversationSummary,
   } = parts;
 
   return `
@@ -113,6 +125,7 @@ Diante de tópicos de saúde ou finanças: ofereça um conceito prático e direc
 Quando o contexto estiver fragmentado após várias mensagens: resuma as hipóteses mais prováveis e pergunte qual delas seguir.
 
 Quando o ${nickname} encerrar um assunto — "pode deixar", "amanhã é outro dia", "ótimo", "combinado" — responda com no máximo uma frase e pare. Não sugira próximos passos, não ofereça mais nada. O assunto acabou.
+
 [TOM E ENERGIA]
 
 Adapte a extensão e o tom à energia do usuário: comandos diretos recebem respostas ultra-concisas; momentos reflexivos recebem mais espaço. Quando perceber sinais de cansaço, valide brevemente e pare. Sem oferecer continuidade explícita.
@@ -136,14 +149,12 @@ ${relatedTopics ? `[TÓPICOS RELACIONADOS]\n${relatedTopics}` : ''}
 ${learnedInsightsBlock ? `Perfil\n${learnedInsightsBlock}` : ''}
 ${personalityBlock}
 
-[MEMÓRIA ATIVA]
 ${conversationSummary ? `[CONVERSA ATUAL — LEIA ANTES DE RESPONDER]
 Os fatos abaixo foram ditos agora mesmo nessa conversa. Não pergunte o que já foi dito aqui.
 ${conversationSummary}
 ` : ''}
 [MEMÓRIA ATIVA]
-${l3Content.slice(0, 3000).replace(/\n+/g, ' ').trim()}
-
+${l3Content}
 
 [CONTEXTO OPERACIONAL]
 Plano: ${plan}
@@ -158,14 +169,12 @@ export async function buildChatPrompt(
   intel: ChatIntelligence,
 ): Promise<ChatPrompt> {
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
-  
-  // CORREÇÃO: 'memory' removido da desestruturação pois foi descontinuado
   const { contexts, emotional, masterContext, recentHistory } = intel;
 
   // ── Helpers do masterContext (zero queries ao banco) ──────────────────────
   const learnedInsightsBlock = buildLearnedInsightsBlock(masterContext?.insights || []);
-  const personalitySettings = buildPersonalityFromContext(masterContext?.settings);
-  const personalityBlock = buildPersonalityBlock(personalitySettings);
+  const personalitySettings  = buildPersonalityFromContext(masterContext?.settings);
+  const personalityBlock     = buildPersonalityBlock(personalitySettings);
 
   // ── Cargas paralelas ──────────────────────────────────────────────────────
   const [moduleResult, dynamicResult] = await Promise.all([
@@ -216,26 +225,24 @@ export async function buildChatPrompt(
     label: resolvedLocation?.label,
     city: resolvedLocation?.city,
   });
+
   const gpsInstruction = resolvedLocation
     ? ''
     : `[GPS]: Indisponível. Não faça suposições sobre localização do usuário.`;
 
-  // ── Filtragem de L3 (Dossiê) ──────────────────────────────────────────────
-  // ── Filtragem de L3 (Dossiê) ──────────────────────────────────────────────
+  // ── L3 / Dossiê ───────────────────────────────────────────────────────────
   const historyText = recentHistory.map(h => h.content).join(' ');
   const includeFamily = shouldIncludeFamilyContext(message, historyText);
 
-  // 1. Defina a fonte de verdade
-  const rawL3Text = masterContext?.dossier_summary || masterContext?.user?.current_context || '';
-  
-  // 2. Filtre o conteúdo (isso gera a variável l3Content)
-  const l3Content = filterL3Content(rawL3Text, includeFamily);
-  
-  // 3. Aplique a truncagem (isso gera a variável l3Truncated)
-  const l3Truncated = l3Content.length > 4000 
-    ? l3Content.slice(0, 4000) + "... (resumo completo disponível em memória HD)"
-    : l3Content;
-  
+  const rawL3Text = masterContext?.dossier_summary
+    || masterContext?.user?.current_context
+    || '';
+
+  const l3Filtered  = filterL3Content(rawL3Text, includeFamily);
+  const l3Content   = l3Filtered.length > 4000
+    ? l3Filtered.slice(0, 4000) + '... (resumo completo disponível em memória HD)'
+    : l3Filtered;
+
   // ── Dados do masterContext ────────────────────────────────────────────────
   const urgentes = (masterContext?.reminders || [])
     .map((u: any) => u.title)
@@ -258,7 +265,7 @@ export async function buildChatPrompt(
   );
 
   const systemPrompt = buildSystemPrompt({
-    nickname: user.nickname || 'usuário',
+    nickname:            user.nickname || 'usuário',
     dataHoraSP,
     geoBlock,
     gpsInstruction,
@@ -268,10 +275,9 @@ export async function buildChatPrompt(
     learnedInsightsBlock,
     personalityBlock,
     l3Content,
-    plan: user.plan,
+    plan:                user.plan,
     guidelines,
     conversationSummary,
-    l3Content: l3Truncated,
   });
 
   // ── Resolução de ferramentas ──────────────────────────────────────────────
@@ -287,8 +293,8 @@ export async function buildChatPrompt(
 
   return {
     systemPrompt,
-    tools: resolvedTools,
-    model: finalModel,
+    tools:                resolvedTools,
+    model:                finalModel,
     conversationMessages: [
       ...recentHistory,
       { role: 'user', content: message },
