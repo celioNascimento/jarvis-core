@@ -39,7 +39,7 @@ export type ContextField =
   | 'favorite_places';
 
 // 2. Agora, verifique se o objeto TTL_CONFIG está usando exatamente este tipo:
-const TTL_CONFIG: Record<ContextField, number> = {
+const FIELD_TTL: Record<ContextField, number> = {
   settings: 86400,
   modules: 86400,
   guidelines: 86400,
