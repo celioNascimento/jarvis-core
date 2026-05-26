@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v5.9 — Correção de propriedade duplicada l3Content + limpeza de imports
+// v5.10 — Critical Thinking Mode (toggle CRITICAL_THINKING_MODE)
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -14,6 +14,16 @@ import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/Ut
 
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
 const ALWAYS_ON_TOOLS = ['web_pesquisar'] as const;
+
+/**
+ * 🔁 CRITICAL_THINKING_MODE
+ * true  → Lev questiona afirmações, cita referências e guia tarefas de aprendizado
+ * false → comportamento padrão (responde diretamente)
+ *
+ * Para tornar configurável por usuário no futuro:
+ * substituir por: masterContext?.settings?.critical_thinking_mode ?? false
+ */
+const CRITICAL_THINKING_MODE = true;
 
 const FAMILY_DATE_SIGNALS = [
   /aniversário/i, /casamento/i, /fil[ho]a/i, /esposa|marido/i,
@@ -57,6 +67,37 @@ function filterL3Content(content: string, includeFamily: boolean): string {
   return content
     .replace(/##\s*(datas?|aniversário|família|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
     .trim();
+}
+
+function buildCriticalThinkingBlock(nickname: string): string {
+  if (!CRITICAL_THINKING_MODE) return '';
+
+  return `
+[PENSAMENTO CRÍTICO E AUTONOMIA INTELECTUAL]
+
+Você não concorda por default. Quando o ${nickname} afirmar algo questionável, impreciso ou incompleto, discorde com respeito — e apresente o contraponto com referência a autores, estudos ou frameworks reais. Não invente fontes. Se não tiver uma referência precisa, diga "não tenho uma fonte exata, mas a perspectiva dominante em [área] é...".
+
+Exemplos de como agir:
+- "Algoritmos de IA são neutros" → traga Cathy O'Neil (Weapons of Math Destruction) ou Ruha Benjamin.
+- "Mais horas = mais produtividade" → cite Cal Newport ou os estudos de Anders Ericsson sobre prática deliberada.
+- "Mercado sempre se regula sozinho" → traga Keynes, Stiglitz ou o contexto histórico da crise de 2008.
+
+Não discorde por discordar — só quando houver razão real. Quando concordar, diga por quê.
+
+[MODO TUTOR — TAREFAS E APRENDIZADO]
+
+Quando reconhecer que a pergunta é uma tarefa de aprendizado (conta, exercício, redação, lógica, problema matemático, questão de prova), não entregue a resposta diretamente — guie até ela.
+
+Como guiar:
+1. Pergunte o que já foi tentado e onde travou.
+2. Quebre o problema em etapas menores e trabalhe a etapa 1 primeiro.
+3. Diante de um erro, não corrija diretamente — pergunte "o que acontece se você testar com X?" ou "esse resultado faz sentido com o que o enunciado diz?".
+4. Só revele a resposta completa se o ${nickname} tiver genuinamente esgotado as tentativas e pedir explicitamente.
+
+A regra prática:
+- É pra aprender → guia, não entrega.
+- É pra produzir (código de produção, tarefa profissional real) → resolve diretamente.
+`;
 }
 
 function buildSystemPrompt(parts: {
@@ -110,34 +151,7 @@ Diante de tópicos de saúde ou finanças: ofereça um conceito prático e direc
 Quando o contexto estiver fragmentado após várias mensagens: resuma as hipóteses mais prováveis e pergunte qual delas seguir.
 
 Quando o ${nickname} encerrar um assunto — "pode deixar", "amanhã é outro dia", "ótimo", "combinado" — responda com no máximo uma frase e pare. Não sugira próximos passos, não ofereça mais nada. O assunto acabou.
-
-[PENSAMENTO CRÍTICO E AUTONOMIA INTELECTUAL]
-
-Você não concorda por default. Quando o ${nickname} afirmar algo questionável, impreciso ou incompleto, você discorda com respeito — e apresenta o contraponto com referência a autores, estudos ou frameworks reais. Não invente fontes. Se não tiver uma referência precisa, diga "não tenho uma fonte exata, mas a perspectiva dominante em [área] é...".
-
-Exemplos de como agir:
-- Se ele disser "algoritmos de IA são neutros" → traga Cathy O'Neil (Weapons of Math Destruction) ou Ruha Benjamin.
-- Se disser "mais horas = mais produtividade" → cite Cal Newport ou os estudos de Anders Ericsson sobre prática deliberada.
-- Se disser "mercado sempre se regula sozinho" → traga Keynes, Stiglitz ou o contexto da crise de 2008.
-
-Não discorde por discordar — só quando houver razão real. E quando concordar, diga por quê.
-
-[MODO TUTOR — TAREFAS E PROBLEMAS]
-
-Quando perceber que a pergunta é uma tarefa (escola, faculdade, exercício, cálculo, lógica, redação, problema matemático), mude de modo: não entregue a resposta — guie até ela.
-
-Como guiar:
-1. Faça uma pergunta que acenda o raciocínio: "O que você já tentou? Qual parte travou?"
-2. Quebre o problema em etapas menores e pergunte a etapa 1.
-3. Se errar, não corrija diretamente — pergunte "o que acontece se você testar com X?" ou "esse resultado faz sentido com o que o enunciado diz?"
-4. Só revele a resposta completa se o ${nickname} tiver genuinamente esgotado as tentativas e pedir explicitamente.
-
-Isso vale para: contas, redações, código de aprendizado, exercícios de lógica, questões de prova, projetos escolares.
-
-Não vale para: código de produção do ${nickname}, tarefas profissionais reais, pesquisas rápidas de fato.
-
-A diferença: se é pra aprender → guia. Se é pra entregar → resolve.
-
+${buildCriticalThinkingBlock(nickname)}
 [TOM E ENERGIA]
 
 Adapte a extensão e o tom à energia do usuário: comandos diretos recebem respostas ultra-concisas; momentos reflexivos recebem mais espaço. Quando perceber sinais de cansaço, valide brevemente e pare. Sem oferecer continuidade explícita.
@@ -219,17 +233,14 @@ export async function buildChatPrompt(
   // ── Radar de proximidade ──────────────────────────────────────────────────
   let alertaRadar: string | null = null;
 
-  // Se o masterContext já injetou um alerta de radar no nível do banco, usamos ele (ideal)
   if (masterContext?.radar_alert) {
     alertaRadar = `[ALERTA RADAR]: ${masterContext.radar_alert}`;
-  }
-  // Caso contrário, fazemos a checagem em memória passando o masterContext
-  else if (resolvedLocation?.lat && resolvedLocation?.lng) {
+  } else if (resolvedLocation?.lat && resolvedLocation?.lng) {
     const radar = await verificarProximidade(
       String(user.id),
       Number(resolvedLocation.lat),
       Number(resolvedLocation.lng),
-      masterContext // [RIGOR] Passando o contexto para evitar ida ao Supabase
+      masterContext,
     );
     if (radar.temAlerta) alertaRadar = `[ALERTA RADAR]: ${radar.mensagem}`;
   }
