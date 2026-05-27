@@ -41,7 +41,7 @@ export function isNoiseMessage(message: string): boolean {
 
 // ─── Cache & RPC Logic ──────────────────────────────────────────────────────
 
-const CACHED_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations', 'shopping', 'reminders'] as const;
+const CACHED_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations', 'shopping', 'reminders','children'] as const;
 
 async function getMasterContext(
   userId: number,
