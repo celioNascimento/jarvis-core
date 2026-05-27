@@ -14,7 +14,7 @@ import { detectImplicitNegativeFeedback } from '@/lib/tools/executors/learning';
 import OpenAI from 'openai';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
-import type { ChatPrompt } from './prompt-assembler';
+import type { ChatPrompt } from './types';
 import { extractReminder, hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
 import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
 import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
