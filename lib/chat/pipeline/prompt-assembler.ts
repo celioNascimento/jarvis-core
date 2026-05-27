@@ -227,8 +227,10 @@ export async function buildChatPrompt(
   const learnedInsightsBlock = buildLearnedInsightsBlock(masterContext?.insights || []);
   const personalitySettings  = buildPersonalityFromContext(masterContext?.settings);
   const personalityBlock     = buildPersonalityBlock(personalitySettings);
-  const familyBlock          = buildFamilyBlock(masterContext?.persons || []);
-
+  const familyBlock = buildFamilyBlock(
+  masterContext?.persons || [],
+  masterContext?.children || [],
+);
   // ── Cargas paralelas ──────────────────────────────────────────────────────
   const [moduleResult, dynamicResult] = await Promise.all([
     loadActiveModules(
