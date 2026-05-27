@@ -17,7 +17,7 @@ import { buildDynamicContext }     from '@/lib/chat/context-builder';
 import { tools as ALL_TOOLS }      from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence }   from './intelligence';
-import type { ChatPrompt }         from './types';
+import type { ChatPrompt }         from './types'; 
 
 // ── Blocos de prompt ──────────────────────────────────────────────────────────
 import { buildIdentityPrompt }              from './prompts/identity';
