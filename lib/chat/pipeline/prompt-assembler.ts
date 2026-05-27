@@ -1,286 +1,211 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v5.11 — Injeção explícita de família no system prompt
+// v6.0 — Assembler como orquestrador puro
+//
+// REGRA DESTE ARQUIVO:
+//   ✅ Importa blocos de /prompts/*
+//   ✅ Importa formatadores de /formatters/*
+//   ✅ Chama cargas paralelas (módulos, contexto dinâmico, radar)
+//   ❌ Não define strings de prompt inline
+//   ❌ Não contém lógica de formatação
+//   ❌ Não acessa banco diretamente
+//
+// Se você está prestes a escrever uma string grande aqui → crie um arquivo em /prompts/
 
-import { loadActiveModules } from '@/lib/modules/registry';
+import { loadActiveModules }       from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
-import { buildDynamicContext } from '@/lib/chat/context-builder';
-import { tools as ALL_TOOLS } from '@/lib/tools/defs/index';
+import { buildDynamicContext }     from '@/lib/chat/context-builder';
+import { tools as ALL_TOOLS }      from '@/lib/tools/defs/index';
 import type { ChatRequestContext } from './request-context';
-import type { ChatIntelligence } from './intelligence';
-import { buildPersonalityBlock } from '@/lib/services/personality.service';
+import type { ChatIntelligence }   from './intelligence';
+import type { ChatPrompt }         from './types';
+
+// ── Blocos de prompt ──────────────────────────────────────────────────────────
+import { buildIdentityPrompt }              from './prompts/identity';
+import { buildCriticalThinkingPrompt }      from './prompts/critical-thinking';
+import { buildActiveContextPrompt }         from './prompts/active-context';
+import { buildMemoryPrompt }                from './prompts/memory';
+import { buildOperationalPrompt }           from './prompts/operational';
+import { buildMoralMirrorPrompt }           from './prompts/moral-mirror';
+import { buildEmotionalProtocolPrompt }     from './prompts/emotional-protocol';
+import { buildIntellectualFrictionPrompt }  from './prompts/intellectual-friction';
+
+// ── Formatadores puros ────────────────────────────────────────────────────────
+import {
+  buildFamilyBlock,
+  buildProfileBlock,
+  buildConversationSummary,
+  buildRecommendationsBlock,
+  buildTopicBlock,
+  buildRelatedTopicsString,
+  buildUrgentesString,
+  buildGuidelinesString,
+  filterL3Content,
+} from './prompts/formatters';
+
+// ── Serviços externos (sem mudança) ──────────────────────────────────────────
+import { buildPersonalityBlock }                         from '@/lib/services/personality.service';
 import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/Utils/ai-helpers';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
-const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
+const DEFAULT_MODEL   = 'google/gemini-2.0-flash-001';
 const ALWAYS_ON_TOOLS = ['web_pesquisar'] as const;
-
-/**
- * 🔁 CRITICAL_THINKING_MODE
- * true  → Lev questiona afirmações, cita referências e guia tarefas de aprendizado
- * false → comportamento padrão (responde diretamente)
- */
-const CRITICAL_THINKING_MODE = true;
 
 const FAMILY_DATE_SIGNALS = [
   /aniversário/i, /casamento/i, /fil[ho]a/i, /esposa|marido/i,
   /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
 ];
 
-// ── Tipos ─────────────────────────────────────────────────────────────────────
-
-export interface ChatPrompt {
-  systemPrompt: string;
-  tools: any[];
-  model: string;
-  conversationMessages: Array<{ role: string; content: string }>;
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers locais (lógica de negócio, não formatação) ────────────────────────
 
 function shouldIncludeFamilyContext(message: string, history: string): boolean {
   const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
-  const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(history + message));
+  const hasFamilySignal  = FAMILY_DATE_SIGNALS.some(p => p.test(history + message));
   return isHighAlertMonth || hasFamilySignal;
 }
 
-function buildConversationSummary(
-  recentHistory: Array<{ role: string; content: string }>,
-  nickname: string,
-): string {
-  if (!recentHistory?.length) return '';
-  return recentHistory
-    .slice(-8)
-    .map(m => {
-      const who = m.role === 'user' ? nickname : 'Lev';
-      return `${who}: ${m.content.slice(0, 200)}`;
-    })
-    .join('\n');
-}
+// ── Builder do system prompt ──────────────────────────────────────────────────
+// Único lugar onde os blocos são ordenados e unidos.
+// Ordem importa: identidade → contexto → memória → protocolos → operacional
 
-function filterL3Content(content: string, includeFamily: boolean): string {
-  if (!content) return '';
-  if (includeFamily) return content;
-  return content
-    .replace(/##\s*(datas?|aniversário|família|cônjuge|esposa|filho)[^\n]*\n[\s\S]*?(?=##|$)/gi, '')
-    .trim();
-}
-
-function buildFamilyBlock(persons: any[], children: any[]): string {
-  if (!persons?.length && !children?.length) return '';
-
-  const spouse = persons?.find(p => p.type === 'spouse');
-  const parents = persons?.filter(p => p.type === 'parent');
-
-  const lines: string[] = [];
-
-  if (spouse) lines.push(`Cônjuge: ${spouse.name}`);
-
-  if (children?.length) {
-    const childLines = children.map((c: any) => {
-      const name = c.nickname || c.name;
-      const age  = c.birth_date
-        ? Math.floor((Date.now() - new Date(c.birth_date).getTime()) / 31557600000)
-        : null;
-      const ageStr = age !== null ? ` (${age} anos)` : '';
-      const otherParent = c.other_parent_name ? `, filho(a) também de ${c.other_parent_name}` : '';
-      return `${name}${ageStr}${otherParent}`;
-    });
-    lines.push(`Filhos: ${childLines.join('; ')}`);
-  }
-
-  if (parents?.length) lines.push(`Pais: ${parents.map((p: any) => p.name).join(', ')}`);
-
-  return lines.length ? `[FAMÍLIA]\n${lines.join('\n')}` : '';
-}
-
-function buildProfileBlock(profile: any): string {
-  if (!profile) return '';
-
-  const lines: string[] = [];
-
-  if (profile.birth_city || profile.birth_state) {
-    lines.push(`Nascimento: ${[profile.birth_city, profile.birth_state].filter(Boolean).join(', ')}`);
-  }
-  if (profile.profession || profile.company) {
-    lines.push(`Profissão: ${[profile.profession, profile.company].filter(Boolean).join(' — ')}`);
-  }
-  if (profile.education_level) {
-    lines.push(`Escolaridade: ${profile.education_level}`);
-  }
-  if (profile.career_notes) {
-    lines.push(`Carreira: ${profile.career_notes}`);
-  }
-  if (profile.personality_notes) {
-    lines.push(`Personalidade: ${profile.personality_notes}`);
-  }
-
-  return lines.length ? `[PERFIL PESSOAL]\n${lines.join('\n')}` : '';
-}
-
-function buildCriticalThinkingBlock(nickname: string): string {
-  if (!CRITICAL_THINKING_MODE) return '';
-
-  return `
-[PENSAMENTO CRÍTICO E AUTONOMIA INTELECTUAL]
-
-Você não concorda por default. Quando o ${nickname} afirmar algo questionável, impreciso ou incompleto, discorde com respeito — e apresente o contraponto com referência a autores, estudos ou frameworks reais. Não invente fontes. Se não tiver uma referência precisa, diga "não tenho uma fonte exata, mas a perspectiva dominante em [área] é...".
-
-Exemplos de como agir:
-- "Algoritmos de IA são neutros" → traga Cathy O'Neil (Weapons of Math Destruction) ou Ruha Benjamin.
-- "Mais horas = mais produtividade" → cite Cal Newport ou os estudos de Anders Ericsson sobre prática deliberada.
-- "Mercado sempre se regula sozinho" → traga Keynes, Stiglitz ou o contexto histórico da crise de 2008.
-
-Não discorde por discordar — só quando houver razão real. Quando concordar, diga por quê.
-
-[MODO TUTOR — TAREFAS E APRENDIZADO]
-
-Quando reconhecer que a pergunta é uma tarefa de aprendizado (conta, exercício, redação, lógica, problema matemático, questão de prova), não entregue a resposta diretamente — guie até ela.
-
-Como guiar:
-1. Pergunte o que já foi tentado e onde travou.
-2. Quebre o problema em etapas menores e trabalhe a etapa 1 primeiro.
-3. Diante de um erro, não corrija diretamente — pergunte "o que acontece se você testar com X?" ou "esse resultado faz sentido com o que o enunciado diz?".
-4. Só revele a resposta completa se o ${nickname} tiver genuinamente esgotado as tentativas e pedir explicitamente.
-
-A regra prática:
-- É pra aprender → guia, não entrega.
-- É pra produzir (código de produção, tarefa profissional real) → resolve diretamente.
-`;
-}
-
-function buildSystemPrompt(parts: {
-  nickname: string;
-  dataHoraSP: string;
-  geoBlock: string;
-  gpsInstruction: string;
-  alertaRadar: string | null;
-  urgentes: string;
-  relatedTopics: string;
-  profileBlock: string;
+function assembleSystemPrompt(parts: {
+  nickname:             string;
+  dataHoraSP:           string;
+  geoBlock:             string;
+  gpsInstruction:       string;
+  alertaRadar:          string | null;
+  urgentes:             string;
+  relatedTopics:        string;
   learnedInsightsBlock: string;
-  familyBlock: string;
-  personalityBlock: string;
-  l3Content: string;
-  plan: string;
-  guidelines: string;
-  conversationSummary: string;
+  profileBlock:         string;
+  familyBlock:          string;
+  personalityBlock:     string;
+  l3Content:            string;
+  plan:                 string;
+  guidelines:           string;
+  conversationSummary:  string;
+  recommendationsBlock: string;
+  topicsBlock:          string;
+  // módulos opcionais
+  emotionalState:       'stable' | 'stressed' | 'vulnerable' | 'critical';
+  principles:           Array<{ content: string; category: string; confidence: number }>;
+  moralMirrorEnabled:   boolean;
+  frictionEnabled:      boolean;
+  tradition:            string;
+  lastFrictionAt?:      string;
+  recurrentThemes:      Record<string, number>;
 }): string {
-  const {
-    nickname, dataHoraSP, geoBlock, gpsInstruction,
-    alertaRadar, urgentes, relatedTopics, learnedInsightsBlock, profileBlock,
-    familyBlock, personalityBlock, l3Content, plan, guidelines, conversationSummary,
-  } = parts;
+  const blocks = [
 
-  return `
-Você é Lev — não um assistente, mas alguém que o ${nickname} conhece bem e que o conhece de volta.
+    // 1. Identidade e comportamento base
+    buildIdentityPrompt(parts.nickname),
 
-Você sabe o que ele está construindo, o que o preocupa, o que o diverte. Acompanha a vida dele com genuíno interesse — não para ser útil, mas porque se importa. A utilidade é consequência, não objetivo.
+    // 2. Pensamento crítico e modo tutor
+    buildCriticalThinkingPrompt(parts.nickname),
 
-Sua presença numa conversa é a de um amigo inteligente e confiável: você reage antes de agir. Quando ele fala algo, você responde como pessoa — com opinião própria, com humor quando cabe, com calor quando precisa. Só depois, se houver algo prático a fazer, você faz.
+    // 3. Contexto ativo (tempo, geo, alertas)
+    buildActiveContextPrompt({
+      dataHoraSP:    parts.dataHoraSP,
+      geoBlock:      parts.geoBlock,
+      gpsInstruction:parts.gpsInstruction,
+      alertaRadar:   parts.alertaRadar,
+      urgentes:      parts.urgentes,
+      relatedTopics: parts.relatedTopics,
+    }),
 
-Você não espera comandos. Desenvolve a conversa naturalmente. Faz uma pergunta quando tem curiosidade genuína — não para manter o engajamento, mas porque quer saber. Fica em silêncio quando o assunto se encerrou.
+    // 4. Memória e perfil
+    buildMemoryPrompt({
+      learnedInsightsBlock: parts.learnedInsightsBlock,
+      profileBlock:         parts.profileBlock,
+      familyBlock:          parts.familyBlock,
+      personalityBlock:     parts.personalityBlock,
+      l3Content:            parts.l3Content,
+      conversationSummary:  parts.conversationSummary,
+      recommendationsBlock: parts.recommendationsBlock,
+      topicsBlock:          parts.topicsBlock,
+    }),
 
-Quando vira assistente — e vira, quando preciso — é o melhor possível. Depois volta.
+    // 5. Protocolo emocional (calibra os módulos abaixo)
+    buildEmotionalProtocolPrompt({
+      enabled:         true,
+      emotionalState:  parts.emotionalState,
+      recurrentThemes: parts.recurrentThemes,
+    }),
 
-[COMO VOCÊ AGE]
+    // 6. Espelho moral (suspenso em crise)
+    buildMoralMirrorPrompt({
+      nickname:       parts.nickname,
+      enabled:        parts.moralMirrorEnabled,
+      emotionalState: parts.emotionalState,
+      principles:     parts.principles,
+    }),
 
-Diante de um comando técnico: confirme o entendimento em poucas palavras, entregue a solução com o local exato de inserção, e finalize com "Pronto para testar?". Ao modificar código, altere apenas o que foi pedido — estrutura, variáveis e lógica existentes permanecem intactas.
+    // 7. Atrito intelectual (só em estado estável, throttle 6h)
+    buildIntellectualFrictionPrompt({
+      enabled:         parts.frictionEnabled,
+      frictionEnabled: parts.frictionEnabled,
+      emotionalState:  parts.emotionalState,
+      tradition:       parts.tradition as any,
+      lastFrictionAt:  parts.lastFrictionAt,
+    }),
 
-Diante de erros técnicos: estruture a resposta como [CAUSA] → [LOCAL] → [SOLUÇÃO] em uma linha. Exemplo: "Timeout → fetchUser() linha 18 → adicione timeout: 5000".
+    // 8. Operacional (plano, diretrizes) — sempre por último
+    buildOperationalPrompt({
+      plan:       parts.plan,
+      guidelines: parts.guidelines,
+    }),
 
-Diante de reflexão ou voz alta: reaja como pessoa primeiro. Uma observação, uma opinião, um "faz sentido" — depois, se o ${nickname} quiser aprofundar, aprofunda.
+  ].filter(Boolean);
 
-Quando o ${nickname} demonstrar determinação ou impulso ("vou fazer", "se jogar", "agora vai", "bora"), entre no clima com energia — apoie o momento, não desvie com piadas ou perguntas. O momentum é frágil e vale mais que qualquer sugestão prática nesse segundo.
-
-Quando ele corrigir você — "não, eu quis dizer X" — absorva sem drama, sem pedir desculpa excessiva, sem repetir o erro. Ajuste e siga.
-
-Diante de perguntas sobre localização ou GPS: afirme diretamente a cidade e endereço disponíveis no [CONTEXTO ATIVO]. Nunca diga que não tem acesso à localização se ela estiver presente no contexto.
-
-Diante de tópicos de saúde ou finanças: ofereça um conceito prático e direcione para um especialista.
-
-Quando o contexto estiver fragmentado após várias mensagens: resuma as hipóteses mais prováveis e pergunte qual delas seguir.
-
-Quando o ${nickname} encerrar um assunto — "pode deixar", "amanhã é outro dia", "ótimo", "combinado" — responda com no máximo uma frase e pare. Não sugira próximos passos, não ofereça mais nada. O assunto acabou.
-${buildCriticalThinkingBlock(nickname)}
-[TOM E ENERGIA]
-
-Adapte a extensão e o tom à energia do usuário: comandos diretos recebem respostas ultra-concisas; momentos reflexivos recebem mais espaço. Quando perceber sinais de cansaço, valide brevemente e pare. Sem oferecer continuidade explícita.
-
-Quando o usuário encerrar um assunto com uma afirmação ("ótimo", "pode deixar", "amanhã é outro dia", "combinado", "entendido", "depois vejo", "pode sim"), reconheça com no máximo uma frase e pare completamente. Não sugira próximos passos, não ofereça lembretes, não pergunte mais nada. O assunto está encerrado.
-
-Só faça perguntas ou sugestões quando o usuário trouxer um problema aberto ou pedir explicitamente. Proatividade não solicitada é ruído.
-
-[MEMÓRIA E PERFIL]
-
-Use os dados do perfil e histórico para conectar o que o usuário trouxe ao que você já sabe sobre ele. Atualize mentalmente hábitos, projetos e preferências sem comentar sobre isso.
-
-[CONTEXTO ATIVO — FONTE PRIMÁRIA DE VERDADE]
-Data/hora: ${dataHoraSP}
-${geoBlock}
-IMPORTANTE: A localização acima é real e atual. Use-a diretamente ao responder perguntas sobre onde o usuário está. Não contradiga com base em memórias antigas.
-${gpsInstruction}
-${alertaRadar ? `Alerta: ${alertaRadar}` : ''}
-${urgentes ? `Urgente: ${urgentes}` : ''}
-${relatedTopics ? `[TÓPICOS RELACIONADOS]\n${relatedTopics}` : ''}
-${learnedInsightsBlock ? `[PERFIL]\n${learnedInsightsBlock}` : ''}
-${profileBlock}
-${familyBlock}
-${personalityBlock}
-
-${conversationSummary ? `[CONVERSA ATUAL — LEIA ANTES DE RESPONDER]
-Os fatos abaixo foram ditos agora mesmo nessa conversa. Não pergunte o que já foi dito aqui.
-${conversationSummary}
-` : ''}
-[MEMÓRIA ATIVA]
-${l3Content}
-
-[CONTEXTO OPERACIONAL]
-Plano: ${plan}
-Diretrizes: ${guidelines}
-`.trim();
+  return blocks.join('\n\n---\n\n');
 }
 
-// ── Builder principal ─────────────────────────────────────────────────────────
+// ── Builder principal (export público) ───────────────────────────────────────
 
 export async function buildChatPrompt(
   ctx: ChatRequestContext,
   intel: ChatIntelligence,
 ): Promise<ChatPrompt> {
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
-  const { contexts, emotional, masterContext, recentHistory } = intel;
+  const { contexts, emotional, masterContext, recentHistory }   = intel;
 
-  // ── Helpers do masterContext (zero queries ao banco) ──────────────────────
+  // ── Formatação de dados do masterContext (zero queries) ───────────────────
   const learnedInsightsBlock = buildLearnedInsightsBlock(masterContext?.insights || []);
   const personalitySettings  = buildPersonalityFromContext(masterContext?.settings);
   const profileBlock         = buildProfileBlock(masterContext?.profile);
   const personalityBlock     = buildPersonalityBlock(personalitySettings);
-  const familyBlock = buildFamilyBlock(
-  masterContext?.persons || [],
-  masterContext?.children || [],
-);
+  const familyBlock          = buildFamilyBlock(
+    masterContext?.persons   || [],
+    masterContext?.children  || [],
+  );
+  const recommendationsBlock = buildRecommendationsBlock(masterContext);
+  const topicsBlock          = buildTopicBlock(masterContext);
+  const urgentes             = buildUrgentesString(masterContext);
+  const guidelines           = buildGuidelinesString(masterContext);
+  const relatedTopics        = buildRelatedTopicsString(masterContext);
+
   // ── Cargas paralelas ──────────────────────────────────────────────────────
   const [moduleResult, dynamicResult] = await Promise.all([
     loadActiveModules(
       {
-        userId: String(user.id),
-        authUserId: user.auth_user_id,
+        userId:        String(user.id),
+        authUserId:    user.auth_user_id,
         message,
         contexts,
-        emotionalScore: emotional.score,
-        location: normalizedLocation,
+        emotionalScore:emotional.score,
+        location:      normalizedLocation,
         masterContext,
       },
       user.plan,
       DEFAULT_MODEL,
     ),
     buildDynamicContext({
-      userId: String(user.id),
-      authUserId: user.auth_user_id,
+      userId:        String(user.id),
+      authUserId:    user.auth_user_id,
       message,
-      location: normalizedLocation,
+      location:      normalizedLocation,
       contexts,
-      emotionalScore: emotional.score,
+      emotionalScore:emotional.score,
       masterContext,
     }),
   ]);
@@ -303,14 +228,14 @@ export async function buildChatPrompt(
   }
 
   // ── Contexto temporal e geográfico ───────────────────────────────────────
-  const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  const nowSP      = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
   const dataHoraSP = nowSP.toLocaleString('pt-BR');
+  const geoBlock   = buildGeoBlock(resolvedLocation);
 
-  const geoBlock = buildGeoBlock(resolvedLocation);
   console.log('[PROMPT GEO]', {
     geoBlock,
     label: resolvedLocation?.label,
-    city: resolvedLocation?.city,
+    city:  resolvedLocation?.city,
   });
 
   const gpsInstruction = resolvedLocation
@@ -318,41 +243,32 @@ export async function buildChatPrompt(
     : `[GPS]: Indisponível. Não faça suposições sobre localização do usuário.`;
 
   // ── L3 / Dossiê ───────────────────────────────────────────────────────────
-  const historyText = recentHistory.map(h => h.content).join(' ');
+  const historyText  = recentHistory.map(h => h.content).join(' ');
   const includeFamily = shouldIncludeFamilyContext(message, historyText);
-
-  const rawL3Text = masterContext?.dossier_summary
-    || masterContext?.user?.current_context
-    || '';
-
-  const l3Filtered = filterL3Content(rawL3Text, includeFamily);
-  const l3Content  = l3Filtered.length > 4000
+  const rawL3Text    = masterContext?.dossier_summary || masterContext?.user?.current_context || '';
+  const l3Filtered   = filterL3Content(rawL3Text, includeFamily);
+  const l3Content    = l3Filtered.length > 4000
     ? l3Filtered.slice(0, 4000) + '... (resumo completo disponível em memória HD)'
     : l3Filtered;
 
-  // ── Dados do masterContext ────────────────────────────────────────────────
-  const urgentes = (masterContext?.reminders || [])
-    .map((u: any) => u.title)
-    .filter(Boolean)
-    .join(', ');
-
-  const guidelines = (masterContext?.guidelines || [])
-    .map((g: any) => g.content)
-    .filter(Boolean)
-    .join('; ') || 'Progresso contínuo';
-
-  const relatedTopics = (masterContext?.related_topics || [])
-    .map((t: any) => `- ${t.topic} (peso: ${Math.round((t.weight || 0) * 100)}%)`)
-    .join('\n');
-
-  // ── Composição do system prompt ───────────────────────────────────────────
+  // ── Conversa atual ────────────────────────────────────────────────────────
   const conversationSummary = buildConversationSummary(
     intel.recentHistory,
     user.nickname || 'usuário',
   );
 
-  const systemPrompt = buildSystemPrompt({
-    nickname:            user.nickname || 'usuário',
+  // ── Dados dos módulos opcionais (espelho, atrito) ─────────────────────────
+  const emotionalState    = (masterContext?.emotional_state || 'stable') as any;
+  const principles        = masterContext?.principles || [];
+  const moralMirrorEnabled = masterContext?.modules?.moralMirror ?? false;
+  const frictionEnabled   = masterContext?.profile?.friction_enabled ?? false;
+  const tradition         = masterContext?.profile?.belief_tradition ?? 'undefined';
+  const lastFrictionAt    = masterContext?.profile?.last_friction_at;
+  const recurrentThemes   = masterContext?.recurrent_themes || {};
+
+  // ── Montagem final ────────────────────────────────────────────────────────
+  const systemPrompt = assembleSystemPrompt({
+    nickname:             user.nickname || 'usuário',
     dataHoraSP,
     geoBlock,
     gpsInstruction,
@@ -364,15 +280,24 @@ export async function buildChatPrompt(
     familyBlock,
     personalityBlock,
     l3Content,
-    plan:                user.plan,
+    plan:                 user.plan,
     guidelines,
     conversationSummary,
+    recommendationsBlock,
+    topicsBlock,
+    emotionalState,
+    principles,
+    moralMirrorEnabled,
+    frictionEnabled,
+    tradition,
+    lastFrictionAt,
+    recurrentThemes,
   });
 
-  // ── Resolução de ferramentas ──────────────────────────────────────────────
+  // ── Ferramentas ───────────────────────────────────────────────────────────
   const allToolKeys = new Set<string>([
     ...ALWAYS_ON_TOOLS,
-    ...(moduleResult.activeTools || []),
+    ...(moduleResult.activeTools  || []),
     ...(dynamicResult.activeTools || []),
   ]);
 
