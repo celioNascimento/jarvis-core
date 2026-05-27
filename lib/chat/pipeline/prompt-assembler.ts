@@ -93,6 +93,31 @@ function buildFamilyBlock(persons: any[], children: any[]): string {
 
   return lines.length ? `[FAMÍLIA]\n${lines.join('\n')}` : '';
 }
+
+function buildProfileBlock(profile: any): string {
+  if (!profile) return '';
+
+  const lines: string[] = [];
+
+  if (profile.birth_city || profile.birth_state) {
+    lines.push(`Nascimento: ${[profile.birth_city, profile.birth_state].filter(Boolean).join(', ')}`);
+  }
+  if (profile.profession || profile.company) {
+    lines.push(`Profissão: ${[profile.profession, profile.company].filter(Boolean).join(' — ')}`);
+  }
+  if (profile.education_level) {
+    lines.push(`Escolaridade: ${profile.education_level}`);
+  }
+  if (profile.career_notes) {
+    lines.push(`Carreira: ${profile.career_notes}`);
+  }
+  if (profile.personality_notes) {
+    lines.push(`Personalidade: ${profile.personality_notes}`);
+  }
+
+  return lines.length ? `[PERFIL PESSOAL]\n${lines.join('\n')}` : '';
+}
+
 function buildCriticalThinkingBlock(nickname: string): string {
   if (!CRITICAL_THINKING_MODE) return '';
 
