@@ -49,15 +49,27 @@ export function buildProfileBlock(profile: any): string {
     lines.push(`Gênero: ${profile.gender}`);
   }
 
-  // 2. Nascimento e Idade (cálculo dinâmico seguro)
+  // 2. Nascimento e Idade (cálculo imune a timezone)
   if (profile.birth_date || profile.birth_city || profile.birth_state) {
     const location = [profile.birth_city, profile.birth_state].filter(Boolean).join(', ');
     let nascimentoStr = '';
 
     if (profile.birth_date) {
-      const dateObj = new Date(new Date(profile.birth_date).toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-      const age = Math.floor((Date.now() - dateObj.getTime()) / 31557600000);
-      nascimentoStr += `${dateObj.toLocaleDateString('pt-BR')} (${age} anos)`;
+      // Extrai os valores exatos da string "YYYY-MM-DD" ignorando o fuso horário
+      const dateString = profile.birth_date.split('T')[0];
+      const [year, month, day] = dateString.split('-');
+
+      const birthDateObj = new Date(Number(year), Number(month) - 1, Number(day));
+      const today = new Date();
+
+      // Cálculo preciso de idade
+      let age = today.getFullYear() - birthDateObj.getFullYear();
+      const monthDiff = today.getMonth() - birthDateObj.getMonth();
+      if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDateObj.getDate())) {
+        age--;
+      }
+
+      nascimentoStr += `${day}/${month}/${year} (${age} anos)`;
     }
 
     if (location) {
@@ -112,8 +124,9 @@ export function buildProfileBlock(profile: any): string {
     let jobStr = `Atuação Profissional: ${jobInfo.join(' — ')}`;
 
     if (profile.job_start_date) {
-      const startDate = new Date(new Date(profile.job_start_date).toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-      jobStr += ` (Desde: ${startDate.toLocaleDateString('pt-BR')})`;
+      const startDateStr = profile.job_start_date.split('T')[0];
+      const [sYear, sMonth, sDay] = startDateStr.split('-');
+      jobStr += ` (Desde: ${sDay}/${sMonth}/${sYear})`;
     }
     lines.push(jobStr);
   }
