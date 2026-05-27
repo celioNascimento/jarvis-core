@@ -40,15 +40,23 @@ export function buildProfileBlock(profile: any): string {
 
   const lines: string[] = [];
 
-  // CORREÇÃO: Incluindo birth_date e calculando a idade dinamicamente
+  // 1. Identidade e Gênero
+  if (profile.full_name) {
+    let nameLine = `Nome Completo: ${profile.full_name}`;
+    if (profile.gender) nameLine += ` (Gênero: ${profile.gender})`;
+    lines.push(nameLine);
+  } else if (profile.gender) {
+    lines.push(`Gênero: ${profile.gender}`);
+  }
+
+  // 2. Nascimento e Idade (cálculo dinâmico seguro)
   if (profile.birth_date || profile.birth_city || profile.birth_state) {
     const location = [profile.birth_city, profile.birth_state].filter(Boolean).join(', ');
     let nascimentoStr = '';
 
     if (profile.birth_date) {
-      // Usando fuso horário de SP para evitar problemas de offset de dia
       const dateObj = new Date(new Date(profile.birth_date).toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-      const age = Math.floor((Date.now() - dateObj.getTime()) / 31557600000); // 31557600000 ms = 1 ano
+      const age = Math.floor((Date.now() - dateObj.getTime()) / 31557600000);
       nascimentoStr += `${dateObj.toLocaleDateString('pt-BR')} (${age} anos)`;
     }
 
@@ -59,14 +67,59 @@ export function buildProfileBlock(profile: any): string {
     lines.push(`Nascimento: ${nascimentoStr}`);
   }
 
-  if (profile.profession || profile.company)
-    lines.push(`Profissão: ${[profile.profession, profile.company].filter(Boolean).join(' — ')}`);
+  // 3. Localização Atual
+  if (profile.city || profile.state) {
+    lines.push(`Residência Atual: ${[profile.city, profile.state].filter(Boolean).join(', ')}`);
+  }
 
-  if (profile.education_level)
-    lines.push(`Escolaridade: ${profile.education_level}`);
+  // 4. Contato
+  if (profile.whatsapp || profile.phone) {
+    lines.push(`Contato: ${[profile.whatsapp, profile.phone].filter(Boolean).join(' / ')}`);
+  }
+
+  // 5. Estrutura Familiar Base (Atua como redundância/complemento ao familyBlock)
+  const parents = [profile.father_name, profile.mother_name].filter(Boolean);
+  if (parents.length > 0 || profile.siblings_count !== null || profile.spouse_name) {
+    const familyBase = [];
+    if (profile.spouse_name) familyBase.push(`Cônjuge: ${profile.spouse_name}`);
+    if (parents.length > 0) familyBase.push(`Pais: ${parents.join(' e ')}`);
+    if (profile.siblings_count !== null && profile.siblings_count !== undefined) familyBase.push(`Irmãos: ${profile.siblings_count}`);
+
+    if (familyBase.length > 0) {
+      lines.push(`Estrutura Familiar Base: ${familyBase.join(' | ')}`);
+    }
+  }
+
+  // 6. Crenças e Fé
+  if (profile.faith_profile && profile.faith_profile !== 'unknown') {
+    let faithStr = `Perfil de Fé: ${profile.faith_profile}`;
+    if (profile.faith_notes) faithStr += ` — Notas: ${profile.faith_notes}`;
+    lines.push(faithStr);
+  }
+
+  // 7. Educação
+  if (profile.education_level || (profile.schools && profile.schools.length > 0)) {
+    let eduStr = `Escolaridade: ${profile.education_level || 'Não informado'}`;
+    if (profile.schools && profile.schools.length > 0) {
+      eduStr += ` (Instituições: ${profile.schools.join(', ')})`;
+    }
+    lines.push(eduStr);
+  }
+
+  // 8. Profissão, Cargo Atual e Empresa
+  const jobInfo = [profile.profession, profile.current_job, profile.company].filter(Boolean);
+  if (jobInfo.length > 0) {
+    let jobStr = `Atuação Profissional: ${jobInfo.join(' — ')}`;
+
+    if (profile.job_start_date) {
+      const startDate = new Date(new Date(profile.job_start_date).toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+      jobStr += ` (Desde: ${startDate.toLocaleDateString('pt-BR')})`;
+    }
+    lines.push(jobStr);
+  }
 
   if (profile.career_notes)
-    lines.push(`Carreira: ${profile.career_notes}`);
+    lines.push(`Notas de Carreira: ${profile.career_notes}`);
 
   if (profile.personality_notes)
     lines.push(`Personalidade: ${profile.personality_notes}`);
