@@ -157,6 +157,7 @@ function buildSystemPrompt(parts: {
   alertaRadar: string | null;
   urgentes: string;
   relatedTopics: string;
+  profileBlock: string;
   learnedInsightsBlock: string;
   familyBlock: string;
   personalityBlock: string;
@@ -167,7 +168,7 @@ function buildSystemPrompt(parts: {
 }): string {
   const {
     nickname, dataHoraSP, geoBlock, gpsInstruction,
-    alertaRadar, urgentes, relatedTopics, learnedInsightsBlock,
+    alertaRadar, urgentes, relatedTopics, learnedInsightsBlock, profileBlock,
     familyBlock, personalityBlock, l3Content, plan, guidelines, conversationSummary,
   } = parts;
 
@@ -359,6 +360,7 @@ export async function buildChatPrompt(
     urgentes,
     relatedTopics,
     learnedInsightsBlock,
+    profileBlock,
     familyBlock,
     personalityBlock,
     l3Content,
