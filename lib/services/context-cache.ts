@@ -36,7 +36,8 @@ export type ContextField =
   | 'diary'
   | 'goals'
   | 'recommendations'
-  | 'favorite_places';
+  | 'favorite_places'
+  | 'children';
 
 // 2. Agora, verifique se o objeto TTL_CONFIG está usando exatamente este tipo:
 const FIELD_TTL: Record<ContextField, number> = {
@@ -50,6 +51,7 @@ const FIELD_TTL: Record<ContextField, number> = {
   history: 3600,
   profile: 86400,
   projects: 86400,
+  children: 86400,
   dossier_summary: 86400, 
   events: 86400,
   diary: 86400,
