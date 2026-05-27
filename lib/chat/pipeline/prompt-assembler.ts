@@ -223,6 +223,7 @@ ${alertaRadar ? `Alerta: ${alertaRadar}` : ''}
 ${urgentes ? `Urgente: ${urgentes}` : ''}
 ${relatedTopics ? `[TÓPICOS RELACIONADOS]\n${relatedTopics}` : ''}
 ${learnedInsightsBlock ? `[PERFIL]\n${learnedInsightsBlock}` : ''}
+${profileBlock
 ${familyBlock}
 ${personalityBlock}
 
