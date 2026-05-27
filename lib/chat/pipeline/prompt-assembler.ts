@@ -66,21 +66,33 @@ function filterL3Content(content: string, includeFamily: boolean): string {
     .trim();
 }
 
-function buildFamilyBlock(persons: any[]): string {
-  if (!persons?.length) return '';
+function buildFamilyBlock(persons: any[], children: any[]): string {
+  if (!persons?.length && !children?.length) return '';
 
-  const spouse   = persons.find(p => p.type === 'spouse');
-  const children = persons.filter(p => p.type === 'child');
-  const parents  = persons.filter(p => p.type === 'parent');
+  const spouse = persons?.find(p => p.type === 'spouse');
+  const parents = persons?.filter(p => p.type === 'parent');
 
   const lines: string[] = [];
-  if (spouse)         lines.push(`Cônjuge: ${spouse.name}`);
-  if (children.length) lines.push(`Filhos: ${children.map((c: any) => c.nickname || c.name).join(', ')}`);
-  if (parents.length)  lines.push(`Pais: ${parents.map((p: any) => p.name).join(', ')}`);
+
+  if (spouse) lines.push(`Cônjuge: ${spouse.name}`);
+
+  if (children?.length) {
+    const childLines = children.map((c: any) => {
+      const name = c.nickname || c.name;
+      const age  = c.birth_date
+        ? Math.floor((Date.now() - new Date(c.birth_date).getTime()) / 31557600000)
+        : null;
+      const ageStr = age !== null ? ` (${age} anos)` : '';
+      const otherParent = c.other_parent_name ? `, filho(a) também de ${c.other_parent_name}` : '';
+      return `${name}${ageStr}${otherParent}`;
+    });
+    lines.push(`Filhos: ${childLines.join('; ')}`);
+  }
+
+  if (parents?.length) lines.push(`Pais: ${parents.map((p: any) => p.name).join(', ')}`);
 
   return lines.length ? `[FAMÍLIA]\n${lines.join('\n')}` : '';
 }
-
 function buildCriticalThinkingBlock(nickname: string): string {
   if (!CRITICAL_THINKING_MODE) return '';
 
