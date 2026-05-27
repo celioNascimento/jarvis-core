@@ -251,6 +251,7 @@ export async function buildChatPrompt(
   // ── Helpers do masterContext (zero queries ao banco) ──────────────────────
   const learnedInsightsBlock = buildLearnedInsightsBlock(masterContext?.insights || []);
   const personalitySettings  = buildPersonalityFromContext(masterContext?.settings);
+  const profileBlock.        = buildProfileBlock(masterContext?.profile);
   const personalityBlock     = buildPersonalityBlock(personalitySettings);
   const familyBlock = buildFamilyBlock(
   masterContext?.persons || [],
