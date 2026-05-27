@@ -9,7 +9,7 @@
 export function buildFamilyBlock(persons: any[], children: any[]): string {
   if (!persons?.length && !children?.length) return '';
 
-  const spouse  = persons?.find(p => p.type === 'spouse');
+  const spouse = persons?.find(p => p.type === 'spouse');
   const parents = persons?.filter(p => p.type === 'parent');
   const lines: string[] = [];
 
@@ -17,11 +17,11 @@ export function buildFamilyBlock(persons: any[], children: any[]): string {
 
   if (children?.length) {
     const childLines = children.map((c: any) => {
-      const name        = c.nickname || c.name;
-      const age         = c.birth_date
+      const name = c.nickname || c.name;
+      const age = c.birth_date
         ? Math.floor((Date.now() - new Date(c.birth_date).getTime()) / 31557600000)
         : null;
-      const ageStr      = age !== null ? ` (${age} anos)` : '';
+      const ageStr = age !== null ? ` (${age} anos)` : '';
       const otherParent = c.other_parent_name ? `, filho(a) também de ${c.other_parent_name}` : '';
       return `${name}${ageStr}${otherParent}`;
     });
@@ -40,8 +40,24 @@ export function buildProfileBlock(profile: any): string {
 
   const lines: string[] = [];
 
-  if (profile.birth_city || profile.birth_state)
-    lines.push(`Nascimento: ${[profile.birth_city, profile.birth_state].filter(Boolean).join(', ')}`);
+  // CORREÇÃO: Incluindo birth_date e calculando a idade dinamicamente
+  if (profile.birth_date || profile.birth_city || profile.birth_state) {
+    const location = [profile.birth_city, profile.birth_state].filter(Boolean).join(', ');
+    let nascimentoStr = '';
+
+    if (profile.birth_date) {
+      // Usando fuso horário de SP para evitar problemas de offset de dia
+      const dateObj = new Date(new Date(profile.birth_date).toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+      const age = Math.floor((Date.now() - dateObj.getTime()) / 31557600000); // 31557600000 ms = 1 ano
+      nascimentoStr += `${dateObj.toLocaleDateString('pt-BR')} (${age} anos)`;
+    }
+
+    if (location) {
+      nascimentoStr += nascimentoStr ? ` em ${location}` : location;
+    }
+
+    lines.push(`Nascimento: ${nascimentoStr}`);
+  }
 
   if (profile.profession || profile.company)
     lines.push(`Profissão: ${[profile.profession, profile.company].filter(Boolean).join(' — ')}`);
