@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v5.10 — Critical Thinking Mode (toggle CRITICAL_THINKING_MODE)
+// v5.11 — Injeção explícita de família no system prompt
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -19,9 +19,6 @@ const ALWAYS_ON_TOOLS = ['web_pesquisar'] as const;
  * 🔁 CRITICAL_THINKING_MODE
  * true  → Lev questiona afirmações, cita referências e guia tarefas de aprendizado
  * false → comportamento padrão (responde diretamente)
- *
- * Para tornar configurável por usuário no futuro:
- * substituir por: masterContext?.settings?.critical_thinking_mode ?? false
  */
 const CRITICAL_THINKING_MODE = true;
 
@@ -69,6 +66,21 @@ function filterL3Content(content: string, includeFamily: boolean): string {
     .trim();
 }
 
+function buildFamilyBlock(persons: any[]): string {
+  if (!persons?.length) return '';
+
+  const spouse   = persons.find(p => p.type === 'spouse');
+  const children = persons.filter(p => p.type === 'child');
+  const parents  = persons.filter(p => p.type === 'parent');
+
+  const lines: string[] = [];
+  if (spouse)         lines.push(`Cônjuge: ${spouse.name}`);
+  if (children.length) lines.push(`Filhos: ${children.map((c: any) => c.nickname || c.name).join(', ')}`);
+  if (parents.length)  lines.push(`Pais: ${parents.map((p: any) => p.name).join(', ')}`);
+
+  return lines.length ? `[FAMÍLIA]\n${lines.join('\n')}` : '';
+}
+
 function buildCriticalThinkingBlock(nickname: string): string {
   if (!CRITICAL_THINKING_MODE) return '';
 
@@ -109,6 +121,7 @@ function buildSystemPrompt(parts: {
   urgentes: string;
   relatedTopics: string;
   learnedInsightsBlock: string;
+  familyBlock: string;
   personalityBlock: string;
   l3Content: string;
   plan: string;
@@ -118,7 +131,7 @@ function buildSystemPrompt(parts: {
   const {
     nickname, dataHoraSP, geoBlock, gpsInstruction,
     alertaRadar, urgentes, relatedTopics, learnedInsightsBlock,
-    personalityBlock, l3Content, plan, guidelines, conversationSummary,
+    familyBlock, personalityBlock, l3Content, plan, guidelines, conversationSummary,
   } = parts;
 
   return `
@@ -172,7 +185,8 @@ ${gpsInstruction}
 ${alertaRadar ? `Alerta: ${alertaRadar}` : ''}
 ${urgentes ? `Urgente: ${urgentes}` : ''}
 ${relatedTopics ? `[TÓPICOS RELACIONADOS]\n${relatedTopics}` : ''}
-${learnedInsightsBlock ? `Perfil\n${learnedInsightsBlock}` : ''}
+${learnedInsightsBlock ? `[PERFIL]\n${learnedInsightsBlock}` : ''}
+${familyBlock}
 ${personalityBlock}
 
 ${conversationSummary ? `[CONVERSA ATUAL — LEIA ANTES DE RESPONDER]
@@ -199,8 +213,9 @@ export async function buildChatPrompt(
 
   // ── Helpers do masterContext (zero queries ao banco) ──────────────────────
   const learnedInsightsBlock = buildLearnedInsightsBlock(masterContext?.insights || []);
-  const personalitySettings = buildPersonalityFromContext(masterContext?.settings);
-  const personalityBlock = buildPersonalityBlock(personalitySettings);
+  const personalitySettings  = buildPersonalityFromContext(masterContext?.settings);
+  const personalityBlock     = buildPersonalityBlock(personalitySettings);
+  const familyBlock          = buildFamilyBlock(masterContext?.persons || []);
 
   // ── Cargas paralelas ──────────────────────────────────────────────────────
   const [moduleResult, dynamicResult] = await Promise.all([
@@ -269,7 +284,7 @@ export async function buildChatPrompt(
     || '';
 
   const l3Filtered = filterL3Content(rawL3Text, includeFamily);
-  const l3Content = l3Filtered.length > 4000
+  const l3Content  = l3Filtered.length > 4000
     ? l3Filtered.slice(0, 4000) + '... (resumo completo disponível em memória HD)'
     : l3Filtered;
 
@@ -295,7 +310,7 @@ export async function buildChatPrompt(
   );
 
   const systemPrompt = buildSystemPrompt({
-    nickname: user.nickname || 'usuário',
+    nickname:            user.nickname || 'usuário',
     dataHoraSP,
     geoBlock,
     gpsInstruction,
@@ -303,9 +318,10 @@ export async function buildChatPrompt(
     urgentes,
     relatedTopics,
     learnedInsightsBlock,
+    familyBlock,
     personalityBlock,
     l3Content,
-    plan: user.plan,
+    plan:                user.plan,
     guidelines,
     conversationSummary,
   });
@@ -323,8 +339,8 @@ export async function buildChatPrompt(
 
   return {
     systemPrompt,
-    tools: resolvedTools,
-    model: finalModel,
+    tools:                resolvedTools,
+    model:                finalModel,
     conversationMessages: [
       ...recentHistory,
       { role: 'user', content: message },
