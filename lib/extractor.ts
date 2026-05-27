@@ -40,6 +40,16 @@ const EXTRACTION_MODULES: ExtractionModule[] = [
   { id: 'compras',      match: (ctx) => ctx.includes('compras'),      run: (uid, msg, reply) => extractShopping(uid, msg, reply) },
 ];
 
+// ── FILTROS DE RUÍDO ──────────────────────────────────────────
+const NOISE_PATTERNS = [
+  /^(ok|oi|olá|bom dia|boa tarde|boa noite|tudo bem|blz|vlw|obrigad)/i,
+  /oxe|eita|rapaz|caramba|nossa/i,
+  /você (errou|falhou|esqueceu|não lembrou)/i,
+  /^(não|nao|errado|incorreto|isso não)/i,
+  /correção|corrigindo|na verdade/i,
+  /^.{0,20}$/, // mensagens muito curtas
+];
+
 // ── ORQUESTRADOR PRINCIPAL ────────────────────────────────────
 
 export async function extractAndSummarize(
@@ -49,6 +59,13 @@ export async function extractAndSummarize(
   aiReply: string
 ): Promise<string> {
   try {
+    // Filtra mensagens que não contêm fatos novos extraíveis
+    const isNoise = NOISE_PATTERNS.some(p => p.test(userMessage.trim()));
+    if (isNoise) {
+      console.log('[Extractor] Mensagem filtrada como ruído — sem extração');
+      return '';
+    }
+
     const classification = await classify(userId, userMessage);
     if (!classification?.has_new_facts) return '';
 
