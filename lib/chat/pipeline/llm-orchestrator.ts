@@ -4,7 +4,7 @@
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
 import type { ChatRequestContext } from './request-context';
-import type { ChatPrompt } from './prompt-assembler';
+import type { ChatPrompt } from './types';
 
 // ── Tipos Explícitos ─────────────────────────────────────────────────────────
 
