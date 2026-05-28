@@ -30,14 +30,15 @@ export interface ExtractionModule {
 
 // ── REGISTRO DE MÓDULOS ──────────────────────────────────────
 const EXTRACTION_MODULES: ExtractionModule[] = [
-  { id: 'familia',      match: (ctx) => ctx.includes('familia'),      run: (uid, msg, gaps: DetectedGap[]) => extractFamilia(uid, msg, gaps) },
+  // Usamos argumentos opcionais (?) para que a assinatura bata com a interface
+  { id: 'familia',      match: (ctx) => ctx.includes('familia'),      run: (uid, msg, gaps) => extractFamilia(uid, msg, gaps || []) },
   { id: 'projeto',      match: (ctx) => ctx.includes('projeto'),      run: (uid, msg) => extractProjeto(uid, msg) },
   { id: 'evento',       match: (ctx) => ctx.includes('evento'),       run: (uid, msg) => extractEvento(uid, msg) },
   { id: 'agenda',       match: (ctx) => ctx.includes('agenda'),       run: (uid, msg) => extractAgenda(uid, msg) },
   { id: 'rotina',       match: (ctx) => ctx.includes('rotina'),       run: (uid, msg) => extractRotina(uid, msg) },
   { id: 'preferencia',  match: (ctx) => ctx.includes('preferencia'),  run: (uid, msg) => extractPreferencia(uid, msg) },
-  { id: 'recomendacao', match: (ctx) => ctx.includes('recomendacao'), run: (uid, msg, reply) => extractRecomendacao(uid, msg, reply) },
-  { id: 'compras',      match: (ctx) => ctx.includes('compras'),      run: (uid, msg, reply) => extractShopping(uid, msg, reply) },
+  { id: 'recomendacao', match: (ctx) => ctx.includes('recomendacao'), run: (uid, msg, reply) => extractRecomendacao(uid, msg, reply || '') },
+  { id: 'compras',      match: (ctx) => ctx.includes('compras'),      run: (uid, msg, reply) => extractShopping(uid, msg, reply || '') },
   { id: 'valores',      match: (ctx) => ctx.includes('valores'),      run: (uid, msg) => extractValores(uid, msg) },
 ];
 
