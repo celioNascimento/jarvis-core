@@ -1,10 +1,10 @@
-// lib/extractor.ts — V13.2 (Contrato: Tipagem Estrita e Gateway)
+// lib/extractor.ts — V13.3 (Contrato: Tipagem Estrita e Gateway + Valores)
 import { supabase } from '@/lib/jarvis';
 import { llmGateway } from '@/lib/chat/llm-gateway';
 import { 
   extractProjeto, extractEvento, extractAgenda, 
   extractRotina, extractPreferencia, extractRecomendacao, 
-  extractFamilia, extractShopping
+  extractFamilia, extractShopping, extractValores
 } from '@/lib/extractor-jobs';
 
 // ── Tipos Estritos ───────────────────────────────────────────
@@ -38,6 +38,7 @@ const EXTRACTION_MODULES: ExtractionModule[] = [
   { id: 'preferencia',  match: (ctx) => ctx.includes('preferencia'),  run: (uid, msg) => extractPreferencia(uid, msg) },
   { id: 'recomendacao', match: (ctx) => ctx.includes('recomendacao'), run: (uid, msg, reply) => extractRecomendacao(uid, msg, reply) },
   { id: 'compras',      match: (ctx) => ctx.includes('compras'),      run: (uid, msg, reply) => extractShopping(uid, msg, reply) },
+  { id: 'valores',      match: (ctx) => ctx.includes('valores'),      run: (uid, msg) => extractValores(uid, msg) },
 ];
 
 // ── FILTROS DE RUÍDO ──────────────────────────────────────────
@@ -96,7 +97,8 @@ export async function extractAndSummarize(
 
 async function classify(userId: string, userMessage: string) {
   const prompt = `Analise a mensagem e retorne JSON: {"has_new_facts": boolean, "contexts": string[]}. 
-Contextos: familia, projeto, evento, agenda, rotina, preferencia, recomendacao, compras. 
+Contextos: familia, projeto, evento, agenda, rotina, preferencia, recomendacao, compras, valores. 
+Atenção: Use 'valores' para mapear crenças, filosofias de vida, fé, regras morais e traços inegociáveis.
 Mensagem: "${userMessage}"`;
 
   try {
