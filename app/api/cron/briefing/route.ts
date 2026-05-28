@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 import { supabase, callOpenRouter, sendTelegram } from '@/lib/jarvis';
 import { getGoogleContext } from '@/lib/google';
 import { getMicrosoftCalendarContext } from '@/lib/microsoft';
-import { buildRecommendationsBlock } from '@/lib/extractor-jobs';
+import { buildRecommendationsBlock } from '../../../../lib/modules/modules/recommendations.module';
 
 export const maxDuration = 25;
 
