@@ -6,7 +6,7 @@ import { supabase, callOpenRouter } from '@/lib/jarvis';
 import { invalidateContextField } from '@/lib/services/context-cache';
 import { generateEmbedding } from '@/lib/memory';
 
-/ ─── Constantes ───────────────────────────────────────────────────────────────
+// ─── Constantes ───────────────────────────────────────────────────────────────
 
 /** Incremento aplicado ao relevance_score a cada reforço */
 const REINFORCE_INCREMENT = 0.05;
