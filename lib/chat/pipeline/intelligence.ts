@@ -201,9 +201,9 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'} | Memories: ${shouldLoadMemories ? 'ATIVO' : 'SKIP'}`);
 
-  const [queryEmbedding, isStressed, masterContext, memoriesResult] = await Promise.race<
-    [number[] | null, boolean, any, MemoriesLoadResult]
-  >([
+  type PipelineTuple = [number[] | null, boolean, any, MemoriesLoadResult];
+
+  const raceResult = await Promise.race([
     Promise.all([
       shouldEmbed
         ? getCachedEmbedding(message).catch((e) => { console.error('[Pipeline][Embedding] Falha:', e); return null; })
@@ -212,18 +212,20 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
       getMasterContext(user.id, sessionId, contextTags),
       shouldLoadMemories
         ? loadMemoriesForContext(user.id, message, 5, 0.3)
-        : Promise.resolve({ memories: [], topEmotional: [] }),
-    ]),
-    new Promise<any[]>((_, reject) =>
+        : Promise.resolve<MemoriesLoadResult>({ memories: [], topEmotional: [] }),
+    ] as const),
+    new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('TIMEOUT_SEGURANCA')), 8000)
     ),
-  ]).catch((err): [number[] | null, boolean, any, MemoriesLoadResult] => {
+  ]).catch((err): PipelineTuple => {
     if (err.message === 'TIMEOUT_SEGURANCA') {
       console.error('[Pipeline][Fatal] Timeout (8s). Retornando contexto parcial.');
       return [null, false, { history: [], config: {}, profile: {} }, { memories: [], topEmotional: [] }];
     }
     throw err;
   });
+
+  const [queryEmbedding, isStressed, masterContext, memoriesResult] = raceResult as PipelineTuple;
 
   // Injeta memories no masterContext — dados fluem para baixo, nunca sobem
   masterContext.memories            = memoriesResult.memories;
