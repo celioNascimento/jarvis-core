@@ -9,7 +9,7 @@ import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import type { ChatRequestContext, LocalMessage } from './request-context';
 import { ContextCache, invalidateSessionHistory } from '@/lib/services/context-cache';
 import { loadMemoriesForContext, type MemoriesLoadResult } from '@/lib/data/memories.data';
-import { reinforceMemory } from '@/lib/services/memory.service';
+import { reinforceMemoryScore } from '@/lib/services/memory.service';
 
 const MAX_MSG_CHARS = 800;
 
@@ -236,7 +236,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     Promise.allSettled(
       memoriesResult.memories
         .slice(0, 3)
-        .map(mem => reinforceMemory(mem.id))
+        .map(mem => reinforceMemoryScore(mem.id))
     ).catch(console.error);
   }
 
