@@ -1,15 +1,20 @@
 // ============================================================
-// lib/extractor-jobs.ts — V14.1 (Rigor de Contrato: Tipagem Estrita Resolvida)
-// Parte 2: Extratores de Jobs (Apenas Parsing e Delegação)
+// lib/extractor-jobs.ts — V15.1 (Refatoração de Contrato + Parser Safe)
+// Responsabilidade: Apenas Prompt, Extração e Delegação para Services.
+// ZERO chamadas diretas ao Supabase.
 // ============================================================
 
-import { supabase } from '@/lib/jarvis'; 
 import { safeParseJSON } from './Utils/ai-helpers';
-import { getCategoryFromType, upsertEvent } from './Utils/db-helpers';
-import { familyService } from '@/lib/services/family.service';
-import { scheduleReminderOnQStash } from '@/lib/qstash';
 import { llmGateway } from '@/lib/chat/llm-gateway';
-import { invalidateContextField } from '@/lib/services/context-cache';
+
+// Importação dos Services (A Única Camada que fala com o Banco)
+import { projectService } from './services/projects.service';
+import { eventsService } from './services/agenda.service';
+import { familyService } from '@/lib/services/family.service';
+import { profileService } from '@/lib/services/profile.service';
+import { shoppingService } from '@/lib/services/shopping.service';
+import { recommendationsService } from './services/recommendations.service';
+import { upsertPrinciple } from '@/lib/principles/principles.service';
 
 // ── TIPAGENS ESTRITAS DE RETORNO DA IA ──────────────────────────────────
 interface ExtractedProjetos { projetos?: Array<{ nome: string; tag: string; descricao?: string; status?: string; contexto_tecnico?: string }> }
@@ -20,8 +25,9 @@ interface ExtractedRotina { despertar?: string; dormir?: string; }
 interface ExtractedPreferencia { preferencias?: Array<{ tipo: string; descricao: string }> }
 interface ExtractedShopping { items?: Array<{ item: string; category?: string }> }
 interface ExtractedRecomendacao { recomendacoes?: Array<{ tipo: string; nome: string; status?: string; source?: string }> }
+export interface ExtractedValores { principios?: Array<{ conteudo: string; categoria: string; tipo: "declaracao" | "amadurecimento" | "desculpa"; tags?: string[] }> }
 
-// ── HELPER CENTRAL: LLM Gateway em Background (Agora com Generics) ─────
+// ── HELPER CENTRAL: LLM Gateway em Background ───────────────────────────
 async function runExtractorAI<T>(userId: string, prompt: string, timeoutMs: number = 15000): Promise<T | null> {
   try {
     const raw = await llmGateway.enqueue({
@@ -35,8 +41,10 @@ async function runExtractorAI<T>(userId: string, prompt: string, timeoutMs: numb
       },
       dedupPayload: prompt.slice(0, 100)
     });
-    // O TypeScript agora confia que o JSON devolvido segue a interface T
-    return safeParseJSON(raw.content?.replace(/```json|```/gi, '').trim() || '{}') as T;
+    
+    // Construtor RegExp previne a quebra do parser de Markdown por crases
+    const cleanContent = raw.content?.replace(new RegExp('\`\`\`json|\`\`\`', 'gi'), '').trim() || '{}';
+    return safeParseJSON(cleanContent) as T;
   } catch (e) {
     console.error('[ExtractorAI] Falha na fila background:', e);
     return null;
@@ -53,51 +61,29 @@ export async function extractProjeto(userId: string, userMessage: string): Promi
   REGRAS: tag em slug. status: "ideia"|"em_desenvolvimento"|"beta"|"producao"|"pausado"`;
 
   const data = await runExtractorAI<ExtractedProjetos>(userId, prompt, 20000);
+  
   for (const proj of (data?.projetos || [])) {
     if (!proj.nome || !proj.tag) continue;
-
-    const payload: Record<string, any> = { 
-      user_id: Number(userId), tag: proj.tag, name: proj.nome, 
-      status: proj.status || 'ideia', updated_at: new Date().toISOString() 
-    };
-    if (proj.descricao) payload.description = proj.descricao;
-    if (proj.contexto_tecnico) payload.context_technical = proj.contexto_tecnico;
-
-    await supabase.from('projects').upsert(payload, { onConflict: 'user_id,tag' });
+    await projectService.upsertProject(Number(userId), proj);
   }
-  invalidateContextField(Number(userId), 'projects').catch(() => {});
 }
 
 // ============================================================
-// EXTRATOR: EVENTOS GENÉRICOS (Sem Hora)
+// EXTRATOR: EVENTOS GENÉRICOS E AGENDA
 // ============================================================
-const EVENT_WEIGHTS: Record<string, { priority: string; decay_type: string; emotional_weight: number }> = {
-  aniversario_proprio: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 1.00 },
-  aniversario_esposa: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.95 },
-  aniversario_filho: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.90 },
-  natal: { priority: 'alta', decay_type: 'recurring_annual', emotional_weight: 0.85 },
-  default: { priority: 'media', decay_type: 'one_time', emotional_weight: 0.50 },
-};
-
 export async function extractEvento(userId: string, userMessage: string): Promise<void> {
   const anoAtual = new Date().getFullYear();
   const prompt = `Extraia eventos. Mensagem: "${userMessage}" Ano: ${anoAtual}
   JSON: {"eventos": [{"titulo": null, "data": "YYYY-MM-DD", "tipo": null, "recorrente": false, "notas": null}]}`;
 
   const data = await runExtractorAI<ExtractedEventos>(userId, prompt, 15000);
+  
   for (const ev of (data?.eventos || [])) {
     if (!ev.titulo || !ev.data) continue;
-    const w = EVENT_WEIGHTS[ev.tipo] || EVENT_WEIGHTS.default;
-    await upsertEvent(userId, {
-      title: ev.titulo, event_date: ev.data, category: getCategoryFromType(ev.tipo),
-      is_recurring: ev.recorrente ?? w.decay_type === 'recurring_annual', notes: ev.notas || null, ...w,
-    });
+    await eventsService.processGenericEvent(Number(userId), ev);
   }
 }
 
-// ============================================================
-// EXTRATOR: AGENDA (Com Hora) + Lembrete
-// ============================================================
 export async function extractAgenda(userId: string, userMessage: string): Promise<void> {
   const anoAtual = new Date().getFullYear();
   const prompt = `Extraia compromissos com data e hora explícitas. Mensagem: "${userMessage}"
@@ -105,49 +91,16 @@ export async function extractAgenda(userId: string, userMessage: string): Promis
   ANO ATUAL: ${anoAtual}. Exemplo: "sexta às 9h" -> "${anoAtual}-05-08T09:00:00-03:00"`;
 
   const data = await runExtractorAI<ExtractedAgenda>(userId, prompt, 20000);
-  if (!data?.compromissos?.length) return;
-
-  const { data: userData } = await supabase.from('users').select('auth_user_id').eq('id', Number(userId)).single();
-
-  for (const comp of data.compromissos) {
-    if (!comp.descricao || !comp.data_hora) continue;
-
-    let dataHora = comp.data_hora;
-    if (parseInt(dataHora.substring(0, 4)) < anoAtual) dataHora = String(anoAtual) + dataHora.substring(4);
-    const startAt = new Date(dataHora);
-    if (isNaN(startAt.getTime())) continue;
-
-    const { error: evError } = await supabase.schema('jarvis').from('events').insert({
-      user_id: Number(userId), title: comp.descricao, start_at: startAt.toISOString(),
-      end_at: new Date(startAt.getTime() + 3600000).toISOString(), all_day: false,
-      category: getCategoryFromType(comp.categoria), source: 'lev', reminder_minutes: [comp.aviso_minutos ?? 30],
-    });
-
-    if (!evError && userData?.auth_user_id) {
-      const notifyTime = new Date(startAt.getTime() - (comp.aviso_minutos ?? 30) * 60000).toISOString();
-      if (new Date(notifyTime).getTime() > Date.now()) {
-        const { data: reminder } = await supabase.schema('jarvis').from('reminders').insert({
-          user_id: Number(userId), title: `📅 ${comp.descricao}`, type: 'agenda', scheduled_time: notifyTime,
-          status: 'pending', metadata: { auth_user_id: userData.auth_user_id },
-        }).select('id').single();
-
-        if (reminder) {
-          const qstashId = await scheduleReminderOnQStash({
-            reminderId: String(reminder.id), userId, authUserId: userData.auth_user_id,
-            message: `📅 [Agenda] ${comp.descricao}`, scheduledTime: notifyTime,
-          });
-          if (qstashId) await supabase.schema('jarvis').from('reminders').update({ qstash_message_id: qstashId }).eq('id', reminder.id);
-        }
-      }
-    }
+  
+  if (data?.compromissos?.length) {
+    await eventsService.processAgendaEvents(Number(userId), data.compromissos, anoAtual);
   }
-  invalidateContextField(Number(userId), 'events').catch(() => {});
 }
 
 // ============================================================
 // EXTRATOR: FAMÍLIA
 // ============================================================
-export async function extractFamilia(userId: string, userMessage: string, gaps: any[]): Promise<void> {
+export async function extractFamilia(userId: string, userMessage: string): Promise<void> {
   const prompt = `Extraia dados familiares. Mensagem: "${userMessage}"
   JSON: {"esposa": {"nome": null, "aniversario": null}, "filhos": [{"nome": null, "nascimento": null}], "pai": null, "mae": null}`;
 
@@ -155,14 +108,12 @@ export async function extractFamilia(userId: string, userMessage: string, gaps: 
   if (!data) return;
 
   const profile = await familyService.getCurrentProfile(userId);
-
   const conjuge = data.esposa?.nome ? data.esposa : data.marido?.nome ? data.marido : null;
+  
   if (conjuge) await familyService.upsertSpouse(userId, conjuge, profile);
-
   if (data.filhos && Array.isArray(data.filhos)) {
     for (const filho of data.filhos) await familyService.upsertChild(userId, filho);
   }
-
   if (data.pai) await familyService.upsertParent(userId, data.pai, 'father_name', profile);
   if (data.mae) await familyService.upsertParent(userId, data.mae, 'mother_name', profile);
 }
@@ -171,30 +122,21 @@ export async function extractFamilia(userId: string, userMessage: string, gaps: 
 // EXTRATOR: ROTINA E PREFERÊNCIAS
 // ============================================================
 export async function extractRotina(userId: string, userMessage: string): Promise<void> {
-  const data = await runExtractorAI<ExtractedRotina>(userId, `Extraia rotina. JSON: {"despertar": null, "dormir": null} Msg: "${userMessage}"`, 10000);
-  if (!data) return;
-
-  const parts = [data.despertar ? `Despertar: ${data.despertar}` : '', data.dormir ? `Dormir: ${data.dormir}` : ''].filter(Boolean);
-  if (!parts.length) return;
-
-  const { data: prof } = await supabase.from('user_profiles').select('personality_notes').eq('user_id', Number(userId)).maybeSingle();
-  const updated = /\[ROTINA\]/i.test(prof?.personality_notes || '') ? (prof?.personality_notes || '').replace(/\[ROTINA\][^\n]*/i, `[ROTINA] ${parts.join(' | ')}`) : `${prof?.personality_notes || ''}\n[ROTINA] ${parts.join(' | ')}`.trim();
-
-  await supabase.from('user_profiles').upsert({ user_id: Number(userId), personality_notes: updated, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
-  invalidateContextField(Number(userId), 'profile').catch(() => {});
+  const prompt = `Extraia rotina. JSON: {"despertar": null, "dormir": null} Msg: "${userMessage}"`;
+  const data = await runExtractorAI<ExtractedRotina>(userId, prompt, 10000);
+  
+  if (data?.despertar || data?.dormir) {
+    await profileService.updateRoutine(Number(userId), data);
+  }
 }
 
 export async function extractPreferencia(userId: string, userMessage: string): Promise<void> {
-  const data = await runExtractorAI<ExtractedPreferencia>(userId, `Extraia preferências. JSON: {"preferencias": [{"tipo": "lugar", "descricao": "X"}]} Msg: "${userMessage}"`, 15000);
-  const prefs = data?.preferencias || [];
-  if (!prefs.length) return;
-
-  const { data: prof } = await supabase.from('user_profiles').select('career_notes').eq('user_id', Number(userId)).maybeSingle();
-  const newLine = prefs.map((p: any) => `[${p.tipo}] ${p.descricao}`).join(' | ');
-  if (prefs.every((p: any) => (prof?.career_notes || '').includes(p.descricao))) return;
-
-  await supabase.from('user_profiles').upsert({ user_id: Number(userId), career_notes: prof?.career_notes ? `${prof.career_notes} | ${newLine}` : newLine, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
-  invalidateContextField(Number(userId), 'profile').catch(() => {});
+  const prompt = `Extraia preferências. JSON: {"preferencias": [{"tipo": "lugar", "descricao": "X"}]} Msg: "${userMessage}"`;
+  const data = await runExtractorAI<ExtractedPreferencia>(userId, prompt, 15000);
+  
+  if (data?.preferencias?.length) {
+    await profileService.addPreferences(Number(userId), data.preferencias);
+  }
 }
 
 // ============================================================
@@ -203,10 +145,9 @@ export async function extractPreferencia(userId: string, userMessage: string): P
 export async function extractShopping(userId: string, userMessage: string, aiReply: string = ''): Promise<void> {
   const prompt = `Extraia itens de compra. JSON: {"items": [{"item": "nome", "category": "mercado"}]} Msg: "${userMessage}" IA: "${aiReply}"`;
   const data = await runExtractorAI<ExtractedShopping>(userId, prompt, 15000);
+  
   if (data?.items?.length) {
-    const inserts = data.items.map(i => ({ user_id: Number(userId), item: i.item, category: i.category || 'outros', done: false }));
-    await supabase.from('shopping_items').insert(inserts);
-    invalidateContextField(Number(userId), 'shopping').catch(() => {});
+    await shoppingService.addItems(Number(userId), data.items);
   }
 }
 
@@ -214,81 +155,37 @@ export async function extractRecomendacao(userId: string, userMessage: string, a
   const prompt = `Extraia recomendações. JSON: {"recomendacoes": [{"tipo": "lugar", "nome": "X", "status": "pending"}]} Msg: "${userMessage}" IA: "${aiReply}"`;
   const data = await runExtractorAI<ExtractedRecomendacao>(userId, prompt, 15000);
   
-  for (const rec of (data?.recomendacoes || [])) {
-    if (!rec.nome || !rec.tipo) continue;
-    const { data: existing } = await supabase.from('recommendations').select('id, status').eq('user_id', Number(userId)).eq('type', rec.tipo).ilike('name', rec.nome).maybeSingle();
-
-    if (existing) {
-      if (rec.status !== 'pending' && existing.status === 'pending') {
-        await supabase.from('recommendations').update({ status: rec.status, updated_at: new Date().toISOString() }).eq('id', existing.id);
-      }
-    } else {
-      await supabase.from('recommendations').insert({ user_id: Number(userId), type: rec.tipo, name: rec.nome, source: rec.source || 'jarvis', status: rec.status || 'pending' });
-    }
+  if (data?.recomendacoes?.length) {
+    await recommendationsService.processRecommendations(Number(userId), data.recomendacoes);
   }
-  invalidateContextField(Number(userId), 'recommendations').catch(() => {});
 }
 
-// ============================================================
-// LOADERS DO SYSTEM PROMPT (Puros! Sem I/O de Banco)
-// ============================================================
-
-export function buildRecommendationsBlock(masterContext: any): string {
-  const recs = masterContext?.recommendations || [];
-  if (!recs.length) return '';
-  
-  const valid = recs.filter((r: any) => r.status !== 'disliked').slice(0, 30);
-  if (!valid.length) return '';
-
-  const lines = valid.map((r: any) => `- [${r.type}] ${r.name} (${r.source})`);
-  return `[RECOMENDAÇÕES]\n${lines.join('\n')}`;
-}
-
-export function buildTopicBlock(masterContext: any): string {
-  const topics = masterContext?.topics || [];
-  if (!topics.length) return '';
-
-  const lines = topics.slice(0, 5).map((t: any) => `- [${t.label}] ${t.topic}`);
-  return `[TÓPICOS RECORRENTES]\n${lines.join('\n')}`;
-}
 // ============================================================
 // EXTRATOR: VALORES E PRINCÍPIOS MORAIS (Espelho Moral)
 // ============================================================
-
-export interface ExtractedValores {
-  principios?: Array<{
-    conteudo: string;
-    categoria: string;
-    tipo: "declaracao" | "amadurecimento" | "desculpa";
-  }>;
-}
-
 export async function extractValores(userId: string, userMessage: string): Promise<void> {
   const prompt = `
   Você extrai princípios morais, regras de vida e visão de mundo do usuário.
   Mensagem: "${userMessage}"
-  Retorne JSON: {"principios": [{"conteudo": null, "categoria": null, "tipo": "declaracao"}]}
+  Retorne JSON: {"principios": [{"conteudo": null, "categoria": null, "tipo": "declaracao", "tags": ["palavra-chave"]}]}
 
   Regras do campo "tipo":
-  - "declaracao": O usuário definiu uma regra de vida ou crença (Ex: "sou embaixador de Cristo, tenho que perdoar").
-  - "amadurecimento": Mudança reflexiva e madura da regra (Ex: "eu perdoo, mas aprendi a não aceitar mais abuso").
-  - "desculpa": Racionalização reativa para um erro emocional (Ex: "explodi porque ele merecia").
+  - "declaracao": O usuário definiu uma regra de vida ou crença.
+  - "amadurecimento": Mudança reflexiva e madura da regra.
+  - "desculpa": Racionalização reativa para um erro emocional.
 
-  Só extraia se for um princípio universal para o usuário, não uma opinião genérica ou efêmera.
+  Extraia "tags" com palavras-chave vitais (ex: "ansiedade", "casamento", "finanças").
+  Só extraia se for um princípio universal para o usuário, não uma opinião genérica.
   `.trim();
 
-  // Caso runExtractorAI não esteja exportada, ela ainda funciona por estar no mesmo arquivo
   const data = await runExtractorAI<ExtractedValores>(userId, prompt, 15000);
   
   if (!data?.principios || data.principios.length === 0) return;
 
-  // Import dinâmico do service para evitar dependência circular no topo do arquivo
-  const { upsertPrinciple } = await import('@/lib/principles/principles.service');
-
   for (const principio of data.principios) {
     if (!principio.conteudo || principio.tipo === 'desculpa') {
       console.log(`[Extractor] Princípio ignorado. Tipo: ${principio.tipo} | Conteúdo: ${principio.conteudo}`);
-      continue; // Ignora racionalizações e desculpas emocionais
+      continue;
     }
 
     try {
@@ -297,9 +194,9 @@ export async function extractValores(userId: string, userMessage: string): Promi
         content: principio.conteudo,
         category: principio.categoria || 'Filosofia e Moral',
         source: 'extracted',
-        confidenceDelta: 0.2 // Aumenta a confiança de forma conservadora
+        confidenceDelta: 0.2,
+        tags: principio.tags || []
       });
-      // A invalidação de cache (invalidateContextField) já acontece dentro do upsertPrinciple
     } catch (e: any) {
       console.error('[Extractor] Falha ao salvar princípio:', e.message);
     }

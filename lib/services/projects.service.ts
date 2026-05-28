@@ -2,6 +2,7 @@
 // V1.1.0 — Fonte Única da Verdade (SSOT) para Projetos & Membros — Schema Jarvis
 
 import { supabase } from '@/lib/jarvis';
+import { invalidateContextField } from '@/lib/services/context-cache';
 
 // ─── HELPER DE PERMISSÃO (DRY) ────────────────────────────────────────────────
 async function validarPermissaoProjeto(userId: number, projectId: string, requiresEditor: boolean = false) {
@@ -204,3 +205,23 @@ export async function coreAtualizarStatusEntry(userId: number, entryId: string, 
   if (error) throw new Error(`Falha ao mover a tarefa: ${error.message}`);
   return true;
 }
+
+// ─── 7. ADAPTER PARA O EXTRATOR DE IA ─────────────────────────────────────────
+
+export const projectService = {
+  async upsertProject(userId: number, proj: any) {
+    const payload: any = { 
+      user_id: userId, 
+      tag: proj.tag, 
+      name: proj.nome, 
+      status: proj.status || 'ideia', 
+      updated_at: new Date().toISOString() 
+    };
+    if (proj.descricao) payload.description = proj.descricao;
+    if (proj.contexto_tecnico) payload.context_technical = proj.contexto_tecnico;
+
+    // Mantemos o upsert direto aqui pela agilidade do onConflict
+    await supabase.schema('jarvis').from('projects').upsert(payload, { onConflict: 'user_id,tag' });
+    await invalidateContextField(userId, 'projects').catch(() => {});
+  }
+};

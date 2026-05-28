@@ -2,6 +2,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { invalidateContextField } from '../services/context-cache'; // ajuste para seu path real
+import { encrypt, decrypt, hashBlindIndex } from '@/lib/crypto-utils';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -15,6 +16,7 @@ export interface PrincipleUpsertInput {
   source?: 'manual' | 'extracted' | 'promoted';
   patternKey?: string;
   confidenceDelta?: number; // quanto aumentar/diminuir a confiança
+  tags?: string[]; // Arrays de palavras-chave extraídas pelo LLM
 }
 
 /**
@@ -30,10 +32,18 @@ export async function upsertPrinciple(input: PrincipleUpsertInput): Promise<void
     source = 'extracted',
     patternKey,
     confidenceDelta = 0.1,
+    tags = [],
   } = input;
 
-  // Gera embedding via OpenAI (ou seu provider atual)
+  // 1. Gera embedding via OpenAI a partir do texto puro (antes de cifrar)
   const embedding = await generateEmbedding(content);
+
+  // 2. Criptografa o conteúdo longo
+  const encryptedContent = encrypt(content);
+
+  // 3. Gera o Índice Cego para as tags (incluindo a própria categoria)
+  const blindTags = tags.map(tag => hashBlindIndex(tag));
+  blindTags.push(hashBlindIndex(category));
 
   if (patternKey) {
     // Upsert por pattern_key — incrementa confidence se já existe
@@ -51,7 +61,9 @@ export async function upsertPrinciple(input: PrincipleUpsertInput): Promise<void
         .schema('jarvis')
         .from('principles')
         .update({
-          content,
+          content: encryptedContent, // Dado cifrado
+          is_encrypted: true,
+          blind_tags: blindTags,
           confidence: newConfidence,
           embedding,
           promoted_at: new Date().toISOString(),
@@ -63,12 +75,14 @@ export async function upsertPrinciple(input: PrincipleUpsertInput): Promise<void
         .from('principles')
         .insert({
           user_id: userId,
-          content,
+          content: encryptedContent, // Dado cifrado
           category,
           source,
           pattern_key: patternKey,
           confidence: 0.5, // começa baixo, cresce com reforço
           embedding,
+          is_encrypted: true,
+          blind_tags: blindTags,
         });
     }
   } else {
@@ -78,11 +92,13 @@ export async function upsertPrinciple(input: PrincipleUpsertInput): Promise<void
       .from('principles')
       .insert({
         user_id: userId,
-        content,
+        content: encryptedContent, // Dado cifrado
         category,
         source,
         confidence: source === 'manual' ? 1.0 : 0.5,
         embedding,
+        is_encrypted: true,
+        blind_tags: blindTags,
       });
   }
 
@@ -97,13 +113,18 @@ export async function getPrinciples(userId: number, minConfidence = 0.4) {
   const { data, error } = await supabase
     .schema('jarvis')
     .from('principles')
-    .select('id, content, category, confidence, source, created_at')
+    .select('id, content, category, confidence, source, created_at, is_encrypted')
     .eq('user_id', userId)
     .gte('confidence', minConfidence)
     .order('confidence', { ascending: false });
 
   if (error) throw error;
-  return data ?? [];
+
+  // Retorna os dados, decriptando caso a flag is_encrypted seja verdadeira
+  return (data ?? []).map(row => ({
+    ...row,
+    content: row.is_encrypted ? decrypt(row.content) : row.content
+  }));
 }
 
 /**
@@ -128,7 +149,13 @@ export async function findSimilarPrinciples(
     });
 
   if (error) throw error;
-  return data ?? [];
+
+  // A RPC precisará ser ajustada no Supabase para também retornar a coluna is_encrypted.
+  // Caso retorne, decriptamos o conteúdo recuperado pela similaridade vetorial.
+  return (data ?? []).map((row: any) => ({
+    ...row,
+    content: row.is_encrypted ? decrypt(row.content) : row.content
+  }));
 }
 
 /**
