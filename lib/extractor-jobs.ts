@@ -251,3 +251,57 @@ export function buildTopicBlock(masterContext: any): string {
   const lines = topics.slice(0, 5).map((t: any) => `- [${t.label}] ${t.topic}`);
   return `[TÓPICOS RECORRENTES]\n${lines.join('\n')}`;
 }
+// ============================================================
+// EXTRATOR: VALORES E PRINCÍPIOS MORAIS (Espelho Moral)
+// ============================================================
+
+export interface ExtractedValores {
+  principios?: Array<{
+    conteudo: string;
+    categoria: string;
+    tipo: "declaracao" | "amadurecimento" | "desculpa";
+  }>;
+}
+
+export async function extractValores(userId: string, userMessage: string): Promise<void> {
+  const prompt = `
+  Você extrai princípios morais, regras de vida e visão de mundo do usuário.
+  Mensagem: "${userMessage}"
+  Retorne JSON: {"principios": [{"conteudo": null, "categoria": null, "tipo": "declaracao"}]}
+
+  Regras do campo "tipo":
+  - "declaracao": O usuário definiu uma regra de vida ou crença (Ex: "sou embaixador de Cristo, tenho que perdoar").
+  - "amadurecimento": Mudança reflexiva e madura da regra (Ex: "eu perdoo, mas aprendi a não aceitar mais abuso").
+  - "desculpa": Racionalização reativa para um erro emocional (Ex: "explodi porque ele merecia").
+
+  Só extraia se for um princípio universal para o usuário, não uma opinião genérica ou efêmera.
+  `.trim();
+
+  // Caso runExtractorAI não esteja exportada, ela ainda funciona por estar no mesmo arquivo
+  const data = await runExtractorAI<ExtractedValores>(userId, prompt, 15000);
+  
+  if (!data?.principios || data.principios.length === 0) return;
+
+  // Import dinâmico do service para evitar dependência circular no topo do arquivo
+  const { upsertPrinciple } = await import('@/lib/principles/principles.service');
+
+  for (const principio of data.principios) {
+    if (!principio.conteudo || principio.tipo === 'desculpa') {
+      console.log(`[Extractor] Princípio ignorado. Tipo: ${principio.tipo} | Conteúdo: ${principio.conteudo}`);
+      continue; // Ignora racionalizações e desculpas emocionais
+    }
+
+    try {
+      await upsertPrinciple({
+        userId: Number(userId),
+        content: principio.conteudo,
+        category: principio.categoria || 'Filosofia e Moral',
+        source: 'extracted',
+        confidenceDelta: 0.2 // Aumenta a confiança de forma conservadora
+      });
+      // A invalidação de cache (invalidateContextField) já acontece dentro do upsertPrinciple
+    } catch (e: any) {
+      console.error('[Extractor] Falha ao salvar princípio:', e.message);
+    }
+  }
+}
