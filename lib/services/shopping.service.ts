@@ -38,7 +38,7 @@ export async function coreListarCompras(userId: number) {
 
 // ─── 2. CRIAR ITEM ────────────────────────────────────────────────────────────
 export async function coreCriarCompra(
-  userId: number, 
+  userId: number,
   payload: { item: string; category?: string; project_id?: string; place_id?: string }
 ) {
   const { data, error } = await supabase
@@ -109,3 +109,26 @@ export async function coreDeletarCompra(userId: number, itemId: string) {
   if (error) throw new Error(`Falha ao deletar item: ${error.message}`);
   await invalidateContextField(userId, 'shopping');
 }
+
+// ─── 5. ADAPTER PARA O EXTRATOR DE IA (extractor-jobs.ts) ────────────────────
+
+export const shoppingService = {
+  // Chamado por: extractShopping
+  async addItems(userId: number, items: Array<{ item: string; category?: string }>) {
+    // Insere os itens um a um ou em batch reaproveitando a lógica
+    const inserts = items.map(i => ({
+      user_id: userId,
+      item: i.item,
+      category: i.category || 'outros',
+      done: false,
+      archived: false
+    }));
+
+    const { error } = await supabase.schema('jarvis').from('shopping_items').insert(inserts);
+    if (error) {
+      console.error('[ShoppingService] Erro ao inserir itens via IA:', error);
+    } else {
+      await invalidateContextField(userId, 'shopping').catch(() => { });
+    }
+  }
+};

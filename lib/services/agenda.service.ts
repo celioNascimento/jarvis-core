@@ -50,12 +50,12 @@ export async function coreConsultarAgenda(userId: number, dias: number = 7) {
   console.log('[coreConsultarAgenda] lev:', levRes.status, (levRes as any).value?.data?.substring(0, 100));
   console.log('[coreConsultarAgenda] google:', googleRes.status);
   console.log('[coreConsultarAgenda] outlook:', outlookRes.status)
-  
+
   const lev = (levRes.status === 'fulfilled' && levRes.value?.data) ? levRes.value.data : 'Nenhum evento na Agenda Lev.';
   let result = `[AGENDA LEV]\n${lev}`;
   if (googleRes.status === 'fulfilled' && googleRes.value) result += `\n\n[GOOGLE]\n${googleRes.value}`;
   if (outlookRes.status === 'fulfilled' && outlookRes.value) result += `\n\n[OUTLOOK]\n${outlookRes.value}`;
-  
+
   return result;
 }
 
@@ -70,9 +70,9 @@ export async function coreBuscarEventosApp(userId: number, from: string, to: str
 
   let query = supabase.schema('jarvis').from('events').select('*').gte('start_at', from);
   if (to) query = query.lte('start_at', to);
-  
-  query = sharedEventIds.length > 0 
-    ? query.or(`user_id.eq.${userId},id.in.(${sharedEventIds.join(',')})`) 
+
+  query = sharedEventIds.length > 0
+    ? query.or(`user_id.eq.${userId},id.in.(${sharedEventIds.join(',')})`)
     : query.eq('user_id', userId);
 
   const { data: baseEvents } = await query.order('start_at', { ascending: true });
@@ -136,7 +136,7 @@ export async function coreCriarEvento(userId: number, payload: EventPayload) {
     }).select().single();
 
   if (error) throw new Error(`Falha no banco: ${error.message}`);
-  if (payload.sessionId) await invalidateContextField(userId, 'events').catch(() => {});
+  if (payload.sessionId) await invalidateContextField(userId, 'events').catch(() => { });
 
 
   return { evento, avisoGoogle, startDate };
@@ -182,8 +182,8 @@ export async function coreDeletarEventoPorBusca(userId: number, busca: string, s
     .delete().eq('user_id', userId).ilike('title', `%${busca}%`).select('title');
 
   if (error) throw new Error(`Falha ao deletar: ${error.message}`);
-  if (sessionId) await invalidateContextField(userId, 'events').catch(() => {});
-  
+  if (sessionId) await invalidateContextField(userId, 'events').catch(() => { });
+
   return data || [];
 
 
@@ -203,3 +203,28 @@ export async function coreDeletarEventoPorId(userId: number, eventId: string) {
   if (error) throw new Error(`Falha ao deletar: ${error.message}`);
   return true;
 }
+
+// ─── 7. ADAPTER PARA O EXTRATOR DE IA ─────────────────────────────────────────
+export const eventsService = {
+  async processGenericEvent(userId: number, ev: any) {
+    await coreCriarEvento(userId, {
+      titulo: ev.titulo,
+      data_hora_inicio: ev.data,
+      categoria: ev.tipo || 'personal',
+      notas: ev.notas,
+      source: 'lev'
+    });
+  },
+
+  async processAgendaEvents(userId: number, compromissos: any[], anoAtual: number) {
+    for (const comp of compromissos) {
+      await coreCriarEvento(userId, {
+        titulo: comp.descricao,
+        data_hora_inicio: comp.data_hora,
+        categoria: comp.categoria || 'personal',
+        minutos_lembrete: [comp.aviso_minutos ?? 30],
+        source: 'lev'
+      });
+    }
+  }
+};
