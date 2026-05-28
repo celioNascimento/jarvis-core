@@ -236,7 +236,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     Promise.allSettled(
       memoriesResult.memories
         .slice(0, 3)
-        .map(mem => reinforceMemory(mem.id, user.id))
+        .map(mem => reinforceMemory(mem.id))
     ).catch(console.error);
   }
 
