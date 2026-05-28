@@ -1,5 +1,5 @@
 // lib/chat/pipeline/intelligence.ts
-// V15.0 - Remoção de RPC Zumbi e Correção do Loop de Shopping (Regra 3)
+// V16.0 - Integração de Memories ao MasterContext
 
 import { supabase } from '@/lib/jarvis';
 import { classifyContextWithL4, type ContextType } from '@/lib/chat/context-classifier';
@@ -8,6 +8,8 @@ import { llmGateway } from '@/lib/chat/llm-gateway';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import type { ChatRequestContext, LocalMessage } from './request-context';
 import { ContextCache, invalidateSessionHistory } from '@/lib/services/context-cache';
+import { loadMemoriesForContext } from '@/lib/data/memories.data';
+import { reinforceMemory } from '@/lib/services/memory.service';
 
 const MAX_MSG_CHARS = 800;
 
@@ -41,7 +43,7 @@ export function isNoiseMessage(message: string): boolean {
 
 // ─── Cache & RPC Logic ──────────────────────────────────────────────────────
 
-const CACHED_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations', 'shopping', 'reminders','children', 'profile'] as const;
+const CACHED_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations', 'shopping', 'reminders', 'children', 'profile'] as const;
 
 async function getMasterContext(
   userId: number,
@@ -61,7 +63,7 @@ async function getMasterContext(
   console.log('[MasterContext] Cache status:', {
     hit: CACHED_FIELDS.filter(f => f in cached),
     miss: missingFields,
-    historyHit: !needsHistory
+    historyHit: !needsHistory,
   });
 
   // 2. Cache Hit Total: NÃO vai ao banco de dados!
@@ -69,44 +71,45 @@ async function getMasterContext(
     console.log('[MasterContext] Cache hit total — Zero queries ao Supabase.');
     return {
       ...cached,
-      history: cachedHistory
+      history: cachedHistory,
     };
   }
 
   // 3. Cache Miss (Parcial ou Total): Vai ao banco buscar APENAS o que falta
-  // Para manter a integridade (Regra 1), chamamos o consolidado
-  console.log(`[MasterContext] Cache miss — rodando RPC consolidado e histórico`);
+  console.log('[MasterContext] Cache miss — rodando RPC consolidado e histórico');
 
   const [rpcRes, historyRes] = await Promise.allSettled([
     supabase.rpc('get_consolidated_context', {
-      p_user_id: userId,
+      p_user_id:   userId,
       p_session_id: sessionId,
-      p_contexts: contexts,
+      p_contexts:  contexts,
     }),
-    needsHistory ? supabase.rpc('get_session_history', {
-      p_user_id: userId,
-      p_session_id: sessionId,
-    }) : Promise.resolve({ data: cachedHistory })
+    needsHistory
+      ? supabase.rpc('get_session_history', {
+          p_user_id:   userId,
+          p_session_id: sessionId,
+        })
+      : Promise.resolve({ data: cachedHistory }),
   ]);
 
-  const result = rpcRes.status === 'fulfilled' && rpcRes.value.data ? rpcRes.value.data : {};
-  const historyData = historyRes.status === 'fulfilled' && historyRes.value?.data ? historyRes.value.data : cachedHistory || [];
+  const result      = rpcRes.status === 'fulfilled' && rpcRes.value.data ? rpcRes.value.data : {};
+  const historyData = historyRes.status === 'fulfilled' && historyRes.value?.data
+    ? historyRes.value.data
+    : cachedHistory || [];
 
-  // CORREÇÃO: Unificando o shopping antes de salvar
+  // Unifica o shopping antes de salvar
   result.shopping = {
-    items: result.shopping_items || [],
-    shares: result.shopping_shares || []
+    items:  result.shopping_items  || [],
+    shares: result.shopping_shares || [],
   };
 
   // 4. Popula o cache com o que buscou
   const savePromises: Promise<void>[] = [];
 
-  // Salva o histórico se buscou novo
   if (needsHistory) {
     savePromises.push(cache.setHistory(sessionId, historyData));
   }
 
-  // Salva os campos ausentes
   for (const f of missingFields) {
     const value = result[f];
     if (value == null) continue;
@@ -119,17 +122,16 @@ async function getMasterContext(
       continue;
     }
 
-    // Reminders agora também vai para o cache
     savePromises.push(cache.set(f, value));
   }
 
-  // Despacha as promessas de cache em background
+  // Fire-and-forget
   Promise.all(savePromises).catch(e => console.error('[MasterContext] Erro salvando cache:', e));
 
   return {
     ...cached,
     ...result,
-    history: historyData
+    history: historyData,
   };
 }
 
@@ -148,7 +150,7 @@ function buildRecentHistoryFromLocal(localHistory: LocalMessage[]): HistoryMessa
   return localHistory
     .slice(-30)
     .map(msg => ({
-      role: msg.role,
+      role:    msg.role,
       content: msg.content.slice(0, MAX_MSG_CHARS),
     }));
 }
@@ -164,23 +166,15 @@ function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
     const uMsg = (row.content || '').trim();
     const aRep = (row.metadata?.ai_reply || '').trim();
 
-    if (uMsg.length > 2) {
-      history.push({ role: 'user', content: uMsg.slice(0, MAX_MSG_CHARS) });
-    }
-    if (aRep.length > 2) {
-      history.push({ role: 'assistant', content: aRep.slice(0, MAX_MSG_CHARS) });
-    }
+    if (uMsg.length > 2) history.push({ role: 'user',      content: uMsg.slice(0, MAX_MSG_CHARS) });
+    if (aRep.length > 2) history.push({ role: 'assistant', content: aRep.slice(0, MAX_MSG_CHARS) });
   }
   return history.slice(-20);
 }
 
 function resolveRecentHistory(localHistory: LocalMessage[], bankHistory: any[]): HistoryMessage[] {
-  if (Array.isArray(bankHistory) && bankHistory.length > 0) {
-    return buildRecentHistoryFromBank(bankHistory);
-  }
-  if (localHistory?.length > 0) {
-    return buildRecentHistoryFromLocal(localHistory);
-  }
+  if (Array.isArray(bankHistory) && bankHistory.length > 0) return buildRecentHistoryFromBank(bankHistory);
+  if (localHistory?.length > 0) return buildRecentHistoryFromLocal(localHistory);
   return [];
 }
 
@@ -195,22 +189,28 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   // Identificação de tags de contexto (Fluxo Downstream)
   const contextTags: string[] = [];
   const m = message.toLowerCase();
-  if (m.includes('carro') || m.includes('frota') || m.includes('abastecimento') || m.includes('manuten')) contextTags.push('veiculos');
-  if (m.includes('projeto') || m.includes('tarefa') || m.includes('desenvolvimento')) contextTags.push('projeto');
-  if (m.includes('dinheiro') || m.includes('gasto') || m.includes('pagamento') || m.includes('orç')) contextTags.push('financas');
+  if (m.includes('carro')   || m.includes('frota')     || m.includes('abastecimento') || m.includes('manuten'))   contextTags.push('veiculos');
+  if (m.includes('projeto') || m.includes('tarefa')    || m.includes('desenvolvimento'))                           contextTags.push('projeto');
+  if (m.includes('dinheiro')|| m.includes('gasto')     || m.includes('pagamento')     || m.includes('orç'))       contextTags.push('financas');
 
   // Filtro inteligente: Embedding apenas se necessário (Regra de Eficiência)
   const shouldEmbed = false;
 
-  console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'}`);
+  // Memories: não carrega para mensagens de ruído (economia de RPC)
+  const shouldLoadMemories = !isNoise;
 
-  const [queryEmbedding, isStressed, masterContext] = await Promise.race([
+  console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'} | Memories: ${shouldLoadMemories ? 'ATIVO' : 'SKIP'}`);
+
+  const [queryEmbedding, isStressed, masterContext, memoriesResult] = await Promise.race([
     Promise.all([
       shouldEmbed
         ? getCachedEmbedding(message).catch((e) => { console.error('[Pipeline][Embedding] Falha:', e); return null; })
         : Promise.resolve(null),
       llmGateway.isOverloaded().catch(() => false),
       getMasterContext(user.id, sessionId, contextTags),
+      shouldLoadMemories
+        ? loadMemoriesForContext(user.id, message, 5, 0.3)
+        : Promise.resolve({ memories: [], topEmotional: [] }),
     ]),
     new Promise<any[]>((_, reject) =>
       setTimeout(() => reject(new Error('TIMEOUT_SEGURANCA')), 8000)
@@ -218,10 +218,23 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   ]).catch((err) => {
     if (err.message === 'TIMEOUT_SEGURANCA') {
       console.error('[Pipeline][Fatal] Timeout (8s). Retornando contexto parcial.');
-      return [null, false, { history: [], config: {}, profile: {} }];
+      return [null, false, { history: [], config: {}, profile: {} }, { memories: [], topEmotional: [] }];
     }
     throw err;
   });
+
+  // Injeta memories no masterContext — dados fluem para baixo, nunca sobem
+  masterContext.memories            = memoriesResult.memories;
+  masterContext.topEmotionalMemories = memoriesResult.topEmotional;
+
+  // Reforça as top 3 memórias carregadas (fire-and-forget, não bloqueia o request)
+  if (memoriesResult.memories.length > 0) {
+    Promise.allSettled(
+      memoriesResult.memories
+        .slice(0, 3)
+        .map(mem => reinforceMemory(mem.id, user.id))
+    ).catch(console.error);
+  }
 
   // Classificação L4 (sempre segura via masterContext)
   const contexts = await classifyContextWithL4(message, user.id, user.auth_user_id, masterContext)
@@ -252,4 +265,3 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     isNoise,
   };
 }
-
