@@ -8,8 +8,8 @@ import { llmGateway } from '@/lib/chat/llm-gateway';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import type { ChatRequestContext, LocalMessage } from './request-context';
 import { ContextCache, invalidateSessionHistory } from '@/lib/services/context-cache';
-import { loadMemoriesForContext, type MemoriesLoadResult } from '@/lib/data/memories.data';
-import { reinforceMemoryScore } from '@/lib/services/memory.service';
+import { loadMemoriesForContext } from '@/lib/data/memories.data';
+import { reinforceMemory } from '@/lib/services/memory.service';
 
 const MAX_MSG_CHARS = 800;
 
@@ -201,9 +201,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'} | Memories: ${shouldLoadMemories ? 'ATIVO' : 'SKIP'}`);
 
-  type PipelineTuple = [number[] | null, boolean, any, MemoriesLoadResult];
-
-  const raceResult = await Promise.race([
+  const [queryEmbedding, isStressed, masterContext, memoriesResult] = await Promise.race([
     Promise.all([
       shouldEmbed
         ? getCachedEmbedding(message).catch((e) => { console.error('[Pipeline][Embedding] Falha:', e); return null; })
@@ -212,20 +210,18 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
       getMasterContext(user.id, sessionId, contextTags),
       shouldLoadMemories
         ? loadMemoriesForContext(user.id, message, 5, 0.3)
-        : Promise.resolve<MemoriesLoadResult>({ memories: [], topEmotional: [] }),
-    ] as const),
-    new Promise<never>((_, reject) =>
+        : Promise.resolve({ memories: [], topEmotional: [] }),
+    ]),
+    new Promise<any[]>((_, reject) =>
       setTimeout(() => reject(new Error('TIMEOUT_SEGURANCA')), 8000)
     ),
-  ]).catch((err): PipelineTuple => {
+  ]).catch((err) => {
     if (err.message === 'TIMEOUT_SEGURANCA') {
       console.error('[Pipeline][Fatal] Timeout (8s). Retornando contexto parcial.');
       return [null, false, { history: [], config: {}, profile: {} }, { memories: [], topEmotional: [] }];
     }
     throw err;
   });
-
-  const [queryEmbedding, isStressed, masterContext, memoriesResult] = raceResult as PipelineTuple;
 
   // Injeta memories no masterContext — dados fluem para baixo, nunca sobem
   masterContext.memories            = memoriesResult.memories;
@@ -236,7 +232,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     Promise.allSettled(
       memoriesResult.memories
         .slice(0, 3)
-        .map(mem => reinforceMemoryScore(mem.id))
+        .map(mem => reinforceMemory(mem.id, user.id))
     ).catch(console.error);
   }
 
