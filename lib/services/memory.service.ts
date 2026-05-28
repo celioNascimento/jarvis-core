@@ -6,6 +6,14 @@ import { supabase, callOpenRouter } from '@/lib/jarvis';
 import { invalidateContextField } from '@/lib/services/context-cache';
 import { generateEmbedding } from '@/lib/memory';
 
+/ ─── Constantes ───────────────────────────────────────────────────────────────
+
+/** Incremento aplicado ao relevance_score a cada reforço */
+const REINFORCE_INCREMENT = 0.05;
+
+/** Teto do relevance_score para evitar overflow */
+const REINFORCE_MAX = 1.0;
+
 // ── Filtro de qualidade ───────────────────────────────────────────────────────
 
 const MEMORIA_INVALIDA = [
@@ -115,26 +123,54 @@ export async function compactMemory(userId: string, authorName: string): Promise
 
 // ── REFORÇO DE MEMÓRIA ────────────────────────────────────────────────────────
 
-export async function reinforceMemory(memoryId: string): Promise<void> {
+export async function reinforceMemory(
+  memoryId: string,
+  userId: number,
+): Promise<void> {
   try {
-    const { data } = await supabase
-      .from('memories')
-      .select('access_count, relevance_score')
+    // Lê o score atual para aplicar o incremento com teto
+    const { data: current, error: readError } = await supabase
+      .from('brain')
+      .select('id, metadata')
       .eq('id', memoryId)
+      .eq('user_id', userId)
       .maybeSingle();
 
-    if (!data) return;
+    if (readError) {
+      console.warn(`[memory.service] Erro ao ler memória ${memoryId}:`, readError.message);
+      return;
+    }
 
-    await supabase
-      .from('memories')
+    if (!current) {
+      console.warn(`[memory.service] Memória ${memoryId} não encontrada para userId ${userId}`);
+      return;
+    }
+
+    const prevScore: number = current.metadata?.relevance_score ?? 0;
+    const newScore = Math.min(prevScore + REINFORCE_INCREMENT, REINFORCE_MAX);
+
+    const { error: updateError } = await supabase
+      .from('brain')
       .update({
-        access_count: (data.access_count || 0) + 1,
-        relevance_score: Math.min((data.relevance_score || 0) + 0.05, 1.0),
-        updated_at: new Date().toISOString(),
+        last_accessed_at: new Date().toISOString(),
+        metadata: {
+          ...current.metadata,
+          relevance_score: newScore,
+        },
       })
-      .eq('id', memoryId);
-  } catch (e) {
-    console.error('[Memory] Erro reinforceMemory:', e);
+      .eq('id', memoryId)
+      .eq('user_id', userId);
+
+    if (updateError) {
+      console.warn(`[memory.service] Erro ao reforçar memória ${memoryId}:`, updateError.message);
+      return;
+    }
+
+    console.log(`[memory.service] Memória ${memoryId} reforçada: ${prevScore.toFixed(2)} → ${newScore.toFixed(2)}`);
+
+  } catch (err) {
+    // Absorve qualquer erro inesperado — nunca deve quebrar o pipeline principal
+    console.error(`[memory.service] Erro inesperado em reinforceMemory(${memoryId}):`, err);
   }
 }
 
