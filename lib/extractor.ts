@@ -1,5 +1,7 @@
-// lib/extractor.ts — V13.3 (Contrato: Tipagem Estrita e Gateway + Valores)
-import { supabase } from '@/lib/jarvis';
+// ============================================================
+// lib/extractor.ts — V14.0 (Type-Safe Dispatcher & Pattern Matching)
+// ============================================================
+
 import { llmGateway } from '@/lib/chat/llm-gateway';
 import { 
   extractProjeto, extractEvento, extractAgenda, 
@@ -7,7 +9,7 @@ import {
   extractFamilia, extractShopping, extractValores
 } from '@/lib/extractor-jobs';
 
-// ── Tipos Estritos ───────────────────────────────────────────
+// ── TIPOS ESTRITOS ───────────────────────────────────────────
 export interface ExtractionOptions {
   userId: string;
   userName: string;
@@ -15,31 +17,22 @@ export interface ExtractionOptions {
   aiReply: string;
 }
 
-export interface DetectedGap {
-  field: string;
-  context: string;
-  hint: string;
-  urgencia?: string;
-}
-
 export interface ExtractionModule {
   id: string;
   match: (ctx: string[]) => boolean;
-  run: (...args: any[]) => Promise<void>;
 }
 
-// ── REGISTRO DE MÓDULOS ──────────────────────────────────────
+// ── REGISTRO DE MÓDULOS (Apenas Identificação) ───────────────
 const EXTRACTION_MODULES: ExtractionModule[] = [
-  // Usamos argumentos opcionais (?) para que a assinatura bata com a interface
-  { id: 'familia',      match: (ctx) => ctx.includes('familia'),      run: (uid, msg, gaps) => extractFamilia(uid, msg, gaps || []) },
-  { id: 'projeto',      match: (ctx) => ctx.includes('projeto'),      run: (uid, msg) => extractProjeto(uid, msg) },
-  { id: 'evento',       match: (ctx) => ctx.includes('evento'),       run: (uid, msg) => extractEvento(uid, msg) },
-  { id: 'agenda',       match: (ctx) => ctx.includes('agenda'),       run: (uid, msg) => extractAgenda(uid, msg) },
-  { id: 'rotina',       match: (ctx) => ctx.includes('rotina'),       run: (uid, msg) => extractRotina(uid, msg) },
-  { id: 'preferencia',  match: (ctx) => ctx.includes('preferencia'),  run: (uid, msg) => extractPreferencia(uid, msg) },
-  { id: 'recomendacao', match: (ctx) => ctx.includes('recomendacao'), run: (uid, msg, reply) => extractRecomendacao(uid, msg, reply || '') },
-  { id: 'compras',      match: (ctx) => ctx.includes('compras'),      run: (uid, msg, reply) => extractShopping(uid, msg, reply || '') },
-  { id: 'valores',      match: (ctx) => ctx.includes('valores'),      run: (uid, msg) => extractValores(uid, msg) },
+  { id: 'familia',      match: (ctx) => ctx.includes('familia') },
+  { id: 'projeto',      match: (ctx) => ctx.includes('projeto') },
+  { id: 'evento',       match: (ctx) => ctx.includes('evento') },
+  { id: 'agenda',       match: (ctx) => ctx.includes('agenda') },
+  { id: 'rotina',       match: (ctx) => ctx.includes('rotina') },
+  { id: 'preferencia',  match: (ctx) => ctx.includes('preferencia') },
+  { id: 'recomendacao', match: (ctx) => ctx.includes('recomendacao') },
+  { id: 'compras',      match: (ctx) => ctx.includes('compras') },
+  { id: 'valores',      match: (ctx) => ctx.includes('valores') },
 ];
 
 // ── FILTROS DE RUÍDO ──────────────────────────────────────────
@@ -53,7 +46,6 @@ const NOISE_PATTERNS = [
 ];
 
 // ── ORQUESTRADOR PRINCIPAL ────────────────────────────────────
-
 export async function extractAndSummarize(
   userId: string,
   userName: string,
@@ -72,19 +64,42 @@ export async function extractAndSummarize(
     if (!classification?.has_new_facts) return '';
 
     const tasks: Promise<void>[] = [];
+
+    // Dispatcher Seguro (Pattern Matching)
     for (const mod of EXTRACTION_MODULES) {
       if (mod.match(classification.contexts)) {
-        if (mod.id === 'familia') {
-          tasks.push(mod.run(userId, userMessage, [] as DetectedGap[]));
-        } else if (mod.id === 'recomendacao' || mod.id === 'compras') {
-          tasks.push(mod.run(userId, userMessage, aiReply));
-        } else {
-          tasks.push(mod.run(userId, userMessage));
+        switch (mod.id) {
+          case 'compras':
+            tasks.push(extractShopping(userId, userMessage, aiReply));
+            break;
+          case 'recomendacao':
+            tasks.push(extractRecomendacao(userId, userMessage, aiReply));
+            break;
+          case 'familia':
+            tasks.push(extractFamilia(userId, userMessage));
+            break;
+          case 'projeto':
+            tasks.push(extractProjeto(userId, userMessage));
+            break;
+          case 'evento':
+            tasks.push(extractEvento(userId, userMessage));
+            break;
+          case 'agenda':
+            tasks.push(extractAgenda(userId, userMessage));
+            break;
+          case 'rotina':
+            tasks.push(extractRotina(userId, userMessage));
+            break;
+          case 'preferencia':
+            tasks.push(extractPreferencia(userId, userMessage));
+            break;
+          case 'valores':
+            tasks.push(extractValores(userId, userMessage));
+            break;
         }
       }
     }
 
-    // updateL3 é chamado no pipeline principal via l3.extractor com masterContext completo
     Promise.allSettled(tasks).catch(console.error);
 
     return summarizeContexts(classification.contexts);
@@ -95,7 +110,6 @@ export async function extractAndSummarize(
 }
 
 // ── CLASSIFICADOR ─────────────────────────────────────────────
-
 async function classify(userId: string, userMessage: string) {
   const prompt = `Analise a mensagem e retorne JSON: {"has_new_facts": boolean, "contexts": string[]}. 
 Contextos: familia, projeto, evento, agenda, rotina, preferencia, recomendacao, compras, valores. 
@@ -115,7 +129,9 @@ Mensagem: "${userMessage}"`;
       dedupPayload: userMessage,
     });
 
-    return JSON.parse(raw.content?.replace(/```json|```/g, '') || '{}');
+    // Construtor RegExp previne a quebra do parser por crases
+    const cleanContent = raw.content?.replace(new RegExp('\`\`\`json|\`\`\`', 'gi'), '').trim() || '{}';
+    return JSON.parse(cleanContent);
   } catch {
     return { has_new_facts: false, contexts: [] };
   }
