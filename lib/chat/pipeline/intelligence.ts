@@ -8,7 +8,7 @@ import { llmGateway } from '@/lib/chat/llm-gateway';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import type { ChatRequestContext, LocalMessage } from './request-context';
 import { ContextCache, invalidateSessionHistory } from '@/lib/services/context-cache';
-import { loadMemoriesForContext } from '@/lib/data/memories.data';
+import { loadMemoriesForContext, type MemoriesLoadResult } from '@/lib/data/memories.data';
 import { reinforceMemory } from '@/lib/services/memory.service';
 
 const MAX_MSG_CHARS = 800;
@@ -201,7 +201,9 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'} | Memories: ${shouldLoadMemories ? 'ATIVO' : 'SKIP'}`);
 
-  const [queryEmbedding, isStressed, masterContext, memoriesResult] = await Promise.race([
+  const [queryEmbedding, isStressed, masterContext, memoriesResult] = await Promise.race<
+    [number[] | null, boolean, any, MemoriesLoadResult]
+  >([
     Promise.all([
       shouldEmbed
         ? getCachedEmbedding(message).catch((e) => { console.error('[Pipeline][Embedding] Falha:', e); return null; })
@@ -215,7 +217,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     new Promise<any[]>((_, reject) =>
       setTimeout(() => reject(new Error('TIMEOUT_SEGURANCA')), 8000)
     ),
-  ]).catch((err) => {
+  ]).catch((err): [number[] | null, boolean, any, MemoriesLoadResult] => {
     if (err.message === 'TIMEOUT_SEGURANCA') {
       console.error('[Pipeline][Fatal] Timeout (8s). Retornando contexto parcial.');
       return [null, false, { history: [], config: {}, profile: {} }, { memories: [], topEmotional: [] }];
