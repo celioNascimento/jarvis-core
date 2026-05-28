@@ -8,8 +8,8 @@ import { llmGateway } from '@/lib/chat/llm-gateway';
 import { getCachedEmbedding } from '@/lib/chat/embedding-cache';
 import type { ChatRequestContext, LocalMessage } from './request-context';
 import { ContextCache, invalidateSessionHistory } from '@/lib/services/context-cache';
-import { loadMemoriesForContext } from '@/lib/data/memories.data';
 import { reinforceMemory } from '@/lib/services/memory.service';
+import { loadMemoriesForContext, type MemoriesLoadResult, type MemoryRecord } from '@/lib/data/memories.data';
 
 const MAX_MSG_CHARS = 800;
 
@@ -52,11 +52,9 @@ async function getMasterContext(
 ): Promise<any> {
   const cache = new ContextCache(userId);
 
-  // 1. Busca TUDO do Redis em uma única chamada de milissegundos
   const cached = await cache.getMany([...CACHED_FIELDS]);
   const cachedHistory = await cache.getHistory(sessionId);
 
-  // Verifica o que está faltando no cache
   const missingFields = CACHED_FIELDS.filter(f => !(f in cached));
   const needsHistory = !cachedHistory || cachedHistory.length === 0;
 
@@ -66,27 +64,22 @@ async function getMasterContext(
     historyHit: !needsHistory,
   });
 
-  // 2. Cache Hit Total: NÃO vai ao banco de dados!
   if (missingFields.length === 0 && !needsHistory) {
     console.log('[MasterContext] Cache hit total — Zero queries ao Supabase.');
-    return {
-      ...cached,
-      history: cachedHistory,
-    };
+    return { ...cached, history: cachedHistory };
   }
 
-  // 3. Cache Miss (Parcial ou Total): Vai ao banco buscar APENAS o que falta
   console.log('[MasterContext] Cache miss — rodando RPC consolidado e histórico');
 
   const [rpcRes, historyRes] = await Promise.allSettled([
     supabase.rpc('get_consolidated_context', {
-      p_user_id:   userId,
+      p_user_id:    userId,
       p_session_id: sessionId,
-      p_contexts:  contexts,
+      p_contexts:   contexts,
     }),
     needsHistory
       ? supabase.rpc('get_session_history', {
-          p_user_id:   userId,
+          p_user_id:    userId,
           p_session_id: sessionId,
         })
       : Promise.resolve({ data: cachedHistory }),
@@ -97,13 +90,11 @@ async function getMasterContext(
     ? historyRes.value.data
     : cachedHistory || [];
 
-  // Unifica o shopping antes de salvar
   result.shopping = {
     items:  result.shopping_items  || [],
     shares: result.shopping_shares || [],
   };
 
-  // 4. Popula o cache com o que buscou
   const savePromises: Promise<void>[] = [];
 
   if (needsHistory) {
@@ -125,14 +116,9 @@ async function getMasterContext(
     savePromises.push(cache.set(f, value));
   }
 
-  // Fire-and-forget
   Promise.all(savePromises).catch(e => console.error('[MasterContext] Erro salvando cache:', e));
 
-  return {
-    ...cached,
-    ...result,
-    history: historyData,
-  };
+  return { ...cached, ...result, history: historyData };
 }
 
 export async function invalidateMasterContextCache(
@@ -149,10 +135,7 @@ function buildRecentHistoryFromLocal(localHistory: LocalMessage[]): HistoryMessa
   console.log('[History][Reconcile] Construindo histórico via localHistory (fallback)');
   return localHistory
     .slice(-30)
-    .map(msg => ({
-      role:    msg.role,
-      content: msg.content.slice(0, MAX_MSG_CHARS),
-    }));
+    .map(msg => ({ role: msg.role, content: msg.content.slice(0, MAX_MSG_CHARS) }));
 }
 
 function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
@@ -165,7 +148,6 @@ function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
   for (const row of rawHistory) {
     const uMsg = (row.content || '').trim();
     const aRep = (row.metadata?.ai_reply || '').trim();
-
     if (uMsg.length > 2) history.push({ role: 'user',      content: uMsg.slice(0, MAX_MSG_CHARS) });
     if (aRep.length > 2) history.push({ role: 'assistant', content: aRep.slice(0, MAX_MSG_CHARS) });
   }
@@ -186,45 +168,48 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   console.log(`[Pipeline] Orquestração iniciada: ${message.slice(0, 50)}...`);
 
-  // Identificação de tags de contexto (Fluxo Downstream)
   const contextTags: string[] = [];
   const m = message.toLowerCase();
-  if (m.includes('carro')   || m.includes('frota')     || m.includes('abastecimento') || m.includes('manuten'))   contextTags.push('veiculos');
-  if (m.includes('projeto') || m.includes('tarefa')    || m.includes('desenvolvimento'))                           contextTags.push('projeto');
-  if (m.includes('dinheiro')|| m.includes('gasto')     || m.includes('pagamento')     || m.includes('orç'))       contextTags.push('financas');
+  if (m.includes('carro')    || m.includes('frota')  || m.includes('abastecimento') || m.includes('manuten')) contextTags.push('veiculos');
+  if (m.includes('projeto')  || m.includes('tarefa') || m.includes('desenvolvimento'))                         contextTags.push('projeto');
+  if (m.includes('dinheiro') || m.includes('gasto')  || m.includes('pagamento')     || m.includes('orç'))     contextTags.push('financas');
 
-  // Filtro inteligente: Embedding apenas se necessário (Regra de Eficiência)
-  const shouldEmbed = false;
-
-  // Memories: não carrega para mensagens de ruído (economia de RPC)
+  const shouldEmbed        = false;
   const shouldLoadMemories = !isNoise;
 
   console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'} | Memories: ${shouldLoadMemories ? 'ATIVO' : 'SKIP'}`);
 
-  const [queryEmbedding, isStressed, masterContext, memoriesResult] = await Promise.race([
+  // ── Tuple tipado explicitamente para o TS não colapsar em any[] ───────────
+  type PipelineTuple = [number[] | null, boolean, any, MemoriesLoadResult];
+
+  const EMPTY_MEMORIES: MemoriesLoadResult = { memories: [], topEmotional: [] };
+
+  const pipelineResult = await Promise.race([
     Promise.all([
       shouldEmbed
         ? getCachedEmbedding(message).catch((e) => { console.error('[Pipeline][Embedding] Falha:', e); return null; })
-        : Promise.resolve(null),
-      llmGateway.isOverloaded().catch(() => false),
+        : Promise.resolve(null as number[] | null),
+      llmGateway.isOverloaded().catch((): boolean => false),
       getMasterContext(user.id, sessionId, contextTags),
       shouldLoadMemories
         ? loadMemoriesForContext(user.id, message, 5, 0.3)
-        : Promise.resolve({ memories: [], topEmotional: [] }),
-    ]),
-    new Promise<any[]>((_, reject) =>
+        : Promise.resolve(EMPTY_MEMORIES),
+    ] as const),
+    new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('TIMEOUT_SEGURANCA')), 8000)
     ),
-  ]).catch((err) => {
+  ]).catch((err): PipelineTuple => {
     if (err.message === 'TIMEOUT_SEGURANCA') {
       console.error('[Pipeline][Fatal] Timeout (8s). Retornando contexto parcial.');
-      return [null, false, { history: [], config: {}, profile: {} }, { memories: [], topEmotional: [] }];
+      return [null, false, { history: [], config: {}, profile: {} }, EMPTY_MEMORIES];
     }
     throw err;
   });
 
+  const [queryEmbedding, isStressed, masterContext, memoriesResult] = pipelineResult as PipelineTuple;
+
   // Injeta memories no masterContext — dados fluem para baixo, nunca sobem
-  masterContext.memories            = memoriesResult.memories;
+  masterContext.memories             = memoriesResult.memories;
   masterContext.topEmotionalMemories = memoriesResult.topEmotional;
 
   // Reforça as top 3 memórias carregadas (fire-and-forget, não bloqueia o request)
@@ -232,15 +217,15 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     Promise.allSettled(
       memoriesResult.memories
         .slice(0, 3)
-        .map(mem => reinforceMemory(mem.id, user.id))
+        .map((mem: MemoryRecord) => reinforceMemory(mem.id, user.id))
     ).catch(console.error);
   }
 
-  // Classificação L4 (sempre segura via masterContext)
+  // Classificação L4
   const contexts = await classifyContextWithL4(message, user.id, user.auth_user_id, masterContext)
     .catch((e) => { console.error('[Pipeline][Classification] Erro:', e); return []; });
 
-  // Análise Emocional (Regra de Dados Downstream)
+  // Análise Emocional
   const emotional = await computeEmotionalScore(
     message,
     String(user.id),
