@@ -8,7 +8,6 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
-import { supabase } from '@/lib/jarvis';
 import { extractAndSummarize } from '@/lib/extractor';
 import { detectImplicitNegativeFeedback } from '@/lib/tools/executors/learning';
 import OpenAI from 'openai';
@@ -18,6 +17,9 @@ import type { ChatPrompt } from './types';
 import { extractReminder, hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
 import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
 import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
+
+// A Mágica da Criptografia (Fonte Única da Verdade para a tabela brain)
+import { insertBrainEntry } from '@/lib/services/brain.service';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -96,26 +98,23 @@ export async function finalizeResponse(
       console.debug('[Feedback] Falha silenciosa:', e);
     }
 
-try {
-  await supabase.from('brain').insert({
-    user_id: ctx.user.id,
-    session_id: ctx.sessionId,
-    content: ctx.message,
-    category: ctx.message.length < 15 ? 'noise' : 'info',
-    metadata: {
-      role: 'user',
-      ai_reply: reply,
-      contexts: intel.contexts,
-      model: prompt.model,
-    },
-  });
+    try {
+      // Usando o novo Service Criptografado
+      await insertBrainEntry({
+        userId: ctx.user.id,
+        sessionId: ctx.sessionId,
+        content: ctx.message,
+        category: ctx.message.length < 15 ? 'noise' : 'info',
+        tags: intel.contexts // Passa o array de contextos como tags para o Índice Cego
+      });
 
-  // Invalida o cache para o próximo turno ler o histórico atualizado
-  await invalidateMasterContextCache(ctx.user.id, ctx.sessionId);
+      // Invalida o cache para o próximo turno ler o histórico atualizado
+      await invalidateMasterContextCache(ctx.user.id, ctx.sessionId);
 
-} catch (e: any) {
-  console.error('[ResponseFinalizer] Brain save error:', e.message);
-}
+    } catch (e: any) {
+      console.error('[ResponseFinalizer] Brain save error:', e.message);
+    }
+
     try {
       await extractAndSummarize(
         String(ctx.user.id),
