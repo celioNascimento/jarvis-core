@@ -124,8 +124,8 @@ export async function compactMemory(userId: string, authorName: string): Promise
 // ── REFORÇO DE MEMÓRIA ────────────────────────────────────────────────────────
 
 export async function reinforceMemory(
-  memoryId: string,
   userId: number,
+  memoryId: string,
 ): Promise<void> {
   try {
     // Lê o score atual para aplicar o incremento com teto
