@@ -1,13 +1,8 @@
 // lib/principles/principles.service.ts
 
-import { createClient } from '@supabase/supabase-js';
-import { invalidateContextField } from '../services/context-cache'; // ajuste para seu path real
+import { supabase } from '@/lib/jarvis'; // ← Importação centralizada (Fonte Única da Verdade)
+import { invalidateContextField } from '../services/context-cache'; // ajuste para seu path real se necessário
 import { encrypt, decrypt, hashBlindIndex } from '@/lib/crypto-utils';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 export interface PrincipleUpsertInput {
   userId: number;
@@ -48,8 +43,7 @@ export async function upsertPrinciple(input: PrincipleUpsertInput): Promise<void
   if (patternKey) {
     // Upsert por pattern_key — incrementa confidence se já existe
     const { data: existing } = await supabase
-      .schema('jarvis')
-      .from('principles')
+      .from('principles') // ← .schema('jarvis') removido pois já está no lib/jarvis.ts
       .select('id, confidence')
       .eq('user_id', userId)
       .eq('pattern_key', patternKey)
@@ -58,7 +52,6 @@ export async function upsertPrinciple(input: PrincipleUpsertInput): Promise<void
     if (existing) {
       const newConfidence = Math.min(1.0, existing.confidence + confidenceDelta);
       await supabase
-        .schema('jarvis')
         .from('principles')
         .update({
           content: encryptedContent, // Dado cifrado
@@ -71,7 +64,6 @@ export async function upsertPrinciple(input: PrincipleUpsertInput): Promise<void
         .eq('id', existing.id);
     } else {
       await supabase
-        .schema('jarvis')
         .from('principles')
         .insert({
           user_id: userId,
@@ -88,7 +80,6 @@ export async function upsertPrinciple(input: PrincipleUpsertInput): Promise<void
   } else {
     // Inserção direta sem deduplicação por pattern_key
     await supabase
-      .schema('jarvis')
       .from('principles')
       .insert({
         user_id: userId,
@@ -111,7 +102,6 @@ export async function upsertPrinciple(input: PrincipleUpsertInput): Promise<void
  */
 export async function getPrinciples(userId: number, minConfidence = 0.4) {
   const { data, error } = await supabase
-    .schema('jarvis')
     .from('principles')
     .select('id, content, category, confidence, source, created_at, is_encrypted')
     .eq('user_id', userId)
@@ -140,7 +130,6 @@ export async function findSimilarPrinciples(
   const embedding = await generateEmbedding(text);
 
   const { data, error } = await supabase
-    .schema('jarvis')
     .rpc('match_principles', {
       p_user_id: userId,
       p_embedding: embedding,
@@ -168,7 +157,6 @@ export async function decayOldPrinciples(userId: number): Promise<void> {
 
   // Busca princípios sem reforço recente
   const { data: stale } = await supabase
-    .schema('jarvis')
     .from('principles')
     .select('id, confidence, content')
     .eq('user_id', userId)
@@ -180,7 +168,6 @@ export async function decayOldPrinciples(userId: number): Promise<void> {
   for (const principle of stale) {
     const newConfidence = Math.max(0.2, principle.confidence - 0.05);
     await supabase
-      .schema('jarvis')
       .from('principles')
       .update({ confidence: newConfidence })
       .eq('id', principle.id);
