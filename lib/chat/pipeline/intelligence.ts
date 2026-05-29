@@ -73,25 +73,25 @@ async function getMasterContext(
 
   const [rpcRes, historyRes] = await Promise.allSettled([
     supabase.rpc('get_consolidated_context', {
-      p_user_id:    userId,
+      p_user_id: userId,
       p_session_id: sessionId,
-      p_contexts:   contexts,
+      p_contexts: contexts,
     }),
     needsHistory
       ? supabase.rpc('get_session_history', {
-          p_user_id:    userId,
-          p_session_id: sessionId,
-        })
+        p_user_id: userId,
+        p_session_id: sessionId,
+      })
       : Promise.resolve({ data: cachedHistory }),
   ]);
 
-  const result      = rpcRes.status === 'fulfilled' && rpcRes.value.data ? rpcRes.value.data : {};
+  const result = rpcRes.status === 'fulfilled' && rpcRes.value.data ? rpcRes.value.data : {};
   const historyData = historyRes.status === 'fulfilled' && historyRes.value?.data
     ? historyRes.value.data
     : cachedHistory || [];
 
   result.shopping = {
-    items:  result.shopping_items  || [],
+    items: result.shopping_items || [],
     shares: result.shopping_shares || [],
   };
 
@@ -148,7 +148,7 @@ function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
   for (const row of rawHistory) {
     const uMsg = (row.content || '').trim();
     const aRep = (row.metadata?.ai_reply || '').trim();
-    if (uMsg.length > 2) history.push({ role: 'user',      content: uMsg.slice(0, MAX_MSG_CHARS) });
+    if (uMsg.length > 2) history.push({ role: 'user', content: uMsg.slice(0, MAX_MSG_CHARS) });
     if (aRep.length > 2) history.push({ role: 'assistant', content: aRep.slice(0, MAX_MSG_CHARS) });
   }
   return history.slice(-20);
@@ -170,11 +170,11 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   const contextTags: string[] = [];
   const m = message.toLowerCase();
-  if (m.includes('carro')    || m.includes('frota')  || m.includes('abastecimento') || m.includes('manuten')) contextTags.push('veiculos');
-  if (m.includes('projeto')  || m.includes('tarefa') || m.includes('desenvolvimento'))                         contextTags.push('projeto');
-  if (m.includes('dinheiro') || m.includes('gasto')  || m.includes('pagamento')     || m.includes('orç'))     contextTags.push('financas');
+  if (m.includes('carro') || m.includes('frota') || m.includes('abastecimento') || m.includes('manuten')) contextTags.push('veiculos');
+  if (m.includes('projeto') || m.includes('tarefa') || m.includes('desenvolvimento')) contextTags.push('projeto');
+  if (m.includes('dinheiro') || m.includes('gasto') || m.includes('pagamento') || m.includes('orç')) contextTags.push('financas');
 
-  const shouldEmbed        = false;
+  const shouldEmbed = false;
   const shouldLoadMemories = !isNoise;
 
   console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'} | Memories: ${shouldLoadMemories ? 'ATIVO' : 'SKIP'}`);
@@ -209,7 +209,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   const [queryEmbedding, isStressed, masterContext, memoriesResult] = pipelineResult as PipelineTuple;
 
   // Injeta memories no masterContext — dados fluem para baixo, nunca sobem
-  masterContext.memories             = memoriesResult.memories;
+  masterContext.memories = memoriesResult.memories;
   masterContext.topEmotionalMemories = memoriesResult.topEmotional;
 
   // Reforça as top 3 memórias carregadas (fire-and-forget, não bloqueia o request)
@@ -217,7 +217,9 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     Promise.allSettled(
       memoriesResult.memories
         .slice(0, 3)
-        .map((mem: MemoryRecord) => reinforceMemory(mem.id, user.id))
+        .map((mem: MemoryRecord) =>
+          reinforceMemory(user.id, String(mem.id))
+        )
     ).catch(console.error);
   }
 
