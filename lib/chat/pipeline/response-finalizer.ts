@@ -50,7 +50,8 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
         body: JSON.stringify({
           text: cleanText,
           model_id: 'eleven_multilingual_v2',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75 },        }),
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },        
+        }),
       });
 
       if (!elRes.ok) {
@@ -91,7 +92,7 @@ export async function finalizeResponse(
     : null;
 
   // 3. Define tarefas em background — NÃO usa await!
-  const backgroundTasks = (async () => {
+  const backgroundTasks = async () => {
     try {
       await detectImplicitNegativeFeedback(ctx.message, ctx.user.id);
     } catch (e) {
@@ -99,20 +100,23 @@ export async function finalizeResponse(
     }
 
     try {
-      // Usando o novo Service Criptografado
+      console.log('[ResponseFinalizer] 🚀 Disparando insertBrainEntry (Versão Criptografada)');
+      
+      // Usando o novo Service Criptografado com type-cast defensivo
       await insertBrainEntry({
-        userId: ctx.user.id,
+        userId: Number(ctx.user.id), 
         sessionId: ctx.sessionId,
         content: ctx.message,
         category: ctx.message.length < 15 ? 'noise' : 'info',
-        tags: intel.contexts // Passa o array de contextos como tags para o Índice Cego
+        tags: intel.contexts as string[]
       });
 
       // Invalida o cache para o próximo turno ler o histórico atualizado
       await invalidateMasterContextCache(ctx.user.id, ctx.sessionId);
-
+      
+      console.log('[ResponseFinalizer] ✅ Inserção cifrada concluída com sucesso.');
     } catch (e: any) {
-      console.error('[ResponseFinalizer] Brain save error:', e.message);
+      console.error('[ResponseFinalizer] Brain save error:', e);
     }
 
     try {
@@ -144,12 +148,15 @@ export async function finalizeResponse(
     } catch (e: any) {
       console.error('[style-learner] erro silencioso:', e);
     }
-  })();
+  };
 
-  // ⏩ Permite que Vercel continue processando após o retorno
+  // ⏩ Tratamento robusto da promise para o contexto Edge/Vercel
+  const bgPromise = backgroundTasks().catch(err => console.error('[BackgroundTasks] Erro fatal:', err));
+  
   if ('waitUntil' in (req as any)) {
-    (req as any).waitUntil?.(backgroundTasks);
+    (req as any).waitUntil?.(bgPromise);
   }
+
   // 4. ✅ Responde IMEDIATAMENTE ao usuário — sem delay
   return NextResponse.json({
     reply,
