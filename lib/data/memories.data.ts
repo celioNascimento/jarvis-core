@@ -7,7 +7,7 @@
 //   ✅ Uma única função de leitura (loadMemoriesForContext) — pode acessar Supabase
 //   ❌ Zero lógica de formatação (isso é responsabilidade do memory-block.ts)
 
-import { supabase } from '@/lib/jarvis';
+import { supabase, generateEmbedding } from '@/lib/jarvis';
 
 // ─── Categorias possíveis ────────────────────────────────────────────────────
 
@@ -101,9 +101,13 @@ export async function loadMemoriesForContext(
   minScore = 0.3,
 ): Promise<MemoriesLoadResult> {
   try {
+    // 1. Converte o texto em vetor semântico
+    const embedding = await generateEmbedding(message);
+
+    // 2. Passa o vetor gerado para o banco
     const { data, error } = await supabase.rpc('get_relevant_memories', {
       p_user_id:  userId,
-      p_query:    message,
+      p_query:    embedding, 
       p_limit:    limit,
       p_min_score: minScore,
     });
