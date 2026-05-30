@@ -128,10 +128,11 @@ export async function reinforceMemory(
   memoryId: string,
 ): Promise<void> {
   try {
-    // Lê o score atual para aplicar o incremento com teto
+    // CORREÇÃO 1: Lendo da tabela 'memories' (onde os contextos consolidados vivem)
+    // CORREÇÃO 2: Buscando relevance_score e access_count direto da raiz
     const { data: current, error: readError } = await supabase
-      .from('brain')
-      .select('id, metadata')
+      .from('memories')
+      .select('id, relevance_score, access_count')
       .eq('id', memoryId)
       .eq('user_id', userId)
       .maybeSingle();
@@ -142,21 +143,21 @@ export async function reinforceMemory(
     }
 
     if (!current) {
-      console.warn(`[memory.service] Memória ${memoryId} não encontrada para userId ${userId}`);
+      console.warn(`[memory.service] Memória ${memoryId} não encontrada na tabela 'memories' para userId ${userId}`);
       return;
     }
 
-    const prevScore: number = current.metadata?.relevance_score ?? 0;
+    const prevScore: number = current.relevance_score ?? 0;
     const newScore = Math.min(prevScore + REINFORCE_INCREMENT, REINFORCE_MAX);
+    const newAccessCount = (current.access_count ?? 0) + 1; // Incrementa o uso histórico
 
+    // CORREÇÃO 1: Atualizando a tabela 'memories'
     const { error: updateError } = await supabase
-      .from('brain')
+      .from('memories')
       .update({
         last_accessed_at: new Date().toISOString(),
-        metadata: {
-          ...current.metadata,
-          relevance_score: newScore,
-        },
+        relevance_score: newScore,
+        access_count: newAccessCount
       })
       .eq('id', memoryId)
       .eq('user_id', userId);
@@ -166,7 +167,7 @@ export async function reinforceMemory(
       return;
     }
 
-    console.log(`[memory.service] Memória ${memoryId} reforçada: ${prevScore.toFixed(2)} → ${newScore.toFixed(2)}`);
+    console.log(`[memory.service] Memória ${memoryId} reforçada: ${prevScore.toFixed(2)} → ${newScore.toFixed(2)} (Acessos: ${newAccessCount})`);
 
   } catch (err) {
     // Absorve qualquer erro inesperado — nunca deve quebrar o pipeline principal
