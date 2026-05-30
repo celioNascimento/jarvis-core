@@ -229,7 +229,10 @@ export async function buildChatPrompt(
 
   // ── Contexto temporal e geográfico ───────────────────────────────────────
   const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-  const dataHoraSP = nowSP.toLocaleString('pt-BR');
+  const dataHoraSP = nowSP.toLocaleString('pt-BR', {
+    weekday: 'long', day: 'numeric', month: 'long',
+    year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
   const geoBlock = buildGeoBlock(resolvedLocation);
 
   console.log('[PROMPT GEO]', {
