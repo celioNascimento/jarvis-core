@@ -1,8 +1,23 @@
 // app/api/history/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/jarvis';
+import { decrypt } from '@/lib/crypto-utils';
 
 const PAGE_SIZE = 15;
+
+function safeDecrypt(value: string): string {
+  if (!value) return value;
+  const parts = value.split(':');
+  if (parts.length !== 3) return value;
+  const [iv, authTag, ciphertext] = parts;
+  // IV = 12 bytes = 24 hex | authTag = 16 bytes = 32 hex
+  if (iv.length !== 24 || authTag.length !== 32 || ciphertext.length === 0) return value;
+  try {
+    return decrypt(value);
+  } catch {
+    return value;
+  }
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -32,7 +47,7 @@ export async function GET(req: NextRequest) {
 
     let query = supabase
       .from('brain')
-      .select('id, content, metadata, created_at', { count: 'exact' })
+      .select('id, content, metadata, created_at, is_encrypted', { count: 'exact' })
       .eq('user_id', userId_)
       .neq('category', 'archived')
       .order('created_at', { ascending: false })
@@ -67,8 +82,22 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Erro ao buscar histórico' }, { status: 500 });
     }
 
-    const messages = (data || []).reverse();
-    const hasMore  = (count || 0) > (page + 1) * PAGE_SIZE;
+    // Descriptografa content e metadata.ai_reply antes de entregar ao app
+    const messages = (data || []).reverse().map((row) => {
+      const content = row.is_encrypted ? safeDecrypt(row.content) : row.content;
+
+      let metadata = row.metadata;
+      if (metadata?.ai_reply) {
+        metadata = {
+          ...metadata,
+          ai_reply: safeDecrypt(metadata.ai_reply),
+        };
+      }
+
+      return { ...row, content, metadata };
+    });
+
+    const hasMore = (count || 0) > (page + 1) * PAGE_SIZE;
 
     return NextResponse.json({ messages, hasMore, total: count, resolvedSessionId });
 
