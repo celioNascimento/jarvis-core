@@ -10,6 +10,7 @@ import type { ChatRequestContext, LocalMessage } from './request-context';
 import { ContextCache, invalidateSessionHistory } from '@/lib/services/context-cache';
 import { reinforceMemory } from '@/lib/services/memory.service';
 import { loadMemoriesForContext, type MemoriesLoadResult, type MemoryRecord } from '@/lib/data/memories.data';
+import { decrypt } from '@/lib/crypto-utils';
 
 const MAX_MSG_CHARS = 800;
 
@@ -138,6 +139,15 @@ function buildRecentHistoryFromLocal(localHistory: LocalMessage[]): HistoryMessa
     .map(msg => ({ role: msg.role, content: msg.content.slice(0, MAX_MSG_CHARS) }));
 }
 
+function safeDecrypt(value: string): string {
+  if (!value || !value.includes(':')) return value;
+  try {
+    return decrypt(value);
+  } catch {
+    return value;
+  }
+}
+
 function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
   if (!Array.isArray(rawHistory)) {
     console.warn('[History][Reconcile] rawHistory não é um array válido, retornando vazio');
@@ -146,8 +156,9 @@ function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
 
   const history: HistoryMessage[] = [];
   for (const row of rawHistory) {
-    const uMsg = (row.content || '').trim();
-    const aRep = (row.metadata?.ai_reply || '').trim();
+    const uMsg = safeDecrypt(row.content || '').trim();
+    const aRep = safeDecrypt(row.metadata?.ai_reply || '').trim();
+
     if (uMsg.length > 2) history.push({ role: 'user', content: uMsg.slice(0, MAX_MSG_CHARS) });
     if (aRep.length > 2) history.push({ role: 'assistant', content: aRep.slice(0, MAX_MSG_CHARS) });
   }
