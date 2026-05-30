@@ -97,18 +97,22 @@ const TOP_EMOTIONAL_LIMIT = 3;
 export async function loadMemoriesForContext(
   userId: number,
   message: string,
-  limit    = 5,
+  limit = 5,
   minScore = 0.3,
 ): Promise<MemoriesLoadResult> {
   try {
-    // 1. Converte o texto em vetor semântico
     const embedding = await generateEmbedding(message);
 
-    // 2. Passa o vetor gerado para o banco
+    // Trava de Segurança Crítica: Protege o banco de dados contra vetores nulos
+    if (!embedding) {
+      console.warn('[memories.data] Embedding retornou null. Abortando busca semântica.');
+      return { memories: [], topEmotional: [] };
+    }
+
     const { data, error } = await supabase.rpc('get_relevant_memories', {
-      p_user_id:  userId,
-      p_query:    embedding, 
-      p_limit:    limit,
+      p_user_id: userId,
+      p_query: embedding,
+      p_limit: limit,
       p_min_score: minScore,
     });
 
@@ -121,19 +125,17 @@ export async function loadMemoriesForContext(
       return { memories: [], topEmotional: [] };
     }
 
-    // Mapeia os campos da RPC para MemoryRecord
     const memories: MemoryRecord[] = data.map((row: any) => ({
-      id:              row.id,
-      summary:         row.content ?? row.summary ?? '',
-      category:        row.category ?? 'info',
+      id: row.id,
+      summary: row.content ?? row.summary ?? '',
+      category: row.category ?? 'info',
       emotional_weight: row.emotional_score ?? row.emotional_weight ?? 0,
-      effective_score:  row.effective_score  ?? undefined,
-      created_at:       row.created_at       ?? undefined,
+      effective_score: row.effective_score ?? undefined,
+      created_at: row.created_at ?? undefined,
       last_accessed_at: row.last_accessed_at ?? undefined,
-      metadata:         row.metadata         ?? undefined,
+      metadata: row.metadata ?? undefined,
     }));
 
-    // Separa as de alto peso emocional que não estão nas semânticas
     const semanticIds = new Set(memories.map(m => m.id));
 
     const topEmotional: MemoryRecord[] = data
@@ -143,16 +145,14 @@ export async function loadMemoriesForContext(
       )
       .slice(0, TOP_EMOTIONAL_LIMIT)
       .map((row: any) => ({
-        id:               row.id,
-        summary:          row.content ?? row.summary ?? '',
-        category:         row.category ?? 'info',
+        id: row.id,
+        summary: row.content ?? row.summary ?? '',
+        category: row.category ?? 'info',
         emotional_weight: row.emotional_score ?? row.emotional_weight ?? 0,
-        created_at:       row.created_at       ?? undefined,
+        created_at: row.created_at ?? undefined,
         last_accessed_at: row.last_accessed_at ?? undefined,
-        metadata:         row.metadata         ?? undefined,
+        metadata: row.metadata ?? undefined,
       }));
-
-    console.log(`[memories.data] Carregadas: ${memories.length} semânticas, ${topEmotional.length} emocionais`);
 
     return { memories, topEmotional };
 

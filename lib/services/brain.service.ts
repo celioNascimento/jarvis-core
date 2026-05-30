@@ -1,7 +1,7 @@
 // lib/services/brain.service.ts
-// Fonte única da verdade para a tabela jarvis.brain (Com Criptografia e Índice Cego)
 
 import { supabase } from '@/lib/jarvis';
+import { generateEmbedding } from '@/lib/memory/generate-embedding';
 import { encrypt, decrypt, hashBlindIndex } from '@/lib/crypto-utils';
 import { invalidateContextField } from '@/lib/services/context-cache';
 
@@ -13,13 +13,9 @@ export interface BrainInsertInput {
   sessionId?: string;
   emotionalScore?: number;
   priorityScore?: number;
-  tags?: string[]; // Tags extras para o Índice Cego
+  tags?: string[];
 }
 
-/**
- * Insere um novo desabafo, log ou nota no Brain do usuário.
- * O conteúdo é criptografado em AES-256-GCM antes de ir para o banco.
- */
 export async function insertBrainEntry(input: BrainInsertInput) {
   const {
     userId,
@@ -32,13 +28,13 @@ export async function insertBrainEntry(input: BrainInsertInput) {
     tags = [],
   } = input;
 
-  // 1. Gera o embedding a partir do texto puro
+  // 1. Gera o embedding (pode retornar null sem quebrar)
   const embedding = await generateEmbedding(content);
 
   // 2. Criptografa o conteúdo íntimo
   const encryptedContent = encrypt(content);
 
-  // 3. Monta o Índice Cego (Hash) com as tags, categoria e projeto
+  // 3. Monta o Índice Cego (Hash)
   const rawTags = [...tags, category, projectTag];
   const blindTags = rawTags.map(tag => hashBlindIndex(tag));
 
@@ -46,10 +42,10 @@ export async function insertBrainEntry(input: BrainInsertInput) {
     .from('brain')
     .insert({
       user_id: userId,
-      content: encryptedContent, // Dado ininteligível
-      is_encrypted: true,        // Flag ativada
-      blind_tags: blindTags,     // Array de hashes para busca segura
-      embedding,                 // Vetor semântico
+      content: encryptedContent,
+      is_encrypted: true,
+      blind_tags: blindTags,
+      embedding: embedding || null, // Salva null pacificamente se falhar
       project_tag: projectTag,
       category,
       session_id: sessionId,
@@ -64,10 +60,6 @@ export async function insertBrainEntry(input: BrainInsertInput) {
   return data;
 }
 
-/**
- * Busca as entradas recentes do Brain de um usuário.
- * Descriptografa automaticamente o conteúdo se a flag estiver ativada.
- */
 export async function getRecentBrainEntries(userId: number, limit = 10) {
   const { data, error } = await supabase
     .from('brain')
@@ -79,16 +71,12 @@ export async function getRecentBrainEntries(userId: number, limit = 10) {
 
   if (error) throw new Error(`Erro ao buscar brain: ${error.message}`);
 
-  // Retorna os dados com o texto descriptografado para o Lev ler
   return (data ?? []).map(row => ({
     ...row,
     content: row.is_encrypted ? decrypt(row.content) : row.content
   }));
 }
 
-/**
- * Marca uma entrada do brain como resolvida ou arquivada.
- */
 export async function resolveBrainEntry(entryId: string) {
   const { error } = await supabase
     .from('brain')
@@ -97,23 +85,4 @@ export async function resolveBrainEntry(entryId: string) {
 
   if (error) throw new Error(`Erro ao resolver nota do brain: ${error.message}`);
   return true;
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-async function generateEmbedding(text: string): Promise<number[]> {
-  const response = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'text-embedding-3-small',
-      input: text,
-    }),
-  });
-
-  const data = await response.json();
-  return data.data[0].embedding;
 }
