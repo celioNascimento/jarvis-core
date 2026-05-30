@@ -14,7 +14,7 @@ const MAX_INPUT_CHARS = 8000;
 
 /**
  * Transforma texto em vetor numérico de 1536 dimensões.
- * Retorna null em caso de falha — nunca lança exceção.
+ * Retorna null em caso de falha — nunca lança exceção (Mantém compatibilidade com legado).
  */
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   if (!text?.trim()) return null;
@@ -23,7 +23,8 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-    console.log('[Embedding] Gerando para:', text.slice(0, 60) + (text.length > 60 ? '...' : ''));
+    // 🔒 Correção de Segurança: Log cego, não exibe mais o texto do usuário
+    console.log(`[Embedding] Gerando vetor semântico [Input: ${text.length} caracteres]`);
 
     const res = await fetch('https://openrouter.ai/api/v1/embeddings', {
       method: 'POST',
@@ -50,7 +51,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
     const embedding = json.data?.[0]?.embedding;
 
     if (!Array.isArray(embedding) || embedding.length === 0) {
-      console.error('[Embedding] Resposta inválida:', JSON.stringify(json).slice(0, 200));
+      console.error('[Embedding] Resposta inválida (vetor vazio).');
       return null;
     }
 
@@ -59,7 +60,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
     if (e?.name === 'AbortError') {
       console.error(`[Embedding] Timeout após ${TIMEOUT_MS}ms`);
     } else {
-      console.error('[Embedding] Falha:', e?.message || e);
+      console.error('[Embedding] Falha silenciosa capturada:', e?.message || e);
     }
     return null;
   }
