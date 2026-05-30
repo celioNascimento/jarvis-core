@@ -42,7 +42,7 @@ export async function insertBrainEntry(input: BrainInsertInput) {
       session_id: sessionId,
       emotional_score: emotionalScore,
       priority_score: priorityScore,
-      metadata, // ← ADICIONADO AQUI
+      metadata: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null,
     })
     .select('id')
     .single();
