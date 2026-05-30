@@ -19,16 +19,29 @@ export interface BrainInsertInput {
 
 export async function insertBrainEntry(input: BrainInsertInput) {
   const {
-    userId, content, projectTag = 'geral', category = 'info',
-    sessionId, emotionalScore, priorityScore = 3, tags = [],
-    metadata = {} // ← ADICIONADO AQUI
+    userId,
+    content,
+    projectTag = 'geral',
+    category = 'info',
+    sessionId,
+    emotionalScore,
+    priorityScore = 3,
+    tags = [],
+    metadata = {}
   } = input;
 
+  console.log('[BrainService] 1. Gerando embedding...');
   const embedding = await generateEmbedding(content);
+
+  console.log('[BrainService] 2. Criptografando conteúdo...');
   const encryptedContent = encrypt(content);
+
+  console.log('[BrainService] 3. Montando Índice Cego...');
   const rawTags = [...tags, category, projectTag];
   const blindTags = rawTags.map(tag => hashBlindIndex(tag));
 
+  console.log('[BrainService] 4. Enviando transação ao Supabase...');
+  
   const { data, error } = await supabase
     .from('brain')
     .insert({
@@ -42,12 +55,18 @@ export async function insertBrainEntry(input: BrainInsertInput) {
       session_id: sessionId,
       emotional_score: emotionalScore,
       priority_score: priorityScore,
-      metadata: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null,
+      metadata: metadata, // ← Objeto puro (Supabase serializa automaticamente para JSONB)
     })
     .select('id')
     .single();
 
-  if (error) throw new Error(`Falha ao inserir no brain: ${error.message}`);
+  if (error) {
+    // Esse log vermelho VAI aparecer se o banco rejeitar
+    console.error('[BrainService] ❌ ERRO FATAL DO SUPABASE:', error);
+    throw new Error(`Falha ao inserir no brain: ${error.message}`);
+  }
+
+  console.log('[BrainService] ✅ Inserção confirmada. ID:', data?.id);
   return data;
 }
 
