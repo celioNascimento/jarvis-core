@@ -18,14 +18,14 @@ export interface BrainInsertInput {
   content: string;
   projectTag?: string;
   category?:
-    | 'Nota'
-    | 'Dúvida'
-    | 'Log_Tecnico'
-    | 'Ideia_Estacionada'
-    | 'Documentacao'
-    | 'info'
-    | 'noise'
-    | 'archived';
+  | 'Nota'
+  | 'Dúvida'
+  | 'Log_Tecnico'
+  | 'Ideia_Estacionada'
+  | 'Documentacao'
+  | 'info'
+  | 'noise'
+  | 'archived';
   sessionId?: string;
   emotionalScore?: number;
   priorityScore?: number;
@@ -98,6 +98,12 @@ export async function insertBrainEntry(input: BrainInsertInput) {
   const blindTags = rawTags.map((tag) => hashBlindIndex(tag));
   console.log('[BrainService] 3. ✅ blindTags:', blindTags.length, 'entradas');
 
+  // Criptografa ai_reply dentro do metadata se existir
+  const safeMetadata = { ...metadata };
+  if (safeMetadata.ai_reply && typeof safeMetadata.ai_reply === 'string') {
+    safeMetadata.ai_reply = encrypt(safeMetadata.ai_reply);
+  }
+
   // 4. Insert no Supabase
   console.log('[BrainService] 4. Enviando para Supabase...');
   const { data, error } = await supabase
@@ -113,7 +119,7 @@ export async function insertBrainEntry(input: BrainInsertInput) {
       session_id: sessionId ?? null,
       emotional_score: emotionalScore ?? null,
       priority_score: priorityScore,
-      metadata,
+      metadata: safeMetadata,
     })
     .select('id')
     .single();
