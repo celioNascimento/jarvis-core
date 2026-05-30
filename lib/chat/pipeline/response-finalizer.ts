@@ -16,7 +16,7 @@ import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './types';
 import { extractReminder, hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
 import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
-import { invalidateMasterContextCache } from '@/lib/chat/pipeline/intelligence';
+import { after } from 'next/server';
 
 // A Mágica da Criptografia (Fonte Única da Verdade para a tabela brain)
 import { insertBrainEntry } from '@/lib/services/brain.service';
@@ -117,9 +117,6 @@ export async function finalizeResponse(
         }
       });
 
-      // Invalida o cache para o próximo turno ler o histórico atualizado
-      await invalidateMasterContextCache(ctx.user.id, ctx.sessionId);
-
       console.log('[ResponseFinalizer] ✅ Inserção cifrada concluída com sucesso.');
     } catch (e: any) {
       console.error('[ResponseFinalizer] Brain save error:', e);
@@ -157,11 +154,11 @@ export async function finalizeResponse(
   };
 
   // ⏩ Tratamento robusto da promise para o contexto Edge/Vercel
-  const bgPromise = backgroundTasks().catch(err => console.error('[BackgroundTasks] Erro fatal:', err));
-
-  if ('waitUntil' in (req as any)) {
-    (req as any).waitUntil?.(bgPromise);
-  }
+  after(async () => {
+    await backgroundTasks().catch(err =>
+      console.error('[BackgroundTasks] Erro fatal:', err)
+    );
+  });
 
   // 4. ✅ Responde IMEDIATAMENTE ao usuário — sem delay
   return NextResponse.json({
