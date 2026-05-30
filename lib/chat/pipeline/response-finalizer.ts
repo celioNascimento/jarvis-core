@@ -50,7 +50,7 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
         body: JSON.stringify({
           text: cleanText,
           model_id: 'eleven_multilingual_v2',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75 },        
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
         }),
       });
 
@@ -84,14 +84,14 @@ export async function finalizeResponse(
   req: NextRequest // ← necessário para waitUntil
 ): Promise<NextResponse> {
   // 1. Cache da resposta (rápido)
-  await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => {});
+  await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => { });
 
   // 2. Gera áudio se solicitado
   const audioBase64 = ctx.speak && ctx.voiceSettings
     ? await generateTTS(reply, ctx.voiceSettings.provider, ctx.voiceSettings.voiceId)
     : null;
 
-  // 3. Define tarefas em background — NÃO usa await!
+  // 3. Define tarefas em background — NÃO usa await bloqueante!
   const backgroundTasks = async () => {
     try {
       await detectImplicitNegativeFeedback(ctx.message, ctx.user.id);
@@ -100,20 +100,26 @@ export async function finalizeResponse(
     }
 
     try {
-      console.log('[ResponseFinalizer] 🚀 Disparando insertBrainEntry (Versão Criptografada)');
-      
-      // Usando o novo Service Criptografado com type-cast defensivo
+      console.log('[ResponseFinalizer] 🚀 Disparando insertBrainEntry (Versão Criptografada + Metadata)');
+
+      // Usando o novo Service Criptografado com type-cast defensivo e metadata restaurado
       await insertBrainEntry({
-        userId: Number(ctx.user.id), 
+        userId: Number(ctx.user.id),
         sessionId: ctx.sessionId,
         content: ctx.message,
         category: ctx.message.length < 15 ? 'noise' : 'info',
-        tags: intel.contexts as string[]
+        tags: intel.contexts as string[],
+        metadata: {
+          role: 'user',
+          model: 'google/gemini-2.0-flash-001',
+          ai_reply: reply,
+          contexts: intel.contexts
+        }
       });
 
       // Invalida o cache para o próximo turno ler o histórico atualizado
       await invalidateMasterContextCache(ctx.user.id, ctx.sessionId);
-      
+
       console.log('[ResponseFinalizer] ✅ Inserção cifrada concluída com sucesso.');
     } catch (e: any) {
       console.error('[ResponseFinalizer] Brain save error:', e);
@@ -152,7 +158,7 @@ export async function finalizeResponse(
 
   // ⏩ Tratamento robusto da promise para o contexto Edge/Vercel
   const bgPromise = backgroundTasks().catch(err => console.error('[BackgroundTasks] Erro fatal:', err));
-  
+
   if ('waitUntil' in (req as any)) {
     (req as any).waitUntil?.(bgPromise);
   }

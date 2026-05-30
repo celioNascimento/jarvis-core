@@ -14,27 +14,18 @@ export interface BrainInsertInput {
   emotionalScore?: number;
   priorityScore?: number;
   tags?: string[];
+  metadata?: Record<string, any>; // ← ADICIONADO AQUI
 }
 
 export async function insertBrainEntry(input: BrainInsertInput) {
   const {
-    userId,
-    content,
-    projectTag = 'geral',
-    category = 'info',
-    sessionId,
-    emotionalScore,
-    priorityScore = 3,
-    tags = [],
+    userId, content, projectTag = 'geral', category = 'info',
+    sessionId, emotionalScore, priorityScore = 3, tags = [],
+    metadata = {} // ← ADICIONADO AQUI
   } = input;
 
-  // 1. Gera o embedding (pode retornar null sem quebrar)
   const embedding = await generateEmbedding(content);
-
-  // 2. Criptografa o conteúdo íntimo
   const encryptedContent = encrypt(content);
-
-  // 3. Monta o Índice Cego (Hash)
   const rawTags = [...tags, category, projectTag];
   const blindTags = rawTags.map(tag => hashBlindIndex(tag));
 
@@ -45,18 +36,18 @@ export async function insertBrainEntry(input: BrainInsertInput) {
       content: encryptedContent,
       is_encrypted: true,
       blind_tags: blindTags,
-      embedding: embedding || null, // Salva null pacificamente se falhar
+      embedding: embedding || null,
       project_tag: projectTag,
       category,
       session_id: sessionId,
       emotional_score: emotionalScore,
       priority_score: priorityScore,
+      metadata, // ← ADICIONADO AQUI
     })
     .select('id')
     .single();
 
   if (error) throw new Error(`Falha ao inserir no brain: ${error.message}`);
-
   return data;
 }
 
