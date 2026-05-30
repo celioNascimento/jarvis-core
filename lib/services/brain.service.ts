@@ -4,7 +4,7 @@
 //   1. generateEmbedding com timeout e fallback gracioso (não bloqueia inserção)
 //   2. invalidateContextField após inserção confirmada (cache history atualizado)
 //   3. Logging detalhado em cada etapa para rastrear onde falha
-//   4. Schema explícito '.schema("jarvis")' em todas as queries
+//   (schema jarvis já está configurado no cliente supabase de @/lib/jarvis)
 
 import { supabase } from '@/lib/jarvis';
 import { generateEmbedding } from '@/lib/memory/generate-embedding';
@@ -98,10 +98,9 @@ export async function insertBrainEntry(input: BrainInsertInput) {
   const blindTags = rawTags.map((tag) => hashBlindIndex(tag));
   console.log('[BrainService] 3. ✅ blindTags:', blindTags.length, 'entradas');
 
-  // 4. Insert no Supabase (schema explícito obrigatório)
-  console.log('[BrainService] 4. Enviando para Supabase (schema: jarvis)...');
+  // 4. Insert no Supabase
+  console.log('[BrainService] 4. Enviando para Supabase...');
   const { data, error } = await supabase
-    .schema('jarvis')
     .from('brain')
     .insert({
       user_id: userId,
@@ -141,7 +140,6 @@ export async function insertBrainEntry(input: BrainInsertInput) {
 
 export async function getRecentBrainEntries(userId: number, limit = 10) {
   const { data, error } = await supabase
-    .schema('jarvis')
     .from('brain')
     .select('id, content, category, project_tag, created_at, is_encrypted')
     .eq('user_id', userId)
@@ -161,7 +159,6 @@ export async function getRecentBrainEntries(userId: number, limit = 10) {
 
 export async function resolveBrainEntry(entryId: string) {
   const { error } = await supabase
-    .schema('jarvis')
     .from('brain')
     .update({ is_resolved: true, context_status: 'Concluído' })
     .eq('id', entryId);
