@@ -142,13 +142,11 @@ function buildRecentHistoryFromLocal(localHistory: LocalMessage[]): HistoryMessa
 function safeDecrypt(value: string): string {
   if (!value) return value;
 
-  // Formato esperado: "hex:hex:hex" com 3 partes
   const parts = value.split(':');
-  if (parts.length !== 3) return value; // texto plano, não tenta
+  if (parts.length !== 3) return value;
 
   const [iv, authTag, ciphertext] = parts;
-
-  // IV = 12 bytes = 24 hex chars | authTag = 16 bytes = 32 hex chars
+  // IV = 12 bytes = 24 hex | authTag = 16 bytes = 32 hex
   if (iv.length !== 24 || authTag.length !== 32 || ciphertext.length === 0) return value;
 
   try {
