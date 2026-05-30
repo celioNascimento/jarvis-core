@@ -18,7 +18,7 @@ export const supabase = createClient(
 if (process.env.NODE_ENV !== 'production') {
   const _from = supabase.from.bind(supabase);
   (supabase as any).from = (table: string) => {
-    const stack = new Error().stack?.split('\n')[2]?.trim() ?? '';
+    const stack = new Error().stack?.split('\n')[2]?.trim() ?? '';  
     console.log(`[DB] .from('${table}') → ${stack}`);
     return _from(table);
   };
