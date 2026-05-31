@@ -1,11 +1,9 @@
 // lib/google.ts
-import { supabase } from './jarvis';
 
-// Dentro de lib/google.ts
+import { supabase } from './jarvis';
 
 // --- 1. AUTENTICAÇÃO ---
 export async function getGoogleAccessToken() {
-  // ✅ CORREÇÃO: maybeSingle()
   const { data } = await supabase
     .from('config')
     .select('value')
@@ -20,20 +18,16 @@ export async function getGoogleAccessToken() {
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ 
-      client_id:     process.env.GOOGLE_CLIENT_ID, 
-      client_secret: process.env.GOOGLE_CLIENT_SECRET, 
-      refresh_token: data.value, 
-      grant_type:    'refresh_token' 
+    body: JSON.stringify({
+      client_id:     process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+      refresh_token: data.value,
+      grant_type:    'refresh_token',
     }),
   });
-  
+
   const json = await res.json();
-
-  if (json.error === 'invalid_grant') {
-    throw new Error('GOOGLE_AUTH_EXPIRED');
-  }
-
+  if (json.error === 'invalid_grant') throw new Error('GOOGLE_AUTH_EXPIRED');
   if (json.error) {
     console.error('[Google] Erro na renovação:', json.error, json.error_description);
     return null;
@@ -42,51 +36,122 @@ export async function getGoogleAccessToken() {
   return json.access_token || null;
 }
 
-
-
 // --- 2. BUSCA NA WEB (SERPER.DEV) ---
-export async function searchWeb(query: string) {
-  try {
-    const apiKey = process.env.SERPER_API_KEY;
-    if (!apiKey) return "Erro: Chave Serper ausente no .env";
 
-    const res = await fetch("https://google.serper.dev/search", {
-      method: "POST",
-      headers: {
-        "X-API-KEY": apiKey,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ q: query, gl: "br", hl: "pt-br" })
+/**
+ * Busca esportiva estruturada via Serper /sports.
+ * Retorna eventos com times, placar e horário — não links.
+ */
+async function searchSports(query: string): Promise<string | null> {
+  const apiKey = process.env.SERPER_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, gl: 'br', hl: 'pt-br', type: 'sports' }),
     });
 
     const data = await res.json();
-    if (!data.organic?.length) return "Nenhum resultado preciso encontrado.";
 
-    return data.organic.slice(0, 3).map((item: any) => 
-      `Título: ${item.title}\nLink: ${item.link}\nResumo: ${item.snippet}`
+    // Serper /sports retorna sportsResults com jogos estruturados
+    const jogos = data.sportsResults?.games;
+    if (jogos?.length) {
+      return jogos.map((g: any) => {
+        const status = g.status || '';
+        const time   = g.time   || '';
+        const home   = g.teams?.[0];
+        const away   = g.teams?.[1];
+        if (!home || !away) return null;
+
+        const placarHome = home.score ?? '-';
+        const placarAway = away.score ?? '-';
+        const info = status || time;
+
+        return `⚽ ${home.name} ${placarHome} x ${placarAway} ${away.name}${info ? ` (${info})` : ''}`;
+      }).filter(Boolean).join('\n');
+    }
+
+    // Fallback: se não tiver sportsResults, tenta answerBox (caixa de resposta direta)
+    if (data.answerBox?.answer) return data.answerBox.answer;
+    if (data.answerBox?.snippet) return data.answerBox.snippet;
+
+    return null;
+  } catch (err) {
+    console.error('[Serper/sports] Erro:', err);
+    return null;
+  }
+}
+
+/**
+ * Detecta se a query é sobre esportes para usar o endpoint especializado.
+ */
+function isQueryEsportiva(query: string): boolean {
+  return /jogo|placar|futebol|champions|brasileir|premier|la liga|serie a|tabela|classifica|rodada|partida|esporte|resultado/i.test(query);
+}
+
+/**
+ * Busca web genérica via Serper /search.
+ * Retorna snippets textuais — melhor para notícias, preços, clima etc.
+ */
+async function searchGeneric(query: string): Promise<string> {
+  const apiKey = process.env.SERPER_API_KEY;
+  if (!apiKey) return 'Erro: Chave Serper ausente no .env';
+
+  try {
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, gl: 'br', hl: 'pt-br' }),
+    });
+
+    const data = await res.json();
+
+    // answerBox tem a resposta direta quando disponível (ex: "quem é o presidente do brasil")
+    if (data.answerBox?.answer)  return data.answerBox.answer;
+    if (data.answerBox?.snippet) return data.answerBox.snippet;
+
+    if (!data.organic?.length) return 'Nenhum resultado encontrado.';
+
+    return data.organic.slice(0, 4).map((item: any) =>
+      `${item.title}\n${item.snippet}`
     ).join('\n\n');
   } catch (err) {
     console.error('[Serper] Exceção:', err);
-    return "Erro ao realizar busca na web.";
+    return 'Erro ao realizar busca na web.';
   }
+}
+
+/**
+ * Entrypoint principal de busca web.
+ * Roteia para /sports ou /search baseado no conteúdo da query.
+ */
+export async function searchWeb(query: string): Promise<string> {
+  if (isQueryEsportiva(query)) {
+    const sportsResult = await searchSports(query);
+    if (sportsResult) return sportsResult;
+    // Se /sports não trouxe dados estruturados, cai no genérico
+  }
+  return searchGeneric(query);
 }
 
 // --- 3. CLIMA PRECISO (OPEN-METEO) ---
 export async function getWeatherForecast(lat: number = -23.2701, lng: number = -51.2044) {
   try {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=America%2FSao_Paulo&forecast_days=5`;
-    
-    const res = await fetch(url);
+
+    const res  = await fetch(url);
     const data = await res.json();
 
-    if (!data.daily) return "Não foi possível obter dados meteorológicos.";
+    if (!data.daily) return 'Não foi possível obter dados meteorológicos.';
 
-    return data.daily.time.map((date: string, i: number) => {
-      return `- ${date}: Máx ${data.daily.temperature_2m_max[i]}°C, Mín ${data.daily.temperature_2m_min[i]}°C (Código: ${data.daily.weathercode[i]})`;
-    }).join('\n');
+    return data.daily.time.map((date: string, i: number) =>
+      `- ${date}: Máx ${data.daily.temperature_2m_max[i]}°C, Mín ${data.daily.temperature_2m_min[i]}°C (Código: ${data.daily.weathercode[i]})`
+    ).join('\n');
   } catch (err) {
     console.error('[Weather] Erro:', err);
-    return "Erro ao processar previsão do tempo.";
+    return 'Erro ao processar previsão do tempo.';
   }
 }
 
@@ -94,16 +159,16 @@ export async function getWeatherForecast(lat: number = -23.2701, lng: number = -
 export async function getGoogleContext() {
   try {
     const token = await getGoogleAccessToken();
-    if (!token) return "Erro ao recuperar agenda do Google.";
+    if (!token) return 'Erro ao recuperar agenda do Google.';
 
     const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=5&timeMin=${new Date().toISOString()}&singleEvents=true&orderBy=startTime`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const res  = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     const data = await res.json();
 
-    if (data.error) return "Erro na API Calendar.";
-    return data.items?.map((e: any) => `- ${e.summary} (${e.start.dateTime || e.start.date})`).join('\n') || "Agenda vazia.";
-  } catch (err) {
-    return "Erro ao recuperar agenda.";
+    if (data.error) return 'Erro na API Calendar.';
+    return data.items?.map((e: any) => `- ${e.summary} (${e.start.dateTime || e.start.date})`).join('\n') || 'Agenda vazia.';
+  } catch {
+    return 'Erro ao recuperar agenda.';
   }
 }
 
@@ -111,11 +176,11 @@ export async function getGoogleContext() {
 export async function createGoogleEvent(
   summary: string,
   startTime: string,
-  reminderMinutes: number = 30
+  reminderMinutes: number = 30,
 ): Promise<string> {
   try {
     const token = await getGoogleAccessToken();
-    if (!token) return "Erro: Token do Google ausente.";
+    if (!token) return 'Erro: Token do Google ausente.';
 
     const startIso  = startTime.trim().replace(' ', 'T').substring(0, 19) + '-03:00';
     const startDate = new Date(startIso);
@@ -123,20 +188,20 @@ export async function createGoogleEvent(
     const event = {
       summary,
       start: { dateTime: startDate.toISOString(), timeZone: 'America/Sao_Paulo' },
-      end:   { dateTime: new Date(startDate.getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
-      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
+      end:   { dateTime: new Date(startDate.getTime() + 3_600_000).toISOString(), timeZone: 'America/Sao_Paulo' },
+      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] },
     };
 
     const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(event)
+      body: JSON.stringify(event),
     });
 
-    return res.ok ? `Agendado no Google: ${summary}` : "Falha na API do Google.";
+    return res.ok ? `Agendado no Google: ${summary}` : 'Falha na API do Google.';
   } catch (err) {
     console.error('[Google] Erro ao criar evento:', err);
-    return "Erro interno ao agendar no Google.";
+    return 'Erro interno ao agendar no Google.';
   }
 }
 
@@ -145,19 +210,18 @@ export async function updateGoogleEvent(
   searchTerm: string,
   newSummary: string,
   newStartTime: string,
-  reminderMinutes: number = 30
+  reminderMinutes: number = 30,
 ): Promise<string> {
   try {
     const token = await getGoogleAccessToken();
-    if (!token) return "Erro de token.";
+    if (!token) return 'Erro de token.';
 
     const timeMin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const calRes = await fetch(
+    const calRes  = await fetch(
       `https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${timeMin}&maxResults=1&singleEvents=true&orderBy=startTime`,
-      { headers: { Authorization: `Bearer ${token}` } }
+      { headers: { Authorization: `Bearer ${token}` } },
     );
     const cal = await calRes.json();
-
     if (!cal.items?.length) return `Não achei "${searchTerm}".`;
 
     const eventId  = cal.items[0].id;
@@ -166,8 +230,8 @@ export async function updateGoogleEvent(
     const event = {
       summary: newSummary,
       start: { dateTime: startIso, timeZone: 'America/Sao_Paulo' },
-      end:   { dateTime: new Date(new Date(startIso).getTime() + 3600000).toISOString(), timeZone: 'America/Sao_Paulo' },
-      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] }
+      end:   { dateTime: new Date(new Date(startIso).getTime() + 3_600_000).toISOString(), timeZone: 'America/Sao_Paulo' },
+      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: reminderMinutes }] },
     };
 
     const res = await fetch(
@@ -175,14 +239,14 @@ export async function updateGoogleEvent(
       {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(event)
-      }
+        body: JSON.stringify(event),
+      },
     );
 
-    return res.ok ? `Corrigido: ${newSummary}` : "Falha API Google.";
+    return res.ok ? `Corrigido: ${newSummary}` : 'Falha API Google.';
   } catch (err) {
     console.error('[Google] Erro ao atualizar evento:', err);
-    return "Erro interno ao atualizar.";
+    return 'Erro interno ao atualizar.';
   }
 }
 
@@ -190,26 +254,25 @@ export async function updateGoogleEvent(
 export async function deleteGoogleEvent(searchTerm: string): Promise<string> {
   try {
     const token = await getGoogleAccessToken();
-    if (!token) return "Erro de token.";
+    if (!token) return 'Erro de token.';
 
     const timeMin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const calRes = await fetch(
+    const calRes  = await fetch(
       `https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${encodeURIComponent(searchTerm)}&timeMin=${timeMin}&maxResults=1&singleEvents=true&orderBy=startTime`,
-      { headers: { Authorization: `Bearer ${token}` } }
+      { headers: { Authorization: `Bearer ${token}` } },
     );
     const cal = await calRes.json();
-
     if (!cal.items?.length) return `Não achei "${searchTerm}".`;
 
     const res = await fetch(
       `https://www.googleapis.com/calendar/v3/calendars/primary/events/${cal.items[0].id}`,
-      { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+      { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
     );
 
-    return res.ok ? `Removido: "${searchTerm}".` : "Falha ao apagar.";
+    return res.ok ? `Removido: "${searchTerm}".` : 'Falha ao apagar.';
   } catch (err) {
     console.error('[Google] Erro ao apagar evento:', err);
-    return "Erro interno ao deletar.";
+    return 'Erro interno ao deletar.';
   }
 }
 
@@ -217,19 +280,19 @@ export async function deleteGoogleEvent(searchTerm: string): Promise<string> {
 export async function trashGoogleEmail(messageId: string): Promise<string> {
   try {
     const token = await getGoogleAccessToken();
-    if (!token) return "Erro de token.";
+    if (!token) return 'Erro de token.';
 
     const res = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/trash`,
-      { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+      { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
     );
 
     return res.ok
-      ? `Email enviado para a lixeira com sucesso.`
-      : "Falha ao apagar email. Verifique as permissões.";
+      ? 'Email enviado para a lixeira com sucesso.'
+      : 'Falha ao apagar email. Verifique as permissões.';
   } catch (err) {
     console.error('[Google] Erro ao mover email:', err);
-    return "Erro interno ao apagar email.";
+    return 'Erro interno ao apagar email.';
   }
 }
 
@@ -246,33 +309,28 @@ export async function syncGoogleCalendarToLev(userId: bigint): Promise<boolean> 
     const timeMax = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
     const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&orderBy=startTime`;
-
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const res  = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
 
     if (!res.ok) throw new Error(`Google API falhou com status ${res.status}`);
 
     const data  = await res.json();
     const items = data.items || [];
-
-    if (items.length === 0) return true;
+    if (!items.length) return true;
 
     const payload = items.map((item: any) => {
       const isAllDay = !!item.start.date;
-      const startAt  = item.start.dateTime || `${item.start.date}T00:00:00Z`;
-      const endAt    = item.end.dateTime   || `${item.end.date}T00:00:00Z`;
-
       return {
-        user_id:    userId,
-        title:      item.summary  || 'Evento Sem Título',
-        description:item.description || null,
-        location:   item.location || null,
-        start_at:   startAt,
-        end_at:     endAt,
-        all_day:    isAllDay,
-        source:     'google',
-        external_id:item.id,
-        category:   'personal',
-        synced_at:  new Date().toISOString(),
+        user_id:     userId,
+        title:       item.summary     || 'Evento Sem Título',
+        description: item.description || null,
+        location:    item.location    || null,
+        start_at:    item.start.dateTime || `${item.start.date}T00:00:00Z`,
+        end_at:      item.end.dateTime   || `${item.end.date}T00:00:00Z`,
+        all_day:     isAllDay,
+        source:      'google',
+        external_id: item.id,
+        category:    'personal',
+        synced_at:   new Date().toISOString(),
       };
     });
 
@@ -288,7 +346,6 @@ export async function syncGoogleCalendarToLev(userId: bigint): Promise<boolean> 
 
     console.log(`[Sync] Sucesso: ${payload.length} eventos do Google injetados no Lev.`);
     return true;
-
   } catch (err: any) {
     console.error('[Sync] Erro Crítico:', err.message);
     return false;
