@@ -2,7 +2,6 @@
 //
 // Funções PURAS de formatação — recebem dados, devolvem string.
 // Sem I/O, sem LLM, sem banco. Testáveis unitariamente.
-// Extraídas do prompt-assembler.ts original.
 
 // ── Família ───────────────────────────────────────────────────────────────────
 
@@ -40,7 +39,6 @@ export function buildProfileBlock(profile: any): string {
 
   const lines: string[] = [];
 
-  // 1. Identidade e Gênero
   if (profile.full_name) {
     let nameLine = `Nome Completo: ${profile.full_name}`;
     if (profile.gender) nameLine += ` (Gênero: ${profile.gender})`;
@@ -49,115 +47,113 @@ export function buildProfileBlock(profile: any): string {
     lines.push(`Gênero: ${profile.gender}`);
   }
 
-  // 2. Nascimento e Idade (cálculo imune a timezone)
   if (profile.birth_date || profile.birth_city || profile.birth_state) {
     const location = [profile.birth_city, profile.birth_state].filter(Boolean).join(', ');
     let nascimentoStr = '';
 
     if (profile.birth_date) {
-      // Extrai os valores exatos da string "YYYY-MM-DD" ignorando o fuso horário
       const dateString = profile.birth_date.split('T')[0];
       const [year, month, day] = dateString.split('-');
-
       const birthDateObj = new Date(Number(year), Number(month) - 1, Number(day));
       const today = new Date();
 
-      // Cálculo preciso de idade
       let age = today.getFullYear() - birthDateObj.getFullYear();
       const monthDiff = today.getMonth() - birthDateObj.getMonth();
-      if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDateObj.getDate())) {
-        age--;
-      }
+      if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDateObj.getDate())) age--;
 
       nascimentoStr += `${day}/${month}/${year} (${age} anos)`;
     }
 
-    if (location) {
-      nascimentoStr += nascimentoStr ? ` em ${location}` : location;
-    }
-
+    if (location) nascimentoStr += nascimentoStr ? ` em ${location}` : location;
     lines.push(`Nascimento: ${nascimentoStr}`);
   }
 
-  // 3. Localização Atual
-  if (profile.city || profile.state) {
+  if (profile.city || profile.state)
     lines.push(`Residência Atual: ${[profile.city, profile.state].filter(Boolean).join(', ')}`);
-  }
 
-  // 4. Contato
-  if (profile.whatsapp || profile.phone) {
+  if (profile.whatsapp || profile.phone)
     lines.push(`Contato: ${[profile.whatsapp, profile.phone].filter(Boolean).join(' / ')}`);
-  }
 
-  // 5. Estrutura Familiar Base (Atua como redundância/complemento ao familyBlock)
   const parents = [profile.father_name, profile.mother_name].filter(Boolean);
   if (parents.length > 0 || profile.siblings_count !== null || profile.spouse_name) {
     const familyBase = [];
     if (profile.spouse_name) familyBase.push(`Cônjuge: ${profile.spouse_name}`);
     if (parents.length > 0) familyBase.push(`Pais: ${parents.join(' e ')}`);
-    if (profile.siblings_count !== null && profile.siblings_count !== undefined) familyBase.push(`Irmãos: ${profile.siblings_count}`);
-
-    if (familyBase.length > 0) {
+    if (profile.siblings_count !== null && profile.siblings_count !== undefined)
+      familyBase.push(`Irmãos: ${profile.siblings_count}`);
+    if (familyBase.length > 0)
       lines.push(`Estrutura Familiar Base: ${familyBase.join(' | ')}`);
-    }
   }
 
-  // 6. Crenças e Fé
   if (profile.faith_profile && profile.faith_profile !== 'unknown') {
     let faithStr = `Perfil de Fé: ${profile.faith_profile}`;
     if (profile.faith_notes) faithStr += ` — Notas: ${profile.faith_notes}`;
     lines.push(faithStr);
   }
 
-  // 7. Educação
-  if (profile.education_level || (profile.schools && profile.schools.length > 0)) {
+  if (profile.education_level || profile.schools?.length) {
     let eduStr = `Escolaridade: ${profile.education_level || 'Não informado'}`;
-    if (profile.schools && profile.schools.length > 0) {
-      eduStr += ` (Instituições: ${profile.schools.join(', ')})`;
-    }
+    if (profile.schools?.length) eduStr += ` (Instituições: ${profile.schools.join(', ')})`;
     lines.push(eduStr);
   }
 
-  // 8. Profissão, Cargo Atual e Empresa
   const jobInfo = [profile.profession, profile.current_job, profile.company].filter(Boolean);
   if (jobInfo.length > 0) {
     let jobStr = `Atuação Profissional: ${jobInfo.join(' — ')}`;
-
     if (profile.job_start_date) {
-      const startDateStr = profile.job_start_date.split('T')[0];
-      const [sYear, sMonth, sDay] = startDateStr.split('-');
+      const [sYear, sMonth, sDay] = profile.job_start_date.split('T')[0].split('-');
       jobStr += ` (Desde: ${sDay}/${sMonth}/${sYear})`;
     }
     lines.push(jobStr);
   }
 
-  if (profile.career_notes)
-    lines.push(`Notas de Carreira: ${profile.career_notes}`);
-
-  if (profile.personality_notes)
-    lines.push(`Personalidade: ${profile.personality_notes}`);
+  if (profile.career_notes) lines.push(`Notas de Carreira: ${profile.career_notes}`);
+  if (profile.personality_notes) lines.push(`Personalidade: ${profile.personality_notes}`);
 
   return lines.length ? `[PERFIL PESSOAL]\n${lines.join('\n')}` : '';
 }
 
 // ── Resumo de conversa ────────────────────────────────────────────────────────
+//
+// Mostra as últimas 6 mensagens com marcação clara de "MAIS RECENTE".
+// O separador --- entre turnos mais antigos e recentes ajuda o LLM
+// a entender que o tópico ativo é o das últimas mensagens,
+// não o do início da sessão.
 
 export function buildConversationSummary(
   recentHistory: Array<{ role: string; content: string }>,
   nickname: string,
 ): string {
   if (!recentHistory?.length) return '';
-  return recentHistory
-    .slice(-8)
-    .map(m => {
-      const who = m.role === 'user' ? nickname : 'Lev';
-      return `${who}: ${m.content.slice(0, 200)}`;
-    })
-    .join('\n');
+
+  const msgs = recentHistory.slice(-6);
+  const total = msgs.length;
+
+  // Divide em contexto anterior (mais antigo) e troca atual (mais recente)
+  const older  = msgs.slice(0, Math.max(0, total - 2));
+  const recent = msgs.slice(-2);
+
+  const format = (m: { role: string; content: string }) => {
+    const who = m.role === 'user' ? nickname : 'Lev';
+    return `${who}: ${m.content.slice(0, 200)}`;
+  };
+
+  const parts: string[] = [];
+
+  if (older.length) {
+    parts.push('[HISTÓRICO ANTERIOR — contexto de fundo, não necessariamente o assunto atual]');
+    parts.push(older.map(format).join('\n'));
+  }
+
+  if (recent.length) {
+    parts.push('[TROCA MAIS RECENTE — este é o assunto ativo agora]');
+    parts.push(recent.map(format).join('\n'));
+  }
+
+  return parts.join('\n');
 }
 
 // ── Recomendações ─────────────────────────────────────────────────────────────
-// Movido de extractor-jobs.ts (buildRecommendationsBlock)
 
 export function buildRecommendationsBlock(masterContext: any): string {
   const recs = masterContext?.recommendations || [];
@@ -171,7 +167,6 @@ export function buildRecommendationsBlock(masterContext: any): string {
 }
 
 // ── Tópicos recorrentes ───────────────────────────────────────────────────────
-// Movido de extractor-jobs.ts (buildTopicBlock)
 
 export function buildTopicBlock(masterContext: any): string {
   const topics = masterContext?.topics || [];
@@ -191,7 +186,7 @@ export function filterL3Content(content: string, includeFamily: boolean): string
     .trim();
 }
 
-// ── Tópicos relacionados (formatação inline) ──────────────────────────────────
+// ── Tópicos relacionados ──────────────────────────────────────────────────────
 
 export function buildRelatedTopicsString(masterContext: any): string {
   return (masterContext?.related_topics || [])
