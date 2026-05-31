@@ -1,5 +1,5 @@
 // lib/modules/registry.ts
-// V12.8.0 — Remove RPC redundante, corrige extração de modules do masterContext
+// V12.9.0 — Adiciona ModuloWeb (web_pesquisar sempre ativo)
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -8,44 +8,40 @@ import type { ModuleDefinition, ModuleConditionOpts } from './types';
 import { recordModuleMetricsBatch } from './metrics';
 import { routeModel } from '@/lib/chat/context-classifier';
 
-import { ModuloFinancas } from './modules/financas';
-import { ModuloVeiculos } from './modules/veiculos';
-import { ModuloFoco } from './modules/foco';
-import { ModuloRotinas } from './modules/rotinas';
-import { ModuloAgenda } from './modules/agenda';
-import { ModuloLocalizacao } from './modules/localizacao';
-import { ModuloProjetos } from './modules/projetos';
+import { ModuloFinancas }       from './modules/financas';
+import { ModuloVeiculos }       from './modules/veiculos';
+import { ModuloFoco }           from './modules/foco';
+import { ModuloRotinas }        from './modules/rotinas';
+import { ModuloAgenda }         from './modules/agenda';
+import { ModuloLocalizacao }    from './modules/localizacao';
+import { ModuloProjetos }       from './modules/projetos';
 import { ModuloRelacionamentos } from '../modules/modules/relacionamentos';
-import { ModuloReminders } from './modules/reminders';
-import { ModuloCompras } from './modules/compras';
-import { ModuloClima } from './modules/clima';
-import { ModuloEsportes } from './modules/esportes';
-import { ModuloPersonalidade } from './modules/personalidade';
-import { ModuloDossie } from './modules/dossie';
+import { ModuloReminders }      from './modules/reminders';
+import { ModuloCompras }        from './modules/compras';
+import { ModuloClima }          from './modules/clima';
+import { ModuloEsportes }       from './modules/esportes';
+import { ModuloPersonalidade }  from './modules/personalidade';
+import { ModuloDossie }         from './modules/dossie';
+import { ModuloWeb }            from './modules/web';
 
 const ALL_MODULES = [
   ModuloFinancas, ModuloVeiculos, ModuloFoco, ModuloRotinas, ModuloAgenda,
   ModuloLocalizacao, ModuloProjetos, ModuloRelacionamentos, ModuloReminders,
   ModuloCompras, ModuloClima, ModuloEsportes, ModuloDossie, ModuloPersonalidade,
+  ModuloWeb, // sempre ativo — não depende de enabledIds
 ];
 
 // ── Extrai enabledIds de forma resiliente ────────────────────────────────────
-//
-// O RPC retorna modules como: [{ module_id: 'financas', ... }, ...]
-// O cache Redis pode retornar o mesmo formato ou uma string serializada.
-// Esta função normaliza os dois casos.
 
 function extractEnabledIds(modules: any): string[] {
   if (!modules) return [];
 
-  // Já é array de objetos com module_id (formato do RPC)
   if (Array.isArray(modules) && modules.length > 0 && typeof modules[0] === 'object') {
     const ids = modules.map((m: any) => m.module_id).filter(Boolean);
     console.log('[Registry] modules extraídos do masterContext:', ids);
     return ids;
   }
 
-  // Array de strings (formato legado)
   if (Array.isArray(modules) && modules.length > 0 && typeof modules[0] === 'string') {
     console.log('[Registry] modules já em formato string[]:', modules);
     return modules;
@@ -63,23 +59,22 @@ export async function loadActiveModules(
   const numericUserId = parseInt(String(opts.userId), 10);
   const masterContext = opts.masterContext || {};
 
-  // 1. Extrai apenas do que o RPC trouxe. Se não veio, não existe.
   let enabledIds = extractEnabledIds(masterContext.modules);
 
-  // 2. LOG DE SEGURANÇA: Se o contexto veio vazio, registramos, mas não buscamos no banco.
   if (enabledIds.length === 0) {
     console.warn(`[Registry] masterContext.modules vazio para user ${numericUserId}. Nenhum módulo carregado.`);
   } else {
     console.log('[Registry] enabledIds carregados do masterContext:', enabledIds.length);
   }
 
-  // 3. Execução Controlada de Módulos (Full Scan)
   const results = await Promise.all(ALL_MODULES.map(async mod => {
     const planOrder = ['free', 'personal', 'family', 'family_plus', 'ultra'];
-    if (
-      planOrder.indexOf(userPlan) < planOrder.indexOf(mod.plan) ||
-      !enabledIds.includes(mod.id)
-    ) return null;
+
+    // Módulos com trigger.always ignoram enabledIds — sempre rodam se o plano permitir
+    const planOk = planOrder.indexOf(userPlan) >= planOrder.indexOf(mod.plan);
+    const enabledOk = mod.trigger.always || enabledIds.includes(mod.id);
+
+    if (!planOk || !enabledOk) return null;
 
     const { trigger } = mod;
     let activated = trigger.always || false;
@@ -109,7 +104,6 @@ export async function loadActiveModules(
 
   const validResults = results.filter(Boolean) as { block: string; tools: string[]; metric: any }[];
 
-  // 1 insert no lugar de N
   waitUntil(
     recordModuleMetricsBatch(numericUserId, validResults.map(r => r.metric))
       .catch(e => console.error('[Metrics Batch Error]', e))
