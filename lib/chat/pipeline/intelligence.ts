@@ -1,5 +1,5 @@
 // lib/chat/pipeline/intelligence.ts
-// V16.0 - Integração de Memories ao MasterContext
+// V17.0 - Embedding reativado para perguntas de memória + gate atualizado
 
 import { supabase } from '@/lib/jarvis';
 import { classifyContextWithL4, type ContextType } from '@/lib/chat/context-classifier';
@@ -16,6 +16,9 @@ const MAX_MSG_CHARS = 800;
 
 // Padrão de ruído para economia de processamento (Noise Detection)
 const NOISE_REGEX = /^(ok|oi|olá|sim|não|nao|faz|claro|certo|blz|vlw|valeu|obrigad|show|ótimo|otimo|perfeito|legal|bom dia|boa tarde|boa noite|pode|vai|vamos|tá|ta|ok|s|n|👍|👎|😊|🤝)[!?.,:… ]*$/i;
+
+// Detecta perguntas explícitas de memória/retrospecto
+const MEMORY_QUERY_REGEX = /\b(lembra|lembrar|falamos|comentei|disse que|você sabe que|contei|mencionei|te falei|a gente conversou|aquela vez|antes você|já te falei)\b/i;
 
 // ─── Interfaces Críticas ───────────────────────────────────────────────────
 
@@ -146,7 +149,6 @@ function safeDecrypt(value: string): string {
   if (parts.length !== 3) return value;
 
   const [iv, authTag, ciphertext] = parts;
-  // IV = 12 bytes = 24 hex | authTag = 16 bytes = 32 hex
   if (iv.length !== 24 || authTag.length !== 32 || ciphertext.length === 0) return value;
 
   try {
@@ -185,7 +187,11 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   const { message, user, sessionId, localHistory } = ctx;
   const isNoise = isNoiseMessage(message);
 
+  // Detecta se é uma pergunta de memória explícita
+  const isMemoryQuery = MEMORY_QUERY_REGEX.test(message);
+
   console.log(`[Pipeline] Orquestração iniciada: ${message.slice(0, 50)}...`);
+  console.log(`[Pipeline] isMemoryQuery: ${isMemoryQuery} | isNoise: ${isNoise}`);
 
   const contextTags: string[] = [];
   const m = message.toLowerCase();
@@ -193,12 +199,15 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   if (m.includes('projeto') || m.includes('tarefa') || m.includes('desenvolvimento')) contextTags.push('projeto');
   if (m.includes('dinheiro') || m.includes('gasto') || m.includes('pagamento') || m.includes('orç')) contextTags.push('financas');
 
-  const shouldEmbed = false;
-  const shouldLoadMemories = !isNoise;
+  // Embedding: ativado para perguntas de memória ou mensagens com conteúdo real
+  // FIX: antes era `const shouldEmbed = false` — bloqueava toda busca semântica
+  const shouldEmbed = isMemoryQuery || (!isNoise && message.trim().length > 30);
+
+  // Memories: carrega sempre que for pergunta de memória, mesmo que pareça ruído
+  const shouldLoadMemories = isMemoryQuery || !isNoise;
 
   console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'} | Memories: ${shouldLoadMemories ? 'ATIVO' : 'SKIP'}`);
 
-  // ── Tuple tipado explicitamente para o TS não colapsar em any[] ───────────
   type PipelineTuple = [number[] | null, boolean, any, MemoriesLoadResult];
 
   const EMPTY_MEMORIES: MemoriesLoadResult = { memories: [], topEmotional: [] };
@@ -227,11 +236,10 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   const [queryEmbedding, isStressed, masterContext, memoriesResult] = pipelineResult as PipelineTuple;
 
-  // Injeta memories no masterContext — dados fluem para baixo, nunca sobem
   masterContext.memories = memoriesResult.memories;
   masterContext.topEmotionalMemories = memoriesResult.topEmotional;
 
-  // Reforça as top 3 memórias carregadas (fire-and-forget, não bloqueia o request)
+  // Reforça as top 3 memórias carregadas (fire-and-forget)
   if (memoriesResult.memories.length > 0) {
     Promise.allSettled(
       memoriesResult.memories
@@ -242,7 +250,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
     ).catch(console.error);
   }
 
-  // Classificação L4
+  // Classificação L4 — passa a mensagem para que retrospecto seja detectado
   const contexts = await classifyContextWithL4(message, user.id, user.auth_user_id, masterContext)
     .catch((e) => { console.error('[Pipeline][Classification] Erro:', e); return []; });
 
