@@ -1,5 +1,5 @@
 // lib/services/reminders.service.ts
-// V1.4.0 — Autopopulate reminder_shares via Active Relationships
+// V1.4.1 — Fix: scheduled_time null explícito tratado como ausente
 
 import { supabase } from '@/lib/jarvis';
 import { scheduleReminderOnQStash, cancelReminderOnQStash, frequencyToCron } from '@/lib/qstash';
@@ -107,27 +107,39 @@ export async function coreCriarLembrete(
   let scheduled_time: string;
   let freq = payload.frequency;
 
+  // FIX V1.4.1: trata null explícito como ausente — antes entrava no branch
+  // `else if (payload.scheduled_time)` com valor "null" e lançava "Data inválida: null"
+  const rawTime = payload.scheduled_time ?? null;
+
   if (payload.delay_minutes) {
     scheduled_time = new Date(agora.getTime() + payload.delay_minutes * 60000).toISOString();
-  } else if (payload.scheduled_time && payload.scheduled_time.length <= 8 && payload.scheduled_time.includes(':')) {
-    const [h, m] = payload.scheduled_time.split(':').map(Number);
+
+  } else if (rawTime && rawTime.length <= 8 && rawTime.includes(':')) {
+    // Hora no formato "HH:MM"
+    const [h, m] = rawTime.split(':').map(Number);
     const dataBR = new Intl.DateTimeFormat('fr-CA', { timeZone: 'America/Sao_Paulo' }).format(agora);
     const target = new Date(`${dataBR}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00-03:00`);
     if (target.getTime() <= agora.getTime()) target.setDate(target.getDate() + 1);
     scheduled_time = target.toISOString();
-  } else if (payload.scheduled_time?.endsWith('Z')) {
-    scheduled_time = new Date(payload.scheduled_time.replace('Z', '-03:00')).toISOString();
-  } else if (payload.scheduled_time) {
-    const parsed = new Date(payload.scheduled_time);
-    if (isNaN(parsed.getTime())) throw new Error(`Data inválida: ${payload.scheduled_time}`);
+
+  } else if (rawTime?.endsWith('Z')) {
+    // ISO com Z — interpreta como horário de Brasília, não UTC
+    scheduled_time = new Date(rawTime.replace('Z', '-03:00')).toISOString();
+
+  } else if (rawTime) {
+    // ISO completo ou outro formato
+    const parsed = new Date(rawTime);
+    if (isNaN(parsed.getTime())) throw new Error(`Data inválida: ${rawTime}`);
     scheduled_time = parsed.toISOString();
+
   } else {
+    // Sem data: recorrente ou fallback de +5 minutos
     scheduled_time = new Date(agora.getTime() + 5 * 60000).toISOString();
   }
 
   if (freq?.toLowerCase().includes('útil')) freq = 'weekdays';
 
-  // 1. Salva o Lembrete base
+  // 1. Salva o lembrete base
   const { data: reminder, error } = await supabase
     .from('reminders')
     .insert({
@@ -146,7 +158,7 @@ export async function coreCriarLembrete(
 
   if (error) throw new Error(`Falha no banco: ${error.message}`);
 
-  // 👥 2. CRUZAMENTO DE VÍNCULOS MULTIPLAYER AUTOMÁTICO
+  // 👥 2. Cruzamento de vínculos multiplayer automático
   try {
     const { data: relationships } = await supabase
       .from('relationships')
@@ -157,11 +169,9 @@ export async function coreCriarLembrete(
     if (relationships && relationships.length > 0) {
       for (const rel of relationships) {
         const settings = rel.settings || {};
-        // Verifica se a chave de sincronização de lembretes está ativa no vínculo
         if (settings.reminders === true || settings.reminder === true) {
           const partnerAuthId = rel.user_id_a === authUserId ? rel.user_id_b : rel.user_id_a;
 
-          // Busca o ID numérico do parceiro para inserir em reminder_shares
           const { data: partnerUser } = await supabase
             .from('users')
             .select('id')
@@ -172,24 +182,23 @@ export async function coreCriarLembrete(
             await supabase
               .from('reminder_shares')
               .insert({
-                reminder_id: reminder.id,
+                reminder_id:    reminder.id,
                 shared_with_id: partnerUser.id,
-                active: true
+                active:         true,
               });
-            console.log(`[Multiplayer] Lembrete ${reminder.id} compartilhado automaticamente com ID: ${partnerUser.id}`);
+            console.log(`[Multiplayer] Lembrete ${reminder.id} compartilhado com ID: ${partnerUser.id}`);
           }
         }
       }
     }
   } catch (shareErr: any) {
-    // Abafa erros de compartilhamento para não travar a criação principal do lembrete
     console.error('[Multiplayer Share Error] Falha silenciosa:', shareErr.message);
   }
 
   // 3. Agendamento no QStash
   const cron = freq ? frequencyToCron(freq, scheduled_time) : null;
   let qstashId: string | null = null;
-  
+
   try {
     qstashId = await scheduleReminderOnQStash({
       reminderId:    String(reminder.id),
@@ -209,7 +218,8 @@ export async function coreCriarLembrete(
       .update({ qstash_message_id: qstashId })
       .eq('id', reminder.id);
   }
-   await invalidateContextField(userId, 'reminders');
+
+  await invalidateContextField(userId, 'reminders');
   return { id: reminder.id, title: payload.title, scheduled_time };
 }
 
@@ -259,7 +269,8 @@ export async function coreAtualizarLembrete(
         .eq('id', updated.id);
     }
   }
-   await invalidateContextField(userId, 'reminders');
+
+  await invalidateContextField(userId, 'reminders');
   return updated;
 }
 
@@ -277,7 +288,7 @@ export async function coreCancelarLembrete(userId: number, query: string): Promi
   if (!reminder) return `Nenhum lembrete encontrado com "${query}".`;
 
   if (reminder.qstash_message_id) await cancelReminderOnQStash(reminder.qstash_message_id);
-  
+
   await supabase
     .from('reminders')
     .update({ status: 'cancelled' })
@@ -301,5 +312,4 @@ export async function coreDeletarLembrete(userId: number, id: string): Promise<v
   if (reminder.qstash_message_id) await cancelReminderOnQStash(reminder.qstash_message_id);
   await supabase.from('reminders').delete().eq('id', id);
   await invalidateContextField(userId, 'reminders');
-
-};
+}
