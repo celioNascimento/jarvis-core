@@ -88,7 +88,7 @@ export async function executeCreateReminder(
 
     await invalidateMasterContextCache(Number(targetId), sessionId);
 
-    const hora = formatScheduledTime(result.scheduled_time, result.frequency ?? p.frequency);
+    const hora = formatScheduledTime(result.scheduled_time, p.frequency);
 
     return `⏰ Lembrete "${result.title}" agendado para ${hora}.`;
   } catch (err: any) {
