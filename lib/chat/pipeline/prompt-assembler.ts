@@ -1,15 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v6.0 — Assembler como orquestrador puro
-//
-// REGRA DESTE ARQUIVO:
-//   ✅ Importa blocos de /prompts/*
-//   ✅ Importa formatadores de /formatters/*
-//   ✅ Chama cargas paralelas (módulos, contexto dinâmico, radar)
-//   ❌ Não define strings de prompt inline
-//   ❌ Não contém lógica de formatação
-//   ❌ Não acessa banco diretamente
-//
-// Se você está prestes a escrever uma string grande aqui → crie um arquivo em /prompts/
+// v7.0 — Integração do buildMemoryHonestyPrompt
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -24,6 +14,7 @@ import { buildIdentityPrompt } from './prompts/identity';
 import { buildCriticalThinkingPrompt } from './prompts/critical-thinking';
 import { buildActiveContextPrompt } from './prompts/active-context';
 import { buildMemoryPrompt } from './prompts/memory';
+import { buildMemoryHonestyPrompt } from './prompts/memory-honesty';
 import { buildOperationalPrompt } from './prompts/operational';
 import { buildMoralMirrorPrompt } from './prompts/moral-mirror';
 import { buildEmotionalProtocolPrompt } from './prompts/emotional-protocol';
@@ -42,7 +33,7 @@ import {
   filterL3Content,
 } from './prompts/formatters';
 
-// ── Serviços externos (sem mudança) ──────────────────────────────────────────
+// ── Serviços externos ─────────────────────────────────────────────────────────
 import { buildPersonalityBlock } from '@/lib/services/personality.service';
 import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/Utils/ai-helpers';
 
@@ -56,7 +47,7 @@ const FAMILY_DATE_SIGNALS = [
   /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
 ];
 
-// ── Helpers locais (lógica de negócio, não formatação) ────────────────────────
+// ── Helpers locais ────────────────────────────────────────────────────────────
 
 function shouldIncludeFamilyContext(message: string, history: string): boolean {
   const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
@@ -65,8 +56,6 @@ function shouldIncludeFamilyContext(message: string, history: string): boolean {
 }
 
 // ── Builder do system prompt ──────────────────────────────────────────────────
-// Único lugar onde os blocos são ordenados e unidos.
-// Ordem importa: identidade → contexto → memória → protocolos → operacional
 
 function assembleSystemPrompt(parts: {
   nickname: string;
@@ -86,7 +75,6 @@ function assembleSystemPrompt(parts: {
   conversationSummary: string;
   recommendationsBlock: string;
   topicsBlock: string;
-  // módulos opcionais
   emotionalState: 'stable' | 'stressed' | 'vulnerable' | 'critical';
   principles: Array<{ content: string; category: string; confidence: number }>;
   moralMirrorEnabled: boolean;
@@ -125,7 +113,10 @@ function assembleSystemPrompt(parts: {
       topicsBlock: parts.topicsBlock,
     }),
 
-    // 5. Protocolo emocional (calibra os módulos abaixo)
+    // 4b. Protocolo de honestidade sobre memória (logo após o bloco de memória)
+    buildMemoryHonestyPrompt(),
+
+    // 5. Protocolo emocional
     buildEmotionalProtocolPrompt({
       enabled: true,
       emotionalState: parts.emotionalState,
@@ -260,7 +251,7 @@ export async function buildChatPrompt(
     user.nickname || 'usuário',
   );
 
-  // ── Dados dos módulos opcionais (espelho, atrito) ─────────────────────────
+  // ── Dados dos módulos opcionais ───────────────────────────────────────────
   const emotionalState = (masterContext?.emotional_state || 'stable') as any;
   const principles = masterContext?.principles || [];
   const moralMirrorEnabled = masterContext?.modules?.moralMirror ?? false;
