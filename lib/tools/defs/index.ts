@@ -1,19 +1,22 @@
-import { memoryTools }   from './memory';
-import { agendaTools }   from './agenda';
-import { remindersTools} from './reminders';
-import { lugaresTools }  from './lugares';
-import { comprasTools }  from './compras';
-import { veiculosTools } from './veiculos';
-import { tdahTools }     from './tdah';
-import { financesTools } from './finances';
-import { projectsTools } from './projects';
-import { guidelinesTools } from './guidelines';
+// lib/tools/defs/index.ts
+
+import { memoryTools }        from './memory';
+import { agendaTools }        from './agenda';
+import { remindersTools }     from './reminders';
+import { lugaresTools }       from './lugares';
+import { comprasTools }       from './compras';
+import { veiculosTools }      from './veiculos';
+import { tdahTools }          from './tdah';
+import { financesTools }      from './finances';
+import { projectsTools }      from './projects';
+import { guidelinesTools }    from './guidelines';
 import { relationshipsTools } from './relationships';
-import { routinesTools } from './routines'; 
-import { climaTools } from './clima';
-import { esportesTools } from './esportes'; 
-import { dossieTools } from './dossie';
-import { personalityTools } from './personality';
+import { routinesTools }      from './routines';
+import { climaTools }         from './clima';
+import { esportesTools }      from './esportes';
+import { dossieTools }        from './dossie';
+import { personalityTools }   from './personality';
+import { webTools }           from './web';
 
 type ToolDef = {
   type: string;
@@ -36,11 +39,12 @@ export const tools: ToolDef[] = [
   ...projectsTools,
   ...guidelinesTools,
   ...relationshipsTools,
-  ...routinesTools, 
+  ...routinesTools,
   ...climaTools,
-  ...esportesTools, 
+  ...esportesTools,
   ...dossieTools,
   ...personalityTools,
+  ...webTools,
 ];
 
 export {
@@ -59,5 +63,6 @@ export {
   climaTools,
   esportesTools,
   dossieTools,
-  personalityTools
+  personalityTools,
+  webTools,
 };
