@@ -1,4 +1,4 @@
-// lib/tools/executors/reminders.ts  (refatorado)
+// lib/tools/executors/reminders.ts
 // Responsabilidade: adaptar tool call → service → string de resposta
 // TODA lógica de negócio fica em reminders.service.ts
 
@@ -19,6 +19,53 @@ type CreateParams = {
   frequency?: 'daily' | 'weekly' | 'monthly' | 'weekdays';
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Formata scheduled_time de forma segura.
+ * Retorna string legível ou fallback descritivo se a data for nula/inválida.
+ */
+function formatScheduledTime(
+  scheduled_time: string | null | undefined,
+  frequency?: string
+): string {
+  if (!scheduled_time) {
+    if (frequency) return `recorrência ${frequency}`;
+    return 'horário a definir';
+  }
+
+  const date = new Date(scheduled_time);
+  if (isNaN(date.getTime())) {
+    console.warn('[Reminder] scheduled_time inválido:', scheduled_time);
+    return scheduled_time; // devolve o raw se não conseguir parsear
+  }
+
+  return date.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+}
+
+/**
+ * Garante que scheduled_time ou delay_minutes estejam presentes
+ * para reminders do tipo 'temporary'. Lança erro descritivo antes
+ * de chegar ao service (evita o throw genérico "Data inválida: null").
+ */
+function validateCreateParams(p: CreateParams): void {
+  const type = p.type ?? 'temporary';
+
+  if (type === 'temporary' && !p.scheduled_time && !p.delay_minutes) {
+    throw new Error(
+      'Para criar um lembrete pontual, informe scheduled_time ou delay_minutes.'
+    );
+  }
+
+  if (type === 'recurring' && !p.frequency && !p.scheduled_time) {
+    throw new Error(
+      'Para criar um lembrete recorrente, informe frequency (daily, weekly, etc.).'
+    );
+  }
+}
+
+// ─── Executores ───────────────────────────────────────────────────────────────
+
 export async function executeCreateReminder(
   p: CreateParams,
   authUserId: string,
@@ -26,6 +73,9 @@ export async function executeCreateReminder(
   sessionId: string
 ): Promise<string> {
   try {
+    // Valida antes de chamar o service — erro claro em vez de "Data inválida: null"
+    validateCreateParams(p);
+
     const targetId = await getEffectiveUserId(authUserId, numericUserId);
 
     const result = await coreCriarLembrete(Number(targetId), authUserId, {
@@ -38,9 +88,7 @@ export async function executeCreateReminder(
 
     await invalidateMasterContextCache(Number(targetId), sessionId);
 
-    const hora = new Date(result.scheduled_time).toLocaleString('pt-BR', {
-      timeZone: 'America/Sao_Paulo',
-    });
+    const hora = formatScheduledTime(result.scheduled_time, result.frequency ?? p.frequency);
 
     return `⏰ Lembrete "${result.title}" agendado para ${hora}.`;
   } catch (err: any) {
