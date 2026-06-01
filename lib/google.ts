@@ -38,11 +38,60 @@ export async function getGoogleAccessToken() {
 
 // --- 2. BUSCA NA WEB (SERPER.DEV) ---
 
+// Gera filtro de data para o Serper no formato cdr
+// Restringe resultados a uma janela de datas exata — evita SEO antigo
+function buildDateFilter(daysBack: number = 2): string {
+  const now  = new Date();
+  const from = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+
+  const fmt = (d: Date) =>
+    `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`;
+
+  return `cdr:1,cd_min:${fmt(from)},cd_max:${fmt(now)}`;
+}
+
 /**
- * Busca esportiva estruturada via Serper /sports.
- * Retorna eventos com times, placar e horário — não links.
+ * Busca esportiva via Serper /news — filtra por data para evitar resultados antigos de SEO.
+ * Retorna notícias recentes com título + snippet ordenados por data.
  */
-async function searchSports(query: string): Promise<string | null> {
+async function searchSportsNews(query: string, daysBack: number = 2): Promise<string | null> {
+  const apiKey = process.env.SERPER_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const res = await fetch('https://google.serper.dev/news', {
+      method: 'POST',
+      headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        q:   query,
+        gl:  'br',
+        hl:  'pt-br',
+        num: 5,
+        tbs: buildDateFilter(daysBack),
+      }),
+    });
+
+    const data = await res.json();
+    if (!data.news?.length) return null;
+
+    return data.news
+      .slice(0, 4)
+      .map((item: any) => {
+        const date = item.date ? ` [${item.date}]` : '';
+        return `${item.title}${date}\n${item.snippet}`;
+      })
+      .join('\n\n');
+  } catch (err) {
+    console.error('[Serper/news] Erro:', err);
+    return null;
+  }
+}
+
+/**
+ * Busca esportiva estruturada via Serper /search com type=sports.
+ * Retorna jogos com times e placar quando disponível.
+ */
+async function searchSportsStructured(query: string): Promise<string | null> {
   const apiKey = process.env.SERPER_API_KEY;
   if (!apiKey) return null;
 
@@ -54,27 +103,21 @@ async function searchSports(query: string): Promise<string | null> {
     });
 
     const data = await res.json();
-
-    // Serper /sports retorna sportsResults com jogos estruturados
     const jogos = data.sportsResults?.games;
+
     if (jogos?.length) {
       return jogos.map((g: any) => {
-        const status = g.status || '';
-        const time   = g.time   || '';
-        const home   = g.teams?.[0];
-        const away   = g.teams?.[1];
+        const home = g.teams?.[0];
+        const away = g.teams?.[1];
         if (!home || !away) return null;
-
         const placarHome = home.score ?? '-';
         const placarAway = away.score ?? '-';
-        const info = status || time;
-
+        const info = g.status || g.time || '';
         return `⚽ ${home.name} ${placarHome} x ${placarAway} ${away.name}${info ? ` (${info})` : ''}`;
       }).filter(Boolean).join('\n');
     }
 
-    // Fallback: se não tiver sportsResults, tenta answerBox (caixa de resposta direta)
-    if (data.answerBox?.answer) return data.answerBox.answer;
+    if (data.answerBox?.answer)  return data.answerBox.answer;
     if (data.answerBox?.snippet) return data.answerBox.snippet;
 
     return null;
@@ -85,15 +128,21 @@ async function searchSports(query: string): Promise<string | null> {
 }
 
 /**
- * Detecta se a query é sobre esportes para usar o endpoint especializado.
+ * Detecta se a query é sobre esportes.
  */
 function isQueryEsportiva(query: string): boolean {
-  return /jogo|placar|futebol|champions|brasileir|premier|la liga|serie a|tabela|classifica|rodada|partida|esporte|resultado/i.test(query);
+  return /jogo|placar|futebol|champions|brasileir|premier|la liga|serie a|tabela|classifica|rodada|partida|esporte|resultado|ontem|hoje|gol/i.test(query);
+}
+
+/**
+ * Detecta se a query é sobre resultado passado (ontem, anteontem, semana passada).
+ */
+function isQueryPassado(query: string): boolean {
+  return /ontem|anteontem|semana passada|resultado.*\d{2}\/\d{2}|jogo.*passado/i.test(query);
 }
 
 /**
  * Busca web genérica via Serper /search.
- * Retorna snippets textuais — melhor para notícias, preços, clima etc.
  */
 async function searchGeneric(query: string): Promise<string> {
   const apiKey = process.env.SERPER_API_KEY;
@@ -108,11 +157,9 @@ async function searchGeneric(query: string): Promise<string> {
 
     const data = await res.json();
 
-    // answerBox tem a resposta direta quando disponível (ex: "quem é o presidente do brasil")
     if (data.answerBox?.answer)  return data.answerBox.answer;
     if (data.answerBox?.snippet) return data.answerBox.snippet;
-
-    if (!data.organic?.length) return 'Nenhum resultado encontrado.';
+    if (!data.organic?.length)   return 'Nenhum resultado encontrado.';
 
     return data.organic.slice(0, 4).map((item: any) =>
       `${item.title}\n${item.snippet}`
@@ -125,14 +172,29 @@ async function searchGeneric(query: string): Promise<string> {
 
 /**
  * Entrypoint principal de busca web.
- * Roteia para /sports ou /search baseado no conteúdo da query.
+ *
+ * Estratégia para queries esportivas:
+ *   1. Se for resultado passado → /news com filtro de data (evita SEO antigo)
+ *   2. Se for jogo atual/hoje  → /search type=sports (dados estruturados)
+ *   3. Fallback                → /search genérico
  */
 export async function searchWeb(query: string): Promise<string> {
   if (isQueryEsportiva(query)) {
-    const sportsResult = await searchSports(query);
-    if (sportsResult) return sportsResult;
-    // Se /sports não trouxe dados estruturados, cai no genérico
+    // Resultado passado: usa /news com filtro de data
+    if (isQueryPassado(query)) {
+      const newsResult = await searchSportsNews(query, 3);
+      if (newsResult) return newsResult;
+    }
+
+    // Jogo atual/hoje: usa /search type=sports
+    const structuredResult = await searchSportsStructured(query);
+    if (structuredResult) return structuredResult;
+
+    // Fallback: /news sem filtro de data
+    const newsResult = await searchSportsNews(query, 7);
+    if (newsResult) return newsResult;
   }
+
   return searchGeneric(query);
 }
 
@@ -140,7 +202,6 @@ export async function searchWeb(query: string): Promise<string> {
 export async function getWeatherForecast(lat: number = -23.2701, lng: number = -51.2044) {
   try {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=America%2FSao_Paulo&forecast_days=5`;
-
     const res  = await fetch(url);
     const data = await res.json();
 
