@@ -33,6 +33,8 @@ import {
   filterL3Content,
 } from './prompts/formatters';
 
+import { inferEmotionalStateFromHistory } from './utils/infer-emotional-state';
+
 // ── Serviços externos ─────────────────────────────────────────────────────────
 import { buildPersonalityBlock } from '@/lib/services/personality.service';
 import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/Utils/ai-helpers';
