@@ -16,7 +16,7 @@ import { buildActiveContextPrompt } from './prompts/active-context';
 import { buildMemoryPrompt } from './prompts/memory';
 import { buildMemoryHonestyPrompt } from './prompts/memory-honesty';
 import { buildOperationalPrompt } from './prompts/operational';
-import { buildMoralMirrorPrompt } from './prompts/moral-mirror';
+import { buildMoralMirrorPrompt, EmotionalState } from './prompts/moral-mirror';
 import { buildEmotionalProtocolPrompt } from './prompts/emotional-protocol';
 import { buildIntellectualFrictionPrompt } from './prompts/intellectual-friction';
 
