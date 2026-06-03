@@ -254,7 +254,11 @@ export async function buildChatPrompt(
   );
 
   // ── Dados dos módulos opcionais ───────────────────────────────────────────
-  const emotionalState = (masterContext?.emotional_state || 'stable') as any;
+  const emotionalState = inferEmotionalStateFromHistory(
+  intel.recentHistory,
+  ctx.message,
+  (masterContext?.emotional_state || 'stable') as EmotionalState,
+);
   const principles = masterContext?.principles || [];
   const moralMirrorEnabled = masterContext?.modules?.moralMirror ?? false;
   const frictionEnabled = masterContext?.profile?.friction_enabled ?? false;
