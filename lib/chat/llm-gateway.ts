@@ -1,5 +1,5 @@
 // lib/chat/llm-gateway.ts
-// V11.6.4 — Correção do ID do Modelo Flash + Tratamento de Erro 404
+// V11.6.5 — FALLBACK_MODEL atualizado para gemini-2.5-flash (2.0-flash descontinuado no OpenRouter)
 
 import { Redis } from '@upstash/redis';
 import { callOpenRouterWithTools as rawCallOpenRouter, ToolDefinition, ToolChoice } from '@/lib/chat/openrouter';
@@ -42,8 +42,9 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-// FIX V11.6.4: Modelo correto sem sufixo -001 (não existe no OpenRouter)
-const FALLBACK_MODEL = 'google/gemini-2.0-flash';
+// FIX V11.6.5: gemini-2.0-flash foi descontinuado no OpenRouter.
+// Fallback atualizado para google/gemini-2.5-flash (modelo ativo mais rápido/barato).
+const FALLBACK_MODEL = 'google/gemini-2.5-flash';
 const CONCURRENCY_LIMIT = 3;
 
 let localBreaker = { open: false, expires: 0 };
@@ -139,7 +140,7 @@ class Gatekeeper {
 
       // Limpeza estrita para evitar Erro 400
       let safeToolChoice: ToolChoice | undefined = forceStripTools ? undefined : task.params.toolChoice;
-      if (!hasTools || modelToCall === FALLBACK_MODEL) {
+      if (!hasTools) {
         safeToolChoice = undefined;
       }
 
@@ -181,7 +182,7 @@ class Gatekeeper {
       const is429     = primaryError?.status === 429 || errMsg.includes('429');
       const isTimeout = errMsg.includes('timeout') || errMsg.includes('aborted') || errName === 'AbortError';
       const is400     = primaryError?.status === 400 || errMsg.includes('400');
-      // FIX V11.6.4: 404 agora é recuperável — modelo inexistente → tenta fallback
+      // 404 = modelo inexistente/descontinuado → recuperável via fallback
       const is404     = primaryError?.status === 404 || errMsg.includes('404');
 
       // Só relança se for erro verdadeiramente não recuperável
@@ -191,7 +192,7 @@ class Gatekeeper {
       }
 
       if (is404) {
-        console.warn(`[Gateway] Modelo "${activeModel}" não encontrado no OpenRouter (404). Forçando fallback imediato.`);
+        console.warn(`[Gateway] Modelo "${activeModel}" não encontrado no OpenRouter (404). Forçando fallback imediato para ${FALLBACK_MODEL}.`);
       } else {
         console.warn(`[Gateway] Falha em ${activeModel} (${is429 ? '429' : is400 ? '400' : 'timeout'}). Iniciando cadeia de resgate.`);
       }
@@ -202,7 +203,7 @@ class Gatekeeper {
         localBreaker = { open: true, expires: Date.now() + 30000 };
       }
 
-      // ── MODO SOBREVIVÊNCIA: Fallback com 400 → problema no schema das tools ──
+      // ── MODO SOBREVIVÊNCIA: já era fallback e deu 400 → problema no schema das tools ──
       if (activeModel === FALLBACK_MODEL && is400) {
         console.warn('[Gateway] Erro 400 no Fallback. Rejeição de Schema provável. Removendo tools e forçando texto livre.');
         try {
@@ -210,17 +211,16 @@ class Gatekeeper {
         } catch (survivalError) {
           console.error('[Gateway] Modo de sobrevivência falhou:', survivalError);
           return {
-            content: 'Tive um problema técnico complexo com minhas ferramentas agora. Pode me explicar de outra forma?',
+            content: 'Tive um problema técnico com minhas ferramentas agora. Pode me explicar de outra forma?',
             toolCalls: null,
             modelUsed: FALLBACK_MODEL,
           };
         }
       }
 
-      // ── TENTATIVA DE FALLBACK NORMAL ────────────────────────────────────────
-      // Se o erro foi 404 no próprio fallback, vai direto para survival mode
+      // ── Proteção: 404 no próprio FALLBACK_MODEL → configuração errada ──────
       if (activeModel === FALLBACK_MODEL && is404) {
-        console.error('[Gateway] FALLBACK_MODEL também retornou 404. Verifique a constante FALLBACK_MODEL.');
+        console.error(`[Gateway] FALLBACK_MODEL "${FALLBACK_MODEL}" retornou 404. Verifique a constante FALLBACK_MODEL.`);
         return {
           content: 'Estou com um problema de configuração interna. Contate o suporte.',
           toolCalls: null,
@@ -228,6 +228,7 @@ class Gatekeeper {
         };
       }
 
+      // ── TENTATIVA DE FALLBACK NORMAL ────────────────────────────────────────
       try {
         const fallbackRes = await callModel(FALLBACK_MODEL);
         if (!fallbackRes.toolCalls?.length) {
@@ -236,22 +237,24 @@ class Gatekeeper {
         return fallbackRes;
 
       } catch (fallbackError: any) {
-        const fbErrMsg  = fallbackError?.message?.toLowerCase() || '';
-        const fbErrName = fallbackError?.name || '';
-        const fbIs400   = fallbackError?.status === 400 || fbErrMsg.includes('400');
-        const fbIs404   = fallbackError?.status === 404 || fbErrMsg.includes('404');
+        const fbErrMsg    = fallbackError?.message?.toLowerCase() || '';
+        const fbErrName   = fallbackError?.name || '';
+        const fbIs400     = fallbackError?.status === 400 || fbErrMsg.includes('400');
+        const fbIs404     = fallbackError?.status === 404 || fbErrMsg.includes('404');
         const fbIsTimeout = fbErrMsg.includes('timeout') || fbErrMsg.includes('aborted') || fbErrName === 'AbortError';
 
         // Fallback com 400 ou 404 → survival mode (strip tools)
         if (fbIs400 || fbIs404) {
-          const reason = fbIs404 ? '404 (modelo não encontrado)' : '400 (schema inválido)';
+          const reason = fbIs404
+            ? `404 (modelo "${FALLBACK_MODEL}" não encontrado — atualize FALLBACK_MODEL)`
+            : '400 (schema inválido)';
           console.warn(`[Gateway] Fallback secundário retornou ${reason}. Removendo tools e forçando texto livre.`);
           try {
             return await callModel(FALLBACK_MODEL, true);
           } catch (survivalError2) {
             console.error('[Gateway] Modo de sobrevivência 2 falhou:', survivalError2);
             return {
-              content: 'Tive um problema técnico complexo com minhas ferramentas agora. Pode me explicar de outra forma?',
+              content: 'Tive um problema técnico com minhas ferramentas agora. Pode me explicar de outra forma?',
               toolCalls: null,
               modelUsed: FALLBACK_MODEL,
             };
