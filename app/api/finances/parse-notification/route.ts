@@ -2,18 +2,13 @@
 // V2 — detecta automaticamente se é notificação bancária ou de corretora
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { parseNotification } from '@/lib/finances/notification-parser';
 import { parseBrokerNotification, isBrokerNotification } from '@/lib/finances/broker-parser';
 import { resolveCategoryId, resolveAccountId } from '@/lib/finances/db';
 import { resolveUser } from '@/lib/finances/auth';
+import { supabase } from '@/lib/jarvis';
 
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
 
 
 const MERCHANT_CATEGORY_MAP: Array<{ pattern: RegExp; category: string }> = [

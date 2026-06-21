@@ -1,13 +1,7 @@
 // app/api/finances/accounts/dashboard/route.ts — V2
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/jarvis';
 import { resolveUser } from '@/lib/finances/auth';
-
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
 
 export async function GET(req: NextRequest) {
   try {
