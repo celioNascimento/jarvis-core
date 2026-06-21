@@ -1,13 +1,8 @@
 // app/api/cron/memory-index/route.ts
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { callAI } from '.././../../../lib/Utils/ai-helpers';
+import { supabase } from '@/lib/jarvis';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
 
 export async function GET(req: Request) {
   const auth = req.headers.get('authorization');

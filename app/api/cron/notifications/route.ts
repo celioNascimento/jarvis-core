@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/jarvis';
 
 // ============================================================
 // CRON: NOTIFICAÇÕES PROATIVAS — Roda diariamente às 07:00
@@ -7,11 +7,6 @@ import { createClient } from '@supabase/supabase-js';
 // app/api/cron/notifications/route.ts
 // ============================================================
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
 
 async function sendTelegram(chatId: string, text: string): Promise<void> {
   const token = process.env.TELEGRAM_BOT_TOKEN;

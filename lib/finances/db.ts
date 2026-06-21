@@ -2,7 +2,7 @@
 // Queries e mutations do módulo de finanças
 // Todas via service_role (sem RLS — uuid/bigint mismatch)
 
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/jarvis';
 import type {
   Transaction,
   UserAccount,
@@ -14,11 +14,6 @@ import type {
   TransactionType,
 } from './types';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
 
 // ─── Períodos ───────────────────────────────────────────────────────────────
 export function getPeriodDates(

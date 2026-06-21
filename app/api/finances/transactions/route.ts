@@ -2,7 +2,6 @@
 // CRUD de transações — GET lista, POST cria
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import {
   createTransaction,
   getTransactions,
@@ -11,13 +10,9 @@ import {
 } from '@/lib/finances/db';
 import type { CreateTransactionPayload, TransactionType } from '@/lib/finances/types';
 import { resolveUser } from '@/lib/finances/auth';
+import { supabase } from '@/lib/jarvis';
 
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
 
 
 export async function GET(req: NextRequest) {

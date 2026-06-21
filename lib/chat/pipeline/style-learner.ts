@@ -1,12 +1,7 @@
 // lib/chat/pipeline/style-learner.ts
 // Captura padrões de vocabulário e comportamento do usuário e promove para principles
 
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { supabase } from '@/lib/jarvis';
 
 // ─── Mapa de padrões → tags ───────────────────────────────────────────────────
 // tag segue o formato 'dimensão:valor' para facilitar agrupamento no prompt
