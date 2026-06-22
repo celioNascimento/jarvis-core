@@ -1,20 +1,14 @@
 // lib/modules/modules/veiculos.ts
-// V12.4.0 — Zero DB Calls — lê exclusivamente do masterContext
+// V13.0.0 — Arquitetura V2 (Sinal de fumaça): Payload enxuto e Zero DB Calls
 
 import type { ModuleDefinition } from '../types';
-
-interface Vehicle {
-  id: number;
-  name: string;
-  plate: string;
-  current_km: number;
-}
 
 export const ModuloVeiculos: ModuleDefinition = {
   id: 'veiculos',
   label: 'Gestão de Veículos (ExpertFrotas)',
   preferredModel: 'flash',
   plan: 'personal',
+  version: 'v2', // ← OFICIALMENTE V2
   trigger: {
     contexts: ['veiculos'],
     keywords: /carro|veículo|placa|km|óleo|gasolina|etanol|manutenção|multa/i,
@@ -22,30 +16,24 @@ export const ModuloVeiculos: ModuleDefinition = {
 
   buildContextBlock: async (opts) => {
     try {
-      const vehicles: Vehicle[] = (opts as any).masterContext?.vehicles || [];
-      const maintenances: any[] = (opts as any).masterContext?.vehicle_maintenances || [];
-      const refuels: any[] = (opts as any).masterContext?.vehicle_refuels || [];
+      // ✅ Injeção limpa via masterContext (RAM)
+      const vehicles = (opts as any).masterContext?.vehicles || [];
 
       if (!vehicles.length) return '';
 
-      const parts = vehicles.map((v: Vehicle) => {
-        const vMain = maintenances.find((m: any) => m.vehicle_id === v.id);
-        const vFuel = refuels.find((f: any) => f.vehicle_id === v.id);
-
-        return `🚗 ${v.name} (${v.plate}):
-  - KM Atual: ${v.current_km}
-  - Última Manutenção: ${vMain ? `${vMain.title} em ${vMain.performed_date}` : 'Sem registros'}
-  - Próxima troca (prevista): ${vMain?.next_due_km || 'N/A'} km
-  - Último Abastecimento: ${vFuel ? `${vFuel.fuel_type} (${vFuel.liters}L) em ${new Date(vFuel.refueled_at).toLocaleDateString()}` : 'Sem registros'}`;
-      });
-
-      return `[MODO EXPERTFROTAS]\n${parts.join('\n\n')}`;
+      // V2: Substituição do cruzamento de arrays e strings longas pelo sinal de fumaça.
+      return `[Módulo: Veículos (ExpertFrotas)] Há ${vehicles.length} veículo(s) registrado(s) no masterContext. Use a tool 'consultar_veiculos' para ver KM atual, histórico de manutenções e abastecimentos. Para registros e atualizações, use 'atualizar_odometro', 'registrar_manutencao' ou 'registrar_abastecimento'.`;
     } catch (e) {
       console.error('[ModuloVeiculos] Erro no build:', e);
       return '';
     }
   },
 
-  tools: ['registrar_manutencao', 'registrar_abastecimento', 'atualizar_odometro'],
+  tools: [
+    'consultar_veiculos', // ← Nova tool adicionada para permitir a leitura sob demanda
+    'registrar_manutencao', 
+    'registrar_abastecimento', 
+    'atualizar_odometro'
+  ],
   metrics: { avgTokens: 0, avgLatencyMs: 0, activationCount: 0 },
 };
