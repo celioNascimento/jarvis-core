@@ -1,5 +1,5 @@
 // lib/modules/modules/web.ts
-// Módulo sempre ativo — injeta instrução de uso da web_pesquisar no system prompt
+// V13.0.0 — Arquitetura V2 (Sinal de fumaça): Redução do payload de diretiva transversal
 
 import type { ModuleDefinition } from '../types';
 
@@ -8,22 +8,15 @@ export const ModuloWeb: ModuleDefinition = {
   label: 'Pesquisa Web em Tempo Real',
   preferredModel: 'flash',
   plan: 'free',
+  version: 'v2', // ← OFICIALMENTE V2
   trigger: {
     always: true, // Sempre ativo — web search é transversal a todos os contextos
   },
 
   buildContextBlock: async () => {
-    return `[MÓDULO WEB — PESQUISA EM TEMPO REAL]
-Você tem acesso à ferramenta web_pesquisar para buscar informações atuais na internet.
-
-USE OBRIGATORIAMENTE web_pesquisar antes de responder sobre:
-- Jogos, placares, resultados e finais esportivas de hoje
-- Notícias e eventos recentes
-- Preços, cotações e câmbio
-- Qualquer fato que dependa da data atual ou que possa ter mudado após seu treinamento
-
-NUNCA responda sobre esses tópicos com base no treinamento — os dados estão desatualizados.
-Se a busca não retornar resultado, diga que não encontrou — jamais invente.`;
+    // V2: Condensação da regra rígida. Mantém a proibição de alucinação e força o uso da tool, 
+    // mas corta as listas de exemplos e o texto redundante.
+    return `[Módulo: Web] Ativo. É OBRIGATÓRIO usar a tool 'web_pesquisar' para fatos atuais, esportes de hoje, notícias, cotações ou preços. JAMAIS invente dados temporais ou responda sobre o tempo real usando seu treinamento base; se a busca falhar, diga que não encontrou.`;
   },
 
   tools: ['web_pesquisar'],
