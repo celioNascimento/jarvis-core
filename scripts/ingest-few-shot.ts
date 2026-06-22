@@ -9,18 +9,23 @@ import { createClient } from "@supabase/supabase-js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CAMINHO_ARQUIVO = join(__dirname, "lev-train.jsonl");
 
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY!;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const OPENROUTER_API_KEY = process.env.OPENAI_API_KEY; // chave OpenRouter (nome confuso no .env.local)
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY_1; // chave real da OpenAI
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !OPENAI_API_KEY || !OPENROUTER_API_KEY) {
-  throw new Error(
-    "Faltam env vars. Confirme SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY e OPENROUTER_API_KEY no .env.local"
-  );
+const faltando = [
+  !SUPABASE_URL && "SUPABASE_URL",
+  !SUPABASE_SERVICE_ROLE_KEY && "SUPABASE_SERVICE_ROLE_KEY",
+  !OPENROUTER_API_KEY && "OPENAI_API_KEY (chave OpenRouter)",
+  !OPENAI_API_KEY && "OPENAI_API_KEY_1 (chave OpenAI)",
+].filter(Boolean);
+
+if (faltando.length > 0) {
+  throw new Error(`Faltam estas env vars no .env.local: ${faltando.join(", ")}`);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!);
 
 interface TrainingLine {
   messages: { role: "system" | "user" | "assistant"; content: string }[];
@@ -29,6 +34,53 @@ interface TrainingLine {
 interface Classificacao {
   emotional_state: "estavel" | "estressado" | "vulneravel" | "critico";
   tags: string[];
+}
+
+// ── Retry genérico com backoff exponencial ─────────────────────────────────
+// Tenta executar `fn`. Se falhar com um erro "transitório" (5xx, timeout,
+// reset de conexão), espera um pouco e tenta de novo, até MAX_TENTATIVAS.
+// Se falhar por outro motivo (ex: 401 de autenticação), desiste na hora —
+// retry não resolve chave errada, só problema de rede momentâneo.
+
+const MAX_TENTATIVAS = 4;
+
+function ehErroTransitorio(mensagem: string): boolean {
+  const m = mensagem.toLowerCase();
+  return (
+    m.includes("503") ||
+    m.includes("502") ||
+    m.includes("504") ||
+    m.includes("connection") ||
+    m.includes("timeout") ||
+    m.includes("reset") ||
+    m.includes("econnreset") ||
+    m.includes("fetch failed")
+  );
+}
+
+async function comRetry<T>(fn: () => Promise<T>, contexto: string): Promise<T> {
+  let ultimoErro: unknown;
+
+  for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
+    try {
+      return await fn();
+    } catch (err) {
+      ultimoErro = err;
+      const msg = err instanceof Error ? err.message : String(err);
+
+      if (!ehErroTransitorio(msg) || tentativa === MAX_TENTATIVAS) {
+        throw err; // erro definitivo (ou esgotou tentativas) — propaga de verdade
+      }
+
+      const esperaMs = 1000 * 2 ** (tentativa - 1); // 1s, 2s, 4s, 8s...
+      console.warn(
+        `[Retry] ${contexto} falhou (tentativa ${tentativa}/${MAX_TENTATIVAS}): ${msg}. Tentando de novo em ${esperaMs}ms...`
+      );
+      await dormir(esperaMs);
+    }
+  }
+
+  throw ultimoErro; // nunca deveria chegar aqui, mas TypeScript exige um retorno/throw
 }
 
 async function gerarEmbedding(texto: string): Promise<number[]> {
@@ -162,8 +214,8 @@ async function ingerir() {
 
     try {
       const [embedding, classificacao] = await Promise.all([
-        gerarEmbedding(user),
-        classificarExemplo(user, assistant),
+        comRetry(() => gerarEmbedding(user), `embedding da linha ${i}`),
+        comRetry(() => classificarExemplo(user, assistant), `classificação da linha ${i}`),
       ]);
 
       const { error } = await supabase.schema("jarvis").from("few_shot_examples").insert({
@@ -184,7 +236,7 @@ async function ingerir() {
         sucesso++;
       }
     } catch (err) {
-      console.error(`Falha na linha ${i}:`, err instanceof Error ? err.message : err);
+      console.error(`Falha definitiva na linha ${i}:`, err instanceof Error ? err.message : err);
       falhas++;
     }
 

@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v7.0 — Integração do buildMemoryHonestyPrompt
+// v7.1 — Few-shot examples por similaridade vetorial
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -19,6 +19,7 @@ import { buildOperationalPrompt } from './prompts/operational';
 import { buildMoralMirrorPrompt, EmotionalState } from './prompts/moral-mirror';
 import { buildEmotionalProtocolPrompt } from './prompts/emotional-protocol';
 import { buildIntellectualFrictionPrompt } from './prompts/intellectual-friction';
+import { buildFewShotExamplesPrompt } from './prompts/few-shot-examples';
 
 // ── Formatadores puros ────────────────────────────────────────────────────────
 import {
@@ -84,6 +85,7 @@ function assembleSystemPrompt(parts: {
   tradition: string;
   lastFrictionAt?: string;
   recurrentThemes: Record<string, number>;
+  fewShotBlock: string; // ← novo
 }): string {
   const blocks = [
 
@@ -115,7 +117,7 @@ function assembleSystemPrompt(parts: {
       topicsBlock: parts.topicsBlock,
     }),
 
-    // 4b. Protocolo de honestidade sobre memória (logo após o bloco de memória)
+    // 4b. Protocolo de honestidade sobre memória
     buildMemoryHonestyPrompt(),
 
     // 5. Protocolo emocional
@@ -124,6 +126,9 @@ function assembleSystemPrompt(parts: {
       emotionalState: parts.emotionalState,
       recurrentThemes: parts.recurrentThemes,
     }),
+
+    // 5b. Exemplos de tom por similaridade vetorial (vazio se nenhum atingir threshold)
+    parts.fewShotBlock,
 
     // 6. Espelho moral (suspenso em crise)
     buildMoralMirrorPrompt({
@@ -178,7 +183,8 @@ export async function buildChatPrompt(
   const relatedTopics = buildRelatedTopicsString(masterContext);
 
   // ── Cargas paralelas ──────────────────────────────────────────────────────
-  const [moduleResult, dynamicResult] = await Promise.all([
+  // fewShotBlock roda junto com os outros — não adiciona latência extra
+  const [moduleResult, dynamicResult, fewShotBlock] = await Promise.all([
     loadActiveModules(
       {
         userId: String(user.id),
@@ -201,6 +207,7 @@ export async function buildChatPrompt(
       emotionalScore: emotional.score,
       masterContext,
     }),
+    buildFewShotExamplesPrompt(message),
   ]);
 
   const finalModel = moduleResult.resolvedModel || DEFAULT_MODEL;
@@ -255,10 +262,10 @@ export async function buildChatPrompt(
 
   // ── Dados dos módulos opcionais ───────────────────────────────────────────
   const emotionalState = inferEmotionalStateFromHistory(
-  intel.recentHistory,
-  ctx.message,
-  (masterContext?.emotional_state || 'stable') as EmotionalState,
-);
+    intel.recentHistory,
+    ctx.message,
+    (masterContext?.emotional_state || 'stable') as EmotionalState,
+  );
   const principles = masterContext?.principles || [];
   const moralMirrorEnabled = masterContext?.modules?.moralMirror ?? false;
   const frictionEnabled = masterContext?.profile?.friction_enabled ?? false;
@@ -292,6 +299,7 @@ export async function buildChatPrompt(
     tradition,
     lastFrictionAt,
     recurrentThemes,
+    fewShotBlock, // ← novo
   });
 
   // ── Ferramentas ───────────────────────────────────────────────────────────
