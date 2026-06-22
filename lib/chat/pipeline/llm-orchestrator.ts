@@ -1,5 +1,5 @@
 // lib/chat/pipeline/llm-orchestrator.ts
-// V11.5.2 — Orquestrador Multi-Steps com Tipagem Segura e Suporte a Ferramentas
+// V11.6.0 — Orquestrador Multi-Steps com Blindagem de Histórico (Prevenção de Alucinação)
 
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
@@ -128,9 +128,15 @@ export async function runLLMOrchestrator(
   const isToolRequired = toolChoice === 'required';
   const MAX_STEPS = isToolRequired ? 2 : 1;
 
+  // ── BLINDAGEM DE HISTÓRICO ──
+  // Mantém apenas as últimas 10 interações (5 turnos de ida e volta)
+  // Isso evita que conversas de horas ou dias atrás causem alucinação temporal no modelo.
+  const MAX_HISTORY_MESSAGES = 10;
+  const recentHistory = conversationMessages.slice(-MAX_HISTORY_MESSAGES);
+
   let currentMessages = [
     { role: 'system' as const, content: prompt.systemPrompt },
-    ...conversationMessages,
+    ...recentHistory,
   ] as ChatMessage[];
 
   let passoAtual = 0;
@@ -148,10 +154,13 @@ export async function runLLMOrchestrator(
     let stepFailed = false;
 
     try {
+      // ── CORREÇÃO DO MAX_TOKENS ──
+      // Reduzido de 8000 para 1500. Respostas de chat nunca precisam de 8k tokens.
+      // Isso evita que o OpenRouter corte o stream abruptamente por pré-alocação exagerada de memória.
       loopResponse = (await callOpenRouterWithPriority(
         1, 'never', stepSignature,
         currentMessages, tools, requestedModel,
-        0.1, 25000, 8000, currentToolChoice
+        0.1, 25000, 1500, currentToolChoice
       )) as LLMResponse;
     } catch (error) {
       console.error(`[Orchestrator] Erro no passo ${passoAtual}:`, error);
@@ -206,7 +215,7 @@ export async function runLLMOrchestrator(
     const synthesisResponse = (await callOpenRouterWithPriority(
       1, 'never', `${requestSignature}_synth`,
       currentMessages, [], fastModel,
-      0.7, 15000, 6000
+      0.7, 15000, 1500 // ← Também ajustado de 6000 para 1500
     )) as LLMResponse;
 
     return appendResilienceNotice(
