@@ -1,5 +1,5 @@
 // lib/modules/modules/reminders.ts
-// V12.3.0 — Padrão consolidado: Zero DB Calls (Uso exclusivo de dados injetados)
+// V13.0.0 — Arquitetura V2 (Sinal de fumaça): Payload enxuto e Zero DB Calls
 
 import { ModuleDefinition } from '../types';
 
@@ -8,6 +8,7 @@ export const ModuloReminders: ModuleDefinition = {
   label: 'Lembretes e Notificações',
   preferredModel: 'flash',
   plan: 'free',
+  version: 'v2', // ← OFICIALMENTE V2
   
   trigger: {
     always: false,
@@ -22,17 +23,11 @@ export const ModuloReminders: ModuleDefinition = {
   
   buildContextBlock: async (opts) => {
     try {
-      // ✅ Injeção via masterContext (Zero DB Calls)
+      // ✅ Injeção via masterContext (RAM)
       const reminders = (opts as any).masterContext?.reminders || [];
-      if (!reminders.length) return '';
-
-      const linhas = reminders.map((r: any) => {
-        const hora = new Date(r.scheduled_time).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-        const freq = r.frequency ? ` (${r.frequency})` : '';
-        return `- ${r.title} → ${hora}${freq}`;
-      }).join('\n');
-
-      return `[LEMBRETES PENDENTES]\n${linhas}`;
+      
+      // V2: Substituição da lista iterada pelo sinal de fumaça.
+      return `[Módulo: Lembretes] Há ${reminders.length} lembrete(s) ativo(s) no masterContext. Para consultar os detalhes, alertas e horários, use a tool 'lembrete_consultar'. Para adicionar ou remover, use 'lembrete_criar' ou 'lembrete_cancelar'.`;
     } catch {
       return '';
     }
