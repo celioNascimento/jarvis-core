@@ -1,5 +1,5 @@
 // lib/modules/modules/relacionamentos.ts
-// V12.3.0 — Padrão Zero-Waste consolidado
+// V13.0.0 — Padrão V2 (Sinal de fumaça) consolidado
 
 import type { ModuleDefinition } from '../types';
 
@@ -8,6 +8,7 @@ export const ModuloRelacionamentos: ModuleDefinition = {
   label: 'Contatos e Permissões',
   preferredModel: 'flash',
   plan: 'free',
+  version: 'v2', // ← OFICIALMENTE V2
   trigger: {
     contexts: ['relacao'],
     keywords: /contato|permissão|compartilhar|acesso|liberar|bloquear|giselle/i 
@@ -20,10 +21,8 @@ export const ModuloRelacionamentos: ModuleDefinition = {
       
       if (!rels || rels.length === 0) return '';
 
-      return [
-        '### 🤝 RELACIONAMENTOS (Permissões Ativas)',
-        'Você possui conexões ativas. Se o usuário pedir para compartilhar algo, use a ferramenta alternar_permissao_contato se não estiver liberado.'
-      ].join('\n');
+      // V2: Sinal de fumaça padronizado
+      return `[Módulo: Relacionamentos] O usuário possui ${rels.length} conexão(ões) no masterContext. Para consultar detalhes ou liberar/bloquear acessos, use a tool 'alternar_permissao_contato'.`;
     } catch (e) {
       console.error('[ModuloRelacionamentos] Erro:', e);
       return '';
