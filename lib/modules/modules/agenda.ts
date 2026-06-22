@@ -1,5 +1,5 @@
 // lib/modules/modules/agenda.ts
-// V13.0.0 — STRICT REGRA 3: Função Pura, Zero DB Calls
+// V13.1.0 — STRICT REGRA 3: Função Pura, Zero DB Calls + Arquitetura V2 (Sinal de fumaça)
 
 import type { ModuleDefinition } from '../types';
 
@@ -8,6 +8,7 @@ export const ModuloAgenda: ModuleDefinition = {
   label: 'Agenda Interna (Lev)',
   preferredModel: 'flash',
   plan: 'free',
+  version: 'v2', // ← OFICIALMENTE V2
   trigger: {
     contexts: ['agenda', 'evento'],
     keywords: /agenda|amanhã|hoje|semana|marcar|meus eventos|compromisso|reunião|horário|cancelar|adiar/i,
@@ -18,25 +19,17 @@ export const ModuloAgenda: ModuleDefinition = {
     },
   },
   
-  // REGRA 3: Sem async, sem await, sem fetch, sem supabase. 
-  // Apenas formata o que já está na memória RAM.
+  // REGRA 3 MANTIDA: Sem async, sem await, sem fetch, sem supabase. 
+  // NOVA REGRA (Processador): Apenas emite o "sinal de fumaça" informando a IA para usar as tools.
   buildContextBlock: async (opts) => {
     try {
       const events = (opts as any).masterContext?.events || [];
       
       if (!events.length) return '';
 
-      // Formata os eventos injetados de forma limpa para o LLM
-      const linhas = events.map((e: any) => {
-        // Ajusta para o fuso do Brasil na hora de exibir pro LLM
-        const data = new Date(e.start_at).toLocaleString('pt-BR', { 
-          timeZone: 'America/Sao_Paulo',
-          day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
-        });
-        return `- ${e.title} (${data}) [Cat: ${e.category || 'personal'}]`;
-      });
-
-      return `[AGENDA INTERNA LEV - PRÓXIMOS EVENTOS]\n${linhas.join('\n')}`;
+      // V2: Não despejamos mais todos os detalhes de data, categoria e nome no prompt.
+      // Damos apenas a métrica e a instrução clara de qual ferramenta usar.
+      return `[Módulo: Agenda] O usuário tem ${events.length} evento(s) no masterContext. Use a tool 'agenda_consultar' para visualizar detalhes e horários, ou 'agenda_salvar_evento'/'agenda_deletar_evento' para modificações.`;
     } catch (e) {
       console.error('[ModuloAgenda] Erro ao construir bloco:', e);
       return '';
