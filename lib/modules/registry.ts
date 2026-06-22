@@ -1,5 +1,5 @@
 // lib/modules/registry.ts
-// V12.9.0 — Adiciona ModuloWeb (web_pesquisar sempre ativo)
+// V13.0.0 — Adiciona suporte à arquitetura Cache/RAM (Modo Híbrido V1/V2)
 
 import { supabase } from '@/lib/jarvis';
 import { Redis } from '@upstash/redis';
@@ -86,6 +86,13 @@ export async function loadActiveModules(
     const start = Date.now();
     try {
       const block = await mod.buildContextBlock({ ...opts, masterContext });
+      
+      // Lógica de Arquitetura Híbrida: Emite aviso para módulos V1 que estão engordando o prompt
+      const isV2 = (mod as any).version === 'v2';
+      if (!isV2 && block && block.length > 800) {
+        console.warn(`[ModuleRegistry] Atenção: Módulo ${mod.id} (V1) injetou ${block.length} caracteres no prompt. Considere migrar para V2.`);
+      }
+
       return {
         block,
         tools: mod.tools || [],
@@ -94,6 +101,7 @@ export async function loadActiveModules(
           latencyMs: Date.now() - start,
           tokens: Math.ceil((block?.length || 0) / 4),
           activated: (block?.length || 0) > 0,
+          version: isV2 ? 'v2' : 'v1', // Rastreamento para telemetria de migração
         },
       };
     } catch (e) {
