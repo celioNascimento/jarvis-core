@@ -1,22 +1,14 @@
 // lib/modules/modules/projetos.ts
-// V12.3.0 — Zero DB Calls, Tipagem rigorosa e Fallback de Hidratação
+// V13.0.0 — STRICT REGRA 3: Sem Supabase + Arquitetura V2 (Sinal de fumaça)
 
-import { supabase } from '@/lib/jarvis';
 import type { ModuleDefinition } from '../types';
-
-interface Project {
-  id: number;
-  name: string;
-  tag: string;
-  status: string;
-  my_role?: string;
-}
 
 export const ModuloProjetos: ModuleDefinition = {
   id: 'projetos_lev',
   label: 'Projetos e Tópicos',
   preferredModel: 'flash',
   plan: 'free',
+  version: 'v2', // ← OFICIALMENTE V2
   trigger: {
     always: false,
     contexts: ['projeto', 'planejamento'],
@@ -25,36 +17,14 @@ export const ModuloProjetos: ModuleDefinition = {
 
   buildContextBlock: async (opts) => {
     try {
-      // 1. Tenta a Injeção de Contexto (Zero DB Calls)
-      let projects: Project[] = (opts as any).masterContext?.projects;
+      // 1. Injeção de Contexto RIGOROSA (Zero DB Calls)
+      // Fallback de Supabase foi removido para respeitar o contrato do Módulo
+      const projects = (opts as any).masterContext?.projects;
 
-      // 2. Fallback de Segurança (Se chamado isoladamente)
-      if (!projects) {
-        const { data } = await supabase
-          .schema('jarvis')
-          .from('projects')
-          .select('id, name, tag, status, my_role')
-          .eq('user_id', opts.userId)
-          .in('status', ['em_desenvolvimento', 'em_pausa'])
-          .limit(10);
-        
-        projects = data || [];
-      }
+      if (!projects || !projects.length) return '';
 
-      if (!projects.length) return '';
-
-      // 3. Montagem Enxuta (Deixa os detalhes para as tools)
-      const topicBlocks = projects.map((proj: Project) => {
-        const roleLabel = proj.my_role && proj.my_role !== 'owner' ? ` [Papel: ${proj.my_role}]` : '';
-        return `• ${proj.name ?? proj.tag} (${proj.tag})${roleLabel} [Status: ${proj.status}] — id: ${proj.id}`;
-      });
-
-      return [
-        '[PROJETOS ATIVOS]',
-        topicBlocks.join('\n'),
-        '',
-        'INSTRUÇÃO: Para ver os tópicos de um projeto, use listar_topicos(project_id). Para ver tarefas, use listar_entries(topic_id).',
-      ].join('\n');
+      // 2. V2: Apenas sinal de fumaça. Deixa a extração de dados para as tools.
+      return `[Módulo: Projetos] O usuário possui ${projects.length} projeto(s) ativo(s) no masterContext. Use a tool 'listar_projetos' para ver a lista, 'listar_topicos' para ver tópicos de um projeto, ou 'listar_entries' para ver as tarefas.`;
     } catch (e) {
       console.error('[ModuloProjetos] Erro:', e);
       return '';
