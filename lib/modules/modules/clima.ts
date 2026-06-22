@@ -1,14 +1,15 @@
 // lib/modules/modules/clima.ts
-// V12.4.0 — Zero DB Calls — usa opts.location do pipeline
+// V13.0.0 — STRICT REGRA 3: Zero API Calls na entrada + Arquitetura V2 (Sinal de fumaça)
 
 import type { ModuleDefinition } from '../types';
-import { fetchWeather } from '@/lib/openmeteo';
+// fetchWeather removido do import, a responsabilidade de I/O passa a ser exclusiva da tool.
 
 export const ModuloClima: ModuleDefinition = {
   id: 'clima',
   label: 'Condições Climáticas',
   preferredModel: 'flash',
   plan: 'free',
+  version: 'v2', // ← OFICIALMENTE V2
   trigger: {
     contexts: ['clima'],
     keywords: /clima|tempo|chover|chuva|sol|frio|calor|previsão|temperatura|guarda-chuva/i,
@@ -18,8 +19,8 @@ export const ModuloClima: ModuleDefinition = {
     try {
       // Prioridade 1: GPS atual do request (opts.location)
       // Prioridade 2: última localização no masterContext.config
-      // Prioridade 3: fallback hardcoded Londrina
-      let lat = -23.27;
+      // Prioridade 3: fallback hardcoded
+      let lat = -23.27; // Londrina
       let lon = -51.2;
 
       if (opts.location?.latitude && opts.location?.longitude) {
@@ -45,12 +46,8 @@ export const ModuloClima: ModuleDefinition = {
         }
       }
 
-      // fetchWeather é API externa — não é query ao banco, é legítimo
-      const weather = await fetchWeather(lat, lon);
-
-      return `[MÓDULO DE CLIMA ATIVO]
-A localização atual do usuário registra ${weather.temp}°C (${weather.description}).
-Umidade: ${weather.humidity}% | Chance de chuva hoje: ${weather.forecast[0]?.rain_probability || 0}%.`;
+      // V2: Fetch externo removido do pipeline de injeção. Zero latência na montagem.
+      return `[Módulo: Clima] Localização resolvida (Lat: ${lat}, Lon: ${lon}). Use a tool 'clima_consultar_atual' para buscar a temperatura real, previsão de chuva e condições do tempo.`;
     } catch (e) {
       console.error('[ModuloClima] Erro:', e);
       return '';
