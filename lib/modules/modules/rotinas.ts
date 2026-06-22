@@ -1,5 +1,5 @@
 // lib/modules/modules/rotinas.ts
-// V12.3.0 — Padrão Zero-Waste consolidado: Injeção de estado de check-in
+// V13.0.0 — Arquitetura V2 (Sinal de fumaça): Payload enxuto e injeção tática
 
 import type { ModuleDefinition } from '../types';
 
@@ -8,6 +8,7 @@ export const ModuloRotinas: ModuleDefinition = {
   label: 'Gestão de Rotinas e Hábitos',
   preferredModel: 'flash',
   plan: 'free',
+  version: 'v2', // ← OFICIALMENTE V2
   trigger: {
     contexts: ['rotina', 'foco'],
     keywords: /rotina|hábito|costume|todo dia|sempre faço|manhã|tarde|noite|ancora|âncora|checkin/i,
@@ -20,35 +21,17 @@ export const ModuloRotinas: ModuleDefinition = {
 
   buildContextBlock: async (opts) => {
     try {
-      // ✅ Usa os dados já processados pelo God RPC (Zero DB Calls)
+      // ✅ Usa os dados já processados pelo God RPC (RAM)
       const routines = (opts as any).masterContext?.routines || [];
       if (!routines.length) return '';
 
-      const formatGroup = (title: string, period: string) => {
-        const list = routines.filter((r: any) => r.period === period);
-        if (!list.length) return '';
+      // V2: Contagem cirúrgica de pendências sem iterar múltiplos grupos
+      const pendentes = routines.filter((r: any) => 
+        r.checkin?.status !== 'done' && r.checkin?.status !== 'skipped'
+      ).length;
 
-        const lines = list.map((r: any) => {
-          let statusIcon = '⏳ (Pendente)';
-          if (r.checkin?.status === 'done') statusIcon = '✅ (Feito)';
-          if (r.checkin?.status === 'skipped') statusIcon = '⏭️ (Pulado)';
-
-          return `  - [${r.anchor}] -> ${r.action} ${statusIcon}`;
-        });
-
-        return `* ${title}:\n${lines.join('\n')}`;
-      };
-
-      const blocks = [
-        formatGroup('MANHÃ', 'morning'),
-        formatGroup('TARDE', 'afternoon'),
-        formatGroup('NOITE', 'evening'),
-        formatGroup('QUALQUER MOMENTO', 'anytime')
-      ].filter(Boolean);
-
-      return `[MÓDULO DE ROTINAS ATIVO - STATUS DE HOJE]\n${blocks.join('\n\n')}
-
-INSTRUÇÃO: Use estas rotinas para dar previsibilidade. Se o usuário parecer perdido, sugira seguir a próxima âncora pendente (⏳). Elogie se ele já concluiu as tarefas (✅).`;
+      // Emite o sinal de fumaça com a instrução de comportamento embutida
+      return `[Módulo: Rotinas] Há ${routines.length} rotina(s) mapeada(s) no masterContext (${pendentes} ainda pendente(s) hoje). Use a tool 'listar_rotinas' para consultar as âncoras exatas e sugerir o próximo passo, ou 'fazer_checkin_rotina' para registrar execuções.`;
 
     } catch (e) {
       console.error('[ModuloRotinas] Erro ao carregar rotinas:', e);
