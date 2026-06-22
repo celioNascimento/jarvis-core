@@ -1,5 +1,5 @@
 // lib/modules/modules/personalidade.ts
-// V12.3.0 — Padrão mantido: Zero DB Calls Nativo (Orientado a Ferramentas)
+// V13.0.0 — Arquitetura V2 (Sinal de fumaça)
 
 import type { ModuleDefinition } from '../types';
 
@@ -8,6 +8,7 @@ export const ModuloPersonalidade: ModuleDefinition = {
   label: 'Personalidade',
   preferredModel: 'flash',
   plan: 'free',
+  version: 'v2', // ← OFICIALMENTE V2
   
   trigger: {
     always: false,
@@ -15,9 +16,10 @@ export const ModuloPersonalidade: ModuleDefinition = {
     contexts: [],
   },
   
-  // O módulo não precisa injetar contexto, pois as ferramentas 
-  // gerenciam o estado da personalidade diretamente no banco/Redis.
-  buildContextBlock: async () => '',
+  // V2: Emite o sinal de fumaça para a IA saber que tem autonomia para alterar o tom ativamente.
+  buildContextBlock: async () => {
+    return `[Módulo: Personalidade] Ativo. O usuário deseja ajustar ou entender seu tom/comportamento. Use a tool 'personalidade_consultar' para verificar suas configurações atuais, ou 'personalidade_ajustar' para calibrar humor, formalidade e franqueza.`;
+  },
   
   tools: [
     'personalidade_ajustar', 
