@@ -1,4 +1,6 @@
-// lib/modules/types.ts — V2.0.0 (God RPC Types + Plan Hierarchy)
+// lib/modules/types.ts
+// V2.1.0 — Adiciona tipagem para arquitetura Cache/RAM (V1/V2)
+
 import type { ContextType } from '@/lib/chat/context-classifier';
 
 export interface ModuleTrigger {
@@ -33,8 +35,8 @@ export interface ModuleDefinition {
   id: string;
   label: string;
   preferredModel: PreferredModel;
-  // Incluído 'ultra' e 'family_plus' para bater com o seu User Summary
   plan: 'free' | 'personal' | 'family' | 'family_plus' | 'pro' | 'ultra'; 
+  version?: 'v1' | 'v2'; // ← NOVA FLAG ADICIONADA AQUI
   trigger: ModuleTrigger;
   buildContextBlock: (opts: ModuleConditionOpts) => Promise<string>;
   tools: string[];
