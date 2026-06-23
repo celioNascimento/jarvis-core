@@ -207,7 +207,7 @@ export async function buildChatPrompt(
       emotionalScore: emotional.score,
       masterContext,
     }),
-    buildFewShotExamplesPrompt(message),
+    buildFewShotExamplesPrompt(message, intel.queryEmbedding),
   ]);
 
   const finalModel = moduleResult.resolvedModel || DEFAULT_MODEL;

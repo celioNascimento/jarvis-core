@@ -1,8 +1,9 @@
 // lib/chat/pipeline/llm-orchestrator.ts
-// V11.6.0 — Orquestrador Multi-Steps com Blindagem de Histórico (Prevenção de Alucinação)
+// V12.0.0 — Orquestrador Multi-Steps com Roteador MoE por Intenção
 
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
+import { supabase } from '@/lib/jarvis';
 import type { ChatRequestContext } from './request-context';
 import type { ChatPrompt } from './types';
 
@@ -34,6 +35,124 @@ interface ToolCallResult {
   result: string;
 }
 
+// ── Roteador MoE ─────────────────────────────────────────────────────────────
+
+type RouterIntent = 'emocional' | 'factual' | 'acao' | 'recuperacao' | 'hibrido';
+
+interface RouterResult {
+  intent: RouterIntent;
+  fragments: number;
+  needs_rag: boolean;
+  escalate: boolean;
+  resolution_confidence: number;
+  ambiguous: boolean;
+  entities: { x: string | null; y: string | null; z: string | null };
+  reason?: string | null;
+}
+
+// Fallback caso o banco esteja indisponível
+const FALLBACK_MODEL_MAP: Record<RouterIntent, string> = {
+  emocional:   'google/gemini-2.5-flash',
+  factual:     'google/gemini-2.5-flash',
+  acao:        'google/gemini-2.5-flash',
+  recuperacao: 'google/gemini-2.5-flash',
+  hibrido:     'anthropic/claude-sonnet-4.6',
+};
+
+// Traduz alias do banco para model ID do OpenRouter
+const ALIAS_TO_MODEL: Record<string, string> = {
+  'flash-25':      'google/gemini-2.5-flash',
+  'claude-sonnet': 'anthropic/claude-sonnet-4.6',
+  'flash-lite':    'google/gemini-3.1-flash-lite-preview',
+  'qwen-8b':       'qwen/qwen3-8b',
+  'llama-8b':      'meta-llama/llama-3.1-8b-instruct',
+};
+
+function buildRouterPrompt(input: string, lastTurn: string | null): string {
+  const ctx = lastTurn
+    ? `\nContexto da mensagem anterior:\n[1] ${lastTurn}\n`
+    : '';
+
+  return `Você é um roteador de intenções de um assistente pessoal. Retorne APENAS JSON válido, sem markdown.
+${ctx}
+Mensagem atual: "${input}"
+
+Categorias:
+- "emocional": desabafo, sentimento — sem ação ou busca
+- "factual": conhecimento geral público — nunca busca memória pessoal
+- "acao": comando explícito — salvar, lembrar, registrar, marcar
+- "recuperacao": busca em memória PESSOAL do usuário — o que EU disse/decidi/gastei
+- "hibrido": mais de uma categoria na mesma mensagem
+
+Regras:
+- needs_rag: true somente para recuperacao ou hibrido com busca pessoal
+- escalate: true somente se pronome sem antecedente claro
+- factual nunca tem needs_rag=true nem escalate=true
+
+{"intent":"","fragments":1,"needs_rag":false,"escalate":false,"resolution_confidence":0.9,"ambiguous":false,"entities":{"x":null,"y":"","z":""},"reason":null}`;
+}
+
+async function getBestModelForCategory(intent: RouterIntent): Promise<string> {
+  try {
+    const { data } = await supabase
+      .from('router_best_model_per_category')
+      .select('model_alias')
+      .eq('category', intent)
+      .single();
+
+    return ALIAS_TO_MODEL[data?.model_alias ?? ''] ?? FALLBACK_MODEL_MAP[intent];
+  } catch {
+    return FALLBACK_MODEL_MAP[intent];
+  }
+}
+
+async function resolveModelByIntent(
+  message: string,
+  lastTurn: string | null,
+  requestedModel: string
+): Promise<{ model: string; routerResult: RouterResult | null }> {
+  try {
+    const prompt = buildRouterPrompt(message, lastTurn);
+
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'google/gemini-2.5-flash',
+        max_tokens: 200,
+        temperature: 0.1,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content ?? '';
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('JSON não encontrado na resposta do roteador');
+
+    const routerResult: RouterResult = JSON.parse(
+      jsonMatch[0].replace(/[\u0000-\u001F\u007F]/g, ' ').trim()
+    );
+
+    // Confiança baixa → mantém modelo original sem alterar
+    if (routerResult.resolution_confidence < 0.6) {
+      console.log(`[Router] ⚠️ Confiança baixa (${routerResult.resolution_confidence}) — usando modelo padrão`);
+      return { model: requestedModel, routerResult };
+    }
+
+    const model = await getBestModelForCategory(routerResult.intent);
+    console.log(`[Router] ✓ intent=${routerResult.intent} conf=${routerResult.resolution_confidence} → ${model}`);
+
+    return { model, routerResult };
+  } catch (err) {
+    console.error('[Router] Falha no roteamento — usando modelo padrão:', err);
+    return { model: requestedModel, routerResult: null };
+  }
+}
+
 // ── Padrões Estritos de Intenção Ativa ────────────────────────────────────────
 
 const IMPERATIVE_INTENT_PATTERNS = [
@@ -47,7 +166,8 @@ const IMPERATIVE_INTENT_PATTERNS = [
 function resolveToolChoice(message: string): 'auto' | 'required' {
   const isImperative = IMPERATIVE_INTENT_PATTERNS.some((pattern) => pattern.test(message));
   if (isImperative) {
-    console.log(`[Orchestrator] 🎯 Intenção estrita detectada. Forçando tool_choice: "required"`); return 'required';
+    console.log(`[Orchestrator] 🎯 Intenção estrita detectada. Forçando tool_choice: "required"`);
+    return 'required';
   }
   return 'auto';
 }
@@ -122,21 +242,23 @@ export async function runLLMOrchestrator(
   const { user, requestSignature, message } = ctx;
   const { conversationMessages, tools, model: requestedModel } = prompt;
 
+  // ── Roteamento MoE: resolve modelo ideal para esta intenção ──────────────
+  const lastTurn = conversationMessages.at(-2)?.content ?? null;
+  const { model: routedModel } = await resolveModelByIntent(
+    message,
+    typeof lastTurn === 'string' ? lastTurn : null,
+    requestedModel
+  );
+
   const toolChoice = resolveToolChoice(message);
 
   // Conversas casuais: 1 step. Tools obrigatórias: até 2 steps.
   const isToolRequired = toolChoice === 'required';
   const MAX_STEPS = isToolRequired ? 2 : 1;
 
-  // ── BLINDAGEM DE HISTÓRICO ──
-  // Mantém apenas as últimas 10 interações (5 turnos de ida e volta)
-  // Isso evita que conversas de horas ou dias atrás causem alucinação temporal no modelo.
-  const MAX_HISTORY_MESSAGES = 10;
-  const recentHistory = conversationMessages.slice(-MAX_HISTORY_MESSAGES);
-
   let currentMessages = [
     { role: 'system' as const, content: prompt.systemPrompt },
-    ...recentHistory,
+    ...conversationMessages,
   ] as ChatMessage[];
 
   let passoAtual = 0;
@@ -154,13 +276,10 @@ export async function runLLMOrchestrator(
     let stepFailed = false;
 
     try {
-      // ── CORREÇÃO DO MAX_TOKENS ──
-      // Reduzido de 8000 para 1500. Respostas de chat nunca precisam de 8k tokens.
-      // Isso evita que o OpenRouter corte o stream abruptamente por pré-alocação exagerada de memória.
       loopResponse = (await callOpenRouterWithPriority(
         1, 'never', stepSignature,
-        currentMessages, tools, requestedModel,
-        0.1, 25000, 1500, currentToolChoice
+        currentMessages, tools, routedModel,
+        0.1, 25000, 8000, currentToolChoice
       )) as LLMResponse;
     } catch (error) {
       console.error(`[Orchestrator] Erro no passo ${passoAtual}:`, error);
@@ -211,11 +330,11 @@ export async function runLLMOrchestrator(
 
   // Síntese apenas quando tools foram executadas e não geraram conteúdo
   try {
-    const fastModel = requestedModel.replace(/pro(-\w+)?/, 'fast$1');
+    const fastModel = routedModel.replace(/pro(-\w+)?/, 'fast$1');
     const synthesisResponse = (await callOpenRouterWithPriority(
       1, 'never', `${requestSignature}_synth`,
       currentMessages, [], fastModel,
-      0.7, 15000, 1500 // ← Também ajustado de 6000 para 1500
+      0.7, 15000, 6000
     )) as LLMResponse;
 
     return appendResilienceNotice(
