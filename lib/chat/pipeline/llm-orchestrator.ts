@@ -323,7 +323,7 @@ export async function runLLMOrchestrator(
   if (!ferramentasExecutadas || (loopResponse.content && loopResponse.content.trim().length > 20)) {
     return appendResilienceNotice(
       loopResponse.content || 'Entendido.',
-      requestedModel,
+      routedModel,
       loopResponse.modelUsed || requestedModel
     );
   }
