@@ -69,6 +69,8 @@ export async function loadKnowledgeForDomain(
       p_min_score: 0.5,
     })
 
+    console.log(`[Knowledge] RPC resultado: ${data?.length ?? 0} registros | erro: ${error?.message ?? 'nenhum'}`)
+
     if (error) {
       console.error('[knowledge.data] RPC falhou:', error.message)
       return { records: [], domain }

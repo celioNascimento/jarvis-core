@@ -194,6 +194,7 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
 
   // Detecta se a mensagem pertence a um domínio de conhecimento curado
   const knowledgeDomain = detectKnowledgeDomain(message);
+  console.log(`[Knowledge] domain="${knowledgeDomain}" | msg="${message.substring(0, 80)}"`)
   const shouldLoadKnowledge = !!knowledgeDomain;
 
   console.log(`[Pipeline] Orquestração iniciada: ${message.slice(0, 50)}...`);
