@@ -15,17 +15,38 @@ config({ path: resolve(process.cwd(), '../.env.local') })
 
 import fs from 'fs'
 import path from 'path'
+import { createClient } from '@supabase/supabase-js'
 
-const SUPABASE_URL = "https://rkvwlzbsxtnxtzeldych.supabase.co"
-const SUPABASE_SERVICE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJrdndsemJzeHRueHR6ZWxkeWNoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDA1NDA0NywiZXhwIjoyMDg1NjMwMDQ3fQ.u1ddjbXZKZ5KkwH91QSL7WtkDsSaZuUwyscY46HS4oE"
-const OPENROUTER_KEY = "***REMOVED***"
+// Aceita nomes alternativos comuns para cada variável, já que diferentes partes
+// do projeto (lib/jarvis.ts vs. scripts) podem ter sido escritas com convenções
+// diferentes (com/sem prefixo NEXT_PUBLIC_, OPENAI_ vs OPENROUTER_, etc).
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY
 const DRY_RUN = process.argv.includes('--dry-run')
 const DATASET_PATH = path.join(process.cwd(), 'parenting-dataset.jsonl')
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !OPENROUTER_KEY) {
-  console.error('❌ Variáveis de ambiente não carregadas.')
+const faltando: string[] = []
+if (!SUPABASE_URL) faltando.push('NEXT_PUBLIC_SUPABASE_URL (ou SUPABASE_URL)')
+if (!SUPABASE_SERVICE_KEY) faltando.push('SUPABASE_SERVICE_ROLE_KEY')
+if (!OPENROUTER_KEY) faltando.push('OPENROUTER_API_KEY (ou OPENAI_API_KEY)')
+
+if (faltando.length > 0) {
+  console.error('❌ Variáveis de ambiente faltando:')
+  faltando.forEach(v => console.error(`   - ${v}`))
+  console.error(`\n   Verifique os nomes exatos em D:\\Projetos\\jarvis-core\\.env.local`)
   process.exit(1)
 }
+
+// ─── Cliente Supabase (schema "jarvis") ────────────────────────────────────────
+// Importante: a tabela knowledge_base vive no schema "jarvis", não no "public".
+// Passar { db: { schema: 'jarvis' } } faz o supabase-js enviar automaticamente
+// os headers Content-Profile / Accept-Profile corretos em cada requisição,
+// evitando o erro PGRST205 ("Could not find the table 'public.knowledge_base'").
+const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_KEY!, {
+  db: { schema: 'jarvis' },
+  auth: { persistSession: false },
+})
 
 // ─── Embedding ────────────────────────────────────────────────────────────────
 
@@ -52,19 +73,9 @@ async function generateEmbedding(text: string): Promise<number[] | null> {
 // ─── Supabase insert ──────────────────────────────────────────────────────────
 
 async function insertKnowledge(rows: any[]) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/knowledge_base`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'apikey': SUPABASE_SERVICE_KEY,
-      'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-      'Prefer': 'return=minimal',
-    },
-    body: JSON.stringify(rows),
-  })
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Supabase insert falhou: ${err}`)
+  const { error } = await supabase.from('knowledge_base').insert(rows)
+  if (error) {
+    throw new Error(`Supabase insert falhou: ${JSON.stringify(error)}`)
   }
 }
 
@@ -121,7 +132,7 @@ async function main() {
     return
   }
 
-  console.log('\n📤 Inserindo no Supabase em lotes de 10...')
+  console.log('\n📤 Inserindo no Supabase (schema "jarvis") em lotes de 10...')
   const BATCH_SIZE = 10
   let inserted = 0
 
