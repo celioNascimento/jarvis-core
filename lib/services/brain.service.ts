@@ -1,10 +1,9 @@
 // lib/services/brain.service.ts
 //
-// V2 — Correções críticas:
-//   1. generateEmbedding com timeout e fallback gracioso (não bloqueia inserção)
-//   2. invalidateContextField após inserção confirmada (cache history atualizado)
-//   3. Logging detalhado em cada etapa para rastrear onde falha
-//   (schema jarvis já está configurado no cliente supabase de @/lib/jarvis)
+// V3 — Janela de contexto no embedding:
+//   O vetor semântico é gerado com a mensagem atual + último turno do assistente,
+//   eliminando a colisão semântica em mensagens curtas ou ambíguas.
+//   O conteúdo salvo no banco continua sendo só a mensagem do usuário (imutável).
 
 import { supabase } from '@/lib/jarvis';
 import { generateEmbedding } from '@/lib/memory/generate-embedding';
@@ -16,16 +15,17 @@ import { invalidateContextField } from '@/lib/services/context-cache';
 export interface BrainInsertInput {
   userId: number;
   content: string;
+  lastAssistantTurn?: string | null; // ← NOVO: turno anterior para ancorar o embedding
   projectTag?: string;
   category?:
-  | 'Nota'
-  | 'Dúvida'
-  | 'Log_Tecnico'
-  | 'Ideia_Estacionada'
-  | 'Documentacao'
-  | 'info'
-  | 'noise'
-  | 'archived';
+    | 'Nota'
+    | 'Dúvida'
+    | 'Log_Tecnico'
+    | 'Ideia_Estacionada'
+    | 'Documentacao'
+    | 'info'
+    | 'noise'
+    | 'archived';
   sessionId?: string;
   emotionalScore?: number;
   priorityScore?: number;
@@ -36,14 +36,27 @@ export interface BrainInsertInput {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
+ * Monta o texto de entrada para o embedding.
+ * Se houver turno anterior do assistente, concatena antes da mensagem atual.
+ * Isso ancora o vetor no contexto correto — elimina colisão semântica em
+ * mensagens curtas como "sei lá" ou "a ideia do fine tuning no prompt".
+ */
+function buildEmbeddingInput(content: string, lastAssistantTurn: string | null | undefined): string {
+  if (!lastAssistantTurn) return content;
+
+  // Limita o turno anterior a 300 chars para não inflar o vetor
+  const truncatedContext = lastAssistantTurn.trim().substring(0, 300);
+  return `[contexto anterior]: ${truncatedContext}\n[mensagem atual]: ${content}`;
+}
+
+/**
  * Gera embedding com timeout de 4s.
  * Se falhar ou exceder o tempo, retorna null — a inserção continua sem vetor.
- * Isso evita que uma falha no modelo de embedding bloqueie o salvamento do brain.
  */
-async function safeGenerateEmbedding(content: string): Promise<number[] | null> {
+async function safeGenerateEmbedding(embeddingInput: string): Promise<number[] | null> {
   try {
     const result = await Promise.race([
-      generateEmbedding(content),
+      generateEmbedding(embeddingInput),
       new Promise<null>((resolve) =>
         setTimeout(() => {
           console.warn('[BrainService] ⚠️ Timeout no generateEmbedding (4s). Inserindo sem vetor.');
@@ -64,6 +77,7 @@ export async function insertBrainEntry(input: BrainInsertInput) {
   const {
     userId,
     content,
+    lastAssistantTurn,
     projectTag = 'geral',
     category = 'info',
     sessionId,
@@ -76,27 +90,31 @@ export async function insertBrainEntry(input: BrainInsertInput) {
   console.log('[BrainService] ── Iniciando inserção ──────────────────────────');
   console.log('[BrainService] userId:', userId, '| category:', category, '| sessionId:', sessionId);
 
-  // 1. Embedding (com fallback gracioso — não bloqueia a inserção)
-  console.log('[BrainService] 1. Gerando embedding...');
-  const embedding = await safeGenerateEmbedding(content);
-  console.log('[BrainService] 1. Embedding:', embedding ? `✅ vetor de ${embedding.length} dims` : '⚠️ null (inserindo sem vetor)');
+  // 1. Monta input do embedding com janela de contexto
+  const embeddingInput = buildEmbeddingInput(content, lastAssistantTurn);
+  const hasContext = !!lastAssistantTurn;
+  console.log(`[BrainService] 1. Embedding input: ${hasContext ? '✓ com contexto anterior' : '⚠ sem contexto (primeira mensagem)'} | ${embeddingInput.length} chars`);
 
-  // 2. Criptografia
-  console.log('[BrainService] 2. Criptografando conteúdo...');
+  // 2. Gera embedding (com fallback gracioso — não bloqueia a inserção)
+  const embedding = await safeGenerateEmbedding(embeddingInput);
+  console.log('[BrainService] 2. Embedding:', embedding ? `✅ vetor de ${embedding.length} dims` : '⚠️ null (inserindo sem vetor)');
+
+  // 3. Criptografia — salva só o conteúdo original do usuário (não o input do embedding)
+  console.log('[BrainService] 3. Criptografando conteúdo...');
   let encryptedContent: string;
   try {
     encryptedContent = encrypt(content);
-    console.log('[BrainService] 2. ✅ Conteúdo cifrado com sucesso.');
+    console.log('[BrainService] 3. ✅ Conteúdo cifrado com sucesso.');
   } catch (e) {
-    console.error('[BrainService] 2. ❌ Falha na criptografia:', e);
+    console.error('[BrainService] 3. ❌ Falha na criptografia:', e);
     throw new Error(`Falha ao criptografar conteúdo: ${(e as Error).message}`);
   }
 
-  // 3. Blind index
-  console.log('[BrainService] 3. Montando índice cego...');
+  // 4. Blind index
+  console.log('[BrainService] 4. Montando índice cego...');
   const rawTags = [...tags, category, projectTag];
   const blindTags = rawTags.map((tag) => hashBlindIndex(tag));
-  console.log('[BrainService] 3. ✅ blindTags:', blindTags.length, 'entradas');
+  console.log('[BrainService] 4. ✅ blindTags:', blindTags.length, 'entradas');
 
   // Criptografa ai_reply dentro do metadata se existir
   const safeMetadata = { ...metadata };
@@ -104,16 +122,16 @@ export async function insertBrainEntry(input: BrainInsertInput) {
     safeMetadata.ai_reply = encrypt(safeMetadata.ai_reply);
   }
 
-  // 4. Insert no Supabase
-  console.log('[BrainService] 4. Enviando para Supabase...');
+  // 5. Insert no Supabase
+  console.log('[BrainService] 5. Enviando para Supabase...');
   const { data, error } = await supabase
     .from('brain')
     .insert({
       user_id: userId,
-      content: encryptedContent,
+      content: encryptedContent,       // conteúdo original — não o input do embedding
       is_encrypted: true,
       blind_tags: blindTags,
-      embedding: embedding ?? null,
+      embedding: embedding ?? null,    // vetor gerado com contexto
       project_tag: projectTag,
       category,
       session_id: sessionId ?? null,
@@ -131,12 +149,12 @@ export async function insertBrainEntry(input: BrainInsertInput) {
 
   console.log('[BrainService] ✅ Inserção confirmada. ID:', data?.id);
 
-  // 5. Invalida o cache de histórico para que o próximo turno leia a entrada nova
-  console.log('[BrainService] 5. Invalidando cache history para userId:', userId);
+  // 6. Invalida o cache de histórico para que o próximo turno leia a entrada nova
+  console.log('[BrainService] 6. Invalidando cache history para userId:', userId);
   await invalidateContextField(userId, 'history').catch((e) =>
     console.warn('[BrainService] ⚠️ Falha ao invalidar cache history (não crítico):', e)
   );
-  console.log('[BrainService] 5. ✅ Cache history invalidado.');
+  console.log('[BrainService] 6. ✅ Cache history invalidado.');
 
   console.log('[BrainService] ── Inserção finalizada ────────────────────────');
   return data;
