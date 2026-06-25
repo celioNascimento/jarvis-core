@@ -1,5 +1,6 @@
 // lib/chat/pipeline/intelligence.ts
-// V17.0 - Embedding reativado para perguntas de memória + gate atualizado
+// V18.0 — Knowledge Base integrada: busca conhecimento curado por domínio
+//          em paralelo com memórias pessoais
 
 import { supabase } from '@/lib/jarvis';
 import { classifyContextWithL4, type ContextType } from '@/lib/chat/context-classifier';
@@ -10,6 +11,7 @@ import type { ChatRequestContext, LocalMessage } from './request-context';
 import { ContextCache, invalidateSessionHistory } from '@/lib/services/context-cache';
 import { reinforceMemory } from '@/lib/services/memory.service';
 import { loadMemoriesForContext, type MemoriesLoadResult, type MemoryRecord } from '@/lib/data/memories.data';
+import { loadKnowledgeForDomain, detectKnowledgeDomain, type KnowledgeLoadResult } from '@/lib/data/knowledge.data';
 import { decrypt } from '@/lib/crypto-utils';
 
 const MAX_MSG_CHARS = 800;
@@ -190,8 +192,12 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   // Detecta se é uma pergunta de memória explícita
   const isMemoryQuery = MEMORY_QUERY_REGEX.test(message);
 
+  // Detecta se a mensagem pertence a um domínio de conhecimento curado
+  const knowledgeDomain = detectKnowledgeDomain(message);
+  const shouldLoadKnowledge = !!knowledgeDomain;
+
   console.log(`[Pipeline] Orquestração iniciada: ${message.slice(0, 50)}...`);
-  console.log(`[Pipeline] isMemoryQuery: ${isMemoryQuery} | isNoise: ${isNoise}`);
+  console.log(`[Pipeline] isMemoryQuery: ${isMemoryQuery} | isNoise: ${isNoise} | knowledgeDomain: ${knowledgeDomain ?? 'nenhum'}`);
 
   const contextTags: string[] = [];
   const m = message.toLowerCase();
@@ -199,18 +205,15 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   if (m.includes('projeto') || m.includes('tarefa') || m.includes('desenvolvimento')) contextTags.push('projeto');
   if (m.includes('dinheiro') || m.includes('gasto') || m.includes('pagamento') || m.includes('orç')) contextTags.push('financas');
 
-  // Embedding: ativado para perguntas de memória ou mensagens com conteúdo real
-  // FIX: antes era `const shouldEmbed = false` — bloqueava toda busca semântica
   const shouldEmbed = isMemoryQuery || (!isNoise && message.trim().length > 30);
-
-  // Memories: carrega sempre que for pergunta de memória, mesmo que pareça ruído
   const shouldLoadMemories = isMemoryQuery || !isNoise;
 
-  console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'} | Memories: ${shouldLoadMemories ? 'ATIVO' : 'SKIP'}`);
+  console.log(`[Pipeline] Execução paralela. Embedding: ${shouldEmbed ? 'ATIVO' : 'SKIP'} | Memories: ${shouldLoadMemories ? 'ATIVO' : 'SKIP'} | Knowledge: ${shouldLoadKnowledge ? 'ATIVO' : 'SKIP'}`);
 
-  type PipelineTuple = [number[] | null, boolean, any, MemoriesLoadResult];
+  type PipelineTuple = [number[] | null, boolean, any, MemoriesLoadResult, KnowledgeLoadResult];
 
   const EMPTY_MEMORIES: MemoriesLoadResult = { memories: [], topEmotional: [] };
+  const EMPTY_KNOWLEDGE: KnowledgeLoadResult = { records: [], domain: '' };
 
   const pipelineResult = await Promise.race([
     Promise.all([
@@ -222,6 +225,12 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
       shouldLoadMemories
         ? loadMemoriesForContext(user.id, message, 5, 0.3)
         : Promise.resolve(EMPTY_MEMORIES),
+      shouldLoadKnowledge
+        ? loadKnowledgeForDomain(knowledgeDomain!, message, 2).catch((e) => {
+            console.error('[Pipeline][Knowledge] Falha:', e);
+            return EMPTY_KNOWLEDGE;
+          })
+        : Promise.resolve(EMPTY_KNOWLEDGE),
     ] as const),
     new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('TIMEOUT_SEGURANCA')), 8000)
@@ -229,15 +238,20 @@ export async function runIntelligencePipeline(ctx: ChatRequestContext): Promise<
   ]).catch((err): PipelineTuple => {
     if (err.message === 'TIMEOUT_SEGURANCA') {
       console.error('[Pipeline][Fatal] Timeout (8s). Retornando contexto parcial.');
-      return [null, false, { history: [], config: {}, profile: {} }, EMPTY_MEMORIES];
+      return [null, false, { history: [], config: {}, profile: {} }, EMPTY_MEMORIES, EMPTY_KNOWLEDGE];
     }
     throw err;
   });
 
-  const [queryEmbedding, isStressed, masterContext, memoriesResult] = pipelineResult as PipelineTuple;
+  const [queryEmbedding, isStressed, masterContext, memoriesResult, knowledgeResult] = pipelineResult as PipelineTuple;
 
   masterContext.memories = memoriesResult.memories;
   masterContext.topEmotionalMemories = memoriesResult.topEmotional;
+  masterContext.knowledge = knowledgeResult.records; // conhecimento curado por domínio
+
+  if (knowledgeResult.records.length > 0) {
+    console.log(`[Pipeline] Knowledge: ${knowledgeResult.records.length} registros de '${knowledgeDomain}' injetados no contexto`);
+  }
 
   // Reforça as top 3 memórias carregadas (fire-and-forget)
   if (memoriesResult.memories.length > 0) {
