@@ -39,8 +39,6 @@ import { inferEmotionalStateFromHistory } from './utils/infer-emotional-state';
 // ── Serviços externos ─────────────────────────────────────────────────────────
 import { buildPersonalityBlock } from '@/lib/services/personality.service';
 import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/Utils/ai-helpers';
-import type { KnowledgeRecord } from '@/lib/data/knowledge.data';
-
 // ── Constantes ────────────────────────────────────────────────────────────────
 
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
@@ -59,32 +57,6 @@ function shouldIncludeFamilyContext(message: string, history: string): boolean {
   return isHighAlertMonth || hasFamilySignal;
 }
 
-/**
- * Formata os registros de knowledge base em um bloco de texto
- * para injetar no prompt — instruções de como aplicar o conhecimento curado.
- */
-function buildKnowledgeBlock(records: KnowledgeRecord[]): string {
-  if (!records || records.length === 0) return '';
-
-  const examples = records.map((r, i) => {
-    const teoria = r.teoria_principal ? ` [${r.teoria_principal}]` : '';
-    const passo = r.passo_fluxo ? ` — passo ${r.passo_fluxo} do fluxo` : '';
-    return `Exemplo ${i + 1}${teoria}${passo}:\nPergunta similar: "${r.input_exemplo}"\nResposta modelo:\n${r.output_ideal}`;
-  }).join('\n\n');
-
-  return `[CONHECIMENTO ESPECIALIZADO — PARENTALIDADE CONSCIENTE]
-Encontrei referências relevantes ao que foi perguntado. Use-as como guia de abordagem — não copie literalmente, adapte ao contexto atual.
-
-FLUXO OBRIGATÓRIO antes de sugerir qualquer técnica:
-1. TRIAGEM (Shanker): É desobediência ou sobrecarga de estresse?
-2. PING DO HARDWARE (Siegel): A amígdala disparou? Conecte antes de redirecionar.
-3. CHECK DE RAM (Harvard): O comando é adequado para a idade?
-4. PATCH (Greene): Só então negocie a execução.
-
-${examples}
-
-Aplique este fluxo na resposta. Nunca pule etapas para ir direto às técnicas.`;
-}
 
 // ── Builder do system prompt ──────────────────────────────────────────────────
 
@@ -114,7 +86,6 @@ function assembleSystemPrompt(parts: {
   lastFrictionAt?: string;
   recurrentThemes: Record<string, number>;
   fewShotBlock: string;
-  knowledgeBlock: string; // ← novo
 }): string {
   const blocks = [
 
@@ -148,11 +119,6 @@ function assembleSystemPrompt(parts: {
 
     // 4b. Protocolo de honestidade sobre memória
     buildMemoryHonestyPrompt(),
-
-    // 4c. Conhecimento curado por domínio (parentalidade, etc)
-    //     Injetado depois da memória pessoal, antes do protocolo emocional
-    //     para que o Lev saiba COMO responder antes de processar O QUE responder
-    parts.knowledgeBlock,
 
     // 5. Protocolo emocional
     buildEmotionalProtocolPrompt({
@@ -216,8 +182,11 @@ export async function buildChatPrompt(
   const guidelines = buildGuidelinesString(masterContext);
   const relatedTopics = buildRelatedTopicsString(masterContext);
 
-  // ── Knowledge block (curado pelo dataset de parentalidade) ────────────────
-  const knowledgeBlock = buildKnowledgeBlock(masterContext?.knowledge || []);
+  // ── Knowledge RAG — turno sintético no histórico (não infla system prompt) ─
+  // O exemplo mais similar é injetado como par user/assistant ANTES da mensagem
+  // atual. O modelo aprende por imitação, não por instrução — mais eficaz e
+  // sem custo extra de tokens vs injetar no system prompt.
+  const knowledgeExample = (masterContext?.knowledge ?? [])[0] ?? null;
 
   // ── Cargas paralelas ──────────────────────────────────────────────────────
   const [moduleResult, dynamicResult, fewShotBlock] = await Promise.all([
@@ -336,7 +305,6 @@ export async function buildChatPrompt(
     lastFrictionAt,
     recurrentThemes,
     fewShotBlock,
-    knowledgeBlock, // ← novo
   });
 
   // ── Ferramentas ───────────────────────────────────────────────────────────
@@ -356,7 +324,12 @@ export async function buildChatPrompt(
     model: finalModel,
     conversationMessages: [
       ...recentHistory,
-      { role: 'user', content: message },
+      // Turno sintético do knowledge RAG — só quando domínio foi detectado
+      ...(knowledgeExample ? [
+        { role: 'user' as const,      content: knowledgeExample.input_exemplo },
+        { role: 'assistant' as const, content: knowledgeExample.output_ideal },
+      ] : []),
+      { role: 'user' as const, content: message },
     ],
   };
 }
