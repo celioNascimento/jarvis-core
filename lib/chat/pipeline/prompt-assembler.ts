@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v7.1 — Few-shot examples por similaridade vetorial
+// v7.2 — Knowledge base curada injetada no bloco de memória
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -39,6 +39,7 @@ import { inferEmotionalStateFromHistory } from './utils/infer-emotional-state';
 // ── Serviços externos ─────────────────────────────────────────────────────────
 import { buildPersonalityBlock } from '@/lib/services/personality.service';
 import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/Utils/ai-helpers';
+import type { KnowledgeRecord } from '@/lib/data/knowledge.data';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -56,6 +57,33 @@ function shouldIncludeFamilyContext(message: string, history: string): boolean {
   const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
   const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(history + message));
   return isHighAlertMonth || hasFamilySignal;
+}
+
+/**
+ * Formata os registros de knowledge base em um bloco de texto
+ * para injetar no prompt — instruções de como aplicar o conhecimento curado.
+ */
+function buildKnowledgeBlock(records: KnowledgeRecord[]): string {
+  if (!records || records.length === 0) return '';
+
+  const examples = records.map((r, i) => {
+    const teoria = r.teoria_principal ? ` [${r.teoria_principal}]` : '';
+    const passo = r.passo_fluxo ? ` — passo ${r.passo_fluxo} do fluxo` : '';
+    return `Exemplo ${i + 1}${teoria}${passo}:\nPergunta similar: "${r.input_exemplo}"\nResposta modelo:\n${r.output_ideal}`;
+  }).join('\n\n');
+
+  return `[CONHECIMENTO ESPECIALIZADO — PARENTALIDADE CONSCIENTE]
+Encontrei referências relevantes ao que foi perguntado. Use-as como guia de abordagem — não copie literalmente, adapte ao contexto atual.
+
+FLUXO OBRIGATÓRIO antes de sugerir qualquer técnica:
+1. TRIAGEM (Shanker): É desobediência ou sobrecarga de estresse?
+2. PING DO HARDWARE (Siegel): A amígdala disparou? Conecte antes de redirecionar.
+3. CHECK DE RAM (Harvard): O comando é adequado para a idade?
+4. PATCH (Greene): Só então negocie a execução.
+
+${examples}
+
+Aplique este fluxo na resposta. Nunca pule etapas para ir direto às técnicas.`;
 }
 
 // ── Builder do system prompt ──────────────────────────────────────────────────
@@ -85,7 +113,8 @@ function assembleSystemPrompt(parts: {
   tradition: string;
   lastFrictionAt?: string;
   recurrentThemes: Record<string, number>;
-  fewShotBlock: string; // ← novo
+  fewShotBlock: string;
+  knowledgeBlock: string; // ← novo
 }): string {
   const blocks = [
 
@@ -120,6 +149,11 @@ function assembleSystemPrompt(parts: {
     // 4b. Protocolo de honestidade sobre memória
     buildMemoryHonestyPrompt(),
 
+    // 4c. Conhecimento curado por domínio (parentalidade, etc)
+    //     Injetado depois da memória pessoal, antes do protocolo emocional
+    //     para que o Lev saiba COMO responder antes de processar O QUE responder
+    parts.knowledgeBlock,
+
     // 5. Protocolo emocional
     buildEmotionalProtocolPrompt({
       enabled: true,
@@ -127,7 +161,7 @@ function assembleSystemPrompt(parts: {
       recurrentThemes: parts.recurrentThemes,
     }),
 
-    // 5b. Exemplos de tom por similaridade vetorial (vazio se nenhum atingir threshold)
+    // 5b. Exemplos de tom por similaridade vetorial
     parts.fewShotBlock,
 
     // 6. Espelho moral (suspenso em crise)
@@ -182,8 +216,10 @@ export async function buildChatPrompt(
   const guidelines = buildGuidelinesString(masterContext);
   const relatedTopics = buildRelatedTopicsString(masterContext);
 
+  // ── Knowledge block (curado pelo dataset de parentalidade) ────────────────
+  const knowledgeBlock = buildKnowledgeBlock(masterContext?.knowledge || []);
+
   // ── Cargas paralelas ──────────────────────────────────────────────────────
-  // fewShotBlock roda junto com os outros — não adiciona latência extra
   const [moduleResult, dynamicResult, fewShotBlock] = await Promise.all([
     loadActiveModules(
       {
@@ -299,7 +335,8 @@ export async function buildChatPrompt(
     tradition,
     lastFrictionAt,
     recurrentThemes,
-    fewShotBlock, // ← novo
+    fewShotBlock,
+    knowledgeBlock, // ← novo
   });
 
   // ── Ferramentas ───────────────────────────────────────────────────────────
