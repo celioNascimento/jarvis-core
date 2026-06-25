@@ -1,10 +1,8 @@
 // lib/chat/pipeline/response-finalizer.ts
 // Fase 5 — Cache, Persistência, TTS e Resposta HTTP
 //
-// Responsabilidade única: entregar a resposta ao cliente rapidamente
-// e disparar salvamento/extração em background via waitUntil.
-//
-// A Vercel continuará processando após o retorno — sem 504, sem perda de dados.
+// V2 — Passa o último turno do assistente para o brain.service,
+//       ancorando o embedding no contexto correto (janela de contexto).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
@@ -17,8 +15,6 @@ import type { ChatPrompt } from './types';
 import { extractReminder, hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
 import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
 import { after } from 'next/server';
-
-// A Mágica da Criptografia (Fonte Única da Verdade para a tabela brain)
 import { insertBrainEntry } from '@/lib/services/brain.service';
 
 const redis = new Redis({
@@ -74,6 +70,16 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
   }
 }
 
+// ─── Extrai o último turno do assistente do histórico local ───────────────────
+
+function getLastAssistantTurn(ctx: ChatRequestContext): string | null {
+  // localHistory vem do frontend em ordem cronológica [mais antigo → mais recente]
+  // Busca o último turno com role 'assistant'
+  const turns = [...ctx.localHistory].reverse();
+  const lastAssistant = turns.find(t => t.role === 'assistant');
+  return lastAssistant?.content ?? null;
+}
+
 // ─── Entrypoint público ───────────────────────────────────────────────────────
 
 export async function finalizeResponse(
@@ -81,7 +87,7 @@ export async function finalizeResponse(
   intel: ChatIntelligence,
   prompt: ChatPrompt,
   reply: string,
-  req: NextRequest // ← necessário para waitUntil
+  req: NextRequest
 ): Promise<NextResponse> {
   // 1. Cache da resposta (rápido)
   await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => { });
@@ -91,7 +97,11 @@ export async function finalizeResponse(
     ? await generateTTS(reply, ctx.voiceSettings.provider, ctx.voiceSettings.voiceId)
     : null;
 
-  // 3. Define tarefas em background — NÃO usa await bloqueante!
+  // 3. Captura o último turno do assistente ANTES do background
+  //    (ctx ainda está íntegro aqui — não depende de async)
+  const lastAssistantTurn = getLastAssistantTurn(ctx);
+
+  // 4. Define tarefas em background — NÃO usa await bloqueante!
   const backgroundTasks = async () => {
     try {
       await detectImplicitNegativeFeedback(ctx.message, ctx.user.id);
@@ -100,21 +110,21 @@ export async function finalizeResponse(
     }
 
     try {
-      console.log('[ResponseFinalizer] 🚀 Disparando insertBrainEntry (Versão Criptografada + Metadata)');
+      console.log('[ResponseFinalizer] 🚀 Disparando insertBrainEntry com janela de contexto');
 
-      // Usando o novo Service Criptografado com type-cast defensivo e metadata restaurado
       await insertBrainEntry({
-        userId: Number(ctx.user.id),
-        sessionId: ctx.sessionId,
-        content: ctx.message,
-        category: ctx.message.length < 15 ? 'noise' : 'info',
-        tags: intel.contexts as string[],
+        userId:           Number(ctx.user.id),
+        sessionId:        ctx.sessionId,
+        content:          ctx.message,
+        lastAssistantTurn,                    // ← ancora o embedding no contexto certo
+        category:         ctx.message.length < 15 ? 'noise' : 'info',
+        tags:             intel.contexts as string[],
         metadata: {
-          role: 'user',
-          model: 'google/gemini-2.0-flash-001',
+          role:     'user',
+          model:    'google/gemini-2.0-flash-001',
           ai_reply: reply,
-          contexts: intel.contexts
-        }
+          contexts: intel.contexts,
+        },
       });
 
       console.log('[ResponseFinalizer] ✅ Inserção cifrada concluída com sucesso.');
@@ -160,13 +170,13 @@ export async function finalizeResponse(
     );
   });
 
-  // 4. ✅ Responde IMEDIATAMENTE ao usuário — sem delay
+  // 5. ✅ Responde IMEDIATAMENTE ao usuário — sem delay
   return NextResponse.json({
     reply,
     audioBase64,
     ok: true,
-    sessionId: ctx.sessionId,
+    sessionId:     ctx.sessionId,
     assistantName: ctx.user.assistant_name || 'Lev',
-    performance: `${Date.now() - ctx.startTime}ms`,
+    performance:   `${Date.now() - ctx.startTime}ms`,
   });
 }
