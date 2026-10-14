@@ -6,7 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import { resolveUser } from '@/lib/finances/auth';
 
 
-const supabase = createClient(
+const getSupabase = () => createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
@@ -22,7 +22,7 @@ export async function GET(
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-    const { data, error } = await supabase
+    const { data, error } = await getSupabase()
       .from('credit_invoices')
       .select('*')
       .eq('account_id', id)

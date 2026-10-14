@@ -7,7 +7,7 @@ import { createClient } from '@supabase/supabase-js';
 import { resolveUser } from '@/lib/finances/auth';
 
 
-const supabase = createClient(
+const getSupabase = () => createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
@@ -23,7 +23,7 @@ export async function GET(
     const user = await resolveUser(req);
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
-    const { data, error } = await supabase
+    const { data, error } = await getSupabase()
       .from('user_accounts')
       .select('*')
       .eq('id', id)
@@ -61,7 +61,7 @@ export async function PATCH(
       if (key in body) update[key] = body[key];
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await getSupabase()
       .from('user_accounts')
       .update(update)
       .eq('id', id)
@@ -86,7 +86,7 @@ export async function DELETE(
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
     // Soft delete
-    const { error } = await supabase
+    const { error } = await getSupabase()
       .from('user_accounts')
       .update({ is_active: false })
       .eq('id', id)
