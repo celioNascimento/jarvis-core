@@ -69,13 +69,23 @@ class Gatekeeper {
   async enqueue(task: GatewayTask): Promise<LLMResponse> {
     const dedupKey = `llm_dedup:${task.id}:${edgeSafeHash(task.dedupPayload || '')}`;
 
-    const [cached, activeCount] = await redis.pipeline()
-      .get(dedupKey)
-      .incr('global_llm_active')
-      .exec();
+    let cached: LLMResponse | null = null;
+    let activeCount = 0;
+    let redisAvailable = true;
+
+    try {
+      [cached, activeCount] = await redis.pipeline()
+        .get(dedupKey)
+        .incr('global_llm_active')
+        .exec() as [LLMResponse | null, number];
+    } catch (error) {
+      // Redis controla cache/concorrência, mas não é requisito para gerar a resposta.
+      redisAvailable = false;
+      console.warn('[Gateway] Redis indisponível; seguindo sem cache/limite global:', error);
+    }
 
     if (cached) {
-      await redis.decr('global_llm_active');
+      if (redisAvailable) await redis.decr('global_llm_active').catch(() => {});
       const hit = cached as LLMResponse;
       return {
         ...hit,
@@ -84,7 +94,7 @@ class Gatekeeper {
     }
 
     try {
-      const currentLoad = activeCount as number;
+      const currentLoad = redisAvailable ? activeCount : 0;
       const isOverloaded = currentLoad > CONCURRENCY_LIMIT;
 
       if (isOverloaded) {
@@ -98,7 +108,7 @@ class Gatekeeper {
 
       return await this.executeWithFallback(task, dedupKey);
     } finally {
-      await redis.decr('global_llm_active').catch(() => {});
+      if (redisAvailable) await redis.decr('global_llm_active').catch(() => {});
     }
   }
 

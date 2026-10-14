@@ -174,7 +174,13 @@ async function checkDedup(
   const dedupKey = `chat_dedup:${sig}`;
   const replyKey = `chat_reply:${sig}`;
 
-  const isFirst = await redis.set(dedupKey, '1', { nx: true, ex: 60 });
+  // Redis é apenas um acelerador; uma falha de DNS/serviço não pode derrubar o chat.
+  let isFirst = true;
+  try {
+    isFirst = Boolean(await redis.set(dedupKey, '1', { nx: true, ex: 60 }));
+  } catch (error) {
+    console.warn('[ChatDedup] Redis indisponível; seguindo sem deduplicação:', error);
+  }
 
   if (isFirst) {
     return { dedupKey, replyKey, isCachedReply: false, cachedReply: null };
