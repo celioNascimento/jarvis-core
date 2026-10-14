@@ -5,13 +5,12 @@ import { NextResponse } from 'next/server';
 import { getGoogleAccessToken } from '@/lib/google';
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { db: { schema: 'jarvis' } }
-);
-
 export async function GET() {
+  const supabase = createClient(
+    process.env.SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { db: { schema: 'jarvis' } }
+  );
   // Verifica vars de ambiente
   const clientId     = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;

@@ -6,7 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import { resolveUser } from '@/lib/finances/auth';
 
 
-const supabase = createClient(
+const getSupabase = () => createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
@@ -23,7 +23,7 @@ export async function GET(
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
     // Verifica que a conta pertence ao usuário
-    const { data: acc } = await supabase
+    const { data: acc } = await getSupabase()
       .from('investment_accounts')
       .select('id')
       .eq('id', id)
@@ -35,7 +35,7 @@ export async function GET(
     const { searchParams } = new URL(req.url);
     const activeOnly = searchParams.get('active') !== 'false';
 
-    let query = supabase
+    let query = getSupabase()
       .from('investment_positions')
       .select('*')
       .eq('investment_account_id', id)
@@ -63,7 +63,7 @@ export async function POST(
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
 
     // Verifica propriedade
-    const { data: acc } = await supabase
+    const { data: acc } = await getSupabase()
       .from('investment_accounts')
       .select('id')
       .eq('id', id)
@@ -76,7 +76,7 @@ export async function POST(
     if (!body.asset_name || !body.asset_type)
       return NextResponse.json({ error: 'asset_name e asset_type obrigatórios' }, { status: 400 });
 
-    const { data, error } = await supabase
+    const { data, error } = await getSupabase()
       .from('investment_positions')
       .insert({
         investment_account_id: id,

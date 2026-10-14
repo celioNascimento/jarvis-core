@@ -6,7 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import { updateTransactionStatus } from '@/lib/finances/db';
 import { resolveUser } from '@/lib/finances/auth';
 
-const supabase = createClient(
+const getSupabase = () => createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { db: { schema: 'jarvis' } }
@@ -32,7 +32,7 @@ export async function PATCH(
       return NextResponse.json({ error: 'Status inválido' }, { status: 400 });
 
     // Verifica propriedade
-    const { data: tx } = await supabase
+    const { data: tx } = await getSupabase()
       .from('transactions')
       .select('jarvis_user_id')
       .eq('id', id)
@@ -62,7 +62,7 @@ export async function DELETE(
     if (isNaN(id)) return NextResponse.json({ error: 'ID inválido' }, { status: 400 });
 
     // Verifica propriedade antes de deletar
-    const { data: tx } = await supabase
+    const { data: tx } = await getSupabase()
       .from('transactions')
       .select('jarvis_user_id')
       .eq('id', id)
@@ -71,7 +71,7 @@ export async function DELETE(
     if (!tx || tx.jarvis_user_id !== user.jarvisUserId)
       return NextResponse.json({ error: 'Transação não encontrada' }, { status: 404 });
 
-    const { error } = await supabase.from('transactions').delete().eq('id', id);
+    const { error } = await getSupabase().from('transactions').delete().eq('id', id);
     if (error) throw error;
 
     return NextResponse.json({ ok: true });

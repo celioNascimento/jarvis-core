@@ -1,6 +1,6 @@
 // lib/services/transcription.ts
-import { OpenAI } from 'openai';
-import { toFile } from 'openai/uploads';
+import { OpenAI } from 'openai/index.js';
+import { toFile } from 'openai/uploads.js';
 
 export interface TranscriptionOptions {
   language?: string;
