@@ -179,7 +179,10 @@ async function checkDedup(
   try {
     isFirst = Boolean(await redis.set(dedupKey, '1', { nx: true, ex: 60 }));
   } catch (error) {
+    // Redis é opcional: se a gravação falhar, não tente consultar o mesmo
+    // endpoint indisponível e não bloqueie o processamento da mensagem.
     console.warn('[ChatDedup] Redis indisponível; seguindo sem deduplicação:', error);
+    return { dedupKey, replyKey, isCachedReply: false, cachedReply: null };
   }
 
   if (isFirst) {
@@ -188,9 +191,14 @@ async function checkDedup(
 
   for (let i = 0; i < 10; i++) {
     await new Promise(r => setTimeout(r, 1500));
-    const cached = await redis.get<string>(replyKey);
-    if (cached) {
-      return { dedupKey, replyKey, isCachedReply: true, cachedReply: cached };
+    try {
+      const cached = await redis.get<string>(replyKey);
+      if (cached) {
+        return { dedupKey, replyKey, isCachedReply: true, cachedReply: cached };
+      }
+    } catch (error) {
+      console.warn('[ChatDedup] Falha ao consultar resposta; seguindo sem deduplicação:', error);
+      return { dedupKey, replyKey, isCachedReply: false, cachedReply: null };
     }
   }
 
