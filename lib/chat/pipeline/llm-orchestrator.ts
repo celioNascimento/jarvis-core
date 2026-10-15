@@ -227,8 +227,11 @@ function buildToolCallMessages(
 }
 
 function appendResilienceNotice(text: string, requestedModel: string, usedModel: string): string {
-  if (requestedModel.includes('pro') && usedModel.includes('flash')) {
-    return text + `\n\n---\n*💡 Nota: O motor principal (${requestedModel}) está instável. Resposta gerada via reserva (${usedModel}).*`;
+  const safeRequestedModel = requestedModel || FALLBACK_MODEL_MAP.factual;
+  const safeUsedModel = usedModel || FALLBACK_MODEL_MAP.factual;
+
+  if (safeRequestedModel.includes('pro') && safeUsedModel.includes('flash')) {
+    return text + `\n\n---\n*💡 Nota: O motor principal (${safeRequestedModel}) está instável. Resposta gerada via reserva (${safeUsedModel}).*`;
   }
   return text;
 }
@@ -240,7 +243,11 @@ export async function runLLMOrchestrator(
   prompt: ChatPrompt
 ): Promise<string> {
   const { user, requestSignature, message } = ctx;
-  const { conversationMessages, tools, model: requestedModel } = prompt;
+  const { conversationMessages, tools } = prompt;
+  const requestedModel =
+    typeof prompt.model === 'string' && prompt.model.trim().length > 0
+      ? prompt.model
+      : FALLBACK_MODEL_MAP.factual;
 
   // ── Roteamento MoE: resolve modelo ideal para esta intenção ──────────────
   const lastTurn = conversationMessages.at(-2)?.content ?? null;
@@ -256,7 +263,7 @@ export async function runLLMOrchestrator(
   const isToolRequired = toolChoice === 'required';
   const MAX_STEPS = isToolRequired ? 2 : 1;
 
-  let currentMessages = [
+  const currentMessages = [
     { role: 'system' as const, content: prompt.systemPrompt },
     ...conversationMessages,
   ] as ChatMessage[];
