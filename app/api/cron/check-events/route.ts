@@ -51,13 +51,14 @@ export async function GET(req: Request) {
       }));
 
       // Duas queries separadas — .or() com NULL + int falha silenciosamente
+      const eventFields = 'id, title, start_at, category, description, last_notified_year';
       const [evNulos, evAntigos] = await Promise.all([
         supabase.from('events')
-          .select('id, title, event_date, priority, decay_type, emotional_weight, last_notified_year, notes')
+          .select(eventFields)
           .eq('user_id', user.id)
           .is('last_notified_year', null),
         supabase.from('events')
-          .select('id, title, event_date, priority, decay_type, emotional_weight, last_notified_year, notes')
+          .select(eventFields)
           .eq('user_id', user.id)
           .neq('last_notified_year', anoAtual),
       ]);
@@ -66,7 +67,9 @@ export async function GET(req: Request) {
       if (events.length === 0) continue;
 
       for (const event of events) {
-        const dataEv = new Date(event.event_date);
+        const dataEv = new Date(event.start_at);
+        if (Number.isNaN(dataEv.getTime())) continue;
+        const prioridade = event.category === 'alta' ? 'alta' : 'normal';
         const evMes = dataEv.getUTCMonth();
         const evDia = dataEv.getUTCDate();
         const hoje = userFuso;
@@ -83,13 +86,13 @@ export async function GET(req: Request) {
         const tresDias = new Date(hoje);
         tresDias.setDate(hoje.getDate() + 3);
         const isTresDias = evDia === tresDias.getDate() && evMes === tresDias.getMonth()
-          && event.priority === 'alta';
+          && prioridade === 'alta';
 
         // Verifica véspera — 1 dia antes (alta prioridade)
         const amanha = new Date(hoje);
         amanha.setDate(hoje.getDate() + 1);
         const isVespera = evDia === amanha.getDate() && evMes === amanha.getMonth()
-          && event.priority === 'alta';
+          && prioridade === 'alta';
 
         if (!isHoje && !isVespera && !isPrevia && !isTresDias) continue;
 
@@ -104,7 +107,7 @@ export async function GET(req: Request) {
 
         const prompt = `Você é ${authorName === 'Celio' ? 'Jarvis' : 'Lev'}, assistente pessoal de ${authorName}.
 Notifique sobre: "${event.title}" — ${statusTxt}.
-Prioridade: ${event.priority}${event.notes ? `\nContexto: ${event.notes}` : ''}
+Categoria: ${event.category ?? 'personal'}${event.description ? `\nContexto: ${event.description}` : ''}
 
 REGRAS:
 - Máximo 2 frases
