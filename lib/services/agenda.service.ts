@@ -109,7 +109,13 @@ export async function coreCriarEvento(userId: number, payload: EventPayload) {
   if (isNaN(startDate.getTime())) throw new Error('Data de início inválida.');
 
   const startISO = startDate.toISOString();
-  const endISO = payload.data_hora_fim || new Date(startDate.getTime() + 3600000).toISOString();
+  const endDate = payload.data_hora_fim
+    ? new Date(payload.data_hora_fim.trim().replace(' ', 'T'))
+    : new Date(startDate.getTime() + 3600000);
+  if (Number.isNaN(endDate.getTime()) || endDate.getTime() <= startDate.getTime()) {
+    throw new Error('Data de término inválida: deve ser posterior ao início.');
+  }
+  const endISO = endDate.toISOString();
 
   if (!payload.forcar_conflito) {
     const { data: conflitos } = await supabase.schema('jarvis').from('events')
