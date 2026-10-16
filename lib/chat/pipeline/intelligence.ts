@@ -138,10 +138,15 @@ export async function invalidateMasterContextCache(
 // ─── Reconciliação de Histórico ──────────────────────────────────────────────
 
 function buildRecentHistoryFromLocal(localHistory: LocalMessage[]): HistoryMessage[] {
-  console.log('[History][Reconcile] Construindo histórico via localHistory (fallback)');
+  console.log('[History][Reconcile] Construindo histórico via localHistory');
   return localHistory
+    .filter(msg =>
+      (msg?.role === 'user' || msg?.role === 'assistant') &&
+      typeof msg.content === 'string' &&
+      msg.content.trim().length > 0,
+    )
     .slice(-30)
-    .map(msg => ({ role: msg.role, content: msg.content.slice(0, MAX_MSG_CHARS) }));
+    .map(msg => ({ role: msg.role, content: msg.content.trim().slice(0, MAX_MSG_CHARS) }));
 }
 
 function safeDecrypt(value: string): string {
@@ -178,9 +183,30 @@ function buildRecentHistoryFromBank(rawHistory: any[]): HistoryMessage[] {
 }
 
 function resolveRecentHistory(localHistory: LocalMessage[], bankHistory: any[]): HistoryMessage[] {
-  if (Array.isArray(bankHistory) && bankHistory.length > 0) return buildRecentHistoryFromBank(bankHistory);
-  if (localHistory?.length > 0) return buildRecentHistoryFromLocal(localHistory);
-  return [];
+  const persisted = Array.isArray(bankHistory) ? buildRecentHistoryFromBank(bankHistory) : [];
+  const local = Array.isArray(localHistory) ? buildRecentHistoryFromLocal(localHistory) : [];
+
+  if (persisted.length === 0) return local;
+  if (local.length === 0) return persisted;
+
+  // O banco pode estar atrasado quando a mensagem anterior ainda está sendo
+  // persistida. Mantemos os dois históricos e removemos apenas duplicatas
+  // exatas, evitando que uma nova pergunta fique sem o turno imediatamente anterior.
+  const merged = [...persisted];
+  for (const message of local) {
+    const duplicate = merged.some(
+      existing => existing.role === message.role && existing.content === message.content,
+    );
+    if (!duplicate) merged.push(message);
+  }
+
+  const result = merged.slice(-30);
+  console.log('[History][Reconcile] histórico persistido/local reconciliado', {
+    persisted: persisted.length,
+    local: local.length,
+    result: result.length,
+  });
+  return result;
 }
 
 // ─── Pipeline Principal ──────────────────────────────────────────────────────
