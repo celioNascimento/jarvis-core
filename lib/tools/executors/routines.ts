@@ -43,7 +43,8 @@ export async function executeListarRotinas(p: any, authUserId: string, numericUs
 export async function executeGerenciarRotina(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
     const targetId = Number(await getEffectiveUserId(authUserId, numericUserId));
-    const { acao, routine_id, anchor, action, period, goal_tag } = p;
+    const { acao, routine_id, anchor, action, period, goal_tag } = p ?? {};
+    if (!['criar', 'atualizar', 'remover'].includes(acao)) return 'Ação não reconhecida.';
 
     if (acao === 'criar') {
       const data = await coreCreateRoutine(targetId, { anchor, action, period, goal_tag });
@@ -71,7 +72,9 @@ export async function executeGerenciarRotina(p: any, authUserId: string, numeric
 export async function executeFazerCheckinRotina(p: any, authUserId: string, numericUserId: string): Promise<string> {
   try {
     const targetId = Number(await getEffectiveUserId(authUserId, numericUserId));
-    const { rotina_texto, status, note } = p;
+    const { rotina_texto, status, note } = p ?? {};
+    if (typeof rotina_texto !== 'string' || !rotina_texto.trim()) return 'Informe qual rotina deseja atualizar.';
+    if (!['done', 'skipped', 'reset'].includes(status)) return 'Status inválido. Use done, skipped ou reset.';
 
     // 1. Busca todas as rotinas para encontrar qual o usuário quer marcar
     const routines = await coreGetRoutines(targetId);
