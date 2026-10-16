@@ -198,15 +198,20 @@ export async function getTransactions(
 
 export async function updateTransactionStatus(
   transactionId: number,
-  status: 'confirmed' | 'ignored' | 'duplicate'
+  status: 'confirmed' | 'ignored' | 'duplicate',
+  jarvisUserId?: number
 ): Promise<void> {
-  const { error } = await supabase
+  let query = supabase
     .from('transactions')
     .update({
       status,
       confirmed_at: status === 'confirmed' ? new Date().toISOString() : null,
     })
     .eq('id', transactionId);
+
+  if (jarvisUserId !== undefined) query = query.eq('jarvis_user_id', jarvisUserId);
+
+  const { error } = await query;
 
   if (error) throw new Error(`[Finance] updateTransactionStatus: ${error.message}`);
 }
