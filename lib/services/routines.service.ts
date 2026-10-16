@@ -52,12 +52,27 @@ export async function coreCreateRoutine(userId: number, payload: any) {
 }
 
 export async function coreUpdateRoutine(userId: number, routineId: string, payload: any) {
+  if (!routineId?.trim()) throw new Error('routine_id é obrigatório');
+
   const allowed = ['anchor', 'action', 'period', 'goal_tag', 'sort_order', 'is_active'];
   const updates: Record<string, any> = {};
   
   for (const key of allowed) {
-    if (key in payload) updates[key] = payload[key];  
+    if (key in (payload ?? {})) updates[key] = payload[key];
   }
+
+  if ('anchor' in updates) {
+    if (typeof updates.anchor !== 'string' || !updates.anchor.trim()) throw new Error('anchor é obrigatório');
+    updates.anchor = updates.anchor.trim();
+  }
+  if ('action' in updates) {
+    if (typeof updates.action !== 'string' || !updates.action.trim()) throw new Error('action é obrigatório');
+    updates.action = updates.action.trim();
+  }
+  if ('period' in updates && !['morning', 'afternoon', 'evening', 'anytime'].includes(updates.period)) {
+    throw new Error('period inválido');
+  }
+  if ('goal_tag' in updates) updates.goal_tag = typeof updates.goal_tag === 'string' ? updates.goal_tag.trim() || null : null;
 
   if (!Object.keys(updates).length) throw new Error('Nenhum campo para atualizar');
 
@@ -69,22 +84,28 @@ export async function coreUpdateRoutine(userId: number, routineId: string, paylo
     .select()
     .single();
 
+  if (error?.code === 'PGRST116') throw new Error('Rotina não encontrada');
   if (error) throw new Error(error.message);
   return data;
 }
 
 export async function coreDeleteRoutine(userId: number, routineId: string) {
-  const { error } = await supabase
+  if (!routineId?.trim()) throw new Error('routine_id é obrigatório');
+
+  const { data, error } = await supabase
     .from('routines')
     .update({ is_active: false })
     .eq('id', routineId)
-    .eq('user_id', userId);
+    .eq('user_id', userId)
+    .select('id')
+    .maybeSingle();
 
   if (error) throw new Error(error.message);
+  if (!data) throw new Error('Rotina não encontrada');
   return true;
 }
 
-// ─── 2. CHECK-INS ─────────────────────────────────────────────────────────────
+// ─── 2. CHECK-INS ───────────────────────────────────────────────────────────────
 
 export async function coreGetCheckins(userId: number, date: string) {
   const { data, error } = await supabase
@@ -98,10 +119,21 @@ export async function coreGetCheckins(userId: number, date: string) {
 }
 
 export async function coreProcessCheckin(userId: number, payload: any) {
-  const { routine_id, status, date, note } = payload;
+  const { routine_id, status, date, note } = payload ?? {};
   if (!routine_id) throw new Error('routine_id é obrigatório');
 
   const checkinDate = date ?? new Date().toISOString().split('T')[0];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(checkinDate)) throw new Error('date inválida');
+
+  const { data: routine, error: routineError } = await supabase
+    .from('routines')
+    .select('id')
+    .eq('id', routine_id)
+    .eq('user_id', userId)
+    .eq('is_active', true)
+    .maybeSingle();
+  if (routineError) throw new Error(routineError.message);
+  if (!routine) throw new Error('Rotina não encontrada ou inativa');
 
   // Caso nulo, remove o check-in (Reset)
   if (status === null) {
@@ -115,7 +147,6 @@ export async function coreProcessCheckin(userId: number, payload: any) {
     return { removed: true };
   }
 
-  // Caso preenchido, valida e insere/atualiza
   if (!['done', 'skipped'].includes(status)) throw new Error('status inválido');
 
   const { data, error } = await supabase
