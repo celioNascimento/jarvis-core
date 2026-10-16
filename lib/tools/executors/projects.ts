@@ -150,7 +150,7 @@ export async function executeListarEntries(p: any, authUserId: string, numericUs
     if (!project) return `Projeto "${p.project_id}" não localizado.`;
 
     // Busca todas as tarefas usando a nova função do service
-    const entries = await coreListarEntriesDoProjeto(project.id);
+    const entries = await coreListarEntriesDoProjeto(Number(targetId), project.id);
     
     if (!entries || entries.length === 0) {
       return `O quadro Kanban do projeto "${project.name}" está vazio.`;
