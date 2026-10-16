@@ -8,10 +8,13 @@ import { invalidateContextField } from '@/lib/services/context-cache';
 // ─── 1. LISTAR COM MULTIPLAYER (APP E CHAT) ──────────────────────────────────
 export async function coreListarCompras(userId: number) {
   // 1. Busca quais categorias foram compartilhadas com este usuário
-  const { data: shares } = await supabase
+  const { data: shares, error: sharesError } = await supabase
+    .schema('jarvis')
     .from('shopping_shares')
     .select('owner_id, category')
     .eq('shared_with_id', userId);
+
+  if (sharesError) throw new Error(`Erro ao buscar compartilhamentos: ${sharesError.message}`);
 
   // 2. Monta a query dinâmica (Meus itens + Itens autorizados)
   let orQuery = `user_id.eq.${userId}`;
@@ -22,6 +25,7 @@ export async function coreListarCompras(userId: number) {
 
   // 3. Busca os itens com os nomes dos projetos populados
   const { data, error } = await supabase
+    .schema('jarvis')
     .from('shopping_items')
     .select(`
       *,
@@ -42,6 +46,7 @@ export async function coreCriarCompra(
   payload: { item: string; category?: string; project_id?: string; place_id?: string }
 ) {
   const { data, error } = await supabase
+    .schema('jarvis')
     .from('shopping_items')
     .insert({
       user_id: userId,
@@ -63,6 +68,7 @@ export async function coreCriarCompra(
 // ─── HELPER DE PERMISSÃO (DRY) ────────────────────────────────────────────────
 async function validarPermissao(userId: number, itemId: string) {
   const { data: itemData, error } = await supabase
+    .schema('jarvis')
     .from('shopping_items')
     .select('user_id, category')
     .eq('id', itemId)
@@ -73,6 +79,7 @@ async function validarPermissao(userId: number, itemId: string) {
 
   // Verifica na tabela de compartilhamento
   const { data: hasPermission } = await supabase
+    .schema('jarvis')
     .from('shopping_shares')
     .select('id')
     .eq('owner_id', itemData.user_id)
@@ -89,6 +96,7 @@ export async function coreAtualizarStatusCompra(userId: number, itemId: string, 
   await validarPermissao(userId, itemId);
 
   const { error } = await supabase
+    .schema('jarvis')
     .from('shopping_items')
     .update({ done })
     .eq('id', itemId);
@@ -102,6 +110,7 @@ export async function coreDeletarCompra(userId: number, itemId: string) {
   await validarPermissao(userId, itemId);
 
   const { error } = await supabase
+    .schema('jarvis')
     .from('shopping_items')
     .delete()
     .eq('id', itemId);
