@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
   if (!projectId) return NextResponse.json({ error: 'ID do projeto ausente' }, { status: 400 });
 
   try {
-    const entries = await coreListarEntriesDoProjeto(projectId);
+    const entries = await coreListarEntriesDoProjeto(userId, projectId);
     return NextResponse.json({ entries, ok: true });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

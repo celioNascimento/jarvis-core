@@ -49,6 +49,7 @@ export interface Transaction {
   confirmed_at: string | null;
   confidence: number | null;
   linked_transaction_id: number | null;
+  project_id: string | null;
   created_at: string;
   updated_at: string;
   // joins
@@ -118,6 +119,7 @@ export interface CreateTransactionPayload {
   category_name?: string;
   merchant?: string;
   account_label?: string;
+  project_id?: string;
   source?: TransactionSource;
 }
 

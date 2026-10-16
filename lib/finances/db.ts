@@ -122,12 +122,34 @@ export async function resolveCategoryId(
 }
 
 // ─── Transações ──────────────────────────────────────────────────────────────
+async function resolveProjectId(jarvisUserId: number, identifier?: string): Promise<string | null> {
+  if (!identifier) return null;
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identifier);
+  if (isUuid) return identifier;
+
+  const { data, error } = await supabase
+    .schema('jarvis')
+    .from('projects')
+    .select('id')
+    .eq('user_id', jarvisUserId)
+    .or(`tag.eq.${identifier},name.ilike.%${identifier}%`)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`[Finance] resolveProjectId: ${error.message}`);
+  return data?.id ?? null;
+}
+
 export async function createTransaction(
   authUserId: string,
   jarvisUserId: number,
   payload: CreateTransactionPayload
 ): Promise<Transaction> {
   const today = new Date().toISOString().split('T')[0];
+  const projectId = await resolveProjectId(jarvisUserId, payload.project_id);
+  if (payload.project_id && !projectId) {
+    throw new Error(`Projeto não encontrado: ${payload.project_id}`);
+  }
 
   let categoryId: string | null = null;
   if (payload.category_name) {
@@ -151,6 +173,7 @@ export async function createTransaction(
       category_id: categoryId,
       merchant: payload.merchant || null,
       user_account_id: accountId,
+      project_id: projectId,
       source: payload.source || 'manual',
       status: 'confirmed',
       confirmed_at: new Date().toISOString(),
@@ -198,15 +221,20 @@ export async function getTransactions(
 
 export async function updateTransactionStatus(
   transactionId: number,
-  status: 'confirmed' | 'ignored' | 'duplicate'
+  status: 'confirmed' | 'ignored' | 'duplicate',
+  jarvisUserId?: number
 ): Promise<void> {
-  const { error } = await supabase
+  let query = supabase
     .from('transactions')
     .update({
       status,
       confirmed_at: status === 'confirmed' ? new Date().toISOString() : null,
     })
     .eq('id', transactionId);
+
+  if (jarvisUserId !== undefined) query = query.eq('jarvis_user_id', jarvisUserId);
+
+  const { error } = await query;
 
   if (error) throw new Error(`[Finance] updateTransactionStatus: ${error.message}`);
 }

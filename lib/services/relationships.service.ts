@@ -9,11 +9,12 @@ export async function coreResolverIdContato(identificador: string): Promise<numb
   if (!identificador) return null;
   if (/^\d+$/.test(identificador)) return Number(identificador);
 
+  const escaped = identificador.replace(/[(),]/g, ' ').trim();
   const { data } = await supabase
     .schema('jarvis')
     .from('users')
     .select('id')
-    .or(`email.ilike.%${identificador}%,name.ilike.%${identificador}%`)
+    .or(`email.ilike.%${escaped}%,name.ilike.%${escaped}%`)
     .limit(1)
     .maybeSingle();
 
