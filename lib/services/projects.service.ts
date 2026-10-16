@@ -9,9 +9,10 @@ async function validarPermissaoProjeto(userId: number, projectId: string, requir
   const { data: member, error } = await supabase
     .schema('jarvis')
     .from('project_members')
-    .select('role')
+    .select('role, status')
     .eq('project_id', projectId)
     .eq('user_id', userId)
+    .eq('status', 'active')
     .maybeSingle();
 
   if (error || !member) throw new Error('Projeto não encontrado ou acesso negado.');
@@ -29,7 +30,8 @@ export async function coreListarProjetos(userId: number, status?: string) {
     .schema('jarvis')
     .from('project_members')
     .select('project_id, role, status')
-    .eq('user_id', userId);
+    .eq('user_id', userId)
+    .eq('status', 'active');
 
   if (memErr) throw new Error(`Erro ao buscar permissões: ${memErr.message}`);
   if (!memberships || memberships.length === 0) return [];
@@ -80,7 +82,7 @@ export async function coreCriarProjeto(userId: number, payload: any) {
 
   if (projErr) throw new Error(`Falha ao criar projeto: ${projErr.message}`);
 
-  await supabase
+  const { error: memberError } = await supabase
     .schema('jarvis')
     .from('project_members')
     .insert({
@@ -91,6 +93,11 @@ export async function coreCriarProjeto(userId: number, payload: any) {
       status: 'active'
     });
 
+  if (memberError) {
+    await supabase.schema('jarvis').from('projects').delete().eq('id', project.id);
+    throw new Error(`Falha ao vincular proprietário ao projeto: ${memberError.message}`);
+  }
+
   return project;
 }
 
@@ -98,10 +105,21 @@ export async function coreCriarProjeto(userId: number, payload: any) {
 export async function coreAtualizarProjeto(userId: number, projectId: string, updates: any) {
   await validarPermissaoProjeto(userId, projectId, true);
 
+  const allowedUpdates = (({ tag, name, description, status, url, repo_url, cover_url, context_technical }) => ({
+    ...(tag !== undefined && { tag }),
+    ...(name !== undefined && { name }),
+    ...(description !== undefined && { description }),
+    ...(status !== undefined && { status }),
+    ...(url !== undefined && { url }),
+    ...(repo_url !== undefined && { repo_url }),
+    ...(cover_url !== undefined && { cover_url }),
+    ...(context_technical !== undefined && { context_technical }),
+  }))(updates || {});
+
   const { error } = await supabase
     .schema('jarvis')
     .from('projects')
-    .update({ ...updates, updated_at: new Date().toISOString() })
+    .update({ ...allowedUpdates, updated_at: new Date().toISOString() })
     .eq('id', projectId);
 
   if (error) throw new Error(`Falha ao atualizar projeto: ${error.message}`);
@@ -176,7 +194,9 @@ export async function coreAtualizarMembroProjeto(
 
 // ─── 6. ENTRIES (TAREFAS / CARDS DO KANBAN) ──────────────────────────────────
 
-export async function coreListarEntriesDoProjeto(projectId: string) {
+export async function coreListarEntriesDoProjeto(userId: number, projectId: string) {
+  await validarPermissaoProjeto(userId, projectId);
+
   // Como as entries pertencem aos tópicos, fazemos um inner join para pegar 
   // todas as tarefas vinculadas aos tópicos deste projeto específico.
   const { data, error } = await supabase
@@ -192,6 +212,17 @@ export async function coreListarEntriesDoProjeto(projectId: string) {
 }
 
 export async function coreAtualizarStatusEntry(userId: number, entryId: string, novoStatus: string) {
+  const { data: entry, error: entryError } = await supabase
+    .schema('jarvis')
+    .from('project_entries')
+    .select('project_topics!inner(project_id)')
+    .eq('id', entryId)
+    .maybeSingle();
+
+  const projectId = (entry as any)?.project_topics?.project_id;
+  if (entryError || !projectId) throw new Error('Tarefa não encontrada.');
+  await validarPermissaoProjeto(userId, projectId, true);
+
   // Atualiza a coluna (status) da tarefa
   const { error } = await supabase
     .schema('jarvis')
