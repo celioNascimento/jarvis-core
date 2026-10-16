@@ -29,6 +29,9 @@ export const financesTools = [
         type: 'object',
         properties: {
           period: { type: 'string', enum: ['today', 'week', 'month', 'last_month', 'year'] },
+          category: { type: 'string' },
+          type: { type: 'string', enum: ['expense', 'income', 'transfer_out', 'transfer_in'] },
+          limit: { type: 'integer', minimum: 1, maximum: 50 },
         },
       },
     },
@@ -36,7 +39,22 @@ export const financesTools = [
   {
     type: 'function',
     function: {
-      name: 'listar_orcamentos',
+      name: 'financas_criar_orcamento',
+      description: 'Cria um limite mensal de gastos para uma categoria.',
+      parameters: {
+        type: 'object',
+        properties: {
+          category_name: { type: 'string' },
+          amount: { type: 'number', exclusiveMinimum: 0 },
+        },
+        required: ['category_name', 'amount'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'financas_listar_orcamentos',
       description: 'Exibe limites de gastos por categoria.',
       parameters: { type: 'object', properties: {} },
     },
