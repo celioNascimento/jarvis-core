@@ -15,6 +15,10 @@ export const financesTools = [
           category_name: { type: 'string' },
           merchant: { type: 'string' },
           account_label: { type: 'string' },
+          project_id: {
+            type: 'string',
+            description: 'Nome, tag ou UUID do projeto ao qual esta transação pertence. Use para materiais, serviços e custos do projeto.',
+          },
         },
         required: ['amount', 'type'],
       },
