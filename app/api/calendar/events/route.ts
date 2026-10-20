@@ -36,13 +36,17 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     if (!body.title || !body.start_at) return NextResponse.json({ error: 'title e start_at são obrigatórios' }, { status: 400 });
 
+    const reminderMinutes = Array.isArray(body.reminder_minutes)
+      ? body.reminder_minutes.filter((value: unknown) => Number.isInteger(value) && Number(value) >= 0)
+      : undefined;
+
     const { evento } = await coreCriarEvento(userId, {
-      titulo: body.title,
-      data_hora_inicio: body.start_at,
-      data_hora_fim: body.end_at,
-      categoria: body.category,
-      notas: body.description,
-      minutos_lembrete: body.reminder_minutes,
+      titulo: String(body.title).trim(),
+      data_hora_inicio: String(body.start_at),
+      data_hora_fim: body.end_at ? String(body.end_at) : undefined,
+      categoria: body.category ? String(body.category) : undefined,
+      notas: body.description ? String(body.description) : undefined,
+      minutos_lembrete: reminderMinutes,
       source: 'app'
     });
 

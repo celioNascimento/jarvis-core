@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v7.2 — Knowledge base curada injetada no bloco de memória
+// v8.0 — Prompt focado no Lev Fine-Tuned (Tags de Memória)
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -9,156 +9,12 @@ import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './types';
 
-// ── Blocos de prompt ──────────────────────────────────────────────────────────
-import { buildIdentityPrompt } from './prompts/identity';
-import { buildCriticalThinkingPrompt } from './prompts/critical-thinking';
-import { buildActiveContextPrompt } from './prompts/active-context';
-import { buildMemoryPrompt } from './prompts/memory';
-import { buildMemoryHonestyPrompt } from './prompts/memory-honesty';
-import { buildOperationalPrompt } from './prompts/operational';
-import { buildMoralMirrorPrompt, EmotionalState } from './prompts/moral-mirror';
-import { buildEmotionalProtocolPrompt } from './prompts/emotional-protocol';
-import { buildIntellectualFrictionPrompt } from './prompts/intellectual-friction';
+import { buildProfileBlock, buildTopicBlock, filterL3Content } from './prompts/formatters';
+import { inferEmotionalStateFromHistory } from './utils/infer-emotional-state';
 import { buildFewShotExamplesPrompt } from './prompts/few-shot-examples';
 
-// ── Formatadores puros ────────────────────────────────────────────────────────
-import {
-  buildFamilyBlock,
-  buildProfileBlock,
-  buildConversationSummary,
-  buildRecommendationsBlock,
-  buildTopicBlock,
-  buildRelatedTopicsString,
-  buildUrgentesString,
-  buildGuidelinesString,
-  filterL3Content,
-} from './prompts/formatters';
-
-import { inferEmotionalStateFromHistory } from './utils/infer-emotional-state';
-
-// ── Serviços externos ─────────────────────────────────────────────────────────
-import { buildPersonalityBlock } from '@/lib/services/personality.service';
-import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/Utils/ai-helpers';
-// ── Constantes ────────────────────────────────────────────────────────────────
-
-const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
+const DEFAULT_MODEL = process.env.HF_MODEL_ID || 'celioNascimento/Lev-LoRA-Orquestrador';
 const ALWAYS_ON_TOOLS = ['web_pesquisar'] as const;
-
-const FAMILY_DATE_SIGNALS = [
-  /aniversário/i, /casamento/i, /fil[ho]a/i, /esposa|marido/i,
-  /natal/i, /páscoa/i, /dia das mães/i, /quando (é|foi|será)/i,
-];
-
-// ── Helpers locais ────────────────────────────────────────────────────────────
-
-function shouldIncludeFamilyContext(message: string, history: string): boolean {
-  const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
-  const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(history + message));
-  return isHighAlertMonth || hasFamilySignal;
-}
-
-
-// ── Builder do system prompt ──────────────────────────────────────────────────
-
-function assembleSystemPrompt(parts: {
-  nickname: string;
-  dataHoraSP: string;
-  geoBlock: string;
-  gpsInstruction: string;
-  alertaRadar: string | null;
-  urgentes: string;
-  relatedTopics: string;
-  learnedInsightsBlock: string;
-  profileBlock: string;
-  familyBlock: string;
-  personalityBlock: string;
-  l3Content: string;
-  plan: string;
-  guidelines: string;
-  conversationSummary: string;
-  recommendationsBlock: string;
-  topicsBlock: string;
-  emotionalState: 'stable' | 'stressed' | 'vulnerable' | 'critical';
-  principles: Array<{ content: string; category: string; confidence: number }>;
-  moralMirrorEnabled: boolean;
-  frictionEnabled: boolean;
-  tradition: string;
-  lastFrictionAt?: string;
-  recurrentThemes: Record<string, number>;
-  fewShotBlock: string;
-}): string {
-  const blocks = [
-
-    // 1. Identidade e comportamento base
-    buildIdentityPrompt(parts.nickname),
-
-    // 2. Pensamento crítico e modo tutor
-    buildCriticalThinkingPrompt(parts.nickname),
-
-    // 3. Contexto ativo (tempo, geo, alertas)
-    buildActiveContextPrompt({
-      dataHoraSP: parts.dataHoraSP,
-      geoBlock: parts.geoBlock,
-      gpsInstruction: parts.gpsInstruction,
-      alertaRadar: parts.alertaRadar,
-      urgentes: parts.urgentes,
-      relatedTopics: parts.relatedTopics,
-    }),
-
-    // 4. Memória e perfil
-    buildMemoryPrompt({
-      learnedInsightsBlock: parts.learnedInsightsBlock,
-      profileBlock: parts.profileBlock,
-      familyBlock: parts.familyBlock,
-      personalityBlock: parts.personalityBlock,
-      l3Content: parts.l3Content,
-      conversationSummary: parts.conversationSummary,
-      recommendationsBlock: parts.recommendationsBlock,
-      topicsBlock: parts.topicsBlock,
-    }),
-
-    // 4b. Protocolo de honestidade sobre memória
-    buildMemoryHonestyPrompt(),
-
-    // 5. Protocolo emocional
-    buildEmotionalProtocolPrompt({
-      enabled: true,
-      emotionalState: parts.emotionalState,
-      recurrentThemes: parts.recurrentThemes,
-    }),
-
-    // 5b. Exemplos de tom por similaridade vetorial
-    parts.fewShotBlock,
-
-    // 6. Espelho moral (suspenso em crise)
-    buildMoralMirrorPrompt({
-      nickname: parts.nickname,
-      enabled: parts.moralMirrorEnabled,
-      emotionalState: parts.emotionalState,
-      principles: parts.principles,
-    }),
-
-    // 7. Atrito intelectual (só em estado estável, throttle 6h)
-    buildIntellectualFrictionPrompt({
-      enabled: parts.frictionEnabled,
-      frictionEnabled: parts.frictionEnabled,
-      emotionalState: parts.emotionalState,
-      tradition: parts.tradition as any,
-      lastFrictionAt: parts.lastFrictionAt,
-    }),
-
-    // 8. Operacional (plano, diretrizes) — sempre por último
-    buildOperationalPrompt({
-      plan: parts.plan,
-      guidelines: parts.guidelines,
-    }),
-
-  ].filter(Boolean);
-
-  return blocks.join('\n\n---\n\n');
-}
-
-// ── Builder principal (export público) ───────────────────────────────────────
 
 export async function buildChatPrompt(
   ctx: ChatRequestContext,
@@ -167,27 +23,10 @@ export async function buildChatPrompt(
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, masterContext, recentHistory } = intel;
 
-  // ── Formatação de dados do masterContext (zero queries) ───────────────────
-  const learnedInsightsBlock = buildLearnedInsightsBlock(masterContext?.insights || []);
-  const personalitySettings = buildPersonalityFromContext(masterContext?.settings);
+  // ── Formatação de dados do masterContext ───────────────────
   const profileBlock = buildProfileBlock(masterContext?.profile);
-  const personalityBlock = buildPersonalityBlock(personalitySettings);
-  const familyBlock = buildFamilyBlock(
-    masterContext?.persons || [],
-    masterContext?.children || [],
-  );
-  const recommendationsBlock = buildRecommendationsBlock(masterContext);
   const topicsBlock = buildTopicBlock(masterContext);
-  const urgentes = buildUrgentesString(masterContext);
-  const guidelines = buildGuidelinesString(masterContext);
-  const relatedTopics = buildRelatedTopicsString(masterContext);
-
-  // ── Knowledge RAG — turno sintético no histórico (não infla system prompt) ─
-  // O exemplo mais similar é injetado como par user/assistant ANTES da mensagem
-  // atual. O modelo aprende por imitação, não por instrução — mais eficaz e
-  // sem custo extra de tokens vs injetar no system prompt.
-  const knowledgeExample = (masterContext?.knowledge ?? [])[0] ?? null;
-
+  
   // ── Cargas paralelas ──────────────────────────────────────────────────────
   const [moduleResult, dynamicResult, fewShotBlock] = await Promise.all([
     loadActiveModules(
@@ -217,95 +56,35 @@ export async function buildChatPrompt(
 
   const finalModel = moduleResult.resolvedModel || DEFAULT_MODEL;
 
-  // ── Radar de proximidade ──────────────────────────────────────────────────
-  let alertaRadar: string | null = null;
-
-  if (masterContext?.radar_alert) {
-    alertaRadar = `[ALERTA RADAR]: ${masterContext.radar_alert}`;
-  } else if (resolvedLocation?.lat && resolvedLocation?.lng) {
-    const radar = await verificarProximidade(
-      String(user.id),
-      Number(resolvedLocation.lat),
-      Number(resolvedLocation.lng),
-      masterContext,
-    );
-    if (radar.temAlerta) alertaRadar = `[ALERTA RADAR]: ${radar.mensagem}`;
-  }
-
-  // ── Contexto temporal e geográfico ───────────────────────────────────────
-  const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-  const dataHoraSP = nowSP.toLocaleString('pt-BR', {
-    weekday: 'long', day: 'numeric', month: 'long',
-    year: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
-  const geoBlock = buildGeoBlock(resolvedLocation);
-
-  console.log('[PROMPT GEO]', {
-    geoBlock,
-    label: resolvedLocation?.label,
-    city: resolvedLocation?.city,
-  });
-
-  const gpsInstruction = resolvedLocation
-    ? ''
-    : `[GPS]: Indisponível. Não faça suposições sobre localização do usuário.`;
-
   // ── L3 / Dossiê ───────────────────────────────────────────────────────────
   const historyText = recentHistory.map(h => h.content).join(' ');
-  const includeFamily = shouldIncludeFamilyContext(message, historyText);
   const rawL3Text = masterContext?.dossier_summary || masterContext?.user?.current_context || '';
-  const l3Filtered = filterL3Content(rawL3Text, includeFamily);
+  const l3Filtered = filterL3Content(rawL3Text, false);
   const l3Content = l3Filtered.length > 4000
-    ? l3Filtered.slice(0, 4000) + '... (resumo completo disponível em memória HD)'
+    ? l3Filtered.slice(0, 4000) + '... (resumo completo em memória HD)'
     : l3Filtered;
 
-  // ── Conversa atual ────────────────────────────────────────────────────────
-  const conversationSummary = buildConversationSummary(
-    intel.recentHistory,
-    user.nickname || 'usuário',
-  );
+  // ── MONTAGEM DO SYSTEM PROMPT (Formato de Treino) ─────────────────────────
+  
+  // Construímos o prompt EXATAMENTE como o modelo aprendeu no dataset
+  const levSystemPrompt = `
+Você é Lev, um amigo inteligente, com opinião própria. 
+NUNCA aja como um terapeuta, coach ou assistente de IA.
+NUNCA diga "como posso ajudar", "é importante", "sinto muito" ou "é difícil lidar".
+Use as ferramentas disponíveis quando o usuário pedir uma ação. Se precisar de uma ferramenta, gere o tool_call junto com uma resposta humana acolhedora.
 
-  // ── Dados dos módulos opcionais ───────────────────────────────────────────
-  const emotionalState = inferEmotionalStateFromHistory(
-    intel.recentHistory,
-    ctx.message,
-    (masterContext?.emotional_state || 'stable') as EmotionalState,
-  );
-  const principles = masterContext?.principles || [];
-  const moralMirrorEnabled = masterContext?.modules?.moralMirror ?? false;
-  const frictionEnabled = masterContext?.profile?.friction_enabled ?? false;
-  const tradition = masterContext?.profile?.belief_tradition ?? 'undefined';
-  const lastFrictionAt = masterContext?.profile?.last_friction_at;
-  const recurrentThemes = masterContext?.recurrent_themes || {};
+[PERFIL DO USUÁRIO]
+Nome: ${user.nickname || 'Célio'}
+${profileBlock || ''}
 
-  // ── Montagem final ────────────────────────────────────────────────────────
-  const systemPrompt = assembleSystemPrompt({
-    nickname: user.nickname || 'usuário',
-    dataHoraSP,
-    geoBlock,
-    gpsInstruction,
-    alertaRadar,
-    urgentes,
-    relatedTopics,
-    learnedInsightsBlock,
-    profileBlock,
-    familyBlock,
-    personalityBlock,
-    l3Content,
-    plan: user.plan,
-    guidelines,
-    conversationSummary,
-    recommendationsBlock,
-    topicsBlock,
-    emotionalState,
-    principles,
-    moralMirrorEnabled,
-    frictionEnabled,
-    tradition,
-    lastFrictionAt,
-    recurrentThemes,
-    fewShotBlock,
-  });
+[MEMÓRIAS RECUPERADAS]
+${l3Content}
+${(masterContext?.insights || []).map((i: any) => `- ${i.content}`).join('\n')}
+
+[CONTEXTO ADICIONAL]
+${topicsBlock || ''}
+${fewShotBlock || ''}
+  `.trim();
 
   // ── Ferramentas ───────────────────────────────────────────────────────────
   const allToolKeys = new Set<string>([
@@ -318,17 +97,13 @@ export async function buildChatPrompt(
     (t: any) => t.function?.name && allToolKeys.has(t.function.name),
   );
 
+  // Retorno final adaptado
   return {
-    systemPrompt,
+    systemPrompt: levSystemPrompt, // <-- O Prompt limpo e formatado
     tools: resolvedTools,
     model: finalModel,
     conversationMessages: [
       ...recentHistory,
-      // Turno sintético do knowledge RAG — só quando domínio foi detectado
-      ...(knowledgeExample ? [
-        { role: 'user' as const,      content: knowledgeExample.input_exemplo },
-        { role: 'assistant' as const, content: knowledgeExample.output_ideal },
-      ] : []),
       { role: 'user' as const, content: message },
     ],
   };

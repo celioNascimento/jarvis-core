@@ -50,7 +50,8 @@ export async function executeRegistrarTransacao(
         `${typeLabel[tx.type]} de ${fmt(tx.amount)} registrada com sucesso.` +
         (catName ? ` Categoria: ${catName}.` : '') +
         (accountLabel ? ` Conta: ${accountLabel}.` : '') +
-        (tx.merchant ? ` Estabelecimento: ${tx.merchant}.` : ''),
+        (tx.merchant ? ` Estabelecimento: ${tx.merchant}.` : '') +
+        (tx.project_id ? ` Projeto vinculado.` : ''),
       transaction: {
         id: tx.id,
         amount: tx.amount,
@@ -59,6 +60,7 @@ export async function executeRegistrarTransacao(
         date: tx.transaction_date,
         category: catName,
         merchant: tx.merchant,
+        project_id: tx.project_id,
         status: tx.status,
       },
     };

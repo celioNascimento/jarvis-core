@@ -1,9 +1,8 @@
 // lib/chat/pipeline/llm-orchestrator.ts
-// V12.0.0 — Orquestrador Multi-Steps com Roteador MoE por Intenção
+// V13.0.0 — Orquestrador Focado no Modelo Fine-Tuned (Hugging Face)
 
-import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway';
+import { callLevModel } from '@/lib/chat/lev-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
-import { supabase } from '@/lib/jarvis';
 import type { ChatRequestContext } from './request-context';
 import type { ChatPrompt } from './types';
 
@@ -33,133 +32,6 @@ export type LLMResponse = {
 interface ToolCallResult {
   tc: ToolCall;
   result: string;
-}
-
-// ── Roteador MoE ─────────────────────────────────────────────────────────────
-
-type RouterIntent = 'emocional' | 'factual' | 'acao' | 'recuperacao' | 'hibrido';
-
-interface RouterResult {
-  intent: RouterIntent;
-  fragments: number;
-  needs_rag: boolean;
-  escalate: boolean;
-  resolution_confidence: number;
-  ambiguous: boolean;
-  entities: { x: string | null; y: string | null; z: string | null };
-  reason?: string | null;
-}
-
-// Fallback caso o banco esteja indisponível
-const FALLBACK_MODEL_MAP: Record<RouterIntent, string> = {
-  emocional: 'google/gemini-2.5-flash',
-  factual: 'google/gemini-2.5-flash',
-  acao: 'google/gemini-2.5-flash',
-  recuperacao: 'google/gemini-2.5-flash',
-  hibrido: 'anthropic/claude-sonnet-4.6',
-};
-
-// Traduz alias do banco para model ID do OpenRouter
-const ALIAS_TO_MODEL: Record<string, string> = {
-  'flash-25': 'google/gemini-2.5-flash',
-  'claude-sonnet': 'anthropic/claude-sonnet-4.6',
-  'flash-lite': 'google/gemini-3.1-flash-lite-preview',
-  'qwen-8b': 'qwen/qwen3-8b',
-  'llama-8b': 'meta-llama/llama-3.1-8b-instruct',
-};
-
-function buildRouterPrompt(input: string, lastTurn: string | null): string {
-  const ctx = lastTurn
-    ? `\nContexto da mensagem anterior:\n[1] ${lastTurn}\n`
-    : '';
-
-  return `Você é um roteador de intenções de um assistente pessoal. Retorne APENAS JSON válido, sem markdown.
-${ctx}
-Mensagem atual: "${input}"
-
-Categorias:
-- "emocional": desabafo, sentimento — sem ação ou busca
-- "factual": conhecimento geral público — nunca busca memória pessoal
-- "acao": comando explícito — salvar, lembrar, registrar, marcar
-- "recuperacao": busca em memória PESSOAL do usuário — o que EU disse/decidi/gastei
-- "hibrido": mais de uma categoria na mesma mensagem
-
-Regras:
-- needs_rag: true somente para recuperacao ou hibrido com busca pessoal
-- escalate: true somente se pronome sem antecedente claro
-- factual nunca tem needs_rag=true nem escalate=true
-
-{"intent":"","fragments":1,"needs_rag":false,"escalate":false,"resolution_confidence":0.9,"ambiguous":false,"entities":{"x":null,"y":"","z":""},"reason":null}`;
-}
-
-async function getBestModelForCategory(intent: RouterIntent): Promise<string> {
-  try {
-    const { data } = await supabase
-      .from('router_best_model_per_category')
-      .select('model_alias')
-      .eq('category', intent)
-      .single();
-
-    return ALIAS_TO_MODEL[data?.model_alias ?? ''] ?? FALLBACK_MODEL_MAP[intent];
-  } catch {
-    return FALLBACK_MODEL_MAP[intent];
-  }
-}
-
-async function resolveModelByIntent(
-  message: string,
-  lastTurn: string | null,
-  requestedModel: string
-): Promise<{ model: string; routerResult: RouterResult | null }> {
-
-
-  const PARENTING_PATTERN = /\b(filho|filha|miguel|criança|crianças|birra|escola|dever|comportamento|disciplina|lição)\b/i;
-  if (PARENTING_PATTERN.test(message)) {
-    const model = await getBestModelForCategory('hibrido');
-    console.log(`[Router] ✓ override parentalidade → ${model}`);
-    return { model, routerResult: null };
-  }
-
-  try {
-    const prompt = buildRouterPrompt(message, lastTurn);
-
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        max_tokens: 200,
-        temperature: 0.1,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
-
-    const data = await res.json();
-    const raw = data.choices?.[0]?.message?.content ?? '';
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('JSON não encontrado na resposta do roteador');
-
-    const routerResult: RouterResult = JSON.parse(
-      jsonMatch[0].replace(/[\u0000-\u001F\u007F]/g, ' ').trim()
-    );
-
-    // Confiança baixa → mantém modelo original sem alterar
-    if (routerResult.resolution_confidence < 0.6) {
-      console.log(`[Router] ⚠️ Confiança baixa (${routerResult.resolution_confidence}) — usando modelo padrão`);
-      return { model: requestedModel, routerResult };
-    }
-
-    const model = await getBestModelForCategory(routerResult.intent);
-    console.log(`[Router] ✓ intent=${routerResult.intent} conf=${routerResult.resolution_confidence} → ${model}`);
-
-    return { model, routerResult };
-  } catch (err) {
-    console.error('[Router] Falha no roteamento — usando modelo padrão:', err);
-    return { model: requestedModel, routerResult: null };
-  }
 }
 
 // ── Padrões Estritos de Intenção Ativa ────────────────────────────────────────
@@ -196,7 +68,7 @@ async function executeToolCalls(
         const rawResult = await Promise.race([
           executeTool(tc, authUserId, numericUserId, contextSnapshot, sessionId),
           new Promise<string>((resolve) =>
-            setTimeout(() => resolve('Desculpe, esta ação demorou muito.'), 3000)
+            setTimeout(() => resolve('Desculpe, esta ação demorou muito.'), 5000)
           ),
         ]);
         const result = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
@@ -235,37 +107,22 @@ function buildToolCallMessages(
   return messages;
 }
 
-function appendResilienceNotice(text: string, requestedModel: string, usedModel: string): string {
-  if (requestedModel.includes('pro') && usedModel.includes('flash')) {
-    return text + `\n\n---\n*💡 Nota: O motor principal (${requestedModel}) está instável. Resposta gerada via reserva (${usedModel}).*`;
-  }
-  return text;
-}
-
 // ── Entrypoint ────────────────────────────────────────────────────────────────
 
 export async function runLLMOrchestrator(
   ctx: ChatRequestContext,
   prompt: ChatPrompt
 ): Promise<string> {
-  const { user, requestSignature, message } = ctx;
-  const { conversationMessages, tools, model: requestedModel } = prompt;
-
-  // ── Roteamento MoE: resolve modelo ideal para esta intenção ──────────────
-  const lastTurn = conversationMessages.at(-2)?.content ?? null;
-  const { model: routedModel } = await resolveModelByIntent(
-    message,
-    typeof lastTurn === 'string' ? lastTurn : null,
-    requestedModel
-  );
+  const { user, message } = ctx;
+  const { conversationMessages, tools } = prompt;
 
   const toolChoice = resolveToolChoice(message);
 
-  // Conversas casuais: 1 step. Tools obrigatórias: até 2 steps.
+  // Conversas casuais: 1 step. Tools obrigatórias: até 2 steps (executa e responde).
   const isToolRequired = toolChoice === 'required';
   const MAX_STEPS = isToolRequired ? 2 : 1;
 
-  let currentMessages = [
+  const currentMessages = [
     { role: 'system' as const, content: prompt.systemPrompt },
     ...conversationMessages,
   ] as ChatMessage[];
@@ -274,22 +131,21 @@ export async function runLLMOrchestrator(
   let loopResponse: LLMResponse | null = null;
   let ferramentasExecutadas = false;
 
-  // ── FASE 1: Loop de Acúmulo ───────────────────────────────────────────────
+  // ── FASE 1: Loop de Acumulo ───────────────────────────────────────────────
   while (passoAtual < MAX_STEPS) {
     passoAtual++;
 
+    // O modelo só é forçado a usar tool no primeiro passo. Se ele já usou, o segundo passo é para gerar o texto final.
     const currentToolChoice = passoAtual === 1 ? toolChoice : 'auto';
-    const stepSignature =
-      passoAtual === 1 ? requestSignature : `${requestSignature}_step_${passoAtual}`;
-
     let stepFailed = false;
 
     try {
-      loopResponse = (await callOpenRouterWithPriority(
-        1, 'never', stepSignature,
-        currentMessages, tools, routedModel,
-        0.1, 25000, 8000, currentToolChoice
-      )) as LLMResponse;
+      loopResponse = await callLevModel(
+        currentMessages,
+        tools,
+        0.7, 
+        currentToolChoice
+      );
     } catch (error) {
       console.error(`[Orchestrator] Erro no passo ${passoAtual}:`, error);
       stepFailed = true;
@@ -314,6 +170,7 @@ export async function runLLMOrchestrator(
         loopResponse!.toolCalls!,
         toolResults
       );
+      
       currentMessages.push(...toolMessages);
       continue;
     } else {
@@ -321,38 +178,12 @@ export async function runLLMOrchestrator(
     }
   }
 
-  // ── FASE 2: Retorno ou Síntese ────────────────────────────────────────────
-
+  // ── FASE 2: Retorno da resposta final ───────────────────────────────────
   if (!loopResponse) {
     console.error('[Orchestrator] Nenhuma resposta LLM. Retornando fallback.');
     return 'Não consegui processar sua mensagem agora. Tente novamente em instantes.';
   }
 
-  // Sem tools ou loop já gerou resposta suficiente → retorna direto
-  if (!ferramentasExecutadas || (loopResponse.content && loopResponse.content.trim().length > 20)) {
-    return appendResilienceNotice(
-      loopResponse.content || 'Entendido.',
-      routedModel,
-      loopResponse.modelUsed || requestedModel
-    );
-  }
-
-  // Síntese apenas quando tools foram executadas e não geraram conteúdo
-  try {
-    const fastModel = routedModel.replace(/pro(-\w+)?/, 'fast$1');
-    const synthesisResponse = (await callOpenRouterWithPriority(
-      1, 'never', `${requestSignature}_synth`,
-      currentMessages, [], fastModel,
-      0.7, 15000, 6000
-    )) as LLMResponse;
-
-    return appendResilienceNotice(
-      synthesisResponse.content || 'Ação concluída.',
-      requestedModel,
-      synthesisResponse.modelUsed || requestedModel
-    );
-  } catch (error) {
-    console.error('[Orchestrator] Falha na síntese:', error);
-    return loopResponse.content || 'Ação realizada, mas houve um problema ao formatar a resposta.';
-  }
+  // O Qwen Fine-Tuned já gera a resposta final humanizada junto com o tool_call ou após ele.
+  return loopResponse.content || 'Entendido.';
 }

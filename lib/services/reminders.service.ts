@@ -111,7 +111,10 @@ export async function coreCriarLembrete(
   // `else if (payload.scheduled_time)` com valor "null" e lançava "Data inválida: null"
   const rawTime = payload.scheduled_time ?? null;
 
-  if (payload.delay_minutes) {
+  if (payload.delay_minutes !== undefined && payload.delay_minutes !== null) {
+    if (!Number.isFinite(payload.delay_minutes) || payload.delay_minutes < 0) {
+      throw new Error('delay_minutes deve ser um número maior ou igual a zero.');
+    }
     scheduled_time = new Date(agora.getTime() + payload.delay_minutes * 60000).toISOString();
 
   } else if (rawTime && rawTime.length <= 8 && rawTime.includes(':')) {

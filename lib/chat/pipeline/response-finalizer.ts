@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { extractAndSummarize } from '@/lib/extractor';
 import { detectImplicitNegativeFeedback } from '@/lib/tools/executors/learning';
-import OpenAI from 'openai';
+import OpenAI from 'openai/index.js';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './types';
@@ -22,7 +22,10 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY_1 });
+const getOpenAI = () => {
+  const apiKey = process.env.OPENAI_API_KEY_1;
+  return apiKey ? new OpenAI({ apiKey }) : null;
+};
 
 // ─── TTS Adaptativo (OpenAI + ElevenLabs) ─────────────────────────────────────
 
@@ -57,6 +60,8 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
       const arrayBuffer = await elRes.arrayBuffer();
       return Buffer.from(arrayBuffer).toString('base64');
     } else {
+      const openai = getOpenAI();
+      if (!openai) return null;
       const mp3 = await openai.audio.speech.create({
         model: 'tts-1',
         voice: (voiceId as any) || 'alloy',
