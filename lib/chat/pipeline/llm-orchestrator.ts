@@ -52,20 +52,20 @@ interface RouterResult {
 
 // Fallback caso o banco esteja indisponível
 const FALLBACK_MODEL_MAP: Record<RouterIntent, string> = {
-  emocional:   'google/gemini-2.5-flash',
-  factual:     'google/gemini-2.5-flash',
-  acao:        'google/gemini-2.5-flash',
+  emocional: 'google/gemini-2.5-flash',
+  factual: 'google/gemini-2.5-flash',
+  acao: 'google/gemini-2.5-flash',
   recuperacao: 'google/gemini-2.5-flash',
-  hibrido:     'anthropic/claude-sonnet-4.6',
+  hibrido: 'anthropic/claude-sonnet-4.6',
 };
 
 // Traduz alias do banco para model ID do OpenRouter
 const ALIAS_TO_MODEL: Record<string, string> = {
-  'flash-25':      'google/gemini-2.5-flash',
+  'flash-25': 'google/gemini-2.5-flash',
   'claude-sonnet': 'anthropic/claude-sonnet-4.6',
-  'flash-lite':    'google/gemini-3.1-flash-lite-preview',
-  'qwen-8b':       'qwen/qwen3-8b',
-  'llama-8b':      'meta-llama/llama-3.1-8b-instruct',
+  'flash-lite': 'google/gemini-3.1-flash-lite-preview',
+  'qwen-8b': 'qwen/qwen3-8b',
+  'llama-8b': 'meta-llama/llama-3.1-8b-instruct',
 };
 
 function buildRouterPrompt(input: string, lastTurn: string | null): string {
@@ -111,6 +111,15 @@ async function resolveModelByIntent(
   lastTurn: string | null,
   requestedModel: string
 ): Promise<{ model: string; routerResult: RouterResult | null }> {
+
+
+  const PARENTING_PATTERN = /\b(filho|filha|miguel|criança|crianças|birra|escola|dever|comportamento|disciplina|lição)\b/i;
+  if (PARENTING_PATTERN.test(message)) {
+    const model = await getBestModelForCategory('hibrido');
+    console.log(`[Router] ✓ override parentalidade → ${model}`);
+    return { model, routerResult: null };
+  }
+
   try {
     const prompt = buildRouterPrompt(message, lastTurn);
 
