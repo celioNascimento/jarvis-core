@@ -2,21 +2,21 @@
 import OpenAI from 'openai';
 import type { ChatMessage, LLMResponse } from './pipeline/llm-orchestrator';
 
-const hfClient = new OpenAI({
-  baseURL: 'https://router.huggingface.co/v1',
-  apiKey: process.env.HF_TOKEN,
+// Apontando para a Modal
+const modalClient = new OpenAI({
+  baseURL: process.env.MODAL_API_URL,
+  apiKey: process.env.MODAL_API_KEY,
 });
 
-// A assinatura abaixo aceita 4 argumentos. O TypeScript exige que todos os tipos batam.
 export async function callLevModel(
   messages: ChatMessage[],
   tools: any[],
   temperature: number = 0.7,
-  toolChoice: 'auto' | 'required' = 'auto' // <-- Este é o 4º argumento
+  toolChoice: 'auto' | 'required' = 'auto'
 ): Promise<LLMResponse> {
   try {
-    const response = await hfClient.chat.completions.create({
-      model: process.env.HF_MODEL_ID as string,
+    const response = await modalClient.chat.completions.create({
+      model: 'celioNascimento/Lev-LoRA-Orquestrador-Merged', 
       messages: messages as any,
       tools: tools && tools.length > 0 ? tools : undefined,
       tool_choice: tools && tools.length > 0 ? toolChoice : undefined,
@@ -29,10 +29,10 @@ export async function callLevModel(
     return {
       content: choice.content,
       toolCalls: (choice.tool_calls as any) || undefined,
-      modelUsed: process.env.HF_MODEL_ID as string,
+      modelUsed: 'lev-modal-vllm',
     };
   } catch (error) {
-    console.error('[Lev Gateway] Erro na chamada do HF:', error);
+    console.error('[Lev Gateway] Erro na chamada da Modal:', error);
     throw error;
   }
 }
