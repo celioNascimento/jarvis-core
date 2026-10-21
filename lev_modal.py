@@ -1,3 +1,4 @@
+import os
 import modal
 import subprocess
 
@@ -25,7 +26,11 @@ hf_cache_vol = modal.Volume.from_name("lev-hf-cache", create_if_missing=True)
     timeout=20 * 60,
     scaledown_window=20 * 60,
     volumes={"/root/.cache/huggingface": hf_cache_vol},
-    secrets=[modal.Secret.from_name("huggingface-secret")],
+    secrets=[
+        modal.Secret.from_name("huggingface-secret"),
+        # Secret com a variável LEV_API_KEY (a mesma chave vai em MODAL_API_KEY no app).
+        modal.Secret.from_name("lev-api-key"),
+    ],
 )
 @modal.concurrent(max_inputs=10)
 @modal.web_server(port=VLLM_PORT, startup_timeout=20 * 60)
@@ -35,11 +40,11 @@ def serve():
         "--served-model-name", MODEL_NAME,
         "--host", "0.0.0.0",
         "--port", str(VLLM_PORT),
-        "--max-model-len", "4096",
-        "--api-key", "lev-secret-key",
+        "--max-model-len", "8192",
+        "--api-key", os.environ["LEV_API_KEY"],
         "--enforce-eager",
-          "--enable-auto-tool-choice",      # <-- NOVO: Permite que o vLLM leia as ferramentas
-        "--tool-call-parser", "hermes",   # <-- NOVO: Ensina a ler o formato JSON do Qwen
+        "--enable-auto-tool-choice",      # Permite que o vLLM leia as ferramentas
+        "--tool-call-parser", "hermes",   # Ensina a ler o formato JSON do Qwen
         # Forçando rope_scaling nulo por segurança
         "--hf-overrides", '{"rope_scaling": null}'
     ])

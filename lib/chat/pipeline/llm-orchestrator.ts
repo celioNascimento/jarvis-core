@@ -122,16 +122,15 @@ export async function runLLMOrchestrator(
   const isToolRequired = toolChoice === 'required';
   const MAX_STEPS = isToolRequired ? 2 : 1;
 
-    const currentMessages = [
+  const currentMessages = [
     { role: 'system' as const, content: prompt.systemPrompt || "Você é o Lev." },
     ...conversationMessages,
-  ].map((m: any) => {
-    // O vLLM não aceita 'content: null'. Se vier nulo, transformamos em string vazia.
-    if (m.content === null || m.content === undefined) {
-      m.content = "";
-    }
-    return m;
-  }) as ChatMessage[];
+  ].map((m: any) => ({
+    // O vLLM não aceita 'content: null'. Copiamos a mensagem (sem alterar o original)
+    // e transformamos conteúdo nulo em string vazia.
+    ...m,
+    content: m.content ?? '',
+  })) as ChatMessage[];
 
   let passoAtual = 0;
   let loopResponse: LLMResponse | null = null;
