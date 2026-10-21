@@ -49,7 +49,64 @@ export function isNoiseMessage(message: string): boolean {
 
 // ─── Cache & RPC Logic ──────────────────────────────────────────────────────
 
-const CACHED_FIELDS = ['settings', 'modules', 'guidelines', 'persons', 'locations', 'shopping', 'reminders', 'children', 'profile'] as const;
+// Campos-base: o RPC os devolve SEMPRE, então podem ser servidos do cache.
+// (insights e related_topics também são base no RPC, mas antes ficavam de fora do cache e
+//  sumiam do prompt em todo acerto de cache.)
+const CACHED_FIELDS = [
+  'settings', 'modules', 'guidelines', 'persons', 'locations', 'shopping', 'reminders',
+  'children', 'profile', 'insights', 'related_topics',
+] as const;
+
+// jsonb_agg devolve NULL quando não há linhas. Sem isto o campo nunca era gravado no cache
+// (`value == null → continue`) e o usuário sem, por ex., lembretes pendentes ou filhos ficava em
+// "cache miss" para sempre, rodando o RPC inteiro a cada mensagem. [] conta como acerto.
+const EMPTY_FIELD_DEFAULTS: Partial<Record<(typeof CACHED_FIELDS)[number], any>> = {
+  settings: [], modules: [], guidelines: [], persons: [], locations: [], reminders: [],
+  children: [], insights: [], related_topics: [],
+};
+
+// Campos que o RPC (jarvis.get_consolidated_context) só devolve conforme as tags de contexto da
+// mensagem. Não são cacheados (dependem da mensagem e mudam rápido); em acerto de cache precisam
+// ser buscados, senão os módulos de agenda, rotinas, projetos etc. enxergam listas vazias.
+const CONTEXT_TAG_FIELDS: Record<string, string[]> = {
+  agenda:   ['events', 'calendar_block'],
+  evento:   ['events', 'calendar_block'],
+  rotina:   ['routines'],
+  foco:     ['routines'],
+  financas: ['budgets'],
+  projeto:  ['projects'],
+  veiculos: ['vehicles', 'vehicle_maintenances', 'vehicle_refuels'],
+  diario:   ['diary'],
+};
+
+async function fetchContextualFields(
+  userId: number,
+  sessionId: string,
+  contexts: string[],
+): Promise<Record<string, any>> {
+  const wanted = new Set<string>();
+  for (const tag of contexts) (CONTEXT_TAG_FIELDS[tag] || []).forEach((f) => wanted.add(f));
+  if (wanted.size === 0) return {};
+
+  try {
+    const { data, error } = await supabase.rpc('get_consolidated_context', {
+      p_user_id: userId,
+      p_session_id: sessionId,
+      p_contexts: contexts,
+    });
+    if (error || !data) {
+      console.warn('[MasterContext] Falha ao buscar campos contextuais:', error?.message);
+      return {};
+    }
+    const picked: Record<string, any> = {};
+    wanted.forEach((f) => { if (data[f] != null) picked[f] = data[f]; });
+    console.log('[MasterContext] Campos contextuais buscados:', Object.keys(picked));
+    return picked;
+  } catch (e) {
+    console.warn('[MasterContext] Erro ao buscar campos contextuais:', e);
+    return {};
+  }
+}
 
 async function getMasterContext(
   userId: number,
@@ -71,8 +128,15 @@ async function getMasterContext(
   });
 
   if (missingFields.length === 0 && !needsHistory) {
-    console.log('[MasterContext] Cache hit total — Zero queries ao Supabase.');
-    return { ...cached, history: cachedHistory };
+    // Acerto total nos campos-base. Só consulta o banco se a mensagem pede campos contextuais
+    // (agenda, rotina, projeto...); nas demais continua sem nenhuma query.
+    const contextual = await fetchContextualFields(userId, sessionId, contexts);
+    console.log(
+      Object.keys(contextual).length
+        ? '[MasterContext] Cache hit nos campos-base + campos contextuais do RPC.'
+        : '[MasterContext] Cache hit total — Zero queries ao Supabase.',
+    );
+    return { ...cached, ...contextual, history: cachedHistory };
   }
 
   console.log('[MasterContext] Cache miss — rodando RPC consolidado e histórico');
@@ -108,7 +172,7 @@ async function getMasterContext(
   }
 
   for (const f of missingFields) {
-    const value = result[f];
+    const value = result[f] ?? EMPTY_FIELD_DEFAULTS[f];
     if (value == null) continue;
 
     if (f === 'persons' && Array.isArray(value)) {
