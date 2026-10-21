@@ -5,6 +5,7 @@
 //       ancorando o embedding no contexto correto (janela de contexto).
 
 import { NextResponse } from 'next/server';
+import { waitUntil } from '@vercel/functions';
 import { Redis } from '@upstash/redis';
 import OpenAI from 'openai/index.js';
 import type { ChatRequestContext } from './request-context';
@@ -120,23 +121,25 @@ export async function finalizeResponse(
       : null;
 
   if (baseUrl && process.env.QSTASH_TOKEN) {
-    await qstash.publishJSON({
-      url: `${baseUrl}/api/chat/background`,
-      body: {
-        userId: String(ctx.user.id),
-        nickname: ctx.user.nickname,
-        authUserId: ctx.user.auth_user_id,
-        sessionId: ctx.sessionId,
-        message: ctx.message,
-        reply,
-        lastAssistantTurn,
-        contexts: intel.contexts,
-        reminder: hasReminderIntent(ctx.message),
-      },
-      retries: 2,
-    }).catch((error) => {
-      console.error('[BackgroundTasks] Falha ao enfileirar:', error);
-    });
+    waitUntil(
+      qstash.publishJSON({
+        url: `${baseUrl}/api/chat/background`,
+        body: {
+          userId: String(ctx.user.id),
+          nickname: ctx.user.nickname,
+          authUserId: ctx.user.auth_user_id,
+          sessionId: ctx.sessionId,
+          message: ctx.message,
+          reply,
+          lastAssistantTurn,
+          contexts: intel.contexts,
+          reminder: hasReminderIntent(ctx.message),
+        },
+        retries: 2,
+      }).catch((error) => {
+        console.error('[BackgroundTasks] Falha ao enfileirar:', error);
+      }),
+    );
   } else {
     console.warn('[BackgroundTasks] QStash ou URL pública ausente; persistência ignorada.');
   }
