@@ -154,8 +154,9 @@ export async function reinforceMemory(
     // CORREÇÃO 1: Atualizando a tabela 'memories'
     const { error: updateError } = await supabase
       .from('memories')
+      // A tabela memories atual não possui last_accessed_at; atualize apenas
+      // as colunas existentes para que o reforço não falhe no schema cache.
       .update({
-        last_accessed_at: new Date().toISOString(),
         relevance_score: newScore,
         access_count: newAccessCount
       })
