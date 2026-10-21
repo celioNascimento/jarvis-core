@@ -26,10 +26,13 @@ export async function warmUpLev(): Promise<void> {
 }
 
 function getModalClient(): OpenAI {
+  const baseURL = process.env.MODAL_API_URL?.trim();
+  if (!baseURL) {
+    throw new Error('MODAL_API_URL não configurada; usando o fallback OpenRouter.');
+  }
+
   return new OpenAI({
-    baseURL: process.env.MODAL_API_URL,
-    // OpenAI validates the key during construction; the request will still
-    // fail and be handled by the orchestrator fallback when Modal is unset.
+    baseURL: baseURL.replace(/\/$/, ''),
     apiKey: process.env.MODAL_API_KEY || 'modal-key-not-configured',
   });
 }
