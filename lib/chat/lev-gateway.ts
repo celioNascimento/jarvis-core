@@ -49,7 +49,9 @@ export async function callLevModel(
       model: 'celioNascimento/Lev-LoRA-Orquestrador-Merged',
       messages: messages as any,
       tools: hasTools ? tools : undefined,
-      tool_choice: hasTools ? toolChoice : undefined,
+      // Alguns servidores vLLM/Modal rejeitam explicitamente tool_choice=auto.
+      // O comportamento padrão da API já é automático quando o campo é omitido.
+      tool_choice: hasTools && toolChoice === 'required' ? 'required' : undefined,
       temperature: temperature,
       max_tokens: 2000,
     });
@@ -61,7 +63,9 @@ export async function callLevModel(
       modelUsed: 'lev-modal-vllm',
     };
   } catch (error: any) {
-    console.error('[Lev Gateway] Erro na Modal:', error.message);
+    const status = error?.status ?? error?.statusCode ?? 'desconhecido';
+    const body = error?.error?.message || error?.response?.data?.error?.message || error?.message || 'sem detalhes';
+    console.error(`[Lev Gateway] Erro na Modal: HTTP ${status} — ${body}`);
     throw error; // Repassa o erro para o fallback do Orquestrador
   }
 }
