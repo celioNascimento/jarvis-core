@@ -44,6 +44,10 @@ function resolveToolChoice(message: string): 'auto' | 'required' {
   return 'auto';
 }
 
+function shouldPrefetchPersonalMemory(message: string): boolean {
+  return /\b(esposa|mulher|cônjuge|filh(?:o|a|os|as)|família|mãe|pai|irm(?:ão|ã)|nome da minha)\b/i.test(message);
+}
+
 async function executeToolCalls(
   toolCalls: ToolCall[],
   authUserId: string,
@@ -104,6 +108,36 @@ export async function runLLMOrchestrator(
     if (m.content === null || m.content === undefined) m.content = "";
     return m;
   }) as ChatMessage[];
+
+  // Consultas factuais sobre a família não podem depender do modelo decidir
+  // chamar uma ferramenta: o endpoint Modal rejeita tools e alguns fallbacks
+  // respondem diretamente, deixando a memória recuperada sem uso.
+  if (shouldPrefetchPersonalMemory(message) && tools.some((tool: any) =>
+    tool?.function?.name === 'buscar_memoria_longa'
+  )) {
+    try {
+      const memoryResult = await executeTool(
+        {
+          id: `prefetch_memory_${requestSignature}`,
+          type: 'function',
+          function: {
+            name: 'buscar_memoria_longa',
+            arguments: JSON.stringify({ query: message }),
+          },
+        },
+        user.auth_user_id,
+        String(user.id),
+        currentMessages.slice(-3),
+        ctx.sessionId,
+      );
+      currentMessages.push({
+        role: 'system',
+        content: `Memória factual recuperada para responder à pergunta atual:\n${memoryResult}`,
+      });
+    } catch (error) {
+      console.warn('[Orchestrator] Prefetch de memória falhou; seguindo com o pipeline:', error);
+    }
+  }
 
   let passoAtual = 0;
   let loopResponse: LLMResponse | null = null;
