@@ -4,7 +4,7 @@
 // V2 — Passa o último turno do assistente para o brain.service,
 //       ancorando o embedding no contexto correto (janela de contexto).
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { extractAndSummarize } from '@/lib/extractor';
 import { detectImplicitNegativeFeedback } from '@/lib/tools/executors/learning';
@@ -16,6 +16,9 @@ import { extractReminder, hasReminderIntent } from '@/lib/chat/pipeline/extracto
 import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
 import { after } from 'next/server';
 import { insertBrainEntry } from '@/lib/services/brain.service';
+
+const BACKGROUND_BUDGET_MS = 12_000;
+const TTS_BUDGET_MS = 8_000;
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -39,8 +42,11 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
         console.warn('[TTS] ELEVENLABS_API_KEY ausente. Abortando áudio.');
         return null;
       }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), TTS_BUDGET_MS);
       const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Accept': 'audio/mpeg',
           'xi-api-key': process.env.ELEVENLABS_API_KEY,
@@ -58,15 +64,19 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
       }
 
       const arrayBuffer = await elRes.arrayBuffer();
+      clearTimeout(timeout);
       return Buffer.from(arrayBuffer).toString('base64');
     } else {
       const openai = getOpenAI();
       if (!openai) return null;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), TTS_BUDGET_MS);
       const mp3 = await openai.audio.speech.create({
         model: 'tts-1',
-        voice: (voiceId as any) || 'alloy',
+        voice: (voiceId || 'alloy') as 'alloy',
         input: cleanText,
-      });
+      }, { signal: controller.signal });
+      clearTimeout(timeout);
       return Buffer.from(await mp3.arrayBuffer()).toString('base64');
     }
   } catch (e) {
@@ -91,8 +101,7 @@ export async function finalizeResponse(
   ctx: ChatRequestContext,
   intel: ChatIntelligence,
   prompt: ChatPrompt,
-  reply: string,
-  req: NextRequest
+  reply: string
 ): Promise<NextResponse> {
   // 1. Cache da resposta (rápido)
   await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => { });
@@ -108,71 +117,60 @@ export async function finalizeResponse(
 
   // 4. Define tarefas em background — NÃO usa await bloqueante!
   const backgroundTasks = async () => {
-    try {
-      await detectImplicitNegativeFeedback(ctx.message, ctx.user.id);
-    } catch (e) {
-      console.debug('[Feedback] Falha silenciosa:', e);
-    }
-
-    try {
-      console.log('[ResponseFinalizer] 🚀 Disparando insertBrainEntry com janela de contexto');
-
-      await insertBrainEntry({
-        userId:           Number(ctx.user.id),
-        sessionId:        ctx.sessionId,
-        content:          ctx.message,
-        lastAssistantTurn,                    // ← ancora o embedding no contexto certo
-        category:         ctx.message.length < 15 ? 'noise' : 'info',
-        tags:             intel.contexts as string[],
+    const tasks = [
+      detectImplicitNegativeFeedback(ctx.message, ctx.user.id),
+      insertBrainEntry({
+        userId: Number(ctx.user.id),
+        sessionId: ctx.sessionId,
+        content: ctx.message,
+        lastAssistantTurn,
+        category: ctx.message.length < 15 ? 'noise' : 'info',
+        tags: intel.contexts as string[],
         metadata: {
-          role:     'user',
-          model:    'google/gemini-2.0-flash-001',
+          role: 'user',
+          model: 'google/gemini-2.5-flash',
           ai_reply: reply,
           contexts: intel.contexts,
         },
-      });
-
-      console.log('[ResponseFinalizer] ✅ Inserção cifrada concluída com sucesso.');
-    } catch (e: any) {
-      console.error('[ResponseFinalizer] Brain save error:', e);
-    }
-
-    try {
-      await extractAndSummarize(
-        String(ctx.user.id),
-        ctx.user.nickname,
-        ctx.message,
-        reply
-      );
-    } catch (e: any) {
-      console.error('[ResponseFinalizer] Extractor error:', e.message);
-    }
+      }),
+      extractAndSummarize(String(ctx.user.id), ctx.user.nickname, ctx.message, reply),
+      processStyleSignals(String(ctx.user.id), ctx.message),
+    ];
 
     if (hasReminderIntent(ctx.message)) {
-      try {
-        await extractReminder(
-          String(ctx.user.id),
-          ctx.user.auth_user_id,
-          ctx.message,
-          new Date().toISOString()
-        );
-      } catch (e: any) {
-        console.error('[ResponseFinalizer] Reminder extractor error:', e.message);
-      }
+      tasks.push(extractReminder(
+        String(ctx.user.id),
+        ctx.user.auth_user_id,
+        ctx.message,
+        new Date().toISOString()
+      ));
     }
 
-    try {
-      await processStyleSignals(String(ctx.user.id), ctx.message);
-    } catch (e: any) {
-      console.error('[style-learner] erro silencioso:', e);
-    }
+    const results = await Promise.allSettled(tasks);
+    results.forEach((result) => {
+      if (result.status === 'rejected') {
+        console.error('[BackgroundTasks] Falha isolada:', result.reason);
+      }
+    });
   };
 
-  // ⏩ Tratamento robusto da promise para o contexto Edge/Vercel
+  // O callback continua depois da resposta, mas tem orçamento próprio. Sem
+  // esse limite, uma integração lenta mantém a invocation aberta até o
+  // maxDuration e a Vercel registra "Task timeout" mesmo após o reply sair.
   after(async () => {
-    await backgroundTasks().catch(err =>
-      console.error('[BackgroundTasks] Erro fatal:', err)
-    );
+    const timeout = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        console.warn('[BackgroundTasks] Orçamento encerrado; resposta já enviada.');
+        resolve();
+      }, BACKGROUND_BUDGET_MS);
+    });
+
+    await Promise.race([
+      backgroundTasks().catch(err =>
+        console.error('[BackgroundTasks] Erro fatal:', err)
+      ),
+      timeout,
+    ]);
   });
 
   // 5. ✅ Responde IMEDIATAMENTE ao usuário — sem delay
