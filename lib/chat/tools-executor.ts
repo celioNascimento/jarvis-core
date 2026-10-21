@@ -55,7 +55,7 @@ const WRITE_TOOLS = new Set([
 // ── Roteador Modular ────────────────────────────────────────────────────────
 const TOOL_ROUTER: Record<string, ToolHandler> = {
   // Memória
-  'memoria_buscar_longa':        (p, a, n) => Memory.executeBuscarMemoriaLonga(p as any, a, n),
+  'buscar_memoria_longa':          (p, a, n) => Memory.executeBuscarMemoriaLonga(p as any, a, n),
   'memoria_adicionar_diretriz':  (p, a, n) => Memory.executeAdicionarDiretrizDinamica(p as any, a, n),
   'gerenciar_guideline':         (p, a, n) => Guidelines.executeGerenciarGuideline(p as any, a, n),
 
