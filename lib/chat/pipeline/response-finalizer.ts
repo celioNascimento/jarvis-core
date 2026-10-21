@@ -6,18 +6,13 @@
 
 import { NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
-import { extractAndSummarize } from '@/lib/extractor';
-import { detectImplicitNegativeFeedback } from '@/lib/tools/executors/learning';
 import OpenAI from 'openai/index.js';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './types';
-import { extractReminder, hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
-import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
-import { after } from 'next/server';
-import { insertBrainEntry } from '@/lib/services/brain.service';
+import { hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
+import { qstash } from '@/lib/qstash';
 
-const BACKGROUND_BUDGET_MS = 12_000;
 const TTS_BUDGET_MS = 8_000;
 
 const redis = new Redis({
@@ -115,63 +110,36 @@ export async function finalizeResponse(
   //    (ctx ainda está íntegro aqui — não depende de async)
   const lastAssistantTurn = getLastAssistantTurn(ctx);
 
-  // 4. Define tarefas em background — NÃO usa await bloqueante!
-  const backgroundTasks = async () => {
-    const tasks = [
-      detectImplicitNegativeFeedback(ctx.message, ctx.user.id),
-      insertBrainEntry({
-        userId: Number(ctx.user.id),
+  // O processamento pesado não pode ficar anexado à invocation do chat.
+  // Promise.race/after apenas deixam de esperar; não cancelam fetches, timers
+  // ou conexões já abertas. O QStash executa a persistência em outra request.
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+    ? process.env.NEXT_PUBLIC_APP_URL
+    : process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : null;
+
+  if (baseUrl && process.env.QSTASH_TOKEN) {
+    await qstash.publishJSON({
+      url: `${baseUrl}/api/chat/background`,
+      body: {
+        userId: String(ctx.user.id),
+        nickname: ctx.user.nickname,
+        authUserId: ctx.user.auth_user_id,
         sessionId: ctx.sessionId,
-        content: ctx.message,
+        message: ctx.message,
+        reply,
         lastAssistantTurn,
-        category: ctx.message.length < 15 ? 'noise' : 'info',
-        tags: intel.contexts as string[],
-        metadata: {
-          role: 'user',
-          model: 'google/gemini-2.5-flash',
-          ai_reply: reply,
-          contexts: intel.contexts,
-        },
-      }),
-      extractAndSummarize(String(ctx.user.id), ctx.user.nickname, ctx.message, reply),
-      processStyleSignals(String(ctx.user.id), ctx.message),
-    ];
-
-    if (hasReminderIntent(ctx.message)) {
-      tasks.push(extractReminder(
-        String(ctx.user.id),
-        ctx.user.auth_user_id,
-        ctx.message,
-        new Date().toISOString()
-      ));
-    }
-
-    const results = await Promise.allSettled(tasks);
-    results.forEach((result) => {
-      if (result.status === 'rejected') {
-        console.error('[BackgroundTasks] Falha isolada:', result.reason);
-      }
+        contexts: intel.contexts,
+        reminder: hasReminderIntent(ctx.message),
+      },
+      retries: 2,
+    }).catch((error) => {
+      console.error('[BackgroundTasks] Falha ao enfileirar:', error);
     });
-  };
-
-  // O callback continua depois da resposta, mas tem orçamento próprio. Sem
-  // esse limite, uma integração lenta mantém a invocation aberta até o
-  // maxDuration e a Vercel registra "Task timeout" mesmo após o reply sair.
-  after(async () => {
-    const timeout = new Promise<void>((resolve) => {
-      setTimeout(() => {
-        console.warn('[BackgroundTasks] Orçamento encerrado; resposta já enviada.');
-        resolve();
-      }, BACKGROUND_BUDGET_MS);
-    });
-
-    await Promise.race([
-      backgroundTasks().catch(err =>
-        console.error('[BackgroundTasks] Erro fatal:', err)
-      ),
-      timeout,
-    ]);
-  });
+  } else {
+    console.warn('[BackgroundTasks] QStash ou URL pública ausente; persistência ignorada.');
+  }
 
   // 5. ✅ Responde IMEDIATAMENTE ao usuário — sem delay
   return NextResponse.json({
