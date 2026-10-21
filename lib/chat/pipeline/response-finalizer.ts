@@ -122,9 +122,15 @@ export async function finalizeResponse(
     }),
   );
 
-  // 2. Gera áudio se solicitado
+  // 2. Áudio é opcional: nunca pode impedir a resposta textual.
+  // A geração TTS depende de um serviço externo e pode permanecer pendente
+  // mesmo quando o texto já está pronto. Limitamos a espera a 1,5s; se não
+  // concluir, o cliente recebe a resposta normalmente sem áudio.
   const audioBase64 = ctx.speak && ctx.voiceSettings
-    ? await generateTTS(reply, ctx.voiceSettings.provider, ctx.voiceSettings.voiceId)
+    ? await Promise.race([
+        generateTTS(reply, ctx.voiceSettings.provider, ctx.voiceSettings.voiceId),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1_500)),
+      ])
     : null;
 
   // 3. Captura o último turno do assistente ANTES do background
