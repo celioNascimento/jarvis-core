@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v8.0 — Prompt focado no Lev Fine-Tuned (Tags de Memória)
+// v8.1 — Injetando bloco familiar e banindo comportamento de IA genérica
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -9,7 +9,8 @@ import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './types';
 
-import { buildProfileBlock, buildTopicBlock, filterL3Content } from './prompts/formatters';
+// Importamos as funções que montam o perfil e a família
+import { buildProfileBlock, buildTopicBlock, filterL3Content, buildFamilyBlock } from './prompts/formatters';
 import { inferEmotionalStateFromHistory } from './utils/infer-emotional-state';
 import { buildFewShotExamplesPrompt } from './prompts/few-shot-examples';
 
@@ -26,6 +27,12 @@ export async function buildChatPrompt(
   // ── Formatação de dados do masterContext ───────────────────
   const profileBlock = buildProfileBlock(masterContext?.profile);
   const topicsBlock = buildTopicBlock(masterContext);
+  
+  // AQUI ESTÁ A CORREÇÃO: Resgatando os dados da família (esposa, filhos)
+  const familyBlock = buildFamilyBlock(
+    masterContext?.persons || [],
+    masterContext?.children || [],
+  );
   
   // ── Cargas paralelas ──────────────────────────────────────────────────────
   const [moduleResult, dynamicResult, fewShotBlock] = await Promise.all([
@@ -66,24 +73,17 @@ export async function buildChatPrompt(
 
   // ── MONTAGEM DO SYSTEM PROMPT (Formato de Treino) ─────────────────────────
   
-  // Construímos o prompt EXATAMENTE como o modelo aprendeu no dataset
   const levSystemPrompt = `
-Você é o Lev, amigo próximo de ${user.nickname || 'Célio'}. Fala como brasileiro de 30 e poucos anos: direto, informal, com opinião própria e humor ácido na medida.
-
-COMO FALAR:
-- Curto, tipo mensagem de WhatsApp. Só alongue se o assunto pedir.
-- O humor vem da situação (ironia, exagero, zoar de volta quando o usuário brinca). Não force piada: se não tem graça, não faz.
-- Gíria leve, no máximo uma por mensagem, sem repetir sempre a mesma.
-- Se o usuário estiver mal, baixa o tom e acolhe de verdade, sem piada.
-- NUNCA aja como terapeuta, coach ou assistente de IA. Nada de "como posso ajudar", "sinto muito", "é importante" ou "é compreensível".
-
-FERRAMENTAS:
-- Use as ferramentas disponíveis quando o usuário pedir uma ação.
-- Ao usar uma ferramenta, gere o tool_call junto com uma confirmação de uma frase, com personalidade, não em tom de sistema.
+Você é Lev, um amigo inteligente, com opinião própria. 
+NUNCA aja como um terapeuta, coach ou assistente de IA genérica.
+NUNCA diga "como posso ajudar", "é importante", "sinto muito", "é difícil lidar" ou "não tenho acesso a registros pessoais". Você TEM acesso às memórias abaixo.
 
 [PERFIL DO USUÁRIO]
 Nome: ${user.nickname || 'Célio'}
 ${profileBlock || ''}
+
+[FAMÍLIA]
+${familyBlock || 'Nenhum familiar registrado.'}
 
 [MEMÓRIAS RECUPERADAS]
 ${l3Content}
@@ -107,7 +107,7 @@ ${fewShotBlock || ''}
 
   // Retorno final adaptado
   return {
-    systemPrompt: levSystemPrompt, // <-- O Prompt limpo e formatado
+    systemPrompt: levSystemPrompt, 
     tools: resolvedTools,
     model: finalModel,
     conversationMessages: [
