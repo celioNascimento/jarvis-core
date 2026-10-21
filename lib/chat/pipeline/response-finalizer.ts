@@ -4,18 +4,30 @@
 // V2 — Passa o último turno do assistente para o brain.service,
 //       ancorando o embedding no contexto correto (janela de contexto).
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+import { waitUntil } from '@vercel/functions';
 import { Redis } from '@upstash/redis';
-import { extractAndSummarize } from '@/lib/extractor';
-import { detectImplicitNegativeFeedback } from '@/lib/tools/executors/learning';
 import OpenAI from 'openai/index.js';
 import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './types';
-import { extractReminder, hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
-import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
-import { after } from 'next/server';
-import { insertBrainEntry } from '@/lib/services/brain.service';
+import { hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extractor';
+import { qstash } from '@/lib/qstash';
+
+const TTS_BUDGET_MS = 8_000;
+const POST_RESPONSE_BUDGET_MS = 2_500;
+
+function settleWithin<T>(task: Promise<T>, label: string): Promise<T | undefined> {
+  return Promise.race([
+    task,
+    new Promise<undefined>((resolve) => {
+      setTimeout(() => {
+        console.warn(`[ResponseFinalizer] ${label} excedeu ${POST_RESPONSE_BUDGET_MS}ms`);
+        resolve(undefined);
+      }, POST_RESPONSE_BUDGET_MS);
+    }),
+  ]);
+}
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -39,8 +51,11 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
         console.warn('[TTS] ELEVENLABS_API_KEY ausente. Abortando áudio.');
         return null;
       }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), TTS_BUDGET_MS);
       const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Accept': 'audio/mpeg',
           'xi-api-key': process.env.ELEVENLABS_API_KEY,
@@ -58,15 +73,19 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
       }
 
       const arrayBuffer = await elRes.arrayBuffer();
+      clearTimeout(timeout);
       return Buffer.from(arrayBuffer).toString('base64');
     } else {
       const openai = getOpenAI();
       if (!openai) return null;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), TTS_BUDGET_MS);
       const mp3 = await openai.audio.speech.create({
         model: 'tts-1',
-        voice: (voiceId as any) || 'alloy',
+        voice: (voiceId || 'alloy') as 'alloy',
         input: cleanText,
-      });
+      }, { signal: controller.signal });
+      clearTimeout(timeout);
       return Buffer.from(await mp3.arrayBuffer()).toString('base64');
     }
   } catch (e) {
@@ -91,89 +110,69 @@ export async function finalizeResponse(
   ctx: ChatRequestContext,
   intel: ChatIntelligence,
   prompt: ChatPrompt,
-  reply: string,
-  req: NextRequest
+  reply: string
 ): Promise<NextResponse> {
-  // 1. Cache da resposta (rápido)
-  await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => { });
+  // A resposta já está pronta: cache é pós-resposta e nunca pode bloquear o usuário.
+  waitUntil(
+    settleWithin(
+      redis.set(ctx.replyKey, reply, { ex: 60 }),
+      'cache Redis',
+    ).catch((error) => {
+      console.error('[ResponseFinalizer] Falha ao salvar cache:', error);
+    }),
+  );
 
-  // 2. Gera áudio se solicitado
+  // 2. Áudio é opcional: nunca pode impedir a resposta textual.
+  // A geração TTS depende de um serviço externo e pode permanecer pendente
+  // mesmo quando o texto já está pronto. Limitamos a espera a 1,5s; se não
+  // concluir, o cliente recebe a resposta normalmente sem áudio.
   const audioBase64 = ctx.speak && ctx.voiceSettings
-    ? await generateTTS(reply, ctx.voiceSettings.provider, ctx.voiceSettings.voiceId)
+    ? await Promise.race([
+        generateTTS(reply, ctx.voiceSettings.provider, ctx.voiceSettings.voiceId),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1_500)),
+      ])
     : null;
 
   // 3. Captura o último turno do assistente ANTES do background
   //    (ctx ainda está íntegro aqui — não depende de async)
   const lastAssistantTurn = getLastAssistantTurn(ctx);
 
-  // 4. Define tarefas em background — NÃO usa await bloqueante!
-  const backgroundTasks = async () => {
-    try {
-      await detectImplicitNegativeFeedback(ctx.message, ctx.user.id);
-    } catch (e) {
-      console.debug('[Feedback] Falha silenciosa:', e);
-    }
+  // O processamento pesado não pode ficar anexado à invocation do chat.
+  // Promise.race/after apenas deixam de esperar; não cancelam fetches, timers
+  // ou conexões já abertas. O QStash executa a persistência em outra request.
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+    ? process.env.NEXT_PUBLIC_APP_URL
+    : process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : null;
 
-    try {
-      console.log('[ResponseFinalizer] 🚀 Disparando insertBrainEntry com janela de contexto');
+  if (baseUrl && process.env.QSTASH_TOKEN) {
+    const publishBackgroundJob = qstash.publishJSON({
+      url: `${baseUrl}/api/chat/background`,
+      body: {
+        userId: String(ctx.user.id),
+        nickname: ctx.user.nickname,
+        authUserId: ctx.user.auth_user_id,
+        sessionId: ctx.sessionId,
+        message: ctx.message,
+        reply,
+        lastAssistantTurn,
+        contexts: intel.contexts,
+        reminder: hasReminderIntent(ctx.message),
+      },
+      retries: 2,
+    });
 
-      await insertBrainEntry({
-        userId:           Number(ctx.user.id),
-        sessionId:        ctx.sessionId,
-        content:          ctx.message,
-        lastAssistantTurn,                    // ← ancora o embedding no contexto certo
-        category:         ctx.message.length < 15 ? 'noise' : 'info',
-        tags:             intel.contexts as string[],
-        metadata: {
-          role:     'user',
-          model:    'google/gemini-2.0-flash-001',
-          ai_reply: reply,
-          contexts: intel.contexts,
-        },
-      });
-
-      console.log('[ResponseFinalizer] ✅ Inserção cifrada concluída com sucesso.');
-    } catch (e: any) {
-      console.error('[ResponseFinalizer] Brain save error:', e);
-    }
-
-    try {
-      await extractAndSummarize(
-        String(ctx.user.id),
-        ctx.user.nickname,
-        ctx.message,
-        reply
-      );
-    } catch (e: any) {
-      console.error('[ResponseFinalizer] Extractor error:', e.message);
-    }
-
-    if (hasReminderIntent(ctx.message)) {
-      try {
-        await extractReminder(
-          String(ctx.user.id),
-          ctx.user.auth_user_id,
-          ctx.message,
-          new Date().toISOString()
-        );
-      } catch (e: any) {
-        console.error('[ResponseFinalizer] Reminder extractor error:', e.message);
-      }
-    }
-
-    try {
-      await processStyleSignals(String(ctx.user.id), ctx.message);
-    } catch (e: any) {
-      console.error('[style-learner] erro silencioso:', e);
-    }
-  };
-
-  // ⏩ Tratamento robusto da promise para o contexto Edge/Vercel
-  after(async () => {
-    await backgroundTasks().catch(err =>
-      console.error('[BackgroundTasks] Erro fatal:', err)
-    );
-  });
+    // Evita que uma indisponibilidade do QStash mantenha a invocation viva.
+    waitUntil(Promise.race([
+      publishBackgroundJob,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('QStash enqueue timeout')), 3_000)),
+    ]).catch((error) => {
+      console.error('[BackgroundTasks] Falha ao enfileirar:', error);
+    }));
+  } else {
+    console.warn('[BackgroundTasks] QStash ou URL pública ausente; persistência ignorada.');
+  }
 
   // 5. ✅ Responde IMEDIATAMENTE ao usuário — sem delay
   return NextResponse.json({

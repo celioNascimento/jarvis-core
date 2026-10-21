@@ -2,9 +2,6 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 // 1. Import necessário para o background task
-import { waitUntil } from '@vercel/functions'; 
-import { updateL3 } from '@/lib/chat/pipeline/extractors/l3.extractor'; // Import do seu extrator
-
 import { buildRequestContext } from '@/lib/chat/pipeline/request-context';
 import { runIntelligencePipeline } from '@/lib/chat/pipeline/intelligence';
 import { buildChatPrompt } from '@/lib/chat/pipeline/prompt-assembler';
@@ -30,20 +27,15 @@ export async function POST(req: NextRequest) {
     const prompt = await buildChatPrompt(ctx, intel);
     const reply = await runLLMOrchestrator(ctx, prompt);
 
-    // 2. DISPARO EM BACKGROUND (O "pulo do gato" da latência)
-    // Usamos o intel.masterContext que já está populado na Fase 2.
-    // O catch evita que um erro na gravação derrube a resposta do usuário.
-    waitUntil(
-      updateL3(String(ctx.user.id), intel.masterContext).catch((err) => 
-      console.error('[Pipeline] Falha no background task L3:', err)
-  )
- );
+    // A persistência pós-resposta é agendada pelo finalizador. Não agende a
+    // mesma atualização aqui: duas tarefas concorrentes prolongam a invocation
+    // e podem atingir o timeout mesmo depois de a resposta estar pronta.
 
-    // 3. Finaliza a resposta sem esperar o banco de dados terminar
-    return finalizeResponse(ctx, intel, prompt, reply, req); 
+    // Finaliza a resposta sem esperar o banco de dados terminar
+    return finalizeResponse(ctx, intel, prompt, reply); 
 
-  } catch (e: any) {
-    if (e.statusCode === 401) {
+  } catch (e: unknown) {
+    if (e instanceof Error && 'statusCode' in e && e.statusCode === 401) {
       return NextResponse.json({ error: 'Auth failed' }, { status: 401 });
     }
     console.error('[FATAL] Pipeline error:', e);
