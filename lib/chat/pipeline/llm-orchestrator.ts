@@ -44,6 +44,10 @@ function resolveToolChoice(message: string): 'auto' | 'required' {
   return 'auto';
 }
 
+function shouldPrefetchPersonalMemory(message: string): boolean {
+  return /\b(esposa|mulher|cônjuge|filh(?:o|a|os|as)|família|mãe|pai|irm(?:ão|ã)|nome da minha)\b/i.test(message);
+}
+
 async function executeToolCalls(
   toolCalls: ToolCall[],
   authUserId: string,
@@ -90,11 +94,14 @@ export async function runLLMOrchestrator(
   const { user, message, requestSignature } = ctx;
   const { conversationMessages, tools } = prompt;
 
+  const isPersonalFactQuestion = shouldPrefetchPersonalMemory(message);
   const toolChoice = resolveToolChoice(message);
-  // Uma consulta factual pode acionar buscar_memoria_longa mesmo com tool_choice=auto.
-  // Nesse caso, o primeiro passo só executa a ferramenta e não contém a resposta final.
-  // Sempre reservamos um segundo passo para o modelo sintetizar o resultado da ferramenta.
-  const MAX_STEPS = tools.length > 0 ? 2 : 1;
+  // Informações pessoais já foram carregadas no masterContext e incorporadas ao
+  // system prompt. Não faça uma segunda consulta nem exponha ferramentas ao
+  // modelo para perguntas factuais: isso evita um tool loop e mantém o dado já
+  // recuperado disponível para a síntese final.
+  const requestTools = isPersonalFactQuestion ? [] : tools;
+  const MAX_STEPS = requestTools.length > 0 ? 2 : 1;
 
   // Sanitização do histórico para o vLLM não quebrar com 'content: null'
   const currentMessages = [
@@ -118,7 +125,7 @@ export async function runLLMOrchestrator(
 
     try {
       // 1. Tenta a Modal (Modelo Fine-Tuned)
-      loopResponse = await callLevModel(currentMessages, tools, 0.85, currentToolChoice);
+      loopResponse = await callLevModel(currentMessages, requestTools, 0.85, currentToolChoice);
     } catch (error) {
       console.warn(`[Orchestrator] ⚠️ Modal indisponível. Acionando Fallback OpenRouter...`);
       try {
