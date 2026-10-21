@@ -38,6 +38,8 @@ def serve():
         "--max-model-len", "4096",
         "--api-key", "lev-secret-key",
         "--enforce-eager",
+          "--enable-auto-tool-choice",      # <-- NOVO: Permite que o vLLM leia as ferramentas
+        "--tool-call-parser", "hermes",   # <-- NOVO: Ensina a ler o formato JSON do Qwen
         # Forçando rope_scaling nulo por segurança
         "--hf-overrides", '{"rope_scaling": null}'
     ])

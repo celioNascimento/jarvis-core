@@ -1,0 +1,10 @@
+{
+  "model": "celioNascimento/Lev-LoRA-Orquestrador-Merged",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Teste de autenticação"
+    }
+  ],
+  "max_tokens": 10
+}

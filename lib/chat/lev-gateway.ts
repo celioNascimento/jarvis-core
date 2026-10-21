@@ -30,8 +30,13 @@ export async function callLevModel(
       toolCalls: (choice.tool_calls as any) || undefined,
       modelUsed: 'lev-modal-vllm',
     };
-  } catch (error) {
-    console.error('[Lev Gateway] Erro na chamada da Modal:', error);
+    } catch (error: any) {
+    console.error('[Lev Gateway] Erro na chamada da Modal:', error.message);
+    if (error.response && error.response.data) {
+      console.error('[Lev Gateway] Detalhes do erro (Payload inválido):', JSON.stringify(error.response.data, null, 2));
+    } else if (error.status === 400) {
+      console.error('[Lev Gateway] Erro 400: O formato das mensagens ou ferramentas está inválido para o vLLM.');
+    }
     throw error;
   }
 }
