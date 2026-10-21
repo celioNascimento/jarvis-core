@@ -38,7 +38,9 @@ export type ContextField =
   | 'recommendations'
   | 'favorite_places'
   | 'children'
-  | 'principles';
+  | 'principles'
+  | 'insights'
+  | 'related_topics';
 
 // 2. Agora, verifique se o objeto TTL_CONFIG está usando exatamente este tipo:
 const FIELD_TTL: Record<ContextField, number> = {
@@ -60,6 +62,8 @@ const FIELD_TTL: Record<ContextField, number> = {
   recommendations: 84600,
   favorite_places: 84600,
   principles: 86400,
+  insights: 1800,       // aprendidos continuamente pelo extrator; 30 min de defasagem é aceitável
+  related_topics: 600,  // pesos do topic_index mudam a cada conversa
 };
 
 // ── Helpers de chave ──────────────────────────────────────────────────────────
