@@ -15,6 +15,19 @@ import { hasReminderIntent } from '@/lib/chat/pipeline/extractors/reminders.extr
 import { qstash } from '@/lib/qstash';
 
 const TTS_BUDGET_MS = 8_000;
+const POST_RESPONSE_BUDGET_MS = 2_500;
+
+function settleWithin<T>(task: Promise<T>, label: string): Promise<T | undefined> {
+  return Promise.race([
+    task,
+    new Promise<undefined>((resolve) => {
+      setTimeout(() => {
+        console.warn(`[ResponseFinalizer] ${label} excedeu ${POST_RESPONSE_BUDGET_MS}ms`);
+        resolve(undefined);
+      }, POST_RESPONSE_BUDGET_MS);
+    }),
+  ]);
+}
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -101,7 +114,10 @@ export async function finalizeResponse(
 ): Promise<NextResponse> {
   // A resposta já está pronta: cache é pós-resposta e nunca pode bloquear o usuário.
   waitUntil(
-    redis.set(ctx.replyKey, reply, { ex: 60 }).catch((error) => {
+    settleWithin(
+      redis.set(ctx.replyKey, reply, { ex: 60 }),
+      'cache Redis',
+    ).catch((error) => {
       console.error('[ResponseFinalizer] Falha ao salvar cache:', error);
     }),
   );
