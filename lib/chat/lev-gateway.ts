@@ -41,6 +41,33 @@ function estimatePromptTokens(messages: ChatMessage[], tools: any[]): number {
   return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 
+// Quantas mensagens finais nunca são removidas (pergunta atual + contexto imediato / cadeia de tools).
+const MIN_MESSAGES_KEPT = 4;
+
+/**
+ * Remove as mensagens mais antigas (logo após o system) até o prompt caber no orçamento.
+ * Nunca mexe no system nem nas últimas MIN_MESSAGES_KEPT e não deixa uma mensagem `tool` órfã.
+ */
+function trimHistoryToFit(messages: ChatMessage[], tools: any[], maxPromptTokens: number): ChatMessage[] {
+  if (estimatePromptTokens(messages, tools) <= maxPromptTokens) return messages;
+
+  const trimmed = [...messages];
+  const hasSystem = trimmed[0]?.role === 'system';
+  const firstDroppable = hasSystem ? 1 : 0;
+
+  while (
+    estimatePromptTokens(trimmed, tools) > maxPromptTokens &&
+    trimmed.length - firstDroppable > MIN_MESSAGES_KEPT
+  ) {
+    trimmed.splice(firstDroppable, 1);
+  }
+  // Removeu a mensagem do assistente que tinha tool_calls? Descarta os resultados que sobraram.
+  while (trimmed.length - firstDroppable > 1 && trimmed[firstDroppable]?.role === 'tool') {
+    trimmed.splice(firstDroppable, 1);
+  }
+  return trimmed;
+}
+
 function getModalClient(): OpenAI {
   const baseURL = process.env.MODAL_API_URL?.trim();
   if (!baseURL) {
@@ -59,13 +86,20 @@ export async function callLevModel(
   temperature: number = 0.7,
   toolChoice: 'auto' | 'required' = 'auto',
 ): Promise<LLMResponse> {
+  let requestMessages = messages;
   try {
     const hasTools = tools && tools.length > 0;
 
-    const promptTokens = estimatePromptTokens(messages, tools);
+    // Garante espaço para a resposta inteira: apara o histórico antigo se preciso.
+    requestMessages = trimHistoryToFit(
+      messages,
+      tools,
+      MODAL_MAX_MODEL_LEN - MAX_OUTPUT_TOKENS - CONTEXT_SAFETY_MARGIN,
+    );
+    const promptTokens = estimatePromptTokens(requestMessages, tools);
     const available = MODAL_MAX_MODEL_LEN - promptTokens - CONTEXT_SAFETY_MARGIN;
     console.log(
-      `[Lev Gateway] Prompt ~${promptTokens} tokens | tools: ${hasTools ? tools.length : 0} | msgs: ${messages.length} | espaço p/ resposta: ${available}`,
+      `[Lev Gateway] Prompt ~${promptTokens} tokens | tools: ${hasTools ? tools.length : 0} | msgs: ${requestMessages.length}/${messages.length} | espaço p/ resposta: ${available}`,
     );
     if (available < MIN_OUTPUT_TOKENS) {
       throw new Error(
@@ -76,7 +110,7 @@ export async function callLevModel(
 
     const response = await getModalClient().chat.completions.create({
       model: 'celioNascimento/Lev-LoRA-Orquestrador-Merged',
-      messages: messages as any,
+      messages: requestMessages as any,
       tools: hasTools ? tools : undefined,
       // Alguns servidores vLLM/Modal rejeitam explicitamente tool_choice=auto.
       // O comportamento padrão da API já é automático quando o campo é omitido.
@@ -108,7 +142,7 @@ export async function callLevModel(
           },
           body: JSON.stringify({
             model: 'celioNascimento/Lev-LoRA-Orquestrador-Merged',
-            messages,
+            messages: requestMessages,
             tools: tools && tools.length > 0 ? tools : undefined,
             temperature,
             max_tokens: MIN_OUTPUT_TOKENS,

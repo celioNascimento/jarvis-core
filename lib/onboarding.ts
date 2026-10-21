@@ -1,4 +1,5 @@
 import { supabase, callOpenRouter } from '@/lib/jarvis';
+import { invalidateContextField } from '@/lib/services/context-cache';
 
 // ============================================================
 // lib/onboarding.ts
@@ -342,6 +343,9 @@ async function syncToUserProfile(userId: string, data: Record<string, any>) {
       });
     }
   }
+
+  // Perfil e filhos ficam em cache (TTL 24h): invalida para o chat já enxergar o que o onboarding gravou.
+  await invalidateContextField(Number(userId), 'profile', 'children').catch(() => { });
 }
 
 // ============================================================

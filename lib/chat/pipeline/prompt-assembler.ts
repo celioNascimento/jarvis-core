@@ -34,12 +34,21 @@ import {
 } from './prompts/formatters';
 
 import { inferEmotionalStateFromHistory } from './utils/infer-emotional-state';
+import { shouldPrefetchPersonalMemory } from './utils/personal-memory';
 import { buildPersonalityBlock } from '@/lib/services/personality.service';
 import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/Utils/ai-helpers';
 
 const DEFAULT_MODEL = process.env.HF_MODEL_ID || 'celioNascimento/Lev-LoRA-Orquestrador-Merged';
 const ALWAYS_ON_TOOLS = ['web_pesquisar'] as const;
-const FAMILY_DATE_SIGNALS = [/aniversário/i, /casamento/i, /fil[ho]a/i, /esposa|marido/i];
+// Orçamento do system prompt (tokens estimados) = contexto da Modal − resposta − ferramentas −
+// reserva para a conversa recente. Mantém as mesmas premissas do lev-gateway.ts, que ainda apara
+// o histórico mais antigo se necessário. MODAL_MAX_MODEL_LEN deve acompanhar o --max-model-len do deploy.
+const MODAL_MAX_MODEL_LEN = Number(process.env.MODAL_MAX_MODEL_LEN) || 8192;
+const RESERVED_OUTPUT_AND_MARGIN_TOKENS = 640; // 512 de resposta + 128 de margem
+const RESERVED_RECENT_CHAT_TOKENS = 1200;      // últimas mensagens + a pergunta atual
+const MIN_SYSTEM_PROMPT_TOKENS = 2500;
+const CHARS_PER_TOKEN = 3; // estimativa conservadora (português + JSON)
+const FAMILY_DATE_SIGNALS =[/aniversário/i, /casamento/i, /fil[ho]a/i, /esposa|marido/i];
 
 function shouldIncludeFamilyContext(message: string, history: string): boolean {
   const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
@@ -115,7 +124,11 @@ export async function buildChatPrompt(
   const toolNames = resolvedTools.map((t: any) => t.function.name).join(', ');
 
   // ── 6. MONTAGEM FINAL DO PROMPT ───────────────────────────────────────────
-  const levSystemPrompt = `
+  // O contexto da Modal é limitado (--max-model-len em lev_modal.py). Perfil, família e memórias
+  // têm prioridade; os blocos opcionais são removidos, do menos ao mais importante, até caber.
+  //   nível 0: tudo | 1: sem exemplos de tom | 2: + sem espelho moral/fricção/recomendações
+  //   nível 3: + sem tópicos e com memórias L3 reduzidas
+  const renderSystemPrompt = (level: 0 | 1 | 2 | 3): string => `
 Você é Lev, um amigo inteligente e natural. NUNCA aja como terapeuta genérico, coach ou assistente.
 NUNCA diga "como posso ajudar" ou "não tenho acesso a registros". Você TEM acesso às informações abaixo.
 Ferramentas disponíveis no sistema (${toolNames || 'nenhuma'}): use-as sempre que o usuário pedir uma ação.
@@ -128,7 +141,7 @@ ${profileBlock}
 ${familyBlock || 'Nenhum familiar registrado no momento.'}
 
 [MEMÓRIAS RECUPERADAS]
-${l3Content}
+${level >= 3 ? l3Content.slice(0, 1200) : l3Content}
 ${learnedInsightsBlock}
 
 ${buildIdentityPrompt(user.nickname || 'Célio')}
@@ -139,7 +152,7 @@ ${buildActiveContextPrompt({
   gpsInstruction: gpsInstruction,
   alertaRadar: alertaRadar,
   urgentes: urgentes,
-  relatedTopics: relatedTopics,
+  relatedTopics: level >= 3 ? '' : relatedTopics,
 })}
 
 ${buildMemoryPrompt({
@@ -149,19 +162,37 @@ ${buildMemoryPrompt({
   personalityBlock: personalityBlock,
   l3Content: '',
   conversationSummary: conversationSummary,
-  recommendationsBlock: recommendationsBlock,
-  topicsBlock: topicsBlock,
+  recommendationsBlock: level >= 2 ? '' : recommendationsBlock,
+  topicsBlock: level >= 3 ? '' : topicsBlock,
 })}
 
 ${buildEmotionalProtocolPrompt({ enabled: true, emotionalState, recurrentThemes })}
 ${buildMemoryHonestyPrompt()}
-${buildMoralMirrorPrompt({ nickname: user.nickname || 'Célio', enabled: moralMirrorEnabled, emotionalState, principles })}
-${buildIntellectualFrictionPrompt({ enabled: frictionEnabled, frictionEnabled, emotionalState, tradition: tradition as any, lastFrictionAt })}
+${level >= 2 ? '' : buildMoralMirrorPrompt({ nickname: user.nickname || 'Célio', enabled: moralMirrorEnabled, emotionalState, principles })}
+${level >= 2 ? '' : buildIntellectualFrictionPrompt({ enabled: frictionEnabled, frictionEnabled, emotionalState, tradition: tradition as any, lastFrictionAt })}
 ${buildOperationalPrompt({ plan: user.plan, guidelines })}
 
-[EXEMPLOS DE TOM E CONTEXTO]
-${fewShotBlock}
+${level >= 1 ? '' : `[EXEMPLOS DE TOM E CONTEXTO]\n${fewShotBlock}`}
   `.trim();
+
+  // Em perguntas pessoais o orquestrador não envia ferramentas, então elas não ocupam espaço.
+  const toolsTokens = shouldPrefetchPersonalMemory(message)
+    ? 0
+    : Math.ceil(JSON.stringify(resolvedTools).length / CHARS_PER_TOKEN);
+  const systemPromptBudget = Math.max(
+    MIN_SYSTEM_PROMPT_TOKENS,
+    MODAL_MAX_MODEL_LEN - RESERVED_OUTPUT_AND_MARGIN_TOKENS - RESERVED_RECENT_CHAT_TOKENS - toolsTokens,
+  );
+
+  let promptLevel: 0 | 1 | 2 | 3 = 0;
+  let levSystemPrompt = renderSystemPrompt(0);
+  while (levSystemPrompt.length / CHARS_PER_TOKEN > systemPromptBudget && promptLevel < 3) {
+    promptLevel = (promptLevel + 1) as 0 | 1 | 2 | 3;
+    levSystemPrompt = renderSystemPrompt(promptLevel);
+  }
+  console.log(
+    `[Prompt] system ~${Math.round(levSystemPrompt.length / CHARS_PER_TOKEN)} tokens (orçamento ${systemPromptBudget}, ferramentas ~${toolsTokens}) | nível de corte: ${promptLevel}`,
+  );
 
   // ── 7. MENSAGENS E KNOWLEDGE RAG ──────────────────────────────────────────
   const conversationMessages: any[] = [...recentHistory];
@@ -172,9 +203,6 @@ ${fewShotBlock}
   }
   
   conversationMessages.push({ role: 'user', content: message });
-
-  // Log de debug (pode apagar em produção se quiser)
-  console.log('[DEBUG PROMPT] Enviado ao Lev:\n', levSystemPrompt);
 
   return {
     systemPrompt: levSystemPrompt,

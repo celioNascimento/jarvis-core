@@ -1,6 +1,7 @@
 // lib/services/family.service.ts
 import { supabase } from '@/lib/jarvis';
-import { 
+import { invalidateContextField } from '@/lib/services/context-cache';
+import {
   upsertAlias, 
   upsertEvent, 
   normalizeDate, 
@@ -34,6 +35,8 @@ export const familyService = {
     if (conjuge.telefone) patch.spouse_phone = conjuge.telefone;
 
     await supabase.from('user_profiles').upsert(patch, { onConflict: 'user_id' });
+    // O perfil fica em cache (TTL 24h) e entra em toda mensagem: sem isto, cônjuge desatualizado.
+    await invalidateContextField(Number(userId), 'profile').catch(() => { });
     
     if (conjuge.apelido) {
       await upsertAlias(userId, conjuge.apelido, 'spouse', null, conjuge.nome);
@@ -110,6 +113,8 @@ export const familyService = {
       const { data: inserted } = await supabase.from('children').insert({ parent_id: userId, ...childData }).select('id').single();
       childId = inserted?.id;
     }
+    // Filhos ficam em cache (TTL 24h): invalida para o próximo prompt já refletir a mudança.
+    await invalidateContextField(Number(userId), 'children').catch(() => { });
 
     if (nicknameToSave && nicknameToSave.toLowerCase() !== firstName) {
       await upsertAlias(userId, nicknameToSave, 'child', childId || null, nameToSave);
@@ -130,7 +135,8 @@ export const familyService = {
 
     const patch = { user_id: userId, [parentType]: parentData.nome, updated_at: new Date().toISOString() };
     await supabase.from('user_profiles').upsert(patch, { onConflict: 'user_id' });
-    
+    await invalidateContextField(Number(userId), 'profile').catch(() => { });
+
     if (parentData.apelido) {
       await upsertAlias(userId, parentData.apelido, 'parent', null, parentData.nome);
     }
