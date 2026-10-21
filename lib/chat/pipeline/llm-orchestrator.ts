@@ -1,20 +1,16 @@
 // lib/chat/pipeline/llm-orchestrator.ts
-// V13.0.0 — Orquestrador Focado no Modelo Fine-Tuned (Hugging Face)
+// V12.0 — Orquestrador com Fallback Automático (Modal -> OpenRouter)
 
-import { callLevModel, CHAT_TEMPERATURE, TOOL_TEMPERATURE } from '@/lib/chat/lev-gateway';
+import { callLevModel } from '@/lib/chat/lev-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
+import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; // RESGATADO
 import type { ChatRequestContext } from './request-context';
 import type { ChatPrompt } from './types';
-
-// ── Tipos Explícitos ─────────────────────────────────────────────────────────
 
 export type ToolCall = {
   id: string;
   type: 'function';
-  function: {
-    name: string;
-    arguments: string; // JSON-stringified
-  };
+  function: { name: string; arguments: string; };
 };
 
 export type ChatMessage =
@@ -29,12 +25,7 @@ export type LLMResponse = {
   modelUsed: string;
 };
 
-interface ToolCallResult {
-  tc: ToolCall;
-  result: string;
-}
-
-// ── Padrões Estritos de Intenção Ativa ────────────────────────────────────────
+interface ToolCallResult { tc: ToolCall; result: string; }
 
 const IMPERATIVE_INTENT_PATTERNS = [
   /(?:me\s+)?lembr[ae]|crie\s+(?:um\s+)?lembrete|me\s+avisa|notifica|daqui\s+a\s+\d+/i,
@@ -53,8 +44,6 @@ function resolveToolChoice(message: string): 'auto' | 'required' {
   return 'auto';
 }
 
-// ── Helpers de Execução ───────────────────────────────────────────────────────
-
 async function executeToolCalls(
   toolCalls: ToolCall[],
   authUserId: string,
@@ -68,16 +57,13 @@ async function executeToolCalls(
         const rawResult = await Promise.race([
           executeTool(tc, authUserId, numericUserId, contextSnapshot, sessionId),
           new Promise<string>((resolve) =>
-            setTimeout(() => resolve('Isso demorou demais e eu desisti. Tenta de novo daqui a pouco?'), 5000)
+            setTimeout(() => resolve('Desculpe, esta ação demorou muito.'), 5000)
           ),
         ]);
         const result = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
         return { tc, result };
       } catch (err) {
-        return {
-          tc,
-          result: 'Não rolou executar isso agora.',
-        };
+        return { tc, result: 'Não foi possível executar esta ação no momento.' };
       }
     })
   );
@@ -89,74 +75,61 @@ function buildToolCallMessages(
   toolResults: ToolCallResult[]
 ): ChatMessage[] {
   const messages: ChatMessage[] = [
-    {
-      role: 'assistant',
-      content: firstContent,
-      tool_calls: toolCalls,
-    },
+    { role: 'assistant', content: firstContent || "", tool_calls: toolCalls }, // content vazio em vez de null
   ];
-
   toolResults.forEach((tr) => {
-    messages.push({
-      role: 'tool',
-      tool_call_id: tr.tc.id,
-      content: tr.result,
-    });
+    messages.push({ role: 'tool', tool_call_id: tr.tc.id, content: tr.result });
   });
-
   return messages;
 }
-
-// ── Entrypoint ────────────────────────────────────────────────────────────────
 
 export async function runLLMOrchestrator(
   ctx: ChatRequestContext,
   prompt: ChatPrompt
 ): Promise<string> {
-  const { user, message } = ctx;
+  const { user, message, requestSignature } = ctx;
   const { conversationMessages, tools } = prompt;
 
   const toolChoice = resolveToolChoice(message);
-
-  // Conversas casuais: 1 step. Tools obrigatórias: até 2 steps (executa e responde).
   const isToolRequired = toolChoice === 'required';
   const MAX_STEPS = isToolRequired ? 2 : 1;
 
+  // Sanitização do histórico para o vLLM não quebrar com 'content: null'
   const currentMessages = [
     { role: 'system' as const, content: prompt.systemPrompt || "Você é o Lev." },
     ...conversationMessages,
-  ].map((m: any) => ({
-    // O vLLM não aceita 'content: null'. Copiamos a mensagem (sem alterar o original)
-    // e transformamos conteúdo nulo em string vazia.
-    ...m,
-    content: m.content ?? '',
-  })) as ChatMessage[];
+  ].map((m: any) => {
+    if (m.content === null || m.content === undefined) m.content = "";
+    return m;
+  }) as ChatMessage[];
 
   let passoAtual = 0;
   let loopResponse: LLMResponse | null = null;
   let ferramentasExecutadas = false;
 
-  // ── FASE 1: Loop de Acumulo ───────────────────────────────────────────────
   while (passoAtual < MAX_STEPS) {
     passoAtual++;
-
-    // O modelo só é forçado a usar tool no primeiro passo. Se ele já usou, o segundo passo é para gerar o texto final.
     const currentToolChoice = passoAtual === 1 ? toolChoice : 'auto';
+    const stepSignature = passoAtual === 1 ? requestSignature : `${requestSignature}_step_${passoAtual}`;
+    
     let stepFailed = false;
 
-    // Passo 1 de uma ação (tool obrigatória) precisa ser preciso; o resto é conversa e pode ser mais solto.
-    const temperature = passoAtual === 1 && isToolRequired ? TOOL_TEMPERATURE : CHAT_TEMPERATURE;
-
     try {
-      loopResponse = await callLevModel(
-        currentMessages,
-        tools,
-        temperature,
-        currentToolChoice
-      );
+      // 1. Tenta a Modal (Modelo Fine-Tuned)
+      loopResponse = await callLevModel(currentMessages, tools, 0.85, currentToolChoice);
     } catch (error) {
-      console.error(`[Orchestrator] Erro no passo ${passoAtual}:`, error);
-      stepFailed = true;
+      console.warn(`[Orchestrator] ⚠️ Modal indisponível. Acionando Fallback OpenRouter...`);
+      try {
+        // 2. Fallback: Se a Modal der Timeout (Cold Start), usa o Gemini
+        loopResponse = (await callOpenRouterWithPriority(
+          1, 'never', stepSignature,
+          currentMessages, tools, 'google/gemini-2.5-flash', 
+          0.7, 15000, 4000, currentToolChoice
+        )) as LLMResponse;
+      } catch (fallbackError) {
+        console.error(`[Orchestrator] Erro crítico no fallback:`, fallbackError);
+        stepFailed = true;
+      }
     }
 
     if (stepFailed) break;
@@ -173,12 +146,7 @@ export async function runLLMOrchestrator(
         currentMessages.slice(-3)
       );
 
-      const toolMessages = buildToolCallMessages(
-        loopResponse!.content,
-        loopResponse!.toolCalls!,
-        toolResults
-      );
-      
+      const toolMessages = buildToolCallMessages(loopResponse!.content, loopResponse!.toolCalls!, toolResults);
       currentMessages.push(...toolMessages);
       continue;
     } else {
@@ -186,15 +154,9 @@ export async function runLLMOrchestrator(
     }
   }
 
-  // ── FASE 2: Retorno da resposta final ───────────────────────────────────
   if (!loopResponse) {
-    console.error('[Orchestrator] Nenhuma resposta LLM. Retornando fallback.');
-    return 'Deu uma travada aqui do meu lado. Tenta de novo daqui a pouco?';
+    return 'Não consegui processar sua mensagem agora. Tente novamente em instantes.';
   }
 
-  // O Qwen Fine-Tuned já gera a resposta final humanizada junto com o tool_call ou após ele.
-  return (
-    loopResponse.content ||
-    (ferramentasExecutadas ? 'Beleza, tá feito.' : 'Opa, me perdi aqui. Manda de novo?')
-  );
+  return loopResponse.content || 'Entendido.';
 }
