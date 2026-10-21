@@ -6,9 +6,10 @@
 //   - shouldSkipWeather() evita chamar open-meteo se posição/TTL ainda válidos
 //   - saveWeatherCache() persiste resultado para próximas requisições
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from '@/lib/jarvis';
+import { warmUpLev } from '@/lib/chat/lev-gateway';
 import { fetchWeather } from '@/lib/openmeteo';
 import {
   updateGeoState,
@@ -58,6 +59,10 @@ export async function GET(req: NextRequest) {
     if (userError || !user) {
       return NextResponse.json({ error: 'Token inválido' }, { status: 401 });
     }
+
+    // O app chama esta rota ao abrir: aproveita para acordar o Modal (vLLM) em segundo plano,
+    // depois que a resposta já foi enviada, sem atrasar o clima.
+    after(() => warmUpLev());
 
     // Buscar numericUserId
     const { data: userRecord } = await supabase

@@ -1,7 +1,7 @@
 // lib/chat/pipeline/llm-orchestrator.ts
 // V13.0.0 — Orquestrador Focado no Modelo Fine-Tuned (Hugging Face)
 
-import { callLevModel } from '@/lib/chat/lev-gateway';
+import { callLevModel, CHAT_TEMPERATURE, TOOL_TEMPERATURE } from '@/lib/chat/lev-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
 import type { ChatRequestContext } from './request-context';
 import type { ChatPrompt } from './types';
@@ -68,7 +68,7 @@ async function executeToolCalls(
         const rawResult = await Promise.race([
           executeTool(tc, authUserId, numericUserId, contextSnapshot, sessionId),
           new Promise<string>((resolve) =>
-            setTimeout(() => resolve('Desculpe, esta ação demorou muito.'), 5000)
+            setTimeout(() => resolve('Isso demorou demais e eu desisti. Tenta de novo daqui a pouco?'), 5000)
           ),
         ]);
         const result = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
@@ -76,7 +76,7 @@ async function executeToolCalls(
       } catch (err) {
         return {
           tc,
-          result: 'Não foi possível executar esta ação no momento.',
+          result: 'Não rolou executar isso agora.',
         };
       }
     })
@@ -144,11 +144,14 @@ export async function runLLMOrchestrator(
     const currentToolChoice = passoAtual === 1 ? toolChoice : 'auto';
     let stepFailed = false;
 
+    // Passo 1 de uma ação (tool obrigatória) precisa ser preciso; o resto é conversa e pode ser mais solto.
+    const temperature = passoAtual === 1 && isToolRequired ? TOOL_TEMPERATURE : CHAT_TEMPERATURE;
+
     try {
       loopResponse = await callLevModel(
         currentMessages,
         tools,
-        0.7, 
+        temperature,
         currentToolChoice
       );
     } catch (error) {
@@ -186,9 +189,12 @@ export async function runLLMOrchestrator(
   // ── FASE 2: Retorno da resposta final ───────────────────────────────────
   if (!loopResponse) {
     console.error('[Orchestrator] Nenhuma resposta LLM. Retornando fallback.');
-    return 'Não consegui processar sua mensagem agora. Tente novamente em instantes.';
+    return 'Deu uma travada aqui do meu lado. Tenta de novo daqui a pouco?';
   }
 
   // O Qwen Fine-Tuned já gera a resposta final humanizada junto com o tool_call ou após ele.
-  return loopResponse.content || 'Entendido.';
+  return (
+    loopResponse.content ||
+    (ferramentasExecutadas ? 'Beleza, tá feito.' : 'Opa, me perdi aqui. Manda de novo?')
+  );
 }
