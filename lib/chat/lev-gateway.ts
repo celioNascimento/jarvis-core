@@ -14,20 +14,16 @@ export async function callLevModel(
   toolChoice: 'auto' | 'required' = 'auto'
 ): Promise<LLMResponse> {
   try {
-    // LOG 1: Ver o que estamos enviando
-    console.log('[Lev Gateway] Enviando para Modal:', JSON.stringify({
-      model: 'celioNascimento/Lev-LoRA-Orquestrador-Merged',
-      messages: messages,
-      tools: tools && tools.length > 0 ? tools : undefined,
-      tool_choice: tools && tools.length > 0 ? toolChoice : undefined,
-    }, null, 2));
+    const hasTools = tools && tools.length > 0;
+
+    // LOG: Verificar o que está sendo enviado
+    console.log(`[Lev Gateway] Enviando para Modal. Tools: ${hasTools ? tools.length : 0} | Msgs: ${messages.length}`);
 
     const response = await modalClient.chat.completions.create({
       model: 'celioNascimento/Lev-LoRA-Orquestrador-Merged',
       messages: messages as any,
-      tools: tools && tools.length > 0 ? tools : undefined,
-      // Vamos forçar o 'auto' para testar se o problema é o 'required'
-      tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
+      tools: hasTools ? tools : undefined,
+      tool_choice: hasTools ? 'auto' : undefined, // vLLM exige 'auto' ou objeto explícito
       temperature: temperature,
       max_tokens: 2000,
     });
