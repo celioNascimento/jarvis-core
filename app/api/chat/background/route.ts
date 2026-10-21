@@ -6,7 +6,18 @@ import { extractReminder } from '@/lib/chat/pipeline/extractors/reminders.extrac
 import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
 import { insertBrainEntry } from '@/lib/services/brain.service';
 
-export const maxDuration = 60;
+export const maxDuration = 30;
+
+const TASK_BUDGET_MS = 20_000;
+
+function withTaskBudget<T>(task: Promise<T>): Promise<T> {
+  return Promise.race([
+    task,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`Tarefa excedeu ${TASK_BUDGET_MS}ms`)), TASK_BUDGET_MS);
+    }),
+  ]);
+}
 
 type BackgroundPayload = {
   userId: string;
@@ -64,7 +75,7 @@ export async function POST(request: NextRequest) {
     ));
   }
 
-  const results = await Promise.allSettled(tasks);
+  const results = await Promise.allSettled(tasks.map((task) => withTaskBudget(task)));
   const failures = results.filter((result) => result.status === 'rejected');
   if (failures.length) {
     console.error('[ChatBackground] Falhas:', failures.map((result) => result.status === 'rejected' ? result.reason : null));

@@ -99,8 +99,12 @@ export async function finalizeResponse(
   prompt: ChatPrompt,
   reply: string
 ): Promise<NextResponse> {
-  // 1. Cache da resposta (rápido)
-  await redis.set(ctx.replyKey, reply, { ex: 60 }).catch(() => { });
+  // A resposta já está pronta: cache é pós-resposta e nunca pode bloquear o usuário.
+  waitUntil(
+    redis.set(ctx.replyKey, reply, { ex: 60 }).catch((error) => {
+      console.error('[ResponseFinalizer] Falha ao salvar cache:', error);
+    }),
+  );
 
   // 2. Gera áudio se solicitado
   const audioBase64 = ctx.speak && ctx.voiceSettings
@@ -121,25 +125,29 @@ export async function finalizeResponse(
       : null;
 
   if (baseUrl && process.env.QSTASH_TOKEN) {
-    waitUntil(
-      qstash.publishJSON({
-        url: `${baseUrl}/api/chat/background`,
-        body: {
-          userId: String(ctx.user.id),
-          nickname: ctx.user.nickname,
-          authUserId: ctx.user.auth_user_id,
-          sessionId: ctx.sessionId,
-          message: ctx.message,
-          reply,
-          lastAssistantTurn,
-          contexts: intel.contexts,
-          reminder: hasReminderIntent(ctx.message),
-        },
-        retries: 2,
-      }).catch((error) => {
-        console.error('[BackgroundTasks] Falha ao enfileirar:', error);
-      }),
-    );
+    const publishBackgroundJob = qstash.publishJSON({
+      url: `${baseUrl}/api/chat/background`,
+      body: {
+        userId: String(ctx.user.id),
+        nickname: ctx.user.nickname,
+        authUserId: ctx.user.auth_user_id,
+        sessionId: ctx.sessionId,
+        message: ctx.message,
+        reply,
+        lastAssistantTurn,
+        contexts: intel.contexts,
+        reminder: hasReminderIntent(ctx.message),
+      },
+      retries: 2,
+    });
+
+    // Evita que uma indisponibilidade do QStash mantenha a invocation viva.
+    waitUntil(Promise.race([
+      publishBackgroundJob,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('QStash enqueue timeout')), 3_000)),
+    ]).catch((error) => {
+      console.error('[BackgroundTasks] Falha ao enfileirar:', error);
+    }));
   } else {
     console.warn('[BackgroundTasks] QStash ou URL pública ausente; persistência ignorada.');
   }
