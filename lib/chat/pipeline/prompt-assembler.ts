@@ -1,5 +1,5 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v10.0 — Resgate Completo: Contexto rico (v7.2) + Formato de Treino LoRA (Qwen)
+// v11.0 — Resgate Total (ActiveContext + MemoryPrompt) + Formato de Treino Qwen
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -9,9 +9,11 @@ import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './types';
 
-// Blocos de prompt originais resgatados
+// Blocos de prompt originais
 import { buildIdentityPrompt } from './prompts/identity';
 import { buildCriticalThinkingPrompt } from './prompts/critical-thinking';
+import { buildActiveContextPrompt } from './prompts/active-context'; // RESGATADO
+import { buildMemoryPrompt } from './prompts/memory'; // RESGATADO
 import { buildMemoryHonestyPrompt } from './prompts/memory-honesty';
 import { buildEmotionalProtocolPrompt } from './prompts/emotional-protocol';
 import { buildMoralMirrorPrompt, EmotionalState } from './prompts/moral-mirror';
@@ -19,7 +21,7 @@ import { buildIntellectualFrictionPrompt } from './prompts/intellectual-friction
 import { buildOperationalPrompt } from './prompts/operational';
 import { buildFewShotExamplesPrompt } from './prompts/few-shot-examples';
 
-// Formatadores originais resgatados
+// Formatadores originais
 import {
   buildFamilyBlock,
   buildProfileBlock,
@@ -53,7 +55,7 @@ export async function buildChatPrompt(
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, masterContext, recentHistory } = intel;
 
-  // ── 1. RESGATE DE TODOS OS DADOS ──────────────────────────────────────────
+  // ── 1. RESGATE DE DADOS E BLOCOS ──────────────────────────────────────────
   const profileBlock = buildProfileBlock(masterContext?.profile);
   const familyBlock = buildFamilyBlock(masterContext?.persons || [], masterContext?.children || []);
   const topicsBlock = buildTopicBlock(masterContext);
@@ -81,14 +83,13 @@ export async function buildChatPrompt(
     if (radar.temAlerta) alertaRadar = `[ALERTA RADAR]: ${radar.mensagem}`;
   }
 
-  // ── 3. L3 E HISTÓRICO ─────────────────────────────────────────────────────
+  // ── 3. L3, HISTÓRICO E ESTADOS ────────────────────────────────────────────
   const historyText = recentHistory.map(h => h.content).join(' ');
   const includeFamily = shouldIncludeFamilyContext(message, historyText);
   const rawL3Text = masterContext?.dossier_summary || masterContext?.user?.current_context || '';
   const l3Content = filterL3Content(rawL3Text, includeFamily).slice(0, 4000);
   const conversationSummary = buildConversationSummary(intel.recentHistory, user.nickname || 'usuário');
 
-  // ── 4. ESTADOS E MÓDULOS (Moral, Fricção, Emoção) ─────────────────────────
   const emotionalState = inferEmotionalStateFromHistory(
     intel.recentHistory, ctx.message, (masterContext?.emotional_state || 'stable') as EmotionalState
   );
@@ -99,7 +100,7 @@ export async function buildChatPrompt(
   const lastFrictionAt = masterContext?.profile?.last_friction_at;
   const recurrentThemes = masterContext?.recurrent_themes || {};
 
-  // ── 5. CARGAS PARALELAS ───────────────────────────────────────────────────
+  // ── 4. CARGAS PARALELAS ───────────────────────────────────────────────────
   const [moduleResult, dynamicResult, fewShotBlock] = await Promise.all([
     loadActiveModules({ userId: String(user.id), authUserId: user.auth_user_id, message, contexts, emotionalScore: emotional.score, location: normalizedLocation, masterContext }, user.plan, DEFAULT_MODEL),
     buildDynamicContext({ userId: String(user.id), authUserId: user.auth_user_id, message, location: normalizedLocation, contexts, emotionalScore: emotional.score, masterContext }),
@@ -109,71 +110,61 @@ export async function buildChatPrompt(
   const finalModel = moduleResult.resolvedModel || DEFAULT_MODEL;
   const knowledgeExample = (masterContext?.knowledge ?? [])[0] ?? null;
 
-  // ── 6. MONTAGEM DO PROMPT FINAL (Híbrido Perfeito) ────────────────────────
-  // Misturamos as tags que o LoRA conhece com os módulos do sistema original.
+  // ── 5. MONTAGEM DO PROMPT FINAL (HÍBRIDO TOTAL) ───────────────────────────
+  // Usamos os blocos originais e injetamos as tags que o Qwen Fine-Tuned aprendeu.
   const levSystemPrompt = `
-Você é Lev, um amigo inteligente, com opinião própria. 
-NUNCA aja como terapeuta genérico. NUNCA diga "como posso ajudar" ou "não tenho acesso".
-Você TEM acesso às memórias abaixo.
+Você é Lev, um amigo inteligente e natural. 
+NUNCA aja como terapeuta genérico, coach ou assistente. NUNCA diga "não tenho acesso a registros".
+Você TEM ACESSO à agenda, memórias e dados do usuário listados abaixo. Use as ferramentas se precisar agir.
 
-[IDENTIDADE E COMPORTAMENTO BASE]
 ${buildIdentityPrompt(user.nickname || 'Célio')}
-${buildCriticalThinkingPrompt(user.nickname || 'Célio')}
 
-[CONTEXTO ATUAL E AMBIENTE]
-Data/Hora: ${dataHoraSP}
-Localização: ${geoBlock || gpsInstruction}
-${alertaRadar || ''}
+${buildActiveContextPrompt({
+  dataHoraSP: dataHoraSP,
+  geoBlock: geoBlock,
+  gpsInstruction: gpsInstruction,
+  alertaRadar: alertaRadar,
+  urgentes: urgentes,
+  relatedTopics: relatedTopics,
+})}
 
-[PERSONALIDADE E DIRETRIZES]
-${personalityBlock}
-${guidelines ? `Diretrizes: ${guidelines}` : ''}
+${buildMemoryPrompt({
+  learnedInsightsBlock: `\n[MEMÓRIAS RECUPERADAS E INSIGHTS]\n${learnedInsightsBlock}\n${l3Content}`,
+  profileBlock: profileBlock,
+  familyBlock: familyBlock,
+  personalityBlock: personalityBlock,
+  l3Content: l3Content,
+  conversationSummary: conversationSummary,
+  recommendationsBlock: recommendationsBlock,
+  topicsBlock: topicsBlock,
+})}
 
-[PERFIL DO USUÁRIO]
-Nome: ${user.nickname || 'Célio'}
-${profileBlock}
-
-[FAMÍLIA]
-${familyBlock || 'Nenhum familiar registrado no momento.'}
-
-[ESTADO EMOCIONAL E PROTOCOLO]
 ${buildEmotionalProtocolPrompt({ enabled: true, emotionalState, recurrentThemes })}
 ${buildMemoryHonestyPrompt()}
-
-[MEMÓRIAS RECUPERADAS (L2/L3)]
-${l3Content}
-${learnedInsightsBlock}
-Resumo da conversa recente: ${conversationSummary}
-
-[LEMBRETES URGENTES]
-${urgentes}
-
-[MÓDULOS ESPECIAIS]
 ${buildMoralMirrorPrompt({ nickname: user.nickname || 'Célio', enabled: moralMirrorEnabled, emotionalState, principles })}
 ${buildIntellectualFrictionPrompt({ enabled: frictionEnabled, frictionEnabled, emotionalState, tradition: tradition as any, lastFrictionAt })}
 ${buildOperationalPrompt({ plan: user.plan, guidelines })}
 
-[CONTEXTO ADICIONAL, TÓPICOS E EXEMPLOS]
-${topicsBlock}
-${recommendationsBlock}
-Tópicos Relacionados: ${relatedTopics}
+[EXEMPLOS DE TOM E CONTEXTO]
 ${fewShotBlock}
   `.trim();
 
-  // ── 7. FERRAMENTAS ────────────────────────────────────────────────────────
+  // ── 6. FERRAMENTAS ────────────────────────────────────────────────────────
   const allToolKeys = new Set<string>([...ALWAYS_ON_TOOLS, ...(moduleResult.activeTools || []), ...(dynamicResult.activeTools || [])]);
   const resolvedTools = ALL_TOOLS.filter((t: any) => t.function?.name && allToolKeys.has(t.function.name));
 
-  // ── 8. HISTÓRICO DE MENSAGENS (COM KNOWLEDGE RAG) ─────────────────────────
+  // ── 7. HISTÓRICO DE MENSAGENS (COM KNOWLEDGE RAG) ─────────────────────────
   const conversationMessages: any[] = [...recentHistory];
   
-  // Injeta o exemplo de conhecimento (RAG) como um turno sintético antes da pergunta atual
   if (knowledgeExample) {
     conversationMessages.push({ role: 'user', content: knowledgeExample.input_exemplo });
     conversationMessages.push({ role: 'assistant', content: knowledgeExample.output_ideal });
   }
   
   conversationMessages.push({ role: 'user', content: message });
+
+  // Log para debug
+  console.log('[DEBUG PROMPT] Enviado ao Lev:\n', levSystemPrompt);
 
   return {
     systemPrompt: levSystemPrompt,
