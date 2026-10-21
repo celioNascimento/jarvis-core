@@ -91,8 +91,10 @@ export async function runLLMOrchestrator(
   const { conversationMessages, tools } = prompt;
 
   const toolChoice = resolveToolChoice(message);
-  const isToolRequired = toolChoice === 'required';
-  const MAX_STEPS = isToolRequired ? 2 : 1;
+  // Uma consulta factual pode acionar buscar_memoria_longa mesmo com tool_choice=auto.
+  // Nesse caso, o primeiro passo só executa a ferramenta e não contém a resposta final.
+  // Sempre reservamos um segundo passo para o modelo sintetizar o resultado da ferramenta.
+  const MAX_STEPS = tools.length > 0 ? 2 : 1;
 
   // Sanitização do histórico para o vLLM não quebrar com 'content: null'
   const currentMessages = [
