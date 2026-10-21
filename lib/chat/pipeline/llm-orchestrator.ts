@@ -4,6 +4,7 @@
 import { callLevModel } from '@/lib/chat/lev-gateway';
 import { executeTool } from '@/lib/chat/tools-executor';
 import { callOpenRouterWithPriority } from '@/lib/chat/llm-gateway'; // RESGATADO
+import { shouldPrefetchPersonalMemory } from './utils/personal-memory';
 import type { ChatRequestContext } from './request-context';
 import type { ChatPrompt } from './types';
 
@@ -42,10 +43,6 @@ function resolveToolChoice(message: string): 'auto' | 'required' {
     return 'required';
   }
   return 'auto';
-}
-
-function shouldPrefetchPersonalMemory(message: string): boolean {
-  return /\b(esposa|mulher|cônjuge|filh(?:o|a|os|as)|família|mãe|pai|irm(?:ão|ã)|nome da minha)\b/i.test(message);
 }
 
 async function executeToolCalls(
@@ -132,7 +129,7 @@ export async function runLLMOrchestrator(
         // 2. Fallback: Se a Modal der Timeout (Cold Start), usa o Gemini
         loopResponse = (await callOpenRouterWithPriority(
           1, 'never', stepSignature,
-          currentMessages, tools, 'google/gemini-2.5-flash', 
+          currentMessages, requestTools, 'google/gemini-2.5-flash',
           0.7, 15000, 4000, currentToolChoice
         )) as LLMResponse;
       } catch (fallbackError) {
