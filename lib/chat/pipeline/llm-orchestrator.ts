@@ -94,11 +94,14 @@ export async function runLLMOrchestrator(
   const { user, message, requestSignature } = ctx;
   const { conversationMessages, tools } = prompt;
 
+  const isPersonalFactQuestion = shouldPrefetchPersonalMemory(message);
   const toolChoice = resolveToolChoice(message);
-  // Uma consulta factual pode acionar buscar_memoria_longa mesmo com tool_choice=auto.
-  // Nesse caso, o primeiro passo só executa a ferramenta e não contém a resposta final.
-  // Sempre reservamos um segundo passo para o modelo sintetizar o resultado da ferramenta.
-  const MAX_STEPS = tools.length > 0 ? 2 : 1;
+  // Informações pessoais já foram carregadas no masterContext e incorporadas ao
+  // system prompt. Não faça uma segunda consulta nem exponha ferramentas ao
+  // modelo para perguntas factuais: isso evita um tool loop e mantém o dado já
+  // recuperado disponível para a síntese final.
+  const requestTools = isPersonalFactQuestion ? [] : tools;
+  const MAX_STEPS = requestTools.length > 0 ? 2 : 1;
 
   // Sanitização do histórico para o vLLM não quebrar com 'content: null'
   const currentMessages = [
@@ -108,36 +111,6 @@ export async function runLLMOrchestrator(
     if (m.content === null || m.content === undefined) m.content = "";
     return m;
   }) as ChatMessage[];
-
-  // Consultas factuais sobre a família não podem depender do modelo decidir
-  // chamar uma ferramenta: o endpoint Modal rejeita tools e alguns fallbacks
-  // respondem diretamente, deixando a memória recuperada sem uso.
-  if (shouldPrefetchPersonalMemory(message) && tools.some((tool: any) =>
-    tool?.function?.name === 'buscar_memoria_longa'
-  )) {
-    try {
-      const memoryResult = await executeTool(
-        {
-          id: `prefetch_memory_${requestSignature}`,
-          type: 'function',
-          function: {
-            name: 'buscar_memoria_longa',
-            arguments: JSON.stringify({ query: message }),
-          },
-        },
-        user.auth_user_id,
-        String(user.id),
-        currentMessages.slice(-3),
-        ctx.sessionId,
-      );
-      currentMessages.push({
-        role: 'system',
-        content: `Memória factual recuperada para responder à pergunta atual:\n${memoryResult}`,
-      });
-    } catch (error) {
-      console.warn('[Orchestrator] Prefetch de memória falhou; seguindo com o pipeline:', error);
-    }
-  }
 
   let passoAtual = 0;
   let loopResponse: LLMResponse | null = null;
@@ -152,7 +125,7 @@ export async function runLLMOrchestrator(
 
     try {
       // 1. Tenta a Modal (Modelo Fine-Tuned)
-      loopResponse = await callLevModel(currentMessages, tools, 0.85, currentToolChoice);
+      loopResponse = await callLevModel(currentMessages, requestTools, 0.85, currentToolChoice);
     } catch (error) {
       console.warn(`[Orchestrator] ⚠️ Modal indisponível. Acionando Fallback OpenRouter...`);
       try {
