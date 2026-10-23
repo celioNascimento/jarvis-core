@@ -30,7 +30,7 @@ export async function warmUpLev(): Promise<void> {
 // Estimamos o prompt de forma conservadora e: (1) reduzimos max_tokens para caber;
 // (2) se nem o mínimo cabe, não gastamos uma chamada que certamente dá 400 — lançamos
 // erro para o orquestrador cair direto no fallback.
-const MODAL_MAX_MODEL_LEN = Number(process.env.MODAL_MAX_MODEL_LEN) || 8192;
+const MODAL_MAX_MODEL_LEN = Number(process.env.MODAL_MAX_MODEL_LEN) || 4096;
 const MAX_OUTPUT_TOKENS = 512;
 const MIN_OUTPUT_TOKENS = 128;
 const CONTEXT_SAFETY_MARGIN = 128;

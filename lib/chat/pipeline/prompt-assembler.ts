@@ -43,7 +43,7 @@ const ALWAYS_ON_TOOLS = ['web_pesquisar'] as const;
 // Orçamento do system prompt (tokens estimados) = contexto da Modal − resposta − ferramentas −
 // reserva para a conversa recente. Mantém as mesmas premissas do lev-gateway.ts, que ainda apara
 // o histórico mais antigo se necessário. MODAL_MAX_MODEL_LEN deve acompanhar o --max-model-len do deploy.
-const MODAL_MAX_MODEL_LEN = Number(process.env.MODAL_MAX_MODEL_LEN) || 8192;
+const MODAL_MAX_MODEL_LEN = Number(process.env.MODAL_MAX_MODEL_LEN) || 4096;
 const RESERVED_OUTPUT_AND_MARGIN_TOKENS = 640; // 512 de resposta + 128 de margem
 const RESERVED_RECENT_CHAT_TOKENS = 1200;      // últimas mensagens + a pergunta atual
 const MIN_SYSTEM_PROMPT_TOKENS = 2500;
