@@ -5,9 +5,14 @@ const WARMUP_MIN_INTERVAL_MS = 4 * 60 * 1000;
 const WARMUP_TIMEOUT_MS = 20 * 1000;
 let lastWarmupAt = 0;
 
-/** Wakes the Modal container without blocking the first chat response. */
+function modalBaseUrl(): string | null {
+  const baseUrl = process.env.MODAL_API_URL?.trim();
+  return baseUrl ? baseUrl.replace(/\/$/, '') : null;
+}
+
+/** Acorda a Modal sem manter a requisição de chat aberta. */
 export async function warmUpLev(): Promise<void> {
-  const baseUrl = process.env.MODAL_API_URL;
+  const baseUrl = modalBaseUrl();
   if (!baseUrl) return;
 
   const now = Date.now();
@@ -15,14 +20,33 @@ export async function warmUpLev(): Promise<void> {
   lastWarmupAt = now;
 
   try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/models`, {
+    await fetch(`${baseUrl}/models`, {
       headers: { Authorization: `Bearer ${process.env.MODAL_API_KEY}` },
       signal: AbortSignal.timeout(WARMUP_TIMEOUT_MS),
     });
-    console.log(`[Lev Gateway] Warm-up do Modal: HTTP ${response.status}`);
-  } catch (error) {
-    console.warn('[Lev Gateway] Warm-up do Modal não confirmou:', error);
+  } catch {
+    // Warm-up é oportunista; a chamada principal continua responsável pelo retry.
   }
+}
+
+async function pingModal(): Promise<boolean> {
+  const baseUrl = modalBaseUrl();
+  if (!baseUrl) return false;
+
+  try {
+    const response = await fetch(`${baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${process.env.MODAL_API_KEY}` },
+      signal: AbortSignal.timeout(WARMUP_TIMEOUT_MS),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function shouldRetryModal(error: any): boolean {
+  const status = error?.status ?? error?.statusCode;
+  return status === 502 || status === 503 || status === 504 || error?.code === 'ECONNRESET' || error?.code === 'ETIMEDOUT';
 }
 
 // ── Orçamento de contexto ────────────────────────────────────────────────────
@@ -114,27 +138,37 @@ export async function callLevModel(
     }
     const maxTokens = Math.min(MAX_OUTPUT_TOKENS, available);
 
-    const response = await getModalClient().chat.completions.create({
+    const request = () => getModalClient().chat.completions.create({
       model: 'celioNascimento/Lev-LoRA-Orquestrador-Merged',
       messages: requestMessages as any,
       tools: hasTools ? tools : undefined,
       // Alguns servidores vLLM/Modal rejeitam explicitamente tool_choice=auto.
-      // O comportamento padrão da API já é automático quando o campo é omitido.
       tool_choice: hasTools && toolChoice === 'required' ? 'required' : undefined,
-      temperature: temperature,
+      temperature,
       max_tokens: maxTokens,
     });
 
+    let response;
+    try {
+      response = await request();
+    } catch (error) {
+      // Cold starts e reinícios da Modal podem retornar 502/503/504. Nesse caso,
+      // confirma que o endpoint voltou e tenta uma única vez, sem loop infinito.
+      if (!shouldRetryModal(error)) throw error;
+      if (!(await pingModal())) throw error;
+      response = await request();
+    }
+
     const choice = response.choices[0].message;
     return {
-      content: choice.content || "", // vLLM safe
+      content: choice.content || '',
       toolCalls: (choice.tool_calls as any) || undefined,
       modelUsed: 'lev-modal-vllm',
     };
   } catch (error: any) {
-    const status = error?.status ?? error?.statusCode ?? 'desconhecido';
-    const body = error?.error?.message || error?.response?.data?.error?.message || error?.message || 'sem detalhes';
-    console.error(`[Lev Gateway] Erro na Modal: HTTP ${status} — ${body}`);
+    const status = error?.status ?? error?.statusCode ?? 'unknown';
+    const code = error?.code ?? 'unknown';
+    console.error(`[Lev Gateway] Modal request failed: status=${status} code=${code}`);
 
     throw error; // Repassa o erro para o fallback do Orquestrador
   }
