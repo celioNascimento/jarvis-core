@@ -70,6 +70,20 @@ async function executeToolCalls(
   );
 }
 
+function sanitizeAssistantReply(content: string | null): string {
+  const text = (content || '').trim();
+  if (!text) return '';
+
+  // Alguns modelos/fallbacks imprimem a chamada em vez de devolvê-la como
+  // tool_call estruturado. Nunca exponha esse protocolo interno ao usuário.
+  const withoutToolProtocol = text
+    .replace(/(?:^|\n)\s*(?:[a-z][\w-]*\.)?[a-z][\w-]*\s*\([^\n]*\)\s*/gi, '\n')
+    .replace(/```(?:tool|json)?\s*[\s\S]*?```/gi, '')
+    .trim();
+
+  return withoutToolProtocol || 'Entendido.';
+}
+
 function buildToolCallMessages(
   firstContent: string | null,
   toolCalls: ToolCall[],
@@ -164,5 +178,5 @@ export async function runLLMOrchestrator(
     return 'Não consegui processar sua mensagem agora. Tente novamente em instantes.';
   }
 
-  return loopResponse.content || 'Entendido.';
+  return sanitizeAssistantReply(loopResponse.content);
 }

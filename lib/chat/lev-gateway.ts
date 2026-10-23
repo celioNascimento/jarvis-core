@@ -34,6 +34,7 @@ const MODAL_MAX_MODEL_LEN = Number(process.env.MODAL_MAX_MODEL_LEN) || 4096;
 const MAX_OUTPUT_TOKENS = 512;
 const MIN_OUTPUT_TOKENS = 128;
 const CONTEXT_SAFETY_MARGIN = 128;
+const MIN_PROMPT_TOKENS = 256;
 const CHARS_PER_TOKEN = 3; // conservador para português + JSON de tools
 
 function estimatePromptTokens(messages: ChatMessage[], tools: any[]): number {
@@ -96,6 +97,9 @@ export async function callLevModel(
       tools,
       MODAL_MAX_MODEL_LEN - MAX_OUTPUT_TOKENS - CONTEXT_SAFETY_MARGIN,
     );
+    if (estimatePromptTokens(requestMessages, tools) > MODAL_MAX_MODEL_LEN - MIN_OUTPUT_TOKENS - CONTEXT_SAFETY_MARGIN) {
+      throw new Error('Prompt excede o orçamento mínimo de contexto da Modal; usando fallback.');
+    }
     const promptTokens = estimatePromptTokens(requestMessages, tools);
     const available = MODAL_MAX_MODEL_LEN - promptTokens - CONTEXT_SAFETY_MARGIN;
     console.log(

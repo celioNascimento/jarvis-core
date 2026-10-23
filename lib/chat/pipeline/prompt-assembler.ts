@@ -238,6 +238,15 @@ ${level >= 1 ? '' : `[EXEMPLOS DE TOM E CONTEXTO]\n${fewShotBlock}`}
     promptLevel = (promptLevel + 1) as 0 | 1 | 2 | 3;
     levSystemPrompt = renderSystemPrompt(promptLevel);
   }
+
+  // Alguns blocos fixos podem continuar grandes mesmo no nível 3. Nunca envie
+  // um system prompt maior que o orçamento calculado para a Modal.
+  if (levSystemPrompt.length / CHARS_PER_TOKEN > systemPromptBudget) {
+    promptLevel = 3;
+    const hardLimit = Math.max(1200, systemPromptBudget * CHARS_PER_TOKEN);
+    const compactPrompt = `Você é Lev, um amigo inteligente e natural. Responda em português, com objetividade e sem inventar informações.\nFerramentas disponíveis: ${toolNames || 'nenhuma'}. Use-as quando necessário.\n\n[PERFIL]\nNome: ${user.nickname || 'Célio'}\n${profileBlock}\n\n[HISTÓRICO RECENTE]\n${conversationSummary}\n\n[CONTEXTO RELEVANTE]\n${hasContextTag ? l3Content.slice(0, 900) : ''}\n\n[REGRAS]\n${buildMemoryHonestyPrompt()}\n${buildOperationalPrompt({ plan: user.plan, guidelines: '' })}`;
+    levSystemPrompt = compactPrompt.slice(0, hardLimit);
+  }
   console.log(
     `[Prompt] system ~${Math.round(levSystemPrompt.length / CHARS_PER_TOKEN)} tokens (orçamento ${systemPromptBudget}, ferramentas ~${toolsTokens}) | nível de corte: ${promptLevel}`,
   );
