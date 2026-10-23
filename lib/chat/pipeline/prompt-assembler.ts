@@ -56,24 +56,70 @@ function shouldIncludeFamilyContext(message: string, history: string): boolean {
   return isHighAlertMonth || hasFamilySignal;
 }
 
+const CONTEXT_FIELDS: Record<string, string[]> = {
+  agenda: ['events', 'calendar_block', 'reminders', 'related_topics'],
+  evento: ['events', 'calendar_block', 'reminders', 'related_topics'],
+  rotina: ['routines', 'related_topics'],
+  foco: ['routines', 'related_topics'],
+  financas: ['budgets', 'shopping', 'related_topics'],
+  compras: ['shopping', 'related_topics'],
+  projeto: ['projects', 'related_topics'],
+  trabalho: ['projects', 'calendar_block', 'related_topics'],
+  veiculos: ['vehicles', 'vehicle_maintenances', 'vehicle_refuels', 'related_topics'],
+  diario: ['diary', 'related_topics'],
+  familia: ['persons', 'children', 'related_topics'],
+  filhos: ['children', 'related_topics'],
+  emocao: ['emotional_state', 'insights', 'related_topics'],
+  saude: ['health', 'related_topics'],
+  localizacao: ['locations', 'related_topics'],
+};
+
+function isRelevantText(value: unknown, tags: Set<string>): boolean {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return [...tags].some(tag => text.toLowerCase().includes(tag.toLowerCase()));
+}
+
+function scopeContextToTags(masterContext: any, contexts: string[]): any {
+  if (!masterContext || contexts.length === 0) return masterContext;
+  const tags = new Set(contexts.map(tag => tag.toLowerCase()));
+  const allowed = new Set(contexts.flatMap(tag => CONTEXT_FIELDS[tag] || []));
+  const scoped = { ...masterContext };
+
+  for (const field of ['events', 'calendar_block', 'routines', 'budgets', 'projects', 'vehicles', 'vehicle_maintenances', 'vehicle_refuels', 'diary', 'health']) {
+    if (!allowed.has(field)) delete scoped[field];
+  }
+
+  if (Array.isArray(masterContext.insights)) {
+    scoped.insights = masterContext.insights.filter((item: unknown) => isRelevantText(item, tags));
+  }
+  if (Array.isArray(masterContext.related_topics)) {
+    scoped.related_topics = masterContext.related_topics.filter((item: unknown) => isRelevantText(item, tags));
+  }
+  return scoped;
+}
+
 export async function buildChatPrompt(
   ctx: ChatRequestContext,
   intel: ChatIntelligence,
 ): Promise<ChatPrompt> {
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, masterContext, recentHistory } = intel;
+  // O histórico recente é sempre consultado. Camadas contextuais maiores só entram
+  // quando o classificador encontrou uma tag relevante para esta mensagem.
+  const hasContextTag = contexts.length > 0;
+  const relevantContext = scopeContextToTags(masterContext, contexts);
 
   // ── 1. MONTAGEM DOS DADOS ──────────────────────────────────────────────────
   const profileBlock = buildProfileBlock(masterContext?.profile);
-  const familyBlock = buildFamilyBlock(masterContext?.persons || [], masterContext?.children || []);
-  const topicsBlock = buildTopicBlock(masterContext);
-  const urgentes = buildUrgentesString(masterContext);
-  const guidelines = buildGuidelinesString(masterContext);
-  const learnedInsightsBlock = buildLearnedInsightsBlock(masterContext?.insights || []);
+  const familyBlock = buildFamilyBlock(relevantContext?.persons || [], relevantContext?.children || []);
+  const topicsBlock = buildTopicBlock(relevantContext);
+  const urgentes = buildUrgentesString(relevantContext);
+  const guidelines = buildGuidelinesString(relevantContext);
+  const learnedInsightsBlock = buildLearnedInsightsBlock(relevantContext?.insights || []);
   const personalitySettings = buildPersonalityFromContext(masterContext?.settings);
   const personalityBlock = buildPersonalityBlock(personalitySettings);
-  const recommendationsBlock = buildRecommendationsBlock(masterContext);
-  const relatedTopics = buildRelatedTopicsString(masterContext);
+  const recommendationsBlock = buildRecommendationsBlock(relevantContext);
+  const relatedTopics = buildRelatedTopicsString(relevantContext);
 
   // ── 2. TEMPO E LOCALIZAÇÃO ────────────────────────────────────────────────
   const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
@@ -94,7 +140,9 @@ export async function buildChatPrompt(
   // ── 3. HISTÓRICO, L3 E ESTADOS ────────────────────────────────────────────
   const historyText = recentHistory.map(h => h.content).join(' ');
   const includeFamily = shouldIncludeFamilyContext(message, historyText);
-  const rawL3Text = masterContext?.dossier_summary || masterContext?.user?.current_context || '';
+  const rawL3Text = hasContextTag
+    ? relevantContext?.dossier_summary || relevantContext?.user?.current_context || ''
+    : '';
   const l3Content = filterL3Content(rawL3Text, includeFamily).slice(0, 3000); // Limite seguro
   const conversationSummary = buildConversationSummary(intel.recentHistory, user.nickname || 'usuário');
 
@@ -123,7 +171,7 @@ export async function buildChatPrompt(
   const resolvedTools = ALL_TOOLS.filter((t: any) => t.function?.name && allToolKeys.has(t.function.name));
   const toolNames = resolvedTools.map((t: any) => t.function.name).join(', ');
 
-  // ── 6. MONTAGEM FINAL DO PROMPT ───────────────────────────────────────────
+  // ── 6. MONTAGEM FINAL DO PROMPT ���──────────────────────────────────────────
   // O contexto da Modal é limitado (--max-model-len em lev_modal.py). Perfil, família e memórias
   // têm prioridade; os blocos opcionais são removidos, do menos ao mais importante, até caber.
   //   nível 0: tudo | 1: sem exemplos de tom | 2: + sem espelho moral/fricção/recomendações
@@ -141,8 +189,8 @@ ${profileBlock}
 ${familyBlock || 'Nenhum familiar registrado no momento.'}
 
 [MEMÓRIAS RECUPERADAS]
-${level >= 3 ? l3Content.slice(0, 1200) : l3Content}
-${learnedInsightsBlock}
+${hasContextTag ? (level >= 3 ? l3Content.slice(0, 1200) : l3Content) : ''}
+${hasContextTag ? learnedInsightsBlock : ''}
 
 ${buildIdentityPrompt(user.nickname || 'Célio')}
 
@@ -152,7 +200,7 @@ ${buildActiveContextPrompt({
   gpsInstruction: gpsInstruction,
   alertaRadar: alertaRadar,
   urgentes: urgentes,
-  relatedTopics: level >= 3 ? '' : relatedTopics,
+  relatedTopics: hasContextTag && level < 3 ? relatedTopics : '',
 })}
 
 ${buildMemoryPrompt({
@@ -162,8 +210,8 @@ ${buildMemoryPrompt({
   personalityBlock: personalityBlock,
   l3Content: '',
   conversationSummary: conversationSummary,
-  recommendationsBlock: level >= 2 ? '' : recommendationsBlock,
-  topicsBlock: level >= 3 ? '' : topicsBlock,
+  recommendationsBlock: hasContextTag && level < 2 ? recommendationsBlock : '',
+  topicsBlock: hasContextTag && level < 3 ? topicsBlock : '',
 })}
 
 ${buildEmotionalProtocolPrompt({ enabled: true, emotionalState, recurrentThemes })}
