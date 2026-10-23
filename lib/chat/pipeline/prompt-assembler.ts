@@ -62,6 +62,9 @@ export async function buildChatPrompt(
 ): Promise<ChatPrompt> {
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, masterContext, recentHistory } = intel;
+  // O histórico recente é sempre consultado. Camadas contextuais maiores só entram
+  // quando o classificador encontrou uma tag relevante para esta mensagem.
+  const hasContextTag = contexts.length > 0;
 
   // ── 1. MONTAGEM DOS DADOS ──────────────────────────────────────────────────
   const profileBlock = buildProfileBlock(masterContext?.profile);
@@ -141,8 +144,8 @@ ${profileBlock}
 ${familyBlock || 'Nenhum familiar registrado no momento.'}
 
 [MEMÓRIAS RECUPERADAS]
-${level >= 3 ? l3Content.slice(0, 1200) : l3Content}
-${learnedInsightsBlock}
+${hasContextTag ? (level >= 3 ? l3Content.slice(0, 1200) : l3Content) : ''}
+${hasContextTag ? learnedInsightsBlock : ''}
 
 ${buildIdentityPrompt(user.nickname || 'Célio')}
 
@@ -152,7 +155,7 @@ ${buildActiveContextPrompt({
   gpsInstruction: gpsInstruction,
   alertaRadar: alertaRadar,
   urgentes: urgentes,
-  relatedTopics: level >= 3 ? '' : relatedTopics,
+  relatedTopics: hasContextTag && level < 3 ? relatedTopics : '',
 })}
 
 ${buildMemoryPrompt({
@@ -162,8 +165,8 @@ ${buildMemoryPrompt({
   personalityBlock: personalityBlock,
   l3Content: '',
   conversationSummary: conversationSummary,
-  recommendationsBlock: level >= 2 ? '' : recommendationsBlock,
-  topicsBlock: level >= 3 ? '' : topicsBlock,
+  recommendationsBlock: hasContextTag && level < 2 ? recommendationsBlock : '',
+  topicsBlock: hasContextTag && level < 3 ? topicsBlock : '',
 })}
 
 ${buildEmotionalProtocolPrompt({ enabled: true, emotionalState, recurrentThemes })}
