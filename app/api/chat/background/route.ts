@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
   const results = await Promise.allSettled(tasks.map((task) => withTaskBudget(task)));
   const failures = results.filter((result) => result.status === 'rejected');
   if (failures.length) {
-    console.error('[ChatBackground] Falhas:', failures.map((result) => result.status === 'rejected' ? result.reason : null));
+    console.error(`[ChatBackground] ${failures.length} tarefa(s) falharam`);
   }
 
   return NextResponse.json({ ok: true, failedTasks: failures.length });

@@ -22,7 +22,9 @@ function settleWithin<T>(task: Promise<T>, label: string): Promise<T | undefined
     task,
     new Promise<undefined>((resolve) => {
       setTimeout(() => {
-        console.warn(`[ResponseFinalizer] ${label} excedeu ${POST_RESPONSE_BUDGET_MS}ms`);
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn(`[ResponseFinalizer] ${label} excedeu ${POST_RESPONSE_BUDGET_MS}ms`);
+        }
         resolve(undefined);
       }, POST_RESPONSE_BUDGET_MS);
     }),

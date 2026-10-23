@@ -26,12 +26,9 @@ export async function scheduleReminderOnQStash(
       : 'http://localhost:3000';
 
   const destination = `${baseUrl}/api/reminders/fire`;
-  console.log('[QStash] Destino:', destination);
-
   try {
     // ── CASE 1: AGENDAMENTO RECORRENTE (CRON) ──
     if (payload.cron) {
-      console.log(`[QStash] Criando Schedule (Cron): ${payload.cron}`);
 
       const res = await qstash.schedules.create({
         destination,

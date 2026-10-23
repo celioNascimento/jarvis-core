@@ -102,6 +102,9 @@ function getModalClient(): OpenAI {
   return new OpenAI({
     baseURL: baseURL.replace(/\/$/, ''),
     apiKey: process.env.MODAL_API_KEY || 'modal-key-not-configured',
+    // Interrompe antes do limite da Vercel para permitir um ping e uma nova tentativa.
+    timeout: 45_000,
+    maxRetries: 0,
   });
 }
 
@@ -168,7 +171,9 @@ export async function callLevModel(
   } catch (error: any) {
     const status = error?.status ?? error?.statusCode ?? 'unknown';
     const code = error?.code ?? 'unknown';
-    console.error(`[Lev Gateway] Modal request failed: status=${status} code=${code}`);
+    if (process.env.NODE_ENV !== 'production' || status !== 'unknown' || code !== 'unknown') {
+      console.error(`[Lev Gateway] Modal request failed: status=${status} code=${code}`);
+    }
 
     throw error; // Repassa o erro para o fallback do Orquestrador
   }
