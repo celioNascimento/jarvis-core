@@ -102,9 +102,11 @@ export async function callLevModel(
     }
     const promptTokens = estimatePromptTokens(requestMessages, tools);
     const available = MODAL_MAX_MODEL_LEN - promptTokens - CONTEXT_SAFETY_MARGIN;
-    console.log(
-      `[Lev Gateway] Prompt ~${promptTokens} tokens | tools: ${hasTools ? tools.length : 0} | msgs: ${requestMessages.length}/${messages.length} | espaço p/ resposta: ${available}`,
-    );
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug(
+        `[Lev Gateway] Prompt ~${promptTokens} tokens | tools: ${hasTools ? tools.length : 0} | msgs: ${requestMessages.length}/${messages.length} | espaço p/ resposta: ${available}`,
+      );
+    }
     if (available < MIN_OUTPUT_TOKENS) {
       throw new Error(
         `Prompt estimado em ~${promptTokens} tokens não cabe no contexto da Modal (${MODAL_MAX_MODEL_LEN}); usando fallback.`,
@@ -133,31 +135,6 @@ export async function callLevModel(
     const status = error?.status ?? error?.statusCode ?? 'desconhecido';
     const body = error?.error?.message || error?.response?.data?.error?.message || error?.message || 'sem detalhes';
     console.error(`[Lev Gateway] Erro na Modal: HTTP ${status} — ${body}`);
-
-    // O vLLM devolve {"object":"error","message":...}, formato que o SDK da OpenAI não extrai
-    // ("400 status code (no body)"). Repete a chamada crua só para registrar a causa real.
-    if (status === 400) {
-      try {
-        const raw = await fetch(`${process.env.MODAL_API_URL?.trim().replace(/\/$/, '')}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${process.env.MODAL_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: 'celioNascimento/Lev-LoRA-Orquestrador-Merged',
-            messages: requestMessages,
-            tools: tools && tools.length > 0 ? tools : undefined,
-            temperature,
-            max_tokens: MIN_OUTPUT_TOKENS,
-          }),
-          signal: AbortSignal.timeout(15000),
-        });
-        console.error('[Lev Gateway] Corpo bruto do 400:', (await raw.text()).slice(0, 1000));
-      } catch (diagErr) {
-        console.error('[Lev Gateway] Falha ao obter corpo bruto do 400:', diagErr);
-      }
-    }
 
     throw error; // Repassa o erro para o fallback do Orquestrador
   }

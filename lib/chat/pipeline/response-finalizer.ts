@@ -88,8 +88,8 @@ async function generateTTS(text: string, provider: string, voiceId: string): Pro
       clearTimeout(timeout);
       return Buffer.from(await mp3.arrayBuffer()).toString('base64');
     }
-  } catch (e) {
-    console.error('[ResponseFinalizer] TTS Error:', e);
+  } catch (error) {
+    console.error('[ResponseFinalizer] TTS falhou:', error instanceof Error ? error.message : 'erro desconhecido');
     return null;
   }
 }
