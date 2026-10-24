@@ -1,5 +1,12 @@
 // lib/chat/pipeline/prompt-assembler.ts
-// v12.0 — O Resgate Definitivo: Contexto Original + Formato LoRA (Memórias no Topo)
+// v13.0 — Prompt com orçamento fixo para a Modal (contexto de 4096 tokens).
+//
+// Regra: só vai para a Modal o que a mensagem pede.
+//   • Sempre:     persona curta + data/hora + perfil + família + histórico recente ("RAM") + pergunta.
+//   • Por tag:    memórias/dossiê, agenda/lembretes urgentes, localização, tópicos relacionados.
+//   • Por mensagem: ferramentas dos grupos citados (agenda, compras, projetos…); nunca as 29 de uma vez.
+//   • Sobrou espaço: exemplos de tom (few-shot) e o exemplo de conhecimento curado.
+// Os limites e o corte ficam em prompt-budget.ts; o lev-gateway.ts ainda confere o total antes de enviar.
 
 import { loadActiveModules } from '@/lib/modules/registry';
 import { buildGeoBlock, verificarProximidade } from '@/lib/geo-resolver';
@@ -9,22 +16,11 @@ import type { ChatRequestContext } from './request-context';
 import type { ChatIntelligence } from './intelligence';
 import type { ChatPrompt } from './types';
 
-// Blocos de prompt originais resgatados
-import { buildIdentityPrompt } from './prompts/identity';
-import { buildActiveContextPrompt } from './prompts/active-context';
-import { buildMemoryPrompt } from './prompts/memory';
-import { buildMemoryHonestyPrompt } from './prompts/memory-honesty';
-import { buildEmotionalProtocolPrompt } from './prompts/emotional-protocol';
-import { buildMoralMirrorPrompt, EmotionalState } from './prompts/moral-mirror';
-import { buildIntellectualFrictionPrompt } from './prompts/intellectual-friction';
-import { buildOperationalPrompt } from './prompts/operational';
+import type { EmotionalState } from './prompts/moral-mirror';
 import { buildFewShotExamplesPrompt } from './prompts/few-shot-examples';
-
-// Formatadores originais resgatados
 import {
   buildFamilyBlock,
   buildProfileBlock,
-  buildConversationSummary,
   buildRecommendationsBlock,
   buildTopicBlock,
   buildRelatedTopicsString,
@@ -35,26 +31,25 @@ import {
 
 import { inferEmotionalStateFromHistory } from './utils/infer-emotional-state';
 import { shouldPrefetchPersonalMemory } from './utils/personal-memory';
-import { buildPersonalityBlock } from '@/lib/services/personality.service';
-import { buildLearnedInsightsBlock, buildPersonalityFromContext } from '@/lib/Utils/ai-helpers';
+import { buildLearnedInsightsBlock } from '@/lib/Utils/ai-helpers';
+import {
+  type ContextBlock,
+  MAX_USER_MESSAGE_CHARS,
+  MESSAGE_OVERHEAD_TOKENS,
+  estimateJsonTokens,
+  estimateTokens,
+  fitBlocks,
+  historyShare,
+  promptBudgetTokens,
+  selectHistory,
+  selectTools,
+  truncateToTokens,
+} from './prompt-budget';
 
 const DEFAULT_MODEL = process.env.HF_MODEL_ID || 'celioNascimento/Lev-LoRA-Orquestrador-Merged';
 const ALWAYS_ON_TOOLS = ['web_pesquisar'] as const;
-// Orçamento do system prompt (tokens estimados) = contexto da Modal − resposta − ferramentas −
-// reserva para a conversa recente. Mantém as mesmas premissas do lev-gateway.ts, que ainda apara
-// o histórico mais antigo se necessário. MODAL_MAX_MODEL_LEN deve acompanhar o --max-model-len do deploy.
-const MODAL_MAX_MODEL_LEN = Number(process.env.MODAL_MAX_MODEL_LEN) || 4096;
-const RESERVED_OUTPUT_AND_MARGIN_TOKENS = 640; // 512 de resposta + 128 de margem
-const RESERVED_RECENT_CHAT_TOKENS = 1200;      // últimas mensagens + a pergunta atual
-const MIN_SYSTEM_PROMPT_TOKENS = 2500;
-const CHARS_PER_TOKEN = 3; // estimativa conservadora (português + JSON)
-const FAMILY_DATE_SIGNALS =[/aniversário/i, /casamento/i, /fil[ho]a/i, /esposa|marido/i];
-
-function shouldIncludeFamilyContext(message: string, history: string): boolean {
-  const isHighAlertMonth = [4, 7].includes(new Date().getMonth());
-  const hasFamilySignal = FAMILY_DATE_SIGNALS.some(p => p.test(history + message));
-  return isHighAlertMonth || hasFamilySignal;
-}
+const TOOLS_MAX_TOKENS = 1500;
+const FEW_SHOT_MIN_ROOM_TOKENS = 450;
 
 const CONTEXT_FIELDS: Record<string, string[]> = {
   agenda: ['events', 'calendar_block', 'reminders', 'related_topics'],
@@ -74,6 +69,10 @@ const CONTEXT_FIELDS: Record<string, string[]> = {
   localizacao: ['locations', 'related_topics'],
 };
 
+const LOCATION_SIGNAL = /onde (eu )?(estou|tô|to)\b|aqui|perto|cidade|endere[çc]o|rota|tr[âa]nsito|clima|previs[ãa]o|chover|calor|frio/i;
+const TECH_SIGNAL = /erro|bug|c[óo]digo|fun[çc][ãa]o|deploy|timeout|stack|build|api\b|query|commit/i;
+const RECOMMEND_SIGNAL = /recomend|indica|sugere|dica de|o que (assistir|ler|ouvir)/i;
+
 function isRelevantText(value: unknown, tags: Set<string>): boolean {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
   return [...tags].some(tag => text.toLowerCase().includes(tag.toLowerCase()));
@@ -88,7 +87,6 @@ function scopeContextToTags(masterContext: any, contexts: string[]): any {
   for (const field of ['events', 'calendar_block', 'routines', 'budgets', 'projects', 'vehicles', 'vehicle_maintenances', 'vehicle_refuels', 'diary', 'health']) {
     if (!allowed.has(field)) delete scoped[field];
   }
-
   if (Array.isArray(masterContext.insights)) {
     scoped.insights = masterContext.insights.filter((item: unknown) => isRelevantText(item, tags));
   }
@@ -98,171 +96,188 @@ function scopeContextToTags(masterContext: any, contexts: string[]): any {
   return scoped;
 }
 
+/** "quinta-feira, 22 de outubro de 2026 às 14:05" — mesmo formato do dataset de treino. */
+function formatNowSP(): string {
+  const parts = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(new Date());
+  const get = (type: string) => parts.find(p => p.type === type)?.value ?? '';
+  return `${get('weekday')}, ${get('day')} de ${get('month')} de ${get('year')} às ${get('hour')}:${get('minute')}`;
+}
+
+const EMOTIONAL_GUIDANCE: Partial<Record<string, string>> = {
+  stressed: 'O usuário parece estressado: seja breve e prático, sem piada pesada.',
+  vulnerable: 'O usuário parece fragilizado: baixe o tom, acolha de verdade, sem piada e sem sugestão prática que ele não pediu.',
+  critical: 'O usuário pode estar em crise: sem humor e sem ferramentas. Frases curtas, presença, uma pergunta direta sobre segurança, CVV 188 (e SAMU 192 se houver risco imediato).',
+};
+
+/** Persona curta — espelha o SYSTEM_TEMPLATE do dataset de treino (ver lev-seed). */
+function buildCorePrompt(opts: { nickname: string; hasTools: boolean; hasWebTool: boolean; technical: boolean; emotionalState: string }): string {
+  const lines = [
+    `Você é o Lev, amigo próximo de ${opts.nickname}. Fala como brasileiro de 30 e poucos anos: direto, informal, com opinião própria e humor ácido na medida.`,
+    '',
+    'COMO FALAR:',
+    '- Curto, tipo mensagem de WhatsApp. Só alongue se o assunto pedir.',
+    '- O humor vem da situação (ironia, exagero, zoar de volta quando o usuário brinca). Não force piada.',
+    '- Gíria leve, no máximo uma por mensagem, sem repetir sempre a mesma.',
+    '- Se o usuário estiver mal, baixa o tom e acolhe de verdade, sem piada.',
+    '- Em crise (fala em morrer, sumir, se machucar): frases curtas, presença, uma pergunta direta sobre segurança, CVV 188 (e SAMU 192 se houver risco imediato). Sem humor e sem ferramentas.',
+    '- NUNCA aja como terapeuta, coach ou assistente de IA. Nada de "como posso ajudar", "sinto muito", "é importante" ou "é compreensível".',
+    '- Assunto encerrado ("valeu", "combinado", "pode deixar"): uma frase e para.',
+    '- Só afirme o que está no contexto abaixo. Se a informação não está aqui, diga que não tem.',
+  ];
+  if (opts.hasTools) {
+    lines.push(
+      '',
+      'FERRAMENTAS:',
+      '- Use as ferramentas quando o usuário pedir uma ação ou um dado delas.',
+      '- Ao chamar uma ferramenta, escreva só uma frase curta antes, sem dizer que já deu certo. Depois do resultado, confirme em uma frase com personalidade.',
+      '- Se a ferramenta devolver erro ou conflito, diga o que houve sem enrolar e ofereça o próximo passo.',
+      '- Perfil e família abaixo você já tem: responda direto, sem ferramenta.',
+    );
+    if (opts.hasWebTool) {
+      lines.push('- Fato que depende da data atual (jogos, notícias, cotações): use web_pesquisar, nunca responda de cabeça.');
+    }
+  }
+  if (opts.technical) {
+    lines.push('', 'PEDIDO TÉCNICO: confirme em poucas palavras, entregue a solução com o local exato e finalize com "Pronto para testar?". Erro: [CAUSA] → [LOCAL] → [SOLUÇÃO].');
+  }
+  const guidance = EMOTIONAL_GUIDANCE[opts.emotionalState];
+  if (guidance) lines.push('', guidance);
+  return lines.join('\n');
+}
+
 export async function buildChatPrompt(
   ctx: ChatRequestContext,
   intel: ChatIntelligence,
 ): Promise<ChatPrompt> {
   const { user, resolvedLocation, normalizedLocation, message } = ctx;
   const { contexts, emotional, masterContext, recentHistory } = intel;
-  // O histórico recente é sempre consultado. Camadas contextuais maiores só entram
-  // quando o classificador encontrou uma tag relevante para esta mensagem.
+  const nickname = user.nickname || 'Célio';
   const hasContextTag = contexts.length > 0;
+  const tagSet = new Set(contexts.map(t => t.toLowerCase()));
   const relevantContext = scopeContextToTags(masterContext, contexts);
+  const isPersonalFact = shouldPrefetchPersonalMemory(message);
 
-  // ── 1. MONTAGEM DOS DADOS ──────────────────────────────────────────────────
-  const profileBlock = buildProfileBlock(masterContext?.profile);
-  const familyBlock = buildFamilyBlock(relevantContext?.persons || [], relevantContext?.children || []);
-  const topicsBlock = buildTopicBlock(relevantContext);
-  const urgentes = buildUrgentesString(relevantContext);
-  const guidelines = buildGuidelinesString(relevantContext);
-  const learnedInsightsBlock = buildLearnedInsightsBlock(relevantContext?.insights || []);
-  const personalitySettings = buildPersonalityFromContext(masterContext?.settings);
-  const personalityBlock = buildPersonalityBlock(personalitySettings);
-  const recommendationsBlock = buildRecommendationsBlock(relevantContext);
-  const relatedTopics = buildRelatedTopicsString(relevantContext);
-
-  // ── 2. TEMPO E LOCALIZAÇÃO ────────────────────────────────────────────────
-  const nowSP = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-  const dataHoraSP = nowSP.toLocaleString('pt-BR', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
-  const geoBlock = buildGeoBlock(resolvedLocation);
-  const gpsInstruction = resolvedLocation ? '' : `[GPS]: Indisponível. Não faça suposições.`;
-  
-  let alertaRadar: string | null = null;
-  if (masterContext?.radar_alert) {
-    alertaRadar = `[ALERTA RADAR]: ${masterContext.radar_alert}`;
-  } else if (resolvedLocation?.lat && resolvedLocation?.lng) {
-    const radar = await verificarProximidade(String(user.id), Number(resolvedLocation.lat), Number(resolvedLocation.lng), masterContext);
-    if (radar.temAlerta) alertaRadar = `[ALERTA RADAR]: ${radar.mensagem}`;
-  }
-
-  // ── 3. HISTÓRICO, L3 E ESTADOS ────────────────────────────────────────────
-  const historyText = recentHistory.map(h => h.content).join(' ');
-  const includeFamily = shouldIncludeFamilyContext(message, historyText);
-  const rawL3Text = hasContextTag
-    ? relevantContext?.dossier_summary || relevantContext?.user?.current_context || ''
-    : '';
-  const l3Content = filterL3Content(rawL3Text, includeFamily).slice(0, 3000); // Limite seguro
-  const conversationSummary = buildConversationSummary(intel.recentHistory, user.nickname || 'usuário');
-
-  const emotionalState = inferEmotionalStateFromHistory(
-    intel.recentHistory, ctx.message, (masterContext?.emotional_state || 'stable') as EmotionalState
-  );
-  const principles = masterContext?.principles || [];
-  const moralMirrorEnabled = masterContext?.modules?.moralMirror ?? false;
-  const frictionEnabled = masterContext?.profile?.friction_enabled ?? false;
-  const tradition = masterContext?.profile?.belief_tradition ?? 'undefined';
-  const lastFrictionAt = masterContext?.profile?.last_friction_at;
-  const recurrentThemes = masterContext?.recurrent_themes || {};
-
-  // ── 4. CARGAS PARALELAS ───────────────────────────────────────────────────
-  const [moduleResult, dynamicResult, fewShotBlock] = await Promise.all([
+  // ── 1. FERRAMENTAS E MÓDULOS ───────────────────────────────────────────────
+  const [moduleResult, dynamicResult] = await Promise.all([
     loadActiveModules({ userId: String(user.id), authUserId: user.auth_user_id, message, contexts, emotionalScore: emotional.score, location: normalizedLocation, masterContext }, user.plan, DEFAULT_MODEL),
     buildDynamicContext({ userId: String(user.id), authUserId: user.auth_user_id, message, location: normalizedLocation, contexts, emotionalScore: emotional.score, masterContext }),
-    buildFewShotExamplesPrompt(message, intel.queryEmbedding),
   ]);
-
   const finalModel = moduleResult.resolvedModel || DEFAULT_MODEL;
-  const knowledgeExample = (masterContext?.knowledge ?? [])[0] ?? null;
 
-  // ── 5. FERRAMENTAS ────────────────────────────────────────────────────────
+  const emotionalState = inferEmotionalStateFromHistory(
+    recentHistory, message, (masterContext?.emotional_state || 'stable') as EmotionalState,
+  );
+  const crisis = emotionalState === 'critical';
+
   const allToolKeys = new Set<string>([...ALWAYS_ON_TOOLS, ...(moduleResult.activeTools || []), ...(dynamicResult.activeTools || [])]);
-  const resolvedTools = ALL_TOOLS.filter((t: any) => t.function?.name && allToolKeys.has(t.function.name));
-  const toolNames = resolvedTools.map((t: any) => t.function.name).join(', ');
+  const candidateTools = ALL_TOOLS.filter((t: any) => t.function?.name && allToolKeys.has(t.function.name));
+  // Perguntas pessoais (família/perfil) e crise não usam ferramentas (o orquestrador também não as envia).
+  const toolSelection = isPersonalFact || crisis
+    ? { tools: [] as any[], groups: [], tokens: 0, dropped: [] as string[] }
+    : selectTools(candidateTools, message, contexts, recentHistory, TOOLS_MAX_TOKENS);
+  const resolvedTools = toolSelection.tools;
+  const hasTools = resolvedTools.length > 0;
+  const hasWebTool = resolvedTools.some((t: any) => t.function?.name === 'web_pesquisar');
 
-  // ── 6. MONTAGEM FINAL DO PROMPT ���──────────────────────────────────────────
-  // O contexto da Modal é limitado (--max-model-len em lev_modal.py). Perfil, família e memórias
-  // têm prioridade; os blocos opcionais são removidos, do menos ao mais importante, até caber.
-  //   nível 0: tudo | 1: sem exemplos de tom | 2: + sem espelho moral/fricção/recomendações
-  //   nível 3: + sem tópicos e com memórias L3 reduzidas
-  const renderSystemPrompt = (level: 0 | 1 | 2 | 3): string => `
-Você é Lev, um amigo inteligente e natural. NUNCA aja como terapeuta genérico, coach ou assistente.
-NUNCA diga "como posso ajudar" ou "não tenho acesso a registros". Você TEM acesso às informações abaixo.
-Ferramentas disponíveis no sistema (${toolNames || 'nenhuma'}): use-as sempre que o usuário pedir uma ação.
+  // ── 2. NÚCLEO + PERGUNTA (partes fixas) ───────────────────────────────────
+  const core = buildCorePrompt({
+    nickname, hasTools, hasWebTool, technical: TECH_SIGNAL.test(message), emotionalState,
+  });
+  const userMessage = message.slice(0, MAX_USER_MESSAGE_CHARS);
+  const total = promptBudgetTokens(hasTools);
+  const fixedTokens = estimateTokens(core) + estimateJsonTokens(resolvedTools) + estimateTokens(userMessage) + 12;
+  const remaining = Math.max(0, total - fixedTokens);
 
-[PERFIL DO USUÁRIO]
-Nome: ${user.nickname || 'Célio'}
-${profileBlock}
+  // ── 3. HISTÓRICO RECENTE ("RAM") — sempre ─────────────────────────────────
+  const history = selectHistory(recentHistory, historyShare(remaining));
+  const historyTokens = history.reduce((sum, m) => sum + estimateTokens(m.content) + MESSAGE_OVERHEAD_TOKENS, 0);
+  const blocksBudget = Math.max(0, remaining - historyTokens);
 
-[FAMÍLIA]
-${familyBlock || 'Nenhum familiar registrado no momento.'}
+  // ── 4. BLOCOS DE CONTEXTO (por prioridade) ────────────────────────────────
+  const profileBlock = buildProfileBlock(masterContext?.profile).replace(/^\[PERFIL PESSOAL\]\n?/, '');
+  const familyBlock = buildFamilyBlock(masterContext?.persons || [], masterContext?.children || []).replace(/^\[FAMÍLIA\]\n?/, '');
 
-[MEMÓRIAS RECUPERADAS]
-${hasContextTag ? (level >= 3 ? l3Content.slice(0, 1200) : l3Content) : ''}
-${hasContextTag ? learnedInsightsBlock : ''}
+  const familyHistory = history.map(h => h.content).join(' ');
+  const includeFamilyInDossier = isPersonalFact || tagSet.has('familia') || tagSet.has('filhos') || /anivers|filh[oa]|espos|marid/i.test(message + familyHistory);
+  const rawL3 = hasContextTag ? relevantContext?.dossier_summary || relevantContext?.user?.current_context || '' : '';
+  const l3Content = filterL3Content(rawL3, includeFamilyInDossier);
+  const insights = hasContextTag ? buildLearnedInsightsBlock(relevantContext?.insights || []) : '';
 
-${buildIdentityPrompt(user.nickname || 'Célio')}
+  const wantsAgendaItems = ['agenda', 'evento', 'rotina', 'trabalho'].some(t => tagSet.has(t));
+  const urgentes = wantsAgendaItems ? buildUrgentesString(relevantContext) : '';
+  const wantsLocation = tagSet.has('localizacao') || LOCATION_SIGNAL.test(message);
+  const geoBlock = wantsLocation ? buildGeoBlock(resolvedLocation) : '';
 
-${buildActiveContextPrompt({
-  dataHoraSP: dataHoraSP,
-  geoBlock: geoBlock,
-  gpsInstruction: gpsInstruction,
-  alertaRadar: alertaRadar,
-  urgentes: urgentes,
-  relatedTopics: hasContextTag && level < 3 ? relatedTopics : '',
-})}
-
-${buildMemoryPrompt({
-  learnedInsightsBlock: '',
-  profileBlock: '',
-  familyBlock: '',
-  personalityBlock: personalityBlock,
-  l3Content: '',
-  conversationSummary: conversationSummary,
-  recommendationsBlock: hasContextTag && level < 2 ? recommendationsBlock : '',
-  topicsBlock: hasContextTag && level < 3 ? topicsBlock : '',
-})}
-
-${buildEmotionalProtocolPrompt({ enabled: true, emotionalState, recurrentThemes })}
-${buildMemoryHonestyPrompt()}
-${level >= 2 ? '' : buildMoralMirrorPrompt({ nickname: user.nickname || 'Célio', enabled: moralMirrorEnabled, emotionalState, principles })}
-${level >= 2 ? '' : buildIntellectualFrictionPrompt({ enabled: frictionEnabled, frictionEnabled, emotionalState, tradition: tradition as any, lastFrictionAt })}
-${buildOperationalPrompt({ plan: user.plan, guidelines })}
-
-${level >= 1 ? '' : `[EXEMPLOS DE TOM E CONTEXTO]\n${fewShotBlock}`}
-  `.trim();
-
-  // Em perguntas pessoais o orquestrador não envia ferramentas, então elas não ocupam espaço.
-  const toolsTokens = shouldPrefetchPersonalMemory(message)
-    ? 0
-    : Math.ceil(JSON.stringify(resolvedTools).length / CHARS_PER_TOKEN);
-  const systemPromptBudget = Math.max(
-    MIN_SYSTEM_PROMPT_TOKENS,
-    MODAL_MAX_MODEL_LEN - RESERVED_OUTPUT_AND_MARGIN_TOKENS - RESERVED_RECENT_CHAT_TOKENS - toolsTokens,
-  );
-
-  let promptLevel: 0 | 1 | 2 | 3 = 0;
-  let levSystemPrompt = renderSystemPrompt(0);
-  while (levSystemPrompt.length / CHARS_PER_TOKEN > systemPromptBudget && promptLevel < 3) {
-    promptLevel = (promptLevel + 1) as 0 | 1 | 2 | 3;
-    levSystemPrompt = renderSystemPrompt(promptLevel);
+  let alertaRadar: string | null = null;
+  if (masterContext?.radar_alert) {
+    alertaRadar = masterContext.radar_alert;
+  } else if (wantsLocation && resolvedLocation?.lat && resolvedLocation?.lng) {
+    const radar = await verificarProximidade(String(user.id), Number(resolvedLocation.lat), Number(resolvedLocation.lng), masterContext);
+    if (radar.temAlerta) alertaRadar = radar.mensagem;
   }
 
-  // Alguns blocos fixos podem continuar grandes mesmo no nível 3. Nunca envie
-  // um system prompt maior que o orçamento calculado para a Modal.
-  if (levSystemPrompt.length / CHARS_PER_TOKEN > systemPromptBudget) {
-    promptLevel = 3;
-    const hardLimit = Math.max(1200, systemPromptBudget * CHARS_PER_TOKEN);
-    const compactPrompt = `Você é Lev, um amigo inteligente e natural. Responda em português, com objetividade e sem inventar informações.\nFerramentas disponíveis: ${toolNames || 'nenhuma'}. Use-as quando necessário.\n\n[PERFIL]\nNome: ${user.nickname || 'Célio'}\n${profileBlock}\n\n[HISTÓRICO RECENTE]\n${conversationSummary}\n\n[CONTEXTO RELEVANTE]\n${hasContextTag ? l3Content.slice(0, 900) : ''}\n\n[REGRAS]\n${buildMemoryHonestyPrompt()}\n${buildOperationalPrompt({ plan: user.plan, guidelines: '' })}`;
-    levSystemPrompt = compactPrompt.slice(0, hardLimit);
+  const rawGuidelines = buildGuidelinesString(relevantContext);
+  const guidelines = rawGuidelines === 'Progresso contínuo' ? '' : rawGuidelines;
+
+  const cap = (text: string, tokens: number) => (text ? truncateToTokens(text, tokens) : '');
+  const blocks: ContextBlock[] = [
+    { key: 'hoje', priority: 0, text: `[CONTEXTO ATIVO]\nHoje é ${formatNowSP()}.` },
+    { key: 'perfil', priority: 1, minTokens: 60, text: `[PERFIL DO USUÁRIO]\nNome: ${nickname}\n${cap(profileBlock, 220)}` },
+    { key: 'familia', priority: 2, minTokens: 30, text: `[FAMÍLIA]\n${cap(familyBlock, 160) || 'Nenhum familiar registrado no momento.'}` },
+    { key: 'diretrizes', priority: 3, minTokens: 40, text: guidelines ? `[DIRETRIZES DO USUÁRIO]\n${cap(guidelines, 150)}` : '' },
+    { key: 'radar', priority: 4, text: alertaRadar ? `[ALERTA RADAR]: ${cap(alertaRadar, 60)}` : '' },
+    { key: 'urgentes', priority: 5, minTokens: 30, text: urgentes ? `[LEMBRETES URGENTES]\n${cap(urgentes, 120)}` : '' },
+    { key: 'local', priority: 6, minTokens: 30, text: geoBlock ? `[LOCALIZAÇÃO]\n${cap(geoBlock, 100)}` : '' },
+    { key: 'memorias', priority: 7, minTokens: 150, text: l3Content ? `[MEMÓRIAS RECUPERADAS]\n${cap(l3Content, 700)}` : '' },
+    { key: 'insights', priority: 8, minTokens: 60, text: insights ? cap(insights, 200) : '' },
+    { key: 'relacionados', priority: 9, minTokens: 40, text: hasContextTag ? cap(buildRelatedTopicsString(relevantContext), 100) && `[TÓPICOS RELACIONADOS]\n${cap(buildRelatedTopicsString(relevantContext), 100)}` : '' },
+    { key: 'topicos', priority: 10, minTokens: 40, text: hasContextTag ? cap(buildTopicBlock(relevantContext), 100) : '' },
+    { key: 'recomendacoes', priority: 11, minTokens: 60, text: hasContextTag && RECOMMEND_SIGNAL.test(message) ? cap(buildRecommendationsBlock(relevantContext), 200) : '' },
+  ];
+
+  const fitted = fitBlocks(blocks, blocksBudget);
+  let contextText = fitted.text;
+  let leftover = blocksBudget - estimateTokens(contextText);
+
+  // ── 5. EXTRAS SÓ SE SOBRAR ESPAÇO ─────────────────────────────────────────
+  let fewShotBlock = '';
+  if (leftover >= FEW_SHOT_MIN_ROOM_TOKENS && !hasTools && !crisis) {
+    const raw = await buildFewShotExamplesPrompt(message, intel.queryEmbedding).catch(() => '');
+    const costFewShot = estimateTokens(raw) + 4;
+    if (raw && costFewShot <= leftover - 150) {
+      fewShotBlock = `[EXEMPLOS DE TOM]\n${raw}`;
+      leftover -= costFewShot;
+    }
   }
+  if (fewShotBlock) contextText = `${contextText}\n\n${fewShotBlock}`;
+
+  const knowledgeExample = (masterContext?.knowledge ?? [])[0] ?? null;
+  const conversationMessages: any[] = [...history];
+  if (knowledgeExample?.input_exemplo && knowledgeExample?.output_ideal) {
+    const pair = `${knowledgeExample.input_exemplo}${knowledgeExample.output_ideal}`;
+    if (estimateTokens(pair) + 10 <= leftover) {
+      conversationMessages.push({ role: 'user', content: knowledgeExample.input_exemplo });
+      conversationMessages.push({ role: 'assistant', content: knowledgeExample.output_ideal });
+    }
+  }
+  conversationMessages.push({ role: 'user', content: userMessage });
+
+  const systemPrompt = `${core}\n\n${contextText}`.trim();
+
+  const totalTokens =
+    estimateTokens(systemPrompt) + estimateJsonTokens(resolvedTools) +
+    conversationMessages.reduce((sum, m) => sum + estimateTokens(m.content) + MESSAGE_OVERHEAD_TOKENS, 0);
   console.log(
-    `[Prompt] system ~${Math.round(levSystemPrompt.length / CHARS_PER_TOKEN)} tokens (orçamento ${systemPromptBudget}, ferramentas ~${toolsTokens}) | nível de corte: ${promptLevel}`,
+    `[Prompt] ~${totalTokens}/${total} tokens | system ${estimateTokens(systemPrompt)} | ferramentas ${resolvedTools.length}` +
+      ` (~${estimateJsonTokens(resolvedTools)}; grupos: ${toolSelection.groups.join(',') || '-'}) | histórico ${history.length}/${recentHistory.length} msgs` +
+      ` | blocos: ${fitted.included.join(',') || '-'}${fitted.dropped.length ? ` | descartados: ${fitted.dropped.join(',')}` : ''}`,
   );
-
-  // ── 7. MENSAGENS E KNOWLEDGE RAG ──────────────────────────────────────────
-  const conversationMessages: any[] = [...recentHistory];
-  
-  if (knowledgeExample) {
-    conversationMessages.push({ role: 'user', content: knowledgeExample.input_exemplo });
-    conversationMessages.push({ role: 'assistant', content: knowledgeExample.output_ideal });
-  }
-  
-  conversationMessages.push({ role: 'user', content: message });
 
   return {
-    systemPrompt: levSystemPrompt,
+    systemPrompt,
     tools: resolvedTools,
     model: finalModel,
     conversationMessages,
