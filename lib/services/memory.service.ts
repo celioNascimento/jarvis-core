@@ -76,7 +76,7 @@ export async function compactMemory(userId: string, authorName: string): Promise
 
     const prompt = `Você é o Gerente de Memória do Lev. Mantenha o Dossiê do usuário ${authorName} atualizado.\n[DOSSIÊ ATUAL]:\n${oldContext}\n\n[NOVAS INTERAÇÕES]:\n${brainText}\nTAREFA: Integre as novas informações ao Dossiê. Retorne apenas o texto puro.`;
 
-    const newContext = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.3);
+    const newContext = await callOpenRouter(prompt, 'google/gemini-2.5-flash', 0.3);
     if (!memoriaEhValida(newContext)) return;
 
     // Gera embedding do novo dossiê via módulo centralizado

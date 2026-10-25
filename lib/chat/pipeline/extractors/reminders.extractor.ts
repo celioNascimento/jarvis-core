@@ -52,7 +52,7 @@ Regras:
 `.trim();
 
   try {
-    const raw    = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4); // ← corrigido
+    const raw    = await callOpenRouter(prompt, 'google/gemini-2.5-flash', 0.1, 4); // ← corrigido
     const parsed = JSON.parse(CLEAN_JSON(raw));
 
     if (!parsed?.found || !parsed?.title) return;

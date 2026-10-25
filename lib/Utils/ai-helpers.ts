@@ -31,7 +31,7 @@ export async function callAI(prompt: string, maxTokens = 300): Promise<string> {
     `callAI_${Date.now()}`, 
     [{ role: 'user', content: prompt }], 
     undefined, 
-    'google/gemini-2.0-flash-001',
+    'google/gemini-2.5-flash',
     0.1, 
     20000, 
     maxTokens

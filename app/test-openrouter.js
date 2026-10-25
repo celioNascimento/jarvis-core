@@ -12,7 +12,7 @@ async function test() {
       'X-Title': 'Jarvis AI',
     },
     body: JSON.stringify({
-      model: 'google/gemini-2.0-flash-001',
+      model: 'google/gemini-2.5-flash',
       messages: [{ role: 'user', content: 'Olá' }],
       max_tokens: 50,
     }),

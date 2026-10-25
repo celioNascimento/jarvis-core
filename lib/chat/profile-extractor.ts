@@ -31,7 +31,7 @@ Se nada for detectado, retorne {}.
   `;
 
   try {
-    const result = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.2);
+    const result = await callOpenRouter(prompt, 'google/gemini-2.5-flash', 0.2);
     const updates = JSON.parse(result);
     if (Object.keys(updates).length) {
       // Atualiza user_profiles

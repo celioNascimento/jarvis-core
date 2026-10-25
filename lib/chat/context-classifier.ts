@@ -180,7 +180,7 @@ export async function classifyContextWithL4(
     const prompt = `Classifique a mensagem abaixo em 1-3 categorias da lista:\n${ALL_CONTEXTS.join(', ')}\n\nMensagem: "${text.slice(0, 200)}"\n\nResponda APENAS com JSON: {"contexts": ["cat1", "cat2"]}`;
 
     const rawResponse: any = await callOpenRouterWithPriority(
-      2, 'if_full', `ctx_class_${Date.now()}`, [{ role: 'user', content: prompt }], [], 'google/gemini-2.0-flash-001', 0.1
+      2, 'if_full', `ctx_class_${Date.now()}`, [{ role: 'user', content: prompt }], [], 'google/gemini-2.5-flash', 0.1
     );
 
     const rawText = typeof rawResponse === 'string' ? rawResponse : (rawResponse.text || rawResponse.content || '');
@@ -214,10 +214,10 @@ export function routeModel(
   if (contexts.some((c) => ['trabalho', 'projeto', 'meta', 'financas'].includes(c))) return { model: 'google/gemini-2.5-pro', label: 'pro-trabalho' };
 
   const flashFriendly: ContextType[] = ['esporte', 'noticias', 'clima', 'casual', 'rotina', 'alias', 'preferencia', 'recomendacao', 'math', 'trivial', 'compras', 'veiculos'];
-  if (contexts.includes('agenda') && effectiveEmotional < 0.4) return { model: 'google/gemini-2.0-flash-001', label: 'flash-agenda' };
-  if (contexts.some((c) => flashFriendly.includes(c))) return { model: 'google/gemini-2.0-flash-001', label: 'flash-default' };
+  if (contexts.includes('agenda') && effectiveEmotional < 0.4) return { model: 'google/gemini-2.5-flash', label: 'flash-agenda' };
+  if (contexts.some((c) => flashFriendly.includes(c))) return { model: 'google/gemini-2.5-flash', label: 'flash-default' };
 
-  return { model: 'google/gemini-2.0-flash-001', label: 'flash-default' };
+  return { model: 'google/gemini-2.5-flash', label: 'flash-default' };
 }
 
 // ─── getTemperature ───────────────────────────────────────────────────────────

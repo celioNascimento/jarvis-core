@@ -67,7 +67,7 @@ export const redis: Redis = new Proxy({} as Redis, {
 
 export async function callOpenRouter(
   input: string | ChatMessage[],
-  model: string = "google/gemini-2.0-flash-001",
+  model: string = "google/gemini-2.5-flash",
   temperature: number = 0.7,
   priority: 1 | 2 | 3 | 4 = 4
 ): Promise<string> {

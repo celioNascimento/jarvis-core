@@ -104,7 +104,7 @@ Regras:
       `extract_unified_${Date.now()}`, 
       [{ role: 'user', content: prompt }],
       [],
-      'google/gemini-2.0-flash-001',
+      'google/gemini-2.5-flash',
       0.1,
       35000,
       1500,

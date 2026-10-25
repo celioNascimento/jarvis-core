@@ -122,7 +122,7 @@ Mensagem: "${userMessage}"`;
       priority: 4,
       params: {
         messages: [{ role: 'user', content: prompt }],
-        model: 'google/gemini-2.0-flash-001',
+        model: 'google/gemini-2.5-flash',
         temperature: 0.1,
         timeoutMs: 10000,
       },
