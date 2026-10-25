@@ -141,7 +141,7 @@ export async function callLevModel(
     const maxTokens = Math.min(MAX_OUTPUT_TOKENS, available);
 
     const request = () => getModalClient().chat.completions.create({
-      model: 'celioNascimento/Lev-LoRA-Orquestrador-Merged',
+      model: 'celioNascimento/Lev-LoRA-Orquestrador-Merged-v2',
       messages: requestMessages as any,
       tools: hasTools ? tools : undefined,
       // Alguns servidores vLLM/Modal rejeitam explicitamente tool_choice=auto.

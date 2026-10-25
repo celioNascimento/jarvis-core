@@ -46,7 +46,7 @@ import {
   truncateToTokens,
 } from './prompt-budget';
 
-const DEFAULT_MODEL = process.env.HF_MODEL_ID || 'celioNascimento/Lev-LoRA-Orquestrador-Merged';
+const DEFAULT_MODEL = process.env.HF_MODEL_ID || 'celioNascimento/Lev-LoRA-Orquestrador-Merged-v2';
 const ALWAYS_ON_TOOLS = ['web_pesquisar'] as const;
 const TOOLS_MAX_TOKENS = 1500;
 const FEW_SHOT_MIN_ROOM_TOKENS = 450;
