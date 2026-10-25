@@ -1,4 +1,8 @@
 // lib/chat/llm-gateway.ts
+// V11.7 — Controle de carga autocorretivo (conjunto ordenado com expiração).
+// O contador antigo `global_llm_active` só subia quando uma invocação morria antes do
+// `finally` e nunca expirava: ficava preso em ~58, causando "Downgrade preventivo" em toda
+// tarefa de background e 4 s de espera inútil em toda resposta de fallback do chat.
 // V11.6.5 — FALLBACK_MODEL atualizado para gemini-2.5-flash (2.0-flash descontinuado no OpenRouter)
 
 import { Redis } from '@upstash/redis';
@@ -47,6 +51,13 @@ const redis = new Redis({
 const FALLBACK_MODEL = 'google/gemini-2.5-flash';
 const CONCURRENCY_LIMIT = 3;
 
+// Tarefas ativas: conjunto ordenado (membro = tarefa, score = hora de início).
+// Cada tarefa se remove ao terminar; se a invocação morrer antes disso, o membro some
+// sozinho depois de ACTIVE_STALE_MS (maior que o maior timeout: 25 s + 10 s do fallback).
+const ACTIVE_KEY = 'llm_active_tasks';
+const ACTIVE_STALE_MS = 90_000;
+const ACTIVE_KEY_TTL_SECONDS = 300;
+
 let localBreaker = { open: false, expires: 0 };
 
 function edgeSafeHash(str: string): string {
@@ -59,25 +70,38 @@ function edgeSafeHash(str: string): string {
 class Gatekeeper {
   async isOverloaded(): Promise<boolean> {
     try {
-      const count = await redis.get<number>('global_llm_active');
+      await redis.zremrangebyscore(ACTIVE_KEY, 0, Date.now() - ACTIVE_STALE_MS);
+      const count = await redis.zcard(ACTIVE_KEY);
       return (count ?? 0) >= CONCURRENCY_LIMIT;
     } catch {
       return false;
     }
   }
 
+  private async release(member: string): Promise<void> {
+    await redis.zrem(ACTIVE_KEY, member).catch(() => {});
+  }
+
   async enqueue(task: GatewayTask): Promise<LLMResponse> {
     const dedupKey = `llm_dedup:${task.id}:${edgeSafeHash(task.dedupPayload || '')}`;
+    const member = `${task.id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 
     let cached: LLMResponse | null = null;
     let activeCount = 0;
     let redisAvailable = true;
 
     try {
-      [cached, activeCount] = await redis.pipeline()
+      const now = Date.now();
+      const results = (await redis.pipeline()
         .get(dedupKey)
-        .incr('global_llm_active')
-        .exec() as [LLMResponse | null, number];
+        .zremrangebyscore(ACTIVE_KEY, 0, now - ACTIVE_STALE_MS)
+        .zadd(ACTIVE_KEY, { score: now, member })
+        .zcard(ACTIVE_KEY)
+        .expire(ACTIVE_KEY, ACTIVE_KEY_TTL_SECONDS)
+        .exec()) as unknown[];
+
+      cached = (results[0] as LLMResponse | null) ?? null;
+      activeCount = Number(results[3]) || 0; // já inclui esta tarefa
     } catch (error) {
       // Redis controla cache/concorrência, mas não é requisito para gerar a resposta.
       redisAvailable = false;
@@ -85,7 +109,7 @@ class Gatekeeper {
     }
 
     if (cached) {
-      if (redisAvailable) await redis.decr('global_llm_active').catch(() => {});
+      if (redisAvailable) await this.release(member);
       const hit = cached as LLMResponse;
       return {
         ...hit,
@@ -108,14 +132,14 @@ class Gatekeeper {
 
       return await this.executeWithFallback(task, dedupKey);
     } finally {
-      if (redisAvailable) await redis.decr('global_llm_active').catch(() => {});
+      if (redisAvailable) await this.release(member);
     }
   }
 
   private async waitSmartly(ms: number): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < ms) {
-      const count = await redis.get<number>('global_llm_active').catch(() => 99);
+      const count = await redis.zcard(ACTIVE_KEY).catch(() => 99);
       if ((count || 0) <= CONCURRENCY_LIMIT) return;
       await new Promise(r => setTimeout(r, 1000));
     }
