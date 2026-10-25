@@ -3,7 +3,7 @@ import modal
 import subprocess
 
 APP_NAME = "lev-orchestrator"
-MODEL_NAME = "celioNascimento/Lev-LoRA-Orquestrador-Merged"
+MODEL_NAME = "celioNascimento/Lev-LoRA-Orquestrador-Merged-v2"
 VLLM_PORT = 8000
 
 # Usando imagem com CUDA devel e versões compatíveis do vLLM e Transformers
