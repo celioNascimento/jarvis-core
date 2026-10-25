@@ -4,7 +4,6 @@ import { extractAndSummarize } from '@/lib/extractor';
 import { detectImplicitNegativeFeedback } from '@/lib/tools/executors/learning';
 import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
 import { insertBrainEntry } from '@/lib/services/brain.service';
-import { extractReminder } from '@/lib/chat/pipeline/extractors/reminders.extractor';
 
 export const maxDuration = 30;
 
@@ -64,9 +63,6 @@ export async function POST(request: NextRequest) {
     }),
     extractAndSummarize(payload.userId, payload.nickname, payload.message, payload.reply),
     processStyleSignals(payload.userId, payload.message),
-    ...(payload.reminder
-      ? [extractReminder(payload.userId, payload.authUserId, payload.message, new Date().toISOString())]
-      : []),
   ];
 
   const results = await Promise.allSettled(tasks.map((task) => withTaskBudget(task)));
