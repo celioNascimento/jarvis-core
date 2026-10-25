@@ -44,8 +44,9 @@ export async function GET(req: Request) {
       : await searchByName(q, authUUID);
 
     return NextResponse.json({ users });
-  } catch (e: any) {
-    console.error('[/api/user/search]', e.message);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[/api/user/search]', message);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
