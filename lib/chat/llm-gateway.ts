@@ -1,4 +1,5 @@
 // lib/chat/llm-gateway.ts
+// V11.8 — Modelos descontinuados (ex.: gemini-2.0-flash-001) são redirecionados antes da chamada.
 // V11.7 — Controle de carga autocorretivo (conjunto ordenado com expiração).
 // O contador antigo `global_llm_active` só subia quando uma invocação morria antes do
 // `finally` e nunca expirava: ficava preso em ~58, causando "Downgrade preventivo" em toda
@@ -51,6 +52,24 @@ const redis = new Redis({
 const FALLBACK_MODEL = 'google/gemini-2.5-flash';
 const CONCURRENCY_LIMIT = 3;
 
+// Modelos que o OpenRouter descontinuou (retornam 404). Qualquer tarefa que os peça, venha o
+// nome do código, de variável de ambiente ou do banco, é redirecionada para o FALLBACK_MODEL
+// antes da chamada, sem gastar uma requisição que certamente falha.
+const DEPRECATED_MODELS = new Set<string>([
+  'google/gemini-2.0-flash-001',
+  'google/gemini-2.0-flash',
+]);
+const warnedDeprecated = new Set<string>();
+
+function resolveModel(model: string): string {
+  if (!DEPRECATED_MODELS.has(model)) return model;
+  if (!warnedDeprecated.has(model)) {
+    warnedDeprecated.add(model); // loga uma vez por instância, não a cada chamada
+    console.warn(`[Gateway] Modelo "${model}" foi descontinuado; usando ${FALLBACK_MODEL}. Atualize a origem desse nome.`);
+  }
+  return FALLBACK_MODEL;
+}
+
 // Tarefas ativas: conjunto ordenado (membro = tarefa, score = hora de início).
 // Cada tarefa se remove ao terminar; se a invocação morrer antes disso, o membro some
 // sozinho depois de ACTIVE_STALE_MS (maior que o maior timeout: 25 s + 10 s do fallback).
@@ -83,6 +102,7 @@ class Gatekeeper {
   }
 
   async enqueue(task: GatewayTask): Promise<LLMResponse> {
+    task.params.model = resolveModel(task.params.model);
     const dedupKey = `llm_dedup:${task.id}:${edgeSafeHash(task.dedupPayload || '')}`;
     const member = `${task.id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 
