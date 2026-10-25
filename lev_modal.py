@@ -24,7 +24,9 @@ hf_cache_vol = modal.Volume.from_name("lev-hf-cache", create_if_missing=True)
     image=vllm_image,
     gpu="L4",
     timeout=20 * 60,
-    scaledown_window=20 * 60,
+    # Keep the GPU available briefly after the last request, then let Modal
+    # scale it down so the next app-open warm-up pays the cold-start cost.
+    scaledown_window=3 * 60,
     volumes={"/root/.cache/huggingface": hf_cache_vol},
     secrets=[
         modal.Secret.from_name("huggingface-secret"),
