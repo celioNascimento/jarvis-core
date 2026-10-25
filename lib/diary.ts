@@ -21,7 +21,7 @@ REGRAS: eh_diario é true para relatos, humor, gratidão, intenção ou reflexã
       priority: 4,
       params: { 
         messages: [{ role: 'user', content: prompt + `\n\n"${userMessage}"` }],
-        model: 'google/gemini-2.0-flash-001',
+        model: 'google/gemini-2.5-flash',
         temperature: 0.2,
         timeoutMs: 15000 
       },
@@ -68,7 +68,7 @@ export async function extractGoal(userId: string, userMessage: string): Promise<
     const raw = await llmGateway.enqueue({
       id: `goal-${userId}-${Date.now()}`,
       priority: 4,
-      params: { messages: [{ role: 'user', content: prompt + `\n\n"${userMessage}"` }], model: 'google/gemini-2.0-flash-001', temperature: 0.2, timeoutMs: 20000 },
+      params: { messages: [{ role: 'user', content: prompt + `\n\n"${userMessage}"` }], model: 'google/gemini-2.5-flash', temperature: 0.2, timeoutMs: 20000 },
       dedupPayload: ''
     });
 

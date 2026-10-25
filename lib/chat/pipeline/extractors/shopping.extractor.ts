@@ -22,7 +22,7 @@ Retorne: {"items": [{"item": "nome específico", "category": "mercado|higiene|fa
   ];
 
   try {
-    const raw = await callOpenRouter(prompt as any, 'google/gemini-2.0-flash-001', 0.1, 4);
+    const raw = await callOpenRouter(prompt as any, 'google/gemini-2.5-flash', 0.1, 4);
     const parsed = JSON.parse(CLEAN_JSON(raw));
     if (!parsed?.items || parsed.items.length === 0) return;
 
@@ -43,7 +43,7 @@ export async function extractShoppingLinks(userId: string, userMessage: string):
   const prompt = `Identifique links ou referências comerciais em: "${userMessage}". Retorne: {"links": [{"url": "...", "title": "...", "category": "casa"}]}`;
 
   try {
-    const raw = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4);
+    const raw = await callOpenRouter(prompt, 'google/gemini-2.5-flash', 0.1, 4);
     const parsed = JSON.parse(CLEAN_JSON(raw));
     if (!parsed?.links) return;
 

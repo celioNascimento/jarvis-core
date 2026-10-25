@@ -6,8 +6,14 @@ import { createClient } from '@supabase/supabase-js'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
+type DebugResults = Record<string, string | Record<string, boolean>>;
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function GET() {
-  const results: any = {}
+  const results: DebugResults = {}
 
   // 1. Verifica variáveis de ambiente
   results.env = {
@@ -26,8 +32,8 @@ export async function GET() {
     )
     const { data, error } = await jarvis.from('users').select('id').limit(1)
     results.jarvis_service_role = error ? `ERRO: ${error.message}` : `OK (${data?.length} rows)`
-  } catch (e: any) {
-    results.jarvis_service_role = `EXCEPTION: ${e.message}`
+  } catch (error: unknown) {
+    results.jarvis_service_role = `EXCEPTION: ${getErrorMessage(error)}`
   }
 
   // 3. Testa service role no schema white_martins
@@ -39,8 +45,8 @@ export async function GET() {
     )
     const { data, error } = await wm.from('equipment').select('id').limit(1)
     results.wm_service_role = error ? `ERRO: ${error.message}` : `OK (${data?.length} rows)`
-  } catch (e: any) {
-    results.wm_service_role = `EXCEPTION: ${e.message}`
+  } catch (error: unknown) {
+    results.wm_service_role = `EXCEPTION: ${getErrorMessage(error)}`
   }
 
   // 4. Testa anon key no schema white_martins (sem auth)
@@ -52,8 +58,8 @@ export async function GET() {
     )
     const { data, error } = await wm_anon.from('equipment').select('id').limit(1)
     results.wm_anon_no_auth = error ? `ERRO: ${error.message}` : `OK (${data?.length} rows)`
-  } catch (e: any) {
-    results.wm_anon_no_auth = `EXCEPTION: ${e.message}`
+  } catch (error: unknown) {
+    results.wm_anon_no_auth = `EXCEPTION: ${getErrorMessage(error)}`
   }
 
   // 5. Verifica sessão do usuário atual via cookies
@@ -66,8 +72,8 @@ export async function GET() {
     )
     const { data: { user }, error } = await supabase.auth.getUser()
     results.session = error ? `ERRO: ${error.message}` : user ? `OK (${user.email})` : 'Sem sessão'
-  } catch (e: any) {
-    results.session = `EXCEPTION: ${e.message}`
+  } catch (error: unknown) {
+    results.session = `EXCEPTION: ${getErrorMessage(error)}`
   }
 
   // 6. Testa anon key COM token de sessão server-side
@@ -94,8 +100,8 @@ export async function GET() {
     } else {
       results.wm_with_session_token = 'Sem token de sessão'
     }
-  } catch (e: any) {
-    results.wm_with_session_token = `EXCEPTION: ${e.message}`
+  } catch (error: unknown) {
+    results.wm_with_session_token = `EXCEPTION: ${getErrorMessage(error)}`
   }
 
   return NextResponse.json(results, { status: 200 })

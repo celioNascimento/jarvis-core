@@ -12,7 +12,7 @@ export async function extractProjeto(userId: string, userMessage: string): Promi
   ];
 
   try {
-    const raw = await callOpenRouter(prompt as any, "google/gemini-2.0-flash-001", 0.1, 4);
+    const raw = await callOpenRouter(prompt as any, "google/gemini-2.5-flash", 0.1, 4);
     const data = JSON.parse(raw.replace(/```json|```/g, '').trim());
     if (!data?.projetos) return;
 

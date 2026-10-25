@@ -16,7 +16,7 @@ export async function extractRotina(userId: string, userMessage: string): Promis
 Retorne: {"despertar": null, "dormir": null, "academia_horario": null, "trabalho_entrada": null, "trabalho_saida": null}`;
 
   try {
-    const raw    = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4);
+    const raw    = await callOpenRouter(prompt, 'google/gemini-2.5-flash', 0.1, 4);
     const parsed = JSON.parse(CLEAN_JSON(raw));
 
     const parts: string[] = [];
@@ -39,7 +39,7 @@ export async function extractPreferencia(userId: string, userMessage: string): P
 Retorne: {"preferencias": [{"tipo": "comida|filme|musica|hobby", "descricao": "..."}]}`;
 
   try {
-    const raw    = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4);
+    const raw    = await callOpenRouter(prompt, 'google/gemini-2.5-flash', 0.1, 4);
     const parsed = JSON.parse(CLEAN_JSON(raw));
     if (!parsed?.preferencias?.length) return;
 
@@ -68,7 +68,7 @@ Retorne APENAS campos com valor identificado, null nos demais:
 }`;
 
   try {
-    const raw    = await callOpenRouter(prompt, 'google/gemini-2.0-flash-001', 0.1, 4);
+    const raw    = await callOpenRouter(prompt, 'google/gemini-2.5-flash', 0.1, 4);
     const parsed = JSON.parse(CLEAN_JSON(raw));
 
     // Remove campos nulos antes de persistir

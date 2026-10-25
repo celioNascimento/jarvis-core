@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
         const criticRes = await callOpenRouterWithPriority(
           4, 'if_full', `critic_${msg_id}`,
           [{ role: 'user', content: criticPrompt }],
-          [], 'google/gemini-2.0-flash-001',
+          [], 'google/gemini-2.5-flash',
           0.1, 4000, 200, 'none'
         );
 

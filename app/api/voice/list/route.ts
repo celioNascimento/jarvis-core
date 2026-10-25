@@ -5,6 +5,26 @@ import { NextResponse } from 'next/server';
  * Este arquivo deve ser criado em: app/api/voice/list/route.ts
  */
 
+interface ElevenLabsVoice {
+  voice_id: string;
+  name: string;
+  preview_url?: string;
+  category?: string;
+  labels?: Record<string, string>;
+}
+
+interface ElevenLabsResponse {
+  voices: ElevenLabsVoice[];
+}
+
+interface ElevenLabsErrorResponse {
+  detail?: { message?: string } | string;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function GET() {
   try {
     const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -29,31 +49,34 @@ export async function GET() {
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
+      const errorData = (await response.json()) as ElevenLabsErrorResponse;
       console.error('[Voice List] Erro da ElevenLabs:', errorData);
+      const detail = typeof errorData.detail === 'string'
+        ? errorData.detail
+        : errorData.detail?.message;
       return NextResponse.json(
-        { error: errorData.detail?.message || 'Falha ao buscar vozes na ElevenLabs' },
+        { error: detail || 'Falha ao buscar vozes na ElevenLabs' },
         { status: response.status }
       );
     }
 
-    const data = await response.json();
-    
+    const data = (await response.json()) as ElevenLabsResponse;
+
     /**
      * Filtramos os dados para enviar apenas o necessário ao App.
      * Isso reduz o consumo de banda e facilita a renderização no React Native.
      */
-    const cleanVoices = data.voices.map((v: any) => ({
-      id: v.voice_id,
-      name: v.name,
-      preview: v.preview_url, // URL do áudio de exemplo
-      category: v.category,
-      labels: v.labels,       // Útil para filtrar por "accent", "description", etc.
+    const cleanVoices = data.voices.map((voice) => ({
+      id: voice.voice_id,
+      name: voice.name,
+      preview: voice.preview_url, // URL do áudio de exemplo
+      category: voice.category,
+      labels: voice.labels,       // Útil para filtrar por "accent", "description", etc.
     }));
 
     return NextResponse.json(cleanVoices);
-  } catch (error: any) {
-    console.error('[Voice List Internal Error]:', error);
+  } catch (error: unknown) {
+    console.error('[Voice List Internal Error]:', getErrorMessage(error));
     return NextResponse.json(
       { error: 'Erro interno ao processar a listagem de vozes' },
       { status: 500 }

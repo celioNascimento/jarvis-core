@@ -33,7 +33,7 @@ Ano base: ${anoAtual}`,
   ];
 
   try {
-    const raw = await callOpenRouter(prompt as any, 'google/gemini-2.0-flash-001', 0.1, 4);
+    const raw = await callOpenRouter(prompt as any, 'google/gemini-2.5-flash', 0.1, 4);
     const cleanJson = raw.replace(/```(?:json)?\r?\n?/g, '').trim();
     const parsed = JSON.parse(cleanJson);
 

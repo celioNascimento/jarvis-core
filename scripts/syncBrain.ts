@@ -115,7 +115,7 @@ Ajuste os valores com base no que encontrar no histórico e dossiê. Não invent
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: "google/gemini-2.0-flash-001",
+      model: "google/gemini-2.5-flash",
       max_tokens: 1200,
       temperature: 0.1, // baixo para extração precisa
       messages: [{ role: 'user', content: prompt }]
