@@ -2,7 +2,6 @@ import { Receiver } from '@upstash/qstash';
 import { NextRequest, NextResponse } from 'next/server';
 import { extractAndSummarize } from '@/lib/extractor';
 import { detectImplicitNegativeFeedback } from '@/lib/tools/executors/learning';
-import { extractReminder } from '@/lib/chat/pipeline/extractors/reminders.extractor';
 import { processStyleSignals } from '@/lib/chat/pipeline/style-learner';
 import { insertBrainEntry } from '@/lib/services/brain.service';
 
@@ -65,15 +64,6 @@ export async function POST(request: NextRequest) {
     extractAndSummarize(payload.userId, payload.nickname, payload.message, payload.reply),
     processStyleSignals(payload.userId, payload.message),
   ];
-
-  if (payload.reminder) {
-    tasks.push(extractReminder(
-      payload.userId,
-      payload.authUserId,
-      payload.message,
-      new Date().toISOString(),
-    ));
-  }
 
   const results = await Promise.allSettled(tasks.map((task) => withTaskBudget(task)));
   const failures = results.filter((result) => result.status === 'rejected');
