@@ -4,23 +4,15 @@ export const remindersTools = [
     type: 'function',
     function: {
       name: 'lembrete_criar',
-      description: 'Cria um lembrete com agendamento. Quando o usuário pedir para ser lembrado de algo, execute IMEDIATAMENTE sem pedir confirmação. Suporta recorrência e dias úteis.',
+      description: 'Cria um lembrete imediatamente. Use delay_minutes para expressões relativas como “daqui a 10 minutos” e scheduled_time somente para horários fixos.',
       parameters: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'O que deve ser lembrado.' },
-          type: {
-            type: 'string',
-            enum: ['temporary', 'recurring', 'location'],
-            description: 'Tipo do lembrete. Use "recurring" se houver frequência.'
-          },
-          scheduled_time: { type: 'string', description: 'Hora ou data específica (ex: "08:00" ou ISO completo).' },
-          delay_minutes: { type: 'integer', description: 'Minutos a partir de agora (caso não haja hora fixa).' },
-          frequency: {
-            type: 'string',
-            enum: ['daily', 'weekly', 'monthly', 'weekdays'],
-            description: 'Frequência da repetição. "weekdays" pula finais de semana.'
-          },
+          type: { type: 'string', enum: ['temporary', 'recurring', 'location'] },
+          scheduled_time: { type: 'string', description: 'Horário fixo em HH:MM ou data ISO. Não use para “daqui a X minutos”.' },
+          delay_minutes: { type: 'integer', description: 'Intervalo em minutos a partir de agora.' },
+          frequency: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'weekdays'] },
         },
         required: ['title'],
       },
